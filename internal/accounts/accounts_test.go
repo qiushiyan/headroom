@@ -119,6 +119,29 @@ func TestCurrentTarget(t *testing.T) {
 	}
 }
 
+func TestSetCurrentAtomicWrite(t *testing.T) {
+	cfg := testConfig(t)
+	if err := SetCurrent(cfg, "first@x.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetCurrent(cfg, "second@x.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got := CurrentTarget(cfg); got != "second@x.com" {
+		t.Errorf("got %q, want second@x.com", got)
+	}
+	// The write goes through a temp file + rename; nothing may be left over.
+	entries, err := os.ReadDir(cfg.AccountsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != ".current" {
+			t.Errorf("stray file after SetCurrent: %q", e.Name())
+		}
+	}
+}
+
 func TestMetaEmail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".claude.json")

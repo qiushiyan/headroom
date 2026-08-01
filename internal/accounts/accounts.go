@@ -159,11 +159,29 @@ func CurrentTarget(cfg config.Config) string {
 	return name
 }
 
-// SetCurrent records the account bare `x` should target from now on. This is
+// SetCurrent records the account bare `x` should target from now on,
+// written atomically (temp file + rename) so a concurrent reader — an `x`
+// launcher mid-startup — never observes a truncated or empty file. This is
 // the one file headroom writes; the Keychain is never touched.
 func SetCurrent(cfg config.Config, name string) error {
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(cfg.StateFile(), []byte(name+"\n"), 0o644)
+	tmp, err := os.CreateTemp(cfg.AccountsRoot, ".current-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op once the rename lands
+	if _, err := tmp.WriteString(name + "\n"); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), cfg.StateFile())
 }
