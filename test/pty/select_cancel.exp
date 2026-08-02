@@ -1,0 +1,17 @@
+#!/usr/bin/expect -f
+# A bare ESC cancels: exit 1, nothing written (run.sh asserts the absence).
+# The ESC resolves as a keypress only after the decoder's pause — this also
+# exercises that path end to end.
+set timeout 10
+spawn $env(HEADROOM_BIN) select
+expect {
+    "esc cancel" {}
+    timeout { puts "picker never drew its footer"; exit 2 }
+}
+send -- "\033"
+expect eof
+catch wait result
+if {[lindex $result 3] != 1} {
+    puts "cancel exited [lindex $result 3], want 1"
+    exit 2
+}

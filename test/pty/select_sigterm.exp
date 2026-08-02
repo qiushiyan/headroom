@@ -1,0 +1,13 @@
+#!/usr/bin/expect -f
+# SIGTERM mid-session: the sh wrapper survives headroom's death and records
+# the pty's terminal state with stty; run.sh asserts it is sane again.
+set timeout 10
+set cmd "$env(HEADROOM_BIN) select; stty -a > $env(STTY_OUT) 2>&1"
+spawn sh -c $cmd
+expect {
+    "esc cancel" {}
+    timeout { puts "picker never drew its footer"; exit 2 }
+}
+sleep 0.2
+exec pkill -nx headroom
+expect eof

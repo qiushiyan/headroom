@@ -5,7 +5,9 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -24,16 +26,41 @@ import (
 func Run(args []string) int {
 	cfg := config.Load()
 	cmd := ""
+	var rest []string
 	if len(args) > 0 {
-		cmd = args[0]
+		cmd, rest = args[0], args[1:]
+	}
+	// Every command but watch takes no further arguments; a stray one is an
+	// error, not silently ignored — a misspelled flag must not fall through
+	// to a command it wasn't meant for.
+	noArgs := func() bool {
+		if len(rest) == 0 {
+			return true
+		}
+		fmt.Fprintf(os.Stderr, "headroom: unexpected argument %q\n", rest[0])
+		printUsage(os.Stderr)
+		return false
 	}
 	switch cmd {
 	case "":
 		return runDashboard(cfg)
+	case "--json":
+		if !noArgs() {
+			return 2
+		}
+		return runDashboardJSON(cfg)
 	case "check", "--check":
+		if !noArgs() {
+			return 2
+		}
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
 	case "select":
+		if !noArgs() {
+			return 2
+		}
 		return runSelect(cfg)
+	case "watch":
+		return runWatch(cfg, rest)
 	case "-h", "--help", "help":
 		printUsage(os.Stdout)
 		return 0
@@ -44,11 +71,13 @@ func Run(args []string) int {
 	}
 }
 
-func printUsage(w *os.File) {
+func printUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: headroom [command]
 
   (none)   usage dashboard for every account
+  --json   the dashboard as JSON (schema versioned)
   select   interactively pick the account bare x targets
+  watch    the dashboard on a lazy refresh loop (--interval <duration>)
   check    verify the reverse-engineered assumptions still hold
 `)
 }
@@ -67,6 +96,12 @@ type accountData struct {
 // prepare walks accounts and resolves labels, launchers, and credentials.
 // Fetch-ready accounts are left in StatusPending for launchFetches.
 func prepare(cfg config.Config) []*accountData {
+	return prepareWith(cfg, creds.ReadRaw)
+}
+
+// prepareWith is prepare with the credential source injected — the one seam
+// that lets the pipeline be table-tested without a Keychain.
+func prepareWith(cfg config.Config, readRaw func(configDir string) string) []*accountData {
 	accts := accounts.Discover(cfg)
 	current := accounts.CurrentTarget(cfg)
 	nowMS := time.Now().UnixMilli()
@@ -87,7 +122,7 @@ func prepare(cfg config.Config) []*accountData {
 		v.Launcher = accounts.Launcher(a, accts, cfg.PrimaryName)
 		v.Current = current == a.Name
 
-		raw := creds.ReadRaw(a.ConfigDir)
+		raw := readRaw(a.ConfigDir)
 		if raw == "" {
 			v.Status = render.StatusNoLogin
 			continue
@@ -109,29 +144,37 @@ func prepare(cfg config.Config) []*accountData {
 	return list
 }
 
-// launchFetches starts all usage fetches in parallel and delivers each
-// account's index as its view resolves; the channel closes when all are
-// done. Receiving an index synchronizes with that account's writes.
-func launchFetches(cfg config.Config, list []*accountData) <-chan int {
+// fetchUpdate is one finished fetch, addressed by account index. The
+// receiver applies it with resolve.
+type fetchUpdate struct {
+	idx int
+	res usage.Result
+}
+
+// launchFetches starts all usage fetches in parallel; the channel closes
+// when all are done. Fetch goroutines never touch a view — the caller
+// applies each result with resolve, so views have exactly one writer and a
+// redraw may read every view between receives. The buffer lets senders
+// finish even if the caller stops receiving early.
+func launchFetches(ctx context.Context, cfg config.Config, list []*accountData) <-chan fetchUpdate {
 	client := &http.Client{Timeout: 10 * time.Second}
-	done := make(chan int)
+	updates := make(chan fetchUpdate, len(list))
 	var wg sync.WaitGroup
 	for i, d := range list {
 		if !d.NeedsFetch {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, d *accountData) {
+		go func(i int, token string) {
 			defer wg.Done()
-			resolve(d, usage.Fetch(client, cfg.UsageURL, d.Token))
-			done <- i
-		}(i, d)
+			updates <- fetchUpdate{i, usage.Fetch(ctx, client, cfg.UsageURL, token)}
+		}(i, d.Token)
 	}
 	go func() {
 		wg.Wait()
-		close(done)
+		close(updates)
 	}()
-	return done
+	return updates
 }
 
 func resolve(d *accountData, res usage.Result) {
@@ -158,19 +201,29 @@ func resolve(d *accountData, res usage.Result) {
 
 func runDashboard(cfg config.Config) int {
 	list := prepare(cfg)
-	for range launchFetches(cfg, list) {
+	for u := range launchFetches(context.Background(), cfg, list) {
+		resolve(list[u.idx], u.res)
 	}
 	p := render.NewPalette(stdoutIsTTY())
 	now := time.Now().Unix()
+	labelWidth := render.LabelWidth(views(list))
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	for i, d := range list {
 		if i > 0 {
 			fmt.Fprintln(out)
 		}
-		for _, line := range p.AccountBlock(d.View, now) {
+		for _, line := range p.AccountBlock(d.View, now, labelWidth) {
 			fmt.Fprintln(out, line)
 		}
 	}
 	return 0
+}
+
+func views(list []*accountData) []render.AccountView {
+	vs := make([]render.AccountView, len(list))
+	for i, d := range list {
+		vs[i] = d.View
+	}
+	return vs
 }

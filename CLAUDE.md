@@ -11,26 +11,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make build            # go build ./...
 make install          # build → ~/.local/bin/headroom
-make test             # go test ./...
+make test             # go test -race ./...
 make vet / make fmt
 make check            # vet + test
+make test-pty         # expect(1) harness for the interactive surface
 
 go test ./internal/usage -run TestDriftTags   # single test
 ```
 
-Interactive picker behavior (raw mode, signals) is out of `go test`'s reach — verify it with a PTY/expect harness; see DESIGN.md § Verification.
+Raw-mode terminal behavior (picker interaction, watch, signal-time
+restoration) is out of `go test`'s reach — `make test-pty` drives it through
+a real pty; see DESIGN.md § Verification and `test/pty/run.sh`.
 
 ## Architecture
 
-One pipeline, three commands over it:
+One pipeline, five surfaces over it:
 
 `config` (paths; `HEADROOM_*` env overrides) → `accounts` (discover config dirs — the filesystem is the registry, no account list exists anywhere) → `creds` (Keychain credential blob per account) → `usage` (parallel fetches of the usage endpoint) → `render` (bars and status lines).
 
-The dashboard prints the pipeline's result. `select` runs the same pipeline into a picker — `internal/tui` owns the raw-terminal session (restoration, signals, key decoding), `app/select.go` owns the layout — and commits the choice by writing the `.current` state file. `check` is the strict twin of the tolerant renderer.
+The dashboard prints the pipeline's result; `--json` serializes the same result (versioned schema, drift tags exposed). `select` runs the pipeline into a picker — `internal/tui` owns the raw-terminal session (restoration, signals, key decoding), `app/select.go` owns the layout — and commits the choice by writing the `.current` state file. `watch` re-runs it on a floored, backoff-guarded interval with per-second local redraws. `check` is the strict twin of the tolerant renderer.
+
+Fetch results flow through a channel to a single writer: goroutines produce `usage.Result`s, only the consuming loop touches views (`resolve`), so a redraw may read every view between receives. `TestLaunchFetchesSingleWriter` guards this under `-race`.
 
 Load-bearing choices:
 
-- **`creds.Parse` and `usage.ParseLimits` are the only readers of vendor data.** Renderer and checker share them: rendering tolerates malformed fields (degrades to `0%` / `resets ?`), but every degraded field carries an ok/none/bad tag and `check` fails on any `bad` — drift the renderer papers over still gets caught. Never add a second parse path.
+- **`creds.Parse` and `usage.ParseLimits` are the only readers of vendor data.** Renderer and checker share them: rendering tolerates malformed fields without dropping the account, and degrades *visibly* — a bad percent renders as a `?` bar with a drift marker, never as a `0%` that reads like free headroom. Every degraded field carries an ok/none/bad tag; `--json` exposes the tags, and `check` fails on any `bad`. Never add a second parse path.
 - **Read-only invariant**: the Keychain is never written; token refresh belongs to Claude Code. The single file headroom writes is `.current`, atomically (temp file + rename).
 - **Accounts fail independently**: any per-account problem becomes that account's rendered status line, never a process failure.
 - **stdlib + `golang.org/x/term` only** — no CLI/TUI frameworks, no cgo. Parsing is pure functions tested by table; exec and HTTP stay at the edges (`internal/app` wires them).

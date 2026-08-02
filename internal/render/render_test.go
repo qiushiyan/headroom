@@ -63,12 +63,78 @@ func TestResetPhrase(t *testing.T) {
 func TestLimitRowPlain(t *testing.T) {
 	p := NewPalette(false)
 	row := usage.Row{Label: "5h session", Percent: 56, Severity: "normal"}
-	got := p.LimitRow(row, 0)
+	got := p.LimitRow(row, 0, 16)
 	if !strings.HasPrefix(got, "  5h session       [") {
 		t.Errorf("label padding off: %q", got)
 	}
 	if !strings.Contains(got, "]  56%  resets ?") {
 		t.Errorf("row = %q", got)
+	}
+	// A wider column pads further.
+	got = p.LimitRow(row, 0, 20)
+	if !strings.HasPrefix(got, "  5h session           [") {
+		t.Errorf("wide label padding off: %q", got)
+	}
+}
+
+// A drift-tagged field must be visibly different from a genuine value — a
+// bad percent rendering as a plain 0% would read as free headroom.
+func TestLimitRowDrift(t *testing.T) {
+	p := NewPalette(false)
+	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: usage.StateBad}, 0, 16)
+	real0 := p.LimitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16)
+	if bad == real0 {
+		t.Fatalf("bad percent indistinguishable from real 0%%: %q", bad)
+	}
+	if strings.Contains(bad, "0%") || !strings.Contains(bad, "?%") {
+		t.Errorf("bad percent should render ?%%, got %q", bad)
+	}
+	if strings.Contains(bad, "░") {
+		t.Errorf("bad percent should not render an empty (all-headroom) bar: %q", bad)
+	}
+	if !strings.Contains(bad, "drift") || strings.Contains(real0, "drift") {
+		t.Errorf("drift marker wrong: bad=%q real0=%q", bad, real0)
+	}
+
+	// A bad timestamp alone also carries the marker.
+	badReset := p.LimitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal",
+		ResetState: usage.StateBad}, 0, 16)
+	if !strings.Contains(badReset, "drift") {
+		t.Errorf("bad reset should carry the drift marker: %q", badReset)
+	}
+}
+
+func TestLabelWidth(t *testing.T) {
+	short := AccountView{Status: StatusRows, Rows: []usage.Row{{Label: "5h session"}}}
+	long := AccountView{Status: StatusRows, Rows: []usage.Row{{Label: "Claude Opus 4.5 (7d)"}}}
+	if got := LabelWidth([]AccountView{short}); got != 16 {
+		t.Errorf("short labels should keep the classic column: %d", got)
+	}
+	if got := LabelWidth([]AccountView{short, long}); got != len("Claude Opus 4.5 (7d)") {
+		t.Errorf("width should follow the longest label: %d", got)
+	}
+}
+
+func TestClip(t *testing.T) {
+	p := NewPalette(true)
+	cases := []struct {
+		name, in string
+		width    int
+		want     string
+	}{
+		{"short unchanged", "abc", 5, "abc"},
+		{"exact unchanged", "abcde", 5, "abcde"},
+		{"plain truncated", "abcdef", 4, "abcd"},
+		{"zero width passes through", "abc", 0, "abc"},
+		{"escapes not counted", p.Red + "abc" + p.Rst, 3, p.Red + "abc" + p.Rst},
+		{"cut keeps later escapes", p.Red + "abcdef" + p.Rst + "gh", 4, p.Red + "abcd" + p.Rst},
+		{"multibyte runes", "ééééé", 3, "ééé"},
+		{"bar glyphs", "[████░░]", 5, "[████"},
+	}
+	for _, c := range cases {
+		if got := Clip(c.in, c.width); got != c.want {
+			t.Errorf("%s: Clip(%q, %d) = %q, want %q", c.name, c.in, c.width, got, c.want)
+		}
 	}
 }
 

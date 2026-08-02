@@ -1,9 +1,9 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"golang.org/x/term"
@@ -24,7 +24,7 @@ func runSelect(cfg config.Config) int {
 	}
 
 	list := prepare(cfg)
-	updates := launchFetches(cfg, list)
+	updates := launchFetches(context.Background(), cfg, list)
 	p := render.NewPalette(true)
 
 	t, err := tui.Open()
@@ -41,46 +41,36 @@ func runSelect(cfg config.Config) int {
 		}
 	}
 
-	// Frames are redrawn in place: move up over the previous frame and
-	// rewrite each line (\x1b[2K clears remnants of longer lines).
-	prevLines := 0
+	fp := &framePrinter{}
 	draw := func() {
-		var b strings.Builder
-		if prevLines > 0 {
-			fmt.Fprintf(&b, "\x1b[%dA", prevLines)
-		}
 		now := time.Now().Unix()
-		lines := 0
-		emit := func(s string) {
-			b.WriteString("\x1b[2K" + s + "\r\n")
-			lines++
-		}
+		labelWidth := render.LabelWidth(views(list))
+		var lines []string
 		for i, d := range list {
-			for j, line := range p.AccountBlock(d.View, now) {
+			for j, line := range p.AccountBlock(d.View, now, labelWidth) {
 				prefix := "  "
 				if i == sel && j == 0 {
 					prefix = p.Bold + "▶ " + p.Rst
 				}
-				emit(prefix + line)
+				lines = append(lines, prefix+line)
 			}
 			if i < len(list)-1 {
-				emit("")
+				lines = append(lines, "")
 			}
 		}
-		emit("")
-		emit(p.Dim + "↑/↓ move · enter select · esc cancel" + p.Rst)
-		os.Stdout.WriteString(b.String())
-		prevLines = lines
+		lines = append(lines, "", p.Dim+"↑/↓ move · enter select · esc cancel"+p.Rst)
+		fp.print(lines)
 	}
 	draw()
 
 	for {
 		select {
-		case _, ok := <-updates:
+		case u, ok := <-updates:
 			if !ok {
 				updates = nil // all fetches resolved; stop selecting on it
 				continue
 			}
+			resolve(list[u.idx], u.res)
 			draw()
 		case ev := <-t.Events():
 			switch ev {

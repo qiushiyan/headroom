@@ -27,6 +27,7 @@ func TestDecoderWholeChunks(t *testing.T) {
 		{"\n", []Event{EventSelect}},
 		{"q", []Event{EventCancel}},
 		{"\x03", []Event{EventCancel}},
+		{"r", []Event{EventRefresh}},
 		{"\x1b[C", nil}, // right arrow: consumed, ignored
 		{"jjk", []Event{EventDown, EventDown, EventUp}},
 		{"x", nil},

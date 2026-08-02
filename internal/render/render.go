@@ -6,11 +6,18 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
-const BarWidth = 20
+const (
+	BarWidth = 20
+
+	// minLabelWidth keeps the classic column for the usual short labels;
+	// LabelWidth widens it only when some label needs more.
+	minLabelWidth = 16
+)
 
 type Palette struct {
 	Bold, Dim, Red, Yel, Grn, Rev, Rst string
@@ -91,12 +98,27 @@ func (p Palette) StatusLine(v AccountView) string {
 	}
 }
 
+// LabelWidth is the label column width for a set of views: wide enough for
+// the longest label anywhere, so every account's bars align, and never
+// narrower than the classic column.
+func LabelWidth(views []AccountView) int {
+	w := minLabelWidth
+	for _, v := range views {
+		for _, r := range v.Rows {
+			if n := utf8.RuneCountInString(r.Label); n > w {
+				w = n
+			}
+		}
+	}
+	return w
+}
+
 // AccountBlock renders the header plus limit rows (or the status line).
-func (p Palette) AccountBlock(v AccountView, now int64) []string {
+func (p Palette) AccountBlock(v AccountView, now int64, labelWidth int) []string {
 	lines := []string{p.HeaderLine(v)}
 	if v.Status == StatusRows {
 		for _, r := range v.Rows {
-			lines = append(lines, p.LimitRow(r, now))
+			lines = append(lines, p.LimitRow(r, now, labelWidth))
 		}
 	} else {
 		lines = append(lines, p.StatusLine(v))
@@ -105,7 +127,7 @@ func (p Palette) AccountBlock(v AccountView, now int64) []string {
 }
 
 // LimitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4d 20h)`
-func (p Palette) LimitRow(r usage.Row, now int64) string {
+func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
 	color := p.Grn
 	if r.Percent >= 50 {
 		color = p.Yel
@@ -113,8 +135,50 @@ func (p Palette) LimitRow(r usage.Row, now int64) string {
 	if r.Percent >= 80 || r.Severity != "normal" {
 		color = p.Red
 	}
-	return fmt.Sprintf("  %-16s %s[%s]%s %3d%%  %s%s%s",
-		r.Label, color, Bar(r.Percent), p.Rst, r.Percent, p.Dim, ResetPhrase(r.ResetAt, now), p.Rst)
+	bar := Bar(r.Percent)
+	pct := fmt.Sprintf("%3d%%", r.Percent)
+	if r.PercentState == usage.StateBad {
+		// A percent that no longer parses must not read as real headroom.
+		color = p.Red
+		bar = strings.Repeat("?", BarWidth)
+		pct = "  ?%"
+	}
+	line := fmt.Sprintf("  %-*s %s[%s]%s %s  %s%s%s",
+		labelWidth, r.Label, color, bar, p.Rst, pct, p.Dim, ResetPhrase(r.ResetAt, now), p.Rst)
+	if r.Drifted() {
+		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
+	}
+	return line
+}
+
+// Clip truncates s to at most width printable columns, passing ANSI escape
+// sequences through uncut so a truncated line keeps the SGR state changes of
+// the full line. Every printable rune counts one column — true for all the
+// glyphs this program emits.
+func Clip(s string, width int) string {
+	if width <= 0 || utf8.RuneCountInString(s) <= width {
+		return s
+	}
+	var b strings.Builder
+	cols, inEsc := 0, false
+	for _, r := range s {
+		switch {
+		case inEsc:
+			b.WriteRune(r)
+			// A CSI sequence (ESC [ params letter) ends at its final byte;
+			// '[' right after ESC is the sequence introducer, not a final.
+			if r >= '@' && r <= '~' && r != '[' {
+				inEsc = false
+			}
+		case r == 0x1b:
+			inEsc = true
+			b.WriteRune(r)
+		case cols < width:
+			b.WriteRune(r)
+			cols++
+		}
+	}
+	return b.String()
 }
 
 func Bar(pct int) string {

@@ -22,6 +22,7 @@ const (
 	EventDown
 	EventSelect
 	EventCancel
+	EventRefresh
 )
 
 // escTimeout is the pause that resolves a bare ESC as the Escape key rather
@@ -94,6 +95,8 @@ func appendPlain(evs []Event, b byte) []Event {
 		return append(evs, EventSelect)
 	case 'q', 0x03, 0x04: // q, ctrl-c, ctrl-d
 		return append(evs, EventCancel)
+	case 'r':
+		return append(evs, EventRefresh)
 	}
 	return evs
 }

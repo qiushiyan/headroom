@@ -1,0 +1,22 @@
+#!/usr/bin/expect -f
+# Down arrow + enter: pick the second account (a@x.com), exit 0. run.sh
+# asserts the .current write afterward.
+set timeout 10
+spawn $env(HEADROOM_BIN) select
+expect {
+    "esc cancel" {}
+    timeout { puts "picker never drew its footer"; exit 2 }
+}
+send -- "\033\[B"
+sleep 0.3
+send -- "\r"
+expect {
+    "bare x now targets it" {}
+    timeout { puts "no confirmation line after enter"; exit 2 }
+}
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} {
+    puts "select exited [lindex $result 3], want 0"
+    exit 2
+}

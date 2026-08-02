@@ -7,6 +7,7 @@
 package usage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,8 +216,8 @@ type Result struct {
 	Err        error
 }
 
-func Fetch(client *http.Client, url, token string) Result {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func Fetch(ctx context.Context, client *http.Client, url, token string) Result {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Result{Err: err}
 	}

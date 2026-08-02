@@ -6,6 +6,7 @@ package check
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -110,7 +111,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			wg.Add(1)
 			go func(c *apiCase, token string) {
 				defer wg.Done()
-				c.res = usage.Fetch(client, cfg.UsageURL, token)
+				c.res = usage.Fetch(context.Background(), client, cfg.UsageURL, token)
 			}(c, blob.Token)
 		} else {
 			c.reason = fmt.Sprintf("token missing or expired — run %s first",
@@ -186,26 +187,30 @@ func claudeBinary() string {
 	return path
 }
 
-// searchFile streams the (large) binary in chunks, keeping an overlap so a
-// needle split across a chunk boundary is still found.
+// searchFile streams the (large) binary through searchReader.
 func searchFile(path string, needles []string) map[string]bool {
-	found := map[string]bool{}
 	f, err := os.Open(path)
 	if err != nil {
-		return found
+		return map[string]bool{}
 	}
 	defer f.Close()
+	return searchReader(f, needles, 4<<20)
+}
 
+// searchReader scans r in bufSize chunks, keeping an overlap of the longest
+// needle so a needle split across a chunk boundary is still found.
+func searchReader(r io.Reader, needles []string, bufSize int) map[string]bool {
+	found := map[string]bool{}
 	overlap := 0
 	for _, n := range needles {
 		if len(n) > overlap {
 			overlap = len(n)
 		}
 	}
-	buf := make([]byte, 4<<20)
+	buf := make([]byte, bufSize)
 	var tail []byte
 	for {
-		n, err := f.Read(buf)
+		n, err := r.Read(buf)
 		if n > 0 {
 			chunk := append(tail, buf[:n]...)
 			for _, nd := range needles {

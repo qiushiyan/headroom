@@ -49,10 +49,12 @@ of it as perishable. That expectation shapes the core seam:
   The renderer and the checker share them, so the checker cannot drift from
   what rendering actually needs.
 - **Tolerant rendering, tagged degradation.** A malformed field degrades
-  (`0%`, `resets ?`) instead of dropping the account; accounts fail
-  independently; and every parsed field carries a state tag that
-  distinguishes *legitimately absent* (an untouched limit window) from
-  *present but no longer parseable* (shape drift).
+  instead of dropping the account, and degrades visibly — a bad percent is a
+  `?` bar with a drift marker, never a `0%` that reads like free headroom;
+  accounts fail independently; and every parsed field carries a state tag
+  that distinguishes *legitimately absent* (an untouched limit window) from
+  *present but no longer parseable* (shape drift). `--json` carries the same
+  tags outward, so machine consumers can't mistake drift for data either.
 - **`check` is the strict twin.** Per logged-in account it asserts the
   Keychain item under the predicted service name, the blob contract, and a
   live HTTP 200 with at least one limit row and zero bad tags; it also greps
@@ -63,6 +65,11 @@ of it as perishable. That expectation shapes the core seam:
 Two deliberate tolerances beyond strict inherited behavior: numeric-epoch
 `resets_at` values are accepted, and timestamps may carry offsets or
 fractional seconds. Handled drift beats flagged drift.
+
+The same posture bounds `watch`: countdowns re-render every second from
+cached data, but fetch rounds run one at a time on an interval with a hard
+30-second floor, backing off on 429 — headroom never polls faster than the
+first-party client's human-driven rate.
 
 ## The launcher contract
 
@@ -94,12 +101,16 @@ keypress only after a pause.
 
 ## Verification
 
-Contract behavior is table-tested (`go test ./...`), drift tags included.
-What `go test` can't reach — signal-time terminal restoration, real picker
-interaction — is exercised with a PTY/expect harness: SIGTERM must leave the
-terminal sane; arrows + enter must select and write state; ESC must cancel
-writing nothing. An in-suite PTY harness was considered and deliberately
-deferred until the interactive surface grows.
+Contract behavior is table-tested (`go test -race ./...`), drift tags
+included; the fetch pipeline's single-writer property has a dedicated
+regression test under the race detector. What `go test` can't reach —
+signal-time terminal restoration, real picker and watch interaction — lives
+in the committed expect(1) harness (`make test-pty`, `test/pty/`): SIGTERM
+must leave the terminal sane; arrows + enter must select and write state;
+ESC must cancel writing nothing; watch must draw and quit cleanly. Its two
+hard-won patterns are documented in `test/pty/run.sh` — kill with
+`pkill -nx headroom`, never `-f`, and inspect post-mortem terminal state via
+an sh wrapper running `stty` in the same pty.
 
 ## Status
 
