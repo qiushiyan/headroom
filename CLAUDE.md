@@ -25,7 +25,7 @@ a real pty; see DESIGN.md § Verification and `test/pty/run.sh`.
 
 ## Architecture
 
-One pipeline, five surfaces over it:
+One pipeline; every command is a surface over it:
 
 `config` (paths; `HEADROOM_*` env overrides) → `accounts` (discover config dirs — the filesystem is the registry, no account list exists anywhere) → `creds` (Keychain credential blob per account) → `usage` (parallel fetches of the usage endpoint) → `render` (bars and status lines).
 

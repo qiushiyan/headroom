@@ -52,7 +52,7 @@ Go and `golang.org/x/term` only — no cgo, no frameworks.
 
 ## Configuration
 
-Defaults fit the author's machine; two environment variables re-point them:
+Defaults fit the author's machine; environment variables re-point them:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

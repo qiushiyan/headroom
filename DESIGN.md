@@ -2,9 +2,10 @@
 
 headroom is a read-only observer of a system it doesn't own: several Claude
 Code logins on one machine, each keyed to its own config dir. It answers
-"which account has headroom left?" (the dashboard), lets the user act on the
-answer (`select`), and proves its own assumptions still hold (`check`). This
-file records the mental model and the vendor contracts — the things the code
+"which account has headroom left?" (the dashboard — printed once, serialized
+by `--json`, kept live by `watch`), lets the user act on the answer
+(`select`), and proves its own assumptions still hold (`check`). This file
+records the mental model and the vendor contracts — the things the code
 can't say about itself.
 
 ## The system observed: the filesystem is the registry
@@ -87,10 +88,10 @@ shell.
 
 ## Dependencies and shape
 
-stdlib plus `golang.org/x/term` (raw-mode terminal control for the picker),
-nothing else: no CLI framework, no TUI framework — the picker is a small
-redraw loop. No cgo either: the Keychain is read by exec'ing `security(1)`,
-which keeps builds trivial. Parsing is pure functions (`[]byte` in, tagged
+stdlib plus `golang.org/x/term` (raw-mode terminal control for the picker
+and watch), nothing else: no CLI framework, no TUI framework — the
+interactive surfaces share one small in-place redraw loop. No cgo either:
+the Keychain is read by exec'ing `security(1)`, which keeps builds trivial. Parsing is pure functions (`[]byte` in, tagged
 structs out) tested by table; exec and HTTP stay in thin edges.
 
 `internal/tui` owns the terminal session whole: raw-mode lifetime,
