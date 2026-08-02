@@ -23,7 +23,7 @@ func runSelect(cfg config.Config) int {
 		return 1
 	}
 
-	list := prepare(cfg)
+	list, _ := prepare(cfg)
 	updates := launchFetches(context.Background(), cfg, list)
 	p := render.NewPalette(true)
 

@@ -57,7 +57,7 @@ Defaults fit the author's machine; two environment variables re-point them:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HEADROOM_ACCOUNTS_ROOT` | `~/.claude-accounts` | Where the extra account dirs live |
-| `HEADROOM_PRIMARY_NAME` | — | Launcher name advertised for the primary `~/.claude` |
+| `HEADROOM_PRIMARY_NAME` | `qiushi` | Launcher name advertised for the primary `~/.claude` |
 
 ## Status
 

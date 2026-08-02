@@ -62,6 +62,9 @@ func Run(args []string) int {
 	case "watch":
 		return runWatch(cfg, rest)
 	case "-h", "--help", "help":
+		if !noArgs() {
+			return 2
+		}
 		printUsage(os.Stdout)
 		return 0
 	default:
@@ -93,15 +96,18 @@ type accountData struct {
 	NeedsFetch bool
 }
 
-// prepare walks accounts and resolves labels, launchers, and credentials.
-// Fetch-ready accounts are left in StatusPending for launchFetches.
-func prepare(cfg config.Config) []*accountData {
+// prepare walks accounts and resolves labels, launchers, and credentials;
+// fetch-ready accounts are left in StatusPending for launchFetches. It also
+// returns the current-target name it marked the views with — consumers that
+// report the current account must use this value, not re-read the state
+// file, or a concurrent `select` could make the two disagree.
+func prepare(cfg config.Config) ([]*accountData, string) {
 	return prepareWith(cfg, creds.ReadRaw)
 }
 
 // prepareWith is prepare with the credential source injected — the one seam
 // that lets the pipeline be table-tested without a Keychain.
-func prepareWith(cfg config.Config, readRaw func(configDir string) string) []*accountData {
+func prepareWith(cfg config.Config, readRaw func(configDir string) string) ([]*accountData, string) {
 	accts := accounts.Discover(cfg)
 	current := accounts.CurrentTarget(cfg)
 	nowMS := time.Now().UnixMilli()
@@ -141,7 +147,7 @@ func prepareWith(cfg config.Config, readRaw func(configDir string) string) []*ac
 		d.NeedsFetch = true
 		v.Status = render.StatusPending
 	}
-	return list
+	return list, current
 }
 
 // fetchUpdate is one finished fetch, addressed by account index. The
@@ -200,7 +206,7 @@ func resolve(d *accountData, res usage.Result) {
 }
 
 func runDashboard(cfg config.Config) int {
-	list := prepare(cfg)
+	list, _ := prepare(cfg)
 	for u := range launchFetches(context.Background(), cfg, list) {
 		resolve(list[u.idx], u.res)
 	}

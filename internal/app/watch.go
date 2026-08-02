@@ -59,7 +59,7 @@ func runWatch(cfg config.Config, args []string) int {
 	nextAt := time.Now()
 
 	startRound := func() {
-		newList := prepare(cfg)
+		newList, _ := prepare(cfg)
 		carryOver(newList, list)
 		list = newList
 		updates = launchFetches(ctx, cfg, list)

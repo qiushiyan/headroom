@@ -12,7 +12,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/usage"
@@ -102,11 +101,13 @@ func jsonDocument(list []*accountData, current string, generatedAt time.Time) ([
 }
 
 func runDashboardJSON(cfg config.Config) int {
-	list := prepare(cfg)
+	// current comes from prepare's snapshot: envelope and per-account flags
+	// must agree even if a concurrent select rewrites .current mid-fetch.
+	list, current := prepare(cfg)
 	for u := range launchFetches(context.Background(), cfg, list) {
 		resolve(list[u.idx], u.res)
 	}
-	data, err := jsonDocument(list, accounts.CurrentTarget(cfg), time.Now())
+	data, err := jsonDocument(list, current, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
 		return 1

@@ -61,7 +61,14 @@ func TestPrepareWith(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list := prepareWith(cfg, func(configDir string) string { return blobs[configDir] })
+	list, current := prepareWith(cfg, func(configDir string) string { return blobs[configDir] })
+
+	// The returned current target and the per-view Current flags come from
+	// one snapshot — consumers (the --json envelope) must never re-read the
+	// state file and risk disagreeing with the flags.
+	if current != "good@x.com" {
+		t.Errorf("current = %q, want good@x.com", current)
+	}
 
 	byName := map[string]*accountData{}
 	for _, d := range list {
