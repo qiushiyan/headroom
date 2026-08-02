@@ -21,19 +21,37 @@ Everything derives from that tree:
   `-<sha256(dir)[0:8]>` appended for any other (verified against the binary,
   v2.1.220). Every dir is therefore an independent login, and all tokens
   coexist.
-- **Labels.** Each dir's `.claude.json` records the email actually logged in
-  (`.oauthAccount.emailAddress`). The dashboard warns when that contradicts
-  the dir's name — it means `/login` picked the wrong account in that dir's
-  session.
+- **Labels, and a free usage cache.** Each dir's `.claude.json` records the
+  email actually logged in (`.oauthAccount.emailAddress`); the dashboard warns
+  when that contradicts the dir's name — `/login` picked the wrong account in
+  that dir's session. The same file carries `cachedUsageUtilization`: the last
+  usage response *Claude Code itself* fetched, stamped with `fetchedAtMs`. Its
+  `utilization` object is shape-identical to the live endpoint's body, so it
+  feeds the same parser and costs no request. Freshness is uncontrolled — it
+  is written only when Claude Code fetches, so ages range from minutes to a
+  day, and an account never used has none at all. It is a fallback with
+  honest provenance, never a substitute for asking.
+- **Health comes from the vendor, not from arithmetic.**
+  `claude auth status --json` answers "is this account logged in", per config
+  dir, from local state: ~170ms, no network, no usage budget. headroom infers
+  account health from credential timestamps only when that command can't
+  answer.
 - **Two state files are the integration surface with the user's shell.**
   `.current` names the account the shell's bare launcher should target;
-  `select` writes it atomically, and it is the *only* write headroom ever
-  makes. `.order` (optional; one email per line, `#` comments) sets display
-  order after the primary; unlisted accounts follow alphabetically.
+  `select` writes it atomically. `.order` (optional; one email per line, `#`
+  comments) sets display order after the primary; unlisted accounts follow
+  alphabetically.
 
-Read-only is an invariant with that one stated exception: headroom never
-writes the Keychain and never refreshes a token — Claude Code owns both. An
-expired token's remedy is opening a Claude Code session on that account.
+Read-only means read-only *against Claude Code*: headroom never writes the
+Keychain, never refreshes a token, and never touches vendor state — Claude
+Code owns all of it. It writes exactly two things of its own: `.current`, and
+`.throttle`, non-secret timestamps recording its own past requests. Neither
+contains credentials or quota data.
+
+`claude auth status` is used for its answer only. It may or may not refresh a
+token as a side effect; headroom neither relies on that nor invokes it hoping
+for it. Building on an unpromised side effect would be the same class of
+mistake as reading `expiresAt` as account health.
 
 ## The data source, and drift as a design input
 
@@ -45,32 +63,77 @@ exists). The endpoint is **undocumented and has already drifted once**
 `limits[]` array). Every fact in this file is reverse-engineered; treat all
 of it as perishable. That expectation shapes the core seam:
 
-- **Exactly two parsers.** `creds.Parse` (credential blob) and
-  `usage.ParseLimits` (usage response) are the only readers of vendor data.
-  The renderer and the checker share them, so the checker cannot drift from
-  what rendering actually needs.
+- **One parser per vendor document type, and no duplicate parse paths.**
+  `creds.Parse` (credential blob), `usage.ParseLimits` (usage response, live
+  *and* cached — they are the same shape) and `auth.Parse` (auth status) are
+  the only readers of vendor data. Renderer and checker share them, so the
+  checker cannot drift from what rendering actually needs.
 - **Tolerant rendering, tagged degradation.** A malformed field degrades
   instead of dropping the account, and degrades visibly — a bad percent is a
   `?` bar with a drift marker, never a `0%` that reads like free headroom;
-  accounts fail independently; and every parsed field carries a state tag
-  that distinguishes *legitimately absent* (an untouched limit window) from
-  *present but no longer parseable* (shape drift). `--json` carries the same
-  tags outward, so machine consumers can't mistake drift for data either.
-- **`check` is the strict twin.** Per logged-in account it asserts the
-  Keychain item under the predicted service name, the blob contract, and a
-  live HTTP 200 with at least one limit row and zero bad tags; it also greps
-  the installed Claude Code binary for the endpoint / config-dir /
-  credential seams. A FAIL names which assumption broke. Run it after any
-  Claude Code update, or whenever the dashboard misbehaves.
+  accounts fail independently; and every parsed field carries a `tag.State`
+  distinguishing *legitimately absent* (an untouched limit window, a
+  credential field the vendor stopped sending) from *present but no longer
+  parseable* (shape drift). `--json` carries the same tags outward, so machine
+  consumers can't mistake drift for data either.
+- **`check` has three outcomes, not two.** PASS means every assertion was
+  tested and held. FAIL means one was tested and contradicted. INCONCLUSIVE
+  (exit 2) means it could not be tested: rate limited, network down, or an
+  access token mid-refresh. A checker that reports "Claude Code likely changed
+  a format" because it couldn't reach the endpoint actively misleads the
+  person running it *because* the dashboard misbehaved — which is the exact
+  moment it is reached for. It also respects the request budget rather than
+  spending one to "diagnose".
 
 Two deliberate tolerances beyond strict inherited behavior: numeric-epoch
 `resets_at` values are accepted, and timestamps may carry offsets or
 fractional seconds. Handled drift beats flagged drift.
 
-The same posture bounds `watch`: countdowns re-render every second from
-cached data, but fetch rounds run one at a time on an interval with a hard
-30-second floor, backing off on 429 — headroom never polls faster than the
-first-party client's human-driven rate.
+## Three axes, because three things vary independently
+
+The defect this design replaced was a single `Status` per account. Health,
+what is known about quota, and how the last request went were one field, so
+each overwrote the others — and a refused request erased known bars and read
+as bad news about the account. All three can be true at once, and the model
+now says so:
+
+- **Health** — can Claude Code use this account? Only `/login` fixes a bad
+  answer. Sourced from `claude auth status`, with credential evidence as
+  fallback.
+- **Observation** — rows, *always* carrying `ObservedAt` and `Source`. Rows
+  never travel without their timestamp; that is what let carried-over data
+  pass itself off as current.
+- **Attempt** — what happened to the newest request. Never a statement about
+  the account.
+
+Two consequences worth stating. An access token aging out is an *attempt*
+fact: the token lives ~8 hours, Claude Code refreshes it silently, and the
+account is fine — only `refreshTokenExpiresAt` passing means a human must act.
+And a failed refresh annotates an observation rather than replacing it, so the
+dashboard degrades to "58%, observed 22h ago, refresh rate-limited" instead of
+to a bare error.
+
+## Spending a budget that is per account
+
+The usage endpoint rate-limits **per account** — account A can be refused in
+the same second B and C succeed — and refills in roughly a minute. There is no
+`Retry-After` worth reading, and a refused request may itself count against
+the budget, so probing to discover recovery can prevent it. Backoff therefore
+means *no traffic*, never a faster loop.
+
+headroom's own surfaces were the main consumer: dashboard, `--json`, `select`,
+`check` and every `watch` round each fetch all accounts, so two within a minute
+refuse each other — and because they fan out in parallel, the whole fleet goes
+dark together rather than one account at a time. `internal/throttle` is the
+fix: a per-account record of when a request last went out and when the next
+may, shared across processes, written *before* the request so a concurrent run
+sees the budget spent. Coordination is best-effort; two processes racing
+between read and write can still both fetch, and the cost is one wasted
+request that falls back to cached rows — degraded freshness, never a wrong
+verdict.
+
+`watch` keeps its hard 30-second interval floor, and a manual `r` re-reads and
+redraws but buys no exemption from per-account eligibility.
 
 ## The launcher contract
 

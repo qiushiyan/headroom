@@ -22,12 +22,24 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/throttle"
 	"github.com/qiushiyan/headroom/internal/usage"
+)
+
+// Exit codes: a checker that cannot distinguish "the assumption broke" from
+// "I couldn't test it" is worse than useless when the dashboard misbehaves —
+// it confirms the false diagnosis. Rate limiting, a dead network and a token
+// mid-refresh are all reasons no evidence was gathered, not evidence against.
+const (
+	ExitPass         = 0
+	ExitFail         = 1
+	ExitInconclusive = 2
 )
 
 func Run(cfg config.Config, out io.Writer, color bool) int {
 	p := render.NewPalette(color)
-	fails := 0
+	fails, unknowns := 0, 0
+
 	chk := func(ok bool, label, hint string) {
 		if ok {
 			fmt.Fprintf(out, "%s ok %s  %s\n", p.Grn, p.Rst, label)
@@ -38,6 +50,14 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		}
 		fmt.Fprintf(out, "%sFAIL%s  %s%s\n", p.Red, p.Rst, label, hint)
 		fails++
+	}
+	// skip records a fact that could not be tested. It never fails the run.
+	skip := func(label, why string) {
+		if why != "" {
+			why = " — " + why
+		}
+		fmt.Fprintf(out, "%s ?? %s  %s%s\n", p.Yel, p.Rst, label, why)
+		unknowns++
 	}
 
 	// The installed binary still carries the seams this tooling depends on:
@@ -70,7 +90,9 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	// after the join, so a dead network costs one timeout, not one per
 	// account.
 	accts := accounts.Discover(cfg)
-	nowMS := time.Now().UnixMilli()
+	now := time.Now()
+	nowMS := now.UnixMilli()
+	th := throttle.Load(cfg.AccountsRoot)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	const (
@@ -106,18 +128,30 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		blob, ok := creds.Parse(creds.ReadKeychain(a.ConfigDir))
 		chk(ok, fmt.Sprintf("blob[%s]: parses via shared contract (accessToken present)", name), "")
 
-		if ok && !blob.Expired(nowMS) {
+		launcher := accounts.Launcher(a, accts, cfg.PrimaryName)
+		switch {
+		case !ok:
+			c.reason = "credential blob did not parse"
+		case !blob.TokenUsable(nowMS):
+			// Routine: the access token ages out every ~8 hours. Nothing is
+			// broken and nothing can be tested against the live endpoint.
+			c.reason = fmt.Sprintf("access token stale — any %s session refreshes it", launcher)
+		case !th.Eligible(a.Name, now):
+			// Spending a request here to "diagnose" would deepen exactly the
+			// rate limiting the user is likely running check about.
+			c.reason = fmt.Sprintf("inside this account's quiet period — %s remaining",
+				th.NextEligible(a.Name).Sub(now).Round(time.Second))
+		default:
 			c.mode = modeFetched
+			th.NoteAttempt(a.Name, now)
 			wg.Add(1)
 			go func(c *apiCase, token string) {
 				defer wg.Done()
 				c.res = usage.Fetch(context.Background(), client, cfg.UsageURL, token)
 			}(c, blob.Token)
-		} else {
-			c.reason = fmt.Sprintf("token missing or expired — run %s first",
-				accounts.Launcher(a, accts, cfg.PrimaryName))
 		}
 	}
+	_ = th.Save()
 	wg.Wait()
 
 	// Live contract, through the same parser rendering uses: 200, ≥1 row,
@@ -130,15 +164,40 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		case modeNeverLoggedIn:
 			continue
 		case modeSkipped:
-			chk(false, fmt.Sprintf("api[%s]: skipped", c.name), c.reason)
+			skip(fmt.Sprintf("api[%s]: not tested", c.name), c.reason)
 			continue
 		}
 		code := c.res.StatusCode
-		var rows []usage.Row
-		if c.res.Err == nil && code == http.StatusOK {
-			if r, err := usage.ParseLimits(c.res.Body); err == nil {
-				rows = r
+		label := func(extra string) string {
+			codeStr := "n/a"
+			if code != 0 {
+				codeStr = strconv.Itoa(code)
 			}
+			return fmt.Sprintf("api[%s]: HTTP %s%s", c.name, codeStr, extra)
+		}
+
+		// Nothing observed → nothing to conclude.
+		switch {
+		case c.res.Err != nil:
+			skip(label(""), "transport error — no evidence either way")
+			continue
+		case code == http.StatusTooManyRequests:
+			th.NoteRefused(c.name, now)
+			skip(label(""), "rate limited — no evidence either way")
+			continue
+		case code >= 500:
+			skip(label(""), "vendor-side error — no evidence either way")
+			continue
+		case code != http.StatusOK:
+			chk(false, label(""), "unexpected status — endpoint or auth drifted")
+			continue
+		}
+
+		// A 200 is evidence, and now the contract is genuinely testable.
+		rows, err := usage.ParseLimits(c.res.Body)
+		if err != nil {
+			chk(false, label(", unparseable body"), "shape drifted")
+			continue
 		}
 		nbad := 0
 		for _, r := range rows {
@@ -147,33 +206,34 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			}
 		}
 		hint := ""
-		switch {
-		case code != http.StatusOK:
-			hint = "non-200 — endpoint or auth drifted"
-		case len(rows) == 0:
-			hint = "response unparseable or no limits — shape drifted"
-		case nbad > 0:
+		if nbad > 0 {
 			hint = fmt.Sprintf("%d malformed field(s) — shape drifted", nbad)
 		}
-		codeStr := "n/a"
-		if code != 0 {
-			codeStr = strconv.Itoa(code)
-		}
-		chk(code == http.StatusOK && len(rows) >= 1 && nbad == 0,
-			fmt.Sprintf("api[%s]: HTTP %s, %d row(s), fields well-formed", c.name, codeStr, len(rows)), hint)
+		// Zero rows is a documented, contractual outcome — usage.ParseLimits
+		// defines a nil/nil result as "this account reports no limits" — so
+		// it must not be reported as drift.
+		chk(nbad == 0, label(fmt.Sprintf(", %d row(s), fields well-formed", len(rows))), hint)
+		th.NoteSuccess(c.name, now)
 	}
+	_ = th.Save()
 
 	// .claude.json still records the logged-in email (dashboard labels).
 	_, ok := accounts.MetaEmail(cfg.PrimaryMeta())
 	chk(ok, "claude.json: .oauthAccount.emailAddress present", "")
 
 	fmt.Fprintln(out)
-	if fails > 0 {
+	switch {
+	case fails > 0:
 		fmt.Fprintf(out, "%d check(s) failed — Claude Code likely changed a format\n", fails)
-		return 1
+		return ExitFail
+	case unknowns > 0:
+		fmt.Fprintf(out, "no assumption broke, but %d could not be tested — "+
+			"nothing here says anything is wrong\n", unknowns)
+		return ExitInconclusive
+	default:
+		fmt.Fprintln(out, "all checks passed")
+		return ExitPass
 	}
-	fmt.Fprintln(out, "all checks passed")
-	return 0
 }
 
 func claudeBinary() string {

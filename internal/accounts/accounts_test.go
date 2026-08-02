@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 func testConfig(t *testing.T) config.Config {
@@ -161,5 +162,105 @@ func TestMetaEmail(t *testing.T) {
 	email, ok := MetaEmail(path)
 	if !ok || email != "a@b.c" {
 		t.Errorf("got %q ok=%v, want a@b.c true", email, ok)
+	}
+}
+
+// The vendor's own cached usage payload must parse through the *same*
+// usage.ParseLimits the live endpoint uses. This is the fixture that keeps
+// "no second parse path" honest: it is a verbatim excerpt of a real
+// .claude.json written by Claude Code 2.1.220.
+func TestReadMetaCachedUsageParsesViaSharedParser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude.json")
+	const real = `{
+	  "oauthAccount": {"emailAddress":"a@x.com","accountUuid":"9deddc4e-f050-4bb9-a250-e73b68a278e3"},
+	  "cachedUsageUtilization": {
+	    "fetchedAtMs": 1785622537840,
+	    "accountUuid": "9deddc4e-f050-4bb9-a250-e73b68a278e3",
+	    "utilization": {
+	      "five_hour": {"utilization":0,"resets_at":"2026-08-02T02:49:59.759074+00:00"},
+	      "seven_day": {"utilization":16,"resets_at":"2026-08-07T12:59:59.759095+00:00"},
+	      "limits": [
+	        {"kind":"session","group":"session","percent":0,"severity":"normal",
+	         "resets_at":"2026-08-02T02:49:59.759074+00:00","scope":null,"is_active":false},
+	        {"kind":"weekly_all","group":"weekly","percent":16,"severity":"normal",
+	         "resets_at":"2026-08-07T12:59:59.759095+00:00","scope":null,"is_active":true},
+	        {"kind":"weekly_scoped","group":"weekly","percent":29,"severity":"normal",
+	         "resets_at":"2026-08-07T12:59:59.759095+00:00",
+	         "scope":{"model":{"id":null,"display_name":"Fable"},"surface":null},"is_active":true}
+	      ]}}}`
+	if err := os.WriteFile(path, []byte(real), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ReadMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Email != "a@x.com" || !m.EmailOK {
+		t.Errorf("email: %q ok=%v", m.Email, m.EmailOK)
+	}
+	if m.FetchedAtMS != 1785622537840 {
+		t.Errorf("fetchedAtMs: %d", m.FetchedAtMS)
+	}
+
+	rows, err := usage.ParseLimits(m.CachedUsage)
+	if err != nil {
+		t.Fatalf("the shared parser rejected Claude Code's cached payload: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(rows))
+	}
+	if rows[0].Label != "5h session" || rows[1].Label != "All models (7d)" ||
+		rows[2].Label != "Fable (7d)" {
+		t.Errorf("labels: %q %q %q", rows[0].Label, rows[1].Label, rows[2].Label)
+	}
+	if rows[2].Percent != 29 {
+		t.Errorf("percent: %d", rows[2].Percent)
+	}
+	for i, r := range rows {
+		if r.Drifted() {
+			t.Errorf("row %d flagged as drift against a real payload: %+v", i, r)
+		}
+	}
+}
+
+// A dir re-logged to another account keeps the old account's cache until
+// Claude Code overwrites it. Attributing one account's quota to another is
+// worse than showing nothing at all.
+func TestReadMetaRejectsCacheFromAnotherAccount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude.json")
+	const mismatched = `{
+	  "oauthAccount": {"emailAddress":"new@x.com","accountUuid":"uuid-new"},
+	  "cachedUsageUtilization": {
+	    "fetchedAtMs": 1785622537840, "accountUuid": "uuid-previous",
+	    "utilization": {"limits":[{"kind":"session","percent":99}]}}}`
+	if err := os.WriteFile(path, []byte(mismatched), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ReadMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.CachedUsage != nil {
+		t.Error("cache from a previous login was handed back")
+	}
+	if m.Email != "new@x.com" {
+		t.Errorf("the email is still good and must survive: %q", m.Email)
+	}
+}
+
+// No cache at all is ordinary — Claude Code only writes one once it has
+// fetched. It must not look like an error.
+func TestReadMetaWithoutCache(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(path, []byte(`{"oauthAccount":{"emailAddress":"a@x.com"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ReadMeta(path)
+	if err != nil || m.CachedUsage != nil || m.Email != "a@x.com" {
+		t.Errorf("meta without cache: %+v err=%v", m, err)
 	}
 }

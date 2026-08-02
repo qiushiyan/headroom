@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 const serviceBase = "Claude Code-credentials"
@@ -33,15 +35,38 @@ func ServiceName(configDir string) string {
 
 // Blob is the credential contract the whole tool depends on: the fields of
 // .claudeAiOauth that rendering and checking need, nothing more.
+//
+// The two expiries mean very different things and must never be conflated.
+// accessToken lives ~8 hours and Claude Code refreshes it silently on its own;
+// its passing says nothing about the account, only that *this stored token*
+// can't be spent on a usage request right now. refreshToken lives ~30 days and
+// is the only one whose passing means a human must run /login again.
 type Blob struct {
 	Token            string
-	ExpiresAtMS      int64 // 0 = absent
+	ExpiresAtMS      int64 // access token; meaningful only when ExpiresState is OK
+	ExpiresState     tag.State
+	RefreshExpiresMS int64 // refresh token; meaningful only when RefreshState is OK
+	RefreshState     tag.State
 	SubscriptionType string
 	RateLimitTier    string
 }
 
-func (b Blob) Expired(nowMS int64) bool {
-	return b.ExpiresAtMS > 0 && b.ExpiresAtMS < nowMS
+// TokenUsable reports whether the stored access token can be spent on a live
+// usage request. An absent expiry is treated as usable — the endpoint is the
+// authority, and refusing to ask on a missing field would invent a problem.
+func (b Blob) TokenUsable(nowMS int64) bool {
+	if b.Token == "" {
+		return false
+	}
+	return b.ExpiresState != tag.OK || b.ExpiresAtMS > nowMS
+}
+
+// ReloginRequired reports the one credential condition a human must act on.
+// It demands positive evidence: an absent or unparseable refresh expiry is
+// never read as "expired", because guessing wrong here sends the user to
+// /login for nothing.
+func (b Blob) ReloginRequired(nowMS int64) bool {
+	return b.RefreshState == tag.OK && b.RefreshExpiresMS < nowMS
 }
 
 // PlanLabel: "default_claude_max_20x" → "max 20x"; falls back to the
@@ -64,9 +89,14 @@ func Parse(raw string) (Blob, bool) {
 		return Blob{}, false
 	}
 	o := outer.ClaudeAiOauth
+	expires, expiresState := asEpochMS(o["expiresAt"])
+	refresh, refreshState := asEpochMS(o["refreshTokenExpiresAt"])
 	b := Blob{
 		Token:            asString(o["accessToken"]),
-		ExpiresAtMS:      asInt64(o["expiresAt"]),
+		ExpiresAtMS:      expires,
+		ExpiresState:     expiresState,
+		RefreshExpiresMS: refresh,
+		RefreshState:     refreshState,
 		SubscriptionType: asStringDefault(o["subscriptionType"], "?"),
 		RateLimitTier:    asString(o["rateLimitTier"]),
 	}
@@ -140,20 +170,30 @@ func asStringDefault(v any, def string) string {
 	}
 }
 
-func asInt64(v any) int64 {
+// asEpochMS reads an epoch-milliseconds field, keeping absent distinct from
+// unparseable. Only that distinction lets an expiry the vendor stopped
+// sending degrade to "unknown" instead of to "1970", which would read as
+// long expired.
+func asEpochMS(v any) (int64, tag.State) {
 	switch n := v.(type) {
+	case nil:
+		return 0, tag.None
 	case float64:
-		return int64(n)
+		return int64(n), tag.OK
 	case json.Number:
-		i, _ := n.Int64()
-		return i
+		if i, err := n.Int64(); err == nil {
+			return i, tag.OK
+		}
 	case string:
+		if n == "" {
+			return 0, tag.None
+		}
 		if i, err := strconv.ParseInt(n, 10, 64); err == nil {
-			return i
+			return i, tag.OK
 		}
 		if f, err := strconv.ParseFloat(n, 64); err == nil {
-			return int64(f)
+			return int64(f), tag.OK
 		}
 	}
-	return 0
+	return 0, tag.Bad
 }

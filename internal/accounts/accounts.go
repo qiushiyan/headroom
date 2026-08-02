@@ -19,6 +19,11 @@ type Account struct {
 	ConfigDir string // "" = the primary ~/.claude (Claude Code's default dir)
 	Name      string // dir basename (the email), or PrimaryName for the primary
 	Email     string // what .claude.json reports as actually logged in ("" = none)
+
+	// Meta is the rest of that same .claude.json read, carried so callers
+	// needing the cached usage payload don't re-parse a file Claude Code
+	// rewrites constantly.
+	Meta Meta
 }
 
 func (a Account) IsPrimary() bool { return a.ConfigDir == "" }
@@ -77,7 +82,8 @@ func Discover(cfg config.Config) []Account {
 		} else {
 			a.Name = filepath.Base(d)
 		}
-		a.Email = loggedInEmail(a.MetaPath(cfg))
+		a.Meta, _ = ReadMeta(a.MetaPath(cfg))
+		a.Email = a.Meta.Email
 		accts = append(accts, a)
 	}
 	return accts
@@ -89,27 +95,70 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func loggedInEmail(metaPath string) string {
-	email, _ := MetaEmail(metaPath)
-	return email
+// Meta is everything headroom reads out of one account's .claude.json. Claude
+// Code keeps two useful things there: who is logged in, and — free of charge —
+// the last usage response it fetched for itself.
+type Meta struct {
+	Email   string
+	EmailOK bool
+
+	// CachedUsage is the raw `cachedUsageUtilization.utilization` object,
+	// byte-identical in shape to the live endpoint's body, so it goes to
+	// usage.ParseLimits unchanged rather than earning a second parser.
+	// Nil when absent or when the consistency guard rejected it.
+	CachedUsage []byte
+	FetchedAtMS int64
+}
+
+// ReadMeta parses one account's .claude.json.
+//
+// The cached usage block is only handed back when its accountUuid matches the
+// logged-in account's. A config dir that has been re-logged to a different
+// account keeps the previous account's cache until Claude Code overwrites it,
+// and rendering account X's quota under account Y's name is a worse failure
+// than showing nothing — wrong data beats missing data only for someone who
+// isn't about to pick an account based on it.
+func ReadMeta(metaPath string) (Meta, error) {
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return Meta{}, err
+	}
+	var doc struct {
+		OauthAccount struct {
+			EmailAddress *string `json:"emailAddress"`
+			AccountUUID  string  `json:"accountUuid"`
+		} `json:"oauthAccount"`
+		CachedUsage *struct {
+			FetchedAtMS int64           `json:"fetchedAtMs"`
+			AccountUUID string          `json:"accountUuid"`
+			Utilization json.RawMessage `json:"utilization"`
+		} `json:"cachedUsageUtilization"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return Meta{}, err
+	}
+	m := Meta{}
+	if doc.OauthAccount.EmailAddress != nil {
+		m.Email, m.EmailOK = *doc.OauthAccount.EmailAddress, true
+	}
+	if c := doc.CachedUsage; c != nil && len(c.Utilization) > 0 {
+		owner := doc.OauthAccount.AccountUUID
+		if owner == "" || c.AccountUUID == "" || owner == c.AccountUUID {
+			m.CachedUsage = c.Utilization
+			m.FetchedAtMS = c.FetchedAtMS
+		}
+	}
+	return m, nil
 }
 
 // MetaEmail reads .oauthAccount.emailAddress; ok reports whether the field
 // is present as a string (the contract `headroom check` asserts).
 func MetaEmail(metaPath string) (string, bool) {
-	data, err := os.ReadFile(metaPath)
+	m, err := ReadMeta(metaPath)
 	if err != nil {
 		return "", false
 	}
-	var meta struct {
-		OauthAccount struct {
-			EmailAddress *string `json:"emailAddress"`
-		} `json:"oauthAccount"`
-	}
-	if json.Unmarshal(data, &meta) != nil || meta.OauthAccount.EmailAddress == nil {
-		return "", false
-	}
-	return *meta.OauthAccount.EmailAddress, true
+	return m.Email, m.EmailOK
 }
 
 // Local parts that never get a short launcher alias: x-<these> are reserved

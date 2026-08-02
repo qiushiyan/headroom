@@ -16,10 +16,12 @@ import (
 	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/check"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/throttle"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -96,21 +98,56 @@ type accountData struct {
 	NeedsFetch bool
 }
 
-// prepare walks accounts and resolves labels, launchers, and credentials;
-// fetch-ready accounts are left in StatusPending for launchFetches. It also
-// returns the current-target name it marked the views with — consumers that
-// report the current account must use this value, not re-read the state
-// file, or a concurrent `select` could make the two disagree.
-func prepare(cfg config.Config) ([]*accountData, string) {
-	return prepareWith(cfg, creds.ReadRaw)
+// sources are the three inputs prepare reads about each account, injected so
+// the pipeline can be table-tested without a Keychain, a Claude Code install,
+// or a network.
+type sources struct {
+	readRaw func(configDir string) string
+	health  auth.QueryFunc
+	now     time.Time
 }
 
-// prepareWith is prepare with the credential source injected — the one seam
-// that lets the pipeline be table-tested without a Keychain.
-func prepareWith(cfg config.Config, readRaw func(configDir string) string) ([]*accountData, string) {
+// prepare walks accounts and assembles what is known about each one before
+// any request goes out: whether Claude Code considers it usable, the newest
+// quota figures already on disk, and whether a live refresh is affordable.
+// It also returns the current-target name it marked the views with —
+// consumers that report the current account must use this value, not re-read
+// the state file, or a concurrent `select` could make the two disagree.
+func prepare(cfg config.Config, th *throttle.Store) ([]*accountData, string) {
 	accts := accounts.Discover(cfg)
+	return prepareWith(cfg, accts, th, sources{
+		readRaw: creds.ReadRaw,
+		health:  queryHealthParallel(accts),
+		now:     time.Now(),
+	})
+}
+
+// queryHealthParallel runs `claude auth status` for every account at once and
+// hands back a lookup. Serially this would cost one process spawn per account
+// before anything renders; in parallel it is one spawn's latency total.
+func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
+	results := make([]auth.Status, len(accts))
+	var wg sync.WaitGroup
+	for i, a := range accts {
+		wg.Add(1)
+		go func(i int, dir string) {
+			defer wg.Done()
+			results[i] = auth.Query(dir)
+		}(i, a.ConfigDir)
+	}
+	wg.Wait()
+	byDir := make(map[string]auth.Status, len(accts))
+	for i, a := range accts {
+		byDir[a.ConfigDir] = results[i]
+	}
+	return func(configDir string) auth.Status { return byDir[configDir] }
+}
+
+// prepareWith is prepare with its inputs injected.
+func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store, src sources) ([]*accountData, string) {
 	current := accounts.CurrentTarget(cfg)
-	nowMS := time.Now().UnixMilli()
+	now := src.now
+	nowMS := now.UnixMilli()
 
 	list := make([]*accountData, 0, len(accts))
 	for _, a := range accts {
@@ -128,26 +165,75 @@ func prepareWith(cfg config.Config, readRaw func(configDir string) string) ([]*a
 		v.Launcher = accounts.Launcher(a, accts, cfg.PrimaryName)
 		v.Current = current == a.Name
 
-		raw := readRaw(a.ConfigDir)
-		if raw == "" {
-			v.Status = render.StatusNoLogin
+		// Whatever Claude Code last saw is free and needs no permission from
+		// the rate limiter, so it is loaded first: even a refused refresh
+		// then leaves the user with numbers and their age.
+		if a.Meta.CachedUsage != nil {
+			if rows, err := usage.ParseLimits(a.Meta.CachedUsage); err == nil && len(rows) > 0 {
+				v.Obs = &render.Observation{
+					Rows:       rows,
+					ObservedAt: a.Meta.FetchedAtMS / 1000,
+					Source:     render.SourceCache,
+				}
+			}
+		}
+
+		raw := src.readRaw(a.ConfigDir)
+		blob, blobOK := creds.Parse(raw)
+		if blobOK {
+			v.Plan = blob.PlanLabel()
+		}
+		v.Health = resolveHealth(src.health(a.ConfigDir), raw, blob, blobOK, nowMS)
+
+		if v.Health != render.HealthOK {
 			continue
 		}
-		blob, ok := creds.Parse(raw)
-		if !ok {
-			v.Status = render.StatusBadBlob
-			continue
+		switch {
+		case !blob.TokenUsable(nowMS):
+			// Nothing to spend: the stored token aged out. The account is
+			// fine and a session will refresh it — that is not our business.
+			v.Attempt.State = render.AttemptTokenStale
+		case !th.Eligible(a.Name, now):
+			v.Attempt.State = render.AttemptDeferred
+			v.Attempt.NextEligibleAt = th.NextEligible(a.Name).Unix()
+		default:
+			d.Token = blob.Token
+			d.NeedsFetch = true
+			v.Attempt.State = render.AttemptPending
 		}
-		v.Plan = blob.PlanLabel()
-		if blob.Expired(nowMS) {
-			v.Status = render.StatusExpired
-			continue
-		}
-		d.Token = blob.Token
-		d.NeedsFetch = true
-		v.Status = render.StatusPending
 	}
 	return list, current
+}
+
+// resolveHealth decides whether the account is usable at all.
+//
+// Claude Code's own verdict is the authority on identity, but it does not
+// outrank a credential that fails the contract: an unreadable blob is drift
+// worth surfacing whatever the auth command says. The credential fallback
+// never infers "expired" from a missing field — see creds.ReloginRequired —
+// because sending the user to /login for a non-problem is the exact failure
+// this rework exists to remove.
+func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, nowMS int64) render.Health {
+	switch {
+	case raw == "":
+		if st.Parsed && st.LoggedIn {
+			// Claude Code says logged in, yet no credential is readable:
+			// contradictory, so claim nothing.
+			return render.HealthUnknown
+		}
+		return render.HealthNoLogin
+	case !blobOK:
+		return render.HealthBadBlob
+	case st.Parsed:
+		if st.LoggedIn {
+			return render.HealthOK
+		}
+		return render.HealthNoLogin
+	case blob.ReloginRequired(nowMS):
+		return render.HealthReloginRequired
+	default:
+		return render.HealthOK
+	}
 }
 
 // fetchUpdate is one finished fetch, addressed by account index. The
@@ -162,20 +248,26 @@ type fetchUpdate struct {
 // applies each result with resolve, so views have exactly one writer and a
 // redraw may read every view between receives. The buffer lets senders
 // finish even if the caller stops receiving early.
-func launchFetches(ctx context.Context, cfg config.Config, list []*accountData) <-chan fetchUpdate {
+func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, th *throttle.Store) <-chan fetchUpdate {
 	client := &http.Client{Timeout: 10 * time.Second}
 	updates := make(chan fetchUpdate, len(list))
 	var wg sync.WaitGroup
+	now := time.Now()
 	for i, d := range list {
 		if !d.NeedsFetch {
 			continue
 		}
+		// Claim the account's budget before the request leaves, so another
+		// headroom process starting meanwhile sees it spent rather than
+		// spending it again.
+		th.NoteAttempt(d.Acct.Name, now)
 		wg.Add(1)
 		go func(i int, token string) {
 			defer wg.Done()
 			updates <- fetchUpdate{i, usage.Fetch(ctx, client, cfg.UsageURL, token)}
 		}(i, d.Token)
 	}
+	_ = th.Save()
 	go func() {
 		wg.Wait()
 		close(updates)
@@ -183,33 +275,51 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData) 
 	return updates
 }
 
-func resolve(d *accountData, res usage.Result) {
+// resolve applies one fetch outcome. It writes the attempt axis always and
+// the observation axis only on success: a refusal or a dead network must
+// leave whatever was already known standing, with its own timestamp intact.
+func resolve(d *accountData, res usage.Result, th *throttle.Store, now time.Time) {
 	v := &d.View
+	name := d.Acct.Name
 	switch {
 	case res.Err != nil:
-		v.Status = render.StatusFetchFailed
+		v.Attempt.State = render.AttemptTransport
+	case res.StatusCode == http.StatusTooManyRequests:
+		// Says nothing about the account — only that this request was too
+		// soon. Rows, if any, stay exactly as they were.
+		v.Attempt.State = render.AttemptRefused
+		v.Attempt.HTTPCode = res.StatusCode
+		th.NoteRefused(name, now)
+		v.Attempt.NextEligibleAt = th.NextEligible(name).Unix()
 	case res.StatusCode != http.StatusOK:
-		v.Status = render.StatusHTTPError
-		v.HTTPCode = res.StatusCode
+		v.Attempt.State = render.AttemptHTTP
+		v.Attempt.HTTPCode = res.StatusCode
 	default:
 		rows, err := usage.ParseLimits(res.Body)
 		switch {
 		case err != nil:
-			v.Status = render.StatusUnparseable
+			v.Attempt.State = render.AttemptUnparseable
 		case len(rows) == 0:
-			v.Status = render.StatusNoLimits
+			v.Attempt.State = render.AttemptNoLimits
 		default:
-			v.Rows = rows
-			v.Status = render.StatusRows
+			v.Attempt.State = render.AttemptOK
+			v.Obs = &render.Observation{
+				Rows:       rows,
+				ObservedAt: now.Unix(),
+				Source:     render.SourceLive,
+			}
+			th.NoteSuccess(name, now)
 		}
 	}
 }
 
 func runDashboard(cfg config.Config) int {
-	list, _ := prepare(cfg)
-	for u := range launchFetches(context.Background(), cfg, list) {
-		resolve(list[u.idx], u.res)
+	th := throttle.Load(cfg.AccountsRoot)
+	list, _ := prepare(cfg, th)
+	for u := range launchFetches(context.Background(), cfg, list, th) {
+		resolve(list[u.idx], u.res, th, time.Now())
 	}
+	_ = th.Save()
 	p := render.NewPalette(stdoutIsTTY())
 	now := time.Now().Unix()
 	labelWidth := render.LabelWidth(views(list))

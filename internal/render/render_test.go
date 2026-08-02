@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -63,7 +64,7 @@ func TestResetPhrase(t *testing.T) {
 func TestLimitRowPlain(t *testing.T) {
 	p := NewPalette(false)
 	row := usage.Row{Label: "5h session", Percent: 56, Severity: "normal"}
-	got := p.LimitRow(row, 0, 16)
+	got := p.LimitRow(row, 0, 16, false)
 	if !strings.HasPrefix(got, "  5h session       [") {
 		t.Errorf("label padding off: %q", got)
 	}
@@ -71,7 +72,7 @@ func TestLimitRowPlain(t *testing.T) {
 		t.Errorf("row = %q", got)
 	}
 	// A wider column pads further.
-	got = p.LimitRow(row, 0, 20)
+	got = p.LimitRow(row, 0, 20, false)
 	if !strings.HasPrefix(got, "  5h session           [") {
 		t.Errorf("wide label padding off: %q", got)
 	}
@@ -81,8 +82,8 @@ func TestLimitRowPlain(t *testing.T) {
 // bad percent rendering as a plain 0% would read as free headroom.
 func TestLimitRowDrift(t *testing.T) {
 	p := NewPalette(false)
-	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: usage.StateBad}, 0, 16)
-	real0 := p.LimitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16)
+	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: usage.StateBad}, 0, 16, false)
+	real0 := p.LimitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16, false)
 	if bad == real0 {
 		t.Fatalf("bad percent indistinguishable from real 0%%: %q", bad)
 	}
@@ -98,15 +99,15 @@ func TestLimitRowDrift(t *testing.T) {
 
 	// A bad timestamp alone also carries the marker.
 	badReset := p.LimitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal",
-		ResetState: usage.StateBad}, 0, 16)
+		ResetState: usage.StateBad}, 0, 16, false)
 	if !strings.Contains(badReset, "drift") {
 		t.Errorf("bad reset should carry the drift marker: %q", badReset)
 	}
 }
 
 func TestLabelWidth(t *testing.T) {
-	short := AccountView{Status: StatusRows, Rows: []usage.Row{{Label: "5h session"}}}
-	long := AccountView{Status: StatusRows, Rows: []usage.Row{{Label: "Claude Opus 4.5 (7d)"}}}
+	short := AccountView{Obs: &Observation{Rows: []usage.Row{{Label: "5h session"}}}}
+	long := AccountView{Obs: &Observation{Rows: []usage.Row{{Label: "Claude Opus 4.5 (7d)"}}}}
 	if got := LabelWidth([]AccountView{short}); got != 16 {
 		t.Errorf("short labels should keep the classic column: %d", got)
 	}
@@ -151,5 +152,98 @@ func TestHeaderLine(t *testing.T) {
 	v = AccountView{Label: "real@b.c", DirMismatch: "dir@b.c", Launcher: "x-a"}
 	if got := p.HeaderLine(v); !strings.Contains(got, "real@b.c (dir says dir@b.c!)") {
 		t.Errorf("mismatch header = %q", got)
+	}
+}
+
+// The reported bug, at the rendering layer: a refused refresh must annotate
+// what is known, never replace it. Before the three-axis model the account
+// block for a 429 was a single "HTTP 429" line and the bars vanished.
+func TestAccountBlockKeepsRowsThroughAFailedRefresh(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	v := AccountView{
+		Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
+		Obs: &Observation{
+			Rows:       []usage.Row{{Label: "5h session", Percent: 42, Severity: "normal"}},
+			ObservedAt: now - 30, Source: SourceLive,
+		},
+		Attempt: Attempt{State: AttemptRefused, HTTPCode: 429, NextEligibleAt: now + 180},
+	}
+	lines := p.AccountBlock(v, now, 16)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "42%") {
+		t.Errorf("known figures erased by a refused refresh:\n%s", joined)
+	}
+	if !strings.Contains(joined, "rate limited") {
+		t.Errorf("refusal not explained:\n%s", joined)
+	}
+	if !strings.Contains(joined, "next attempt in 3m") {
+		t.Errorf("no indication of when it retries:\n%s", joined)
+	}
+}
+
+// A stale access token is routine housekeeping. It must never be phrased as
+// expiry or send the user to /login — that was the false alarm users learned
+// to distrust.
+func TestStaleTokenReadsAsHousekeeping(t *testing.T) {
+	p := NewPalette(false)
+	v := AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
+		Attempt: Attempt{State: AttemptTokenStale}}
+	line := p.StatusLine(v, time.Now().Unix())
+	if strings.Contains(line, "expired") || strings.Contains(line, "/login") {
+		t.Errorf("stale access token phrased as an account problem: %q", line)
+	}
+	if !strings.Contains(line, "x-a") || !strings.Contains(line, "refreshes it") {
+		t.Errorf("remedy not stated: %q", line)
+	}
+
+	// The genuine case still says what it must.
+	dead := p.StatusLine(AccountView{Launcher: "x-a", Health: HealthReloginRequired}, 0)
+	if !strings.Contains(dead, "/login") {
+		t.Errorf("a dead refresh token must tell the user to log in: %q", dead)
+	}
+}
+
+// Old figures render, but must be visibly marked so they cannot be read as
+// current headroom at a glance.
+func TestStaleObservationIsMarked(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	v := AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
+		Obs: &Observation{
+			Rows:       []usage.Row{{Label: "5h session", Percent: 58, Severity: "normal"}},
+			ObservedAt: now - int64((22 * time.Hour).Seconds()), Source: SourceCache,
+		},
+		Attempt: Attempt{State: AttemptDeferred, NextEligibleAt: now + 40},
+	}
+	joined := strings.Join(p.AccountBlock(v, now, 16), "\n")
+	if !strings.Contains(joined, "58%") {
+		t.Errorf("stale figures should still be shown as context:\n%s", joined)
+	}
+	if !strings.Contains(joined, "stale") || !strings.Contains(joined, "22h ago") {
+		t.Errorf("staleness not surfaced:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Claude Code's cache") {
+		t.Errorf("source not surfaced:\n%s", joined)
+	}
+	if v.Fresh(now) {
+		t.Error("22h-old observation reported as fresh")
+	}
+}
+
+// The ordinary case stays quiet: fresh live numbers need no caption.
+func TestFreshLiveObservationHasNoProvenanceNoise(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	v := AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
+		Obs: &Observation{Rows: []usage.Row{{Label: "5h session", Percent: 3, Severity: "normal"}},
+			ObservedAt: now - 2, Source: SourceLive},
+		Attempt: Attempt{State: AttemptOK},
+	}
+	if got := p.ProvenanceLine(v, now); got != "" {
+		t.Errorf("fresh live rows should need no caption, got %q", got)
+	}
+	if len(p.AccountBlock(v, now, 16)) != 2 {
+		t.Errorf("expected header + one row only: %#v", p.AccountBlock(v, now, 16))
 	}
 }

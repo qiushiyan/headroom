@@ -35,50 +35,62 @@ func TestWatchInterval(t *testing.T) {
 	}
 }
 
-func TestCarryOver(t *testing.T) {
-	rows := []usage.Row{{Label: "5h session", Percent: 42}}
+// carryOver used to assert that a previous round's rows become ordinary
+// current rows. That assertion was the bug in test form: it committed the
+// design to presenting old numbers as if they had just been observed. The
+// contract now is that an observation carries *whole* — its timestamp and
+// source travel with it, so age survives the round boundary.
+func TestCarryOverPreservesProvenance(t *testing.T) {
+	observedAt := time.Now().Add(-40 * time.Second).Unix()
 	old := []*accountData{
-		{Acct: accounts.Account{Name: "resolved"},
-			View: render.AccountView{Status: render.StatusRows, Rows: rows, Plan: "old plan"}},
-		{Acct: accounts.Account{Name: "failed"},
-			View: render.AccountView{Status: render.StatusFetchFailed}},
+		{Acct: accounts.Account{Name: "resolved"}, View: render.AccountView{
+			Plan: "old plan",
+			Obs: &render.Observation{
+				Rows:       []usage.Row{{Label: "5h session", Percent: 42}},
+				ObservedAt: observedAt,
+				Source:     render.SourceLive,
+			}}},
+		{Acct: accounts.Account{Name: "never-observed"}, View: render.AccountView{
+			Attempt: render.Attempt{State: render.AttemptTransport}}},
 	}
 	newList := []*accountData{
-		{Acct: accounts.Account{Name: "resolved"},
-			View: render.AccountView{Status: render.StatusPending, Plan: "new plan"}},
-		{Acct: accounts.Account{Name: "failed"},
-			View: render.AccountView{Status: render.StatusPending}},
-		{Acct: accounts.Account{Name: "expired"},
-			View: render.AccountView{Status: render.StatusExpired}},
-		{Acct: accounts.Account{Name: "added"},
-			View: render.AccountView{Status: render.StatusPending}},
+		{Acct: accounts.Account{Name: "resolved"}, View: render.AccountView{
+			Plan: "new plan", Attempt: render.Attempt{State: render.AttemptPending}}},
+		{Acct: accounts.Account{Name: "never-observed"}, View: render.AccountView{
+			Attempt: render.Attempt{State: render.AttemptPending}}},
+		{Acct: accounts.Account{Name: "added"}, View: render.AccountView{
+			Attempt: render.Attempt{State: render.AttemptPending}}},
 	}
 	carryOver(newList, old)
 
-	// Resolved bars carry so the redraw doesn't blank; header fields stay fresh.
-	if v := newList[0].View; v.Status != render.StatusRows || len(v.Rows) != 1 || v.Plan != "new plan" {
-		t.Errorf("resolved: %+v", v)
+	v := newList[0].View
+	if v.Obs == nil || len(v.Obs.Rows) != 1 {
+		t.Fatalf("rows did not carry: %+v", v.Obs)
 	}
-	// A previous failure does not carry — the new attempt shows as pending.
-	if v := newList[1].View; v.Status != render.StatusPending {
-		t.Errorf("failed: %+v", v)
+	if v.Obs.ObservedAt != observedAt {
+		t.Errorf("carried rows were restamped as fresh: got %d want %d", v.Obs.ObservedAt, observedAt)
 	}
-	// Non-pending states are this round's truth, never overwritten.
-	if v := newList[2].View; v.Status != render.StatusExpired {
-		t.Errorf("expired: %+v", v)
+	if v.Plan != "new plan" {
+		t.Errorf("header fields must be this round's: plan=%q", v.Plan)
 	}
-	if v := newList[3].View; v.Status != render.StatusPending {
-		t.Errorf("added: %+v", v)
+	// Nothing was ever observed for these two — there is nothing to carry.
+	if newList[1].View.Obs != nil || newList[2].View.Obs != nil {
+		t.Error("invented an observation for an account that never had one")
 	}
 }
 
-func TestSawRateLimit(t *testing.T) {
-	ok := []*accountData{{View: render.AccountView{Status: render.StatusRows}}}
-	limited := append(ok, &accountData{
-		View: render.AccountView{Status: render.StatusHTTPError, HTTPCode: 429}})
-	notLimited := append(ok, &accountData{
-		View: render.AccountView{Status: render.StatusHTTPError, HTTPCode: 500}})
-	if sawRateLimit(ok) || sawRateLimit(notLimited) || !sawRateLimit(limited) {
-		t.Error("429 detection wrong")
+// A newer observation already loaded this round (a live fetch that landed, or
+// a fresher Claude Code cache) must not be overwritten by an older carried one.
+func TestCarryOverKeepsTheNewerObservation(t *testing.T) {
+	now := time.Now().Unix()
+	old := []*accountData{{Acct: accounts.Account{Name: "a"}, View: render.AccountView{
+		Obs: &render.Observation{ObservedAt: now - 300, Source: render.SourceLive,
+			Rows: []usage.Row{{Label: "old"}}}}}}
+	newList := []*accountData{{Acct: accounts.Account{Name: "a"}, View: render.AccountView{
+		Obs: &render.Observation{ObservedAt: now - 10, Source: render.SourceCache,
+			Rows: []usage.Row{{Label: "new"}}}}}}
+	carryOver(newList, old)
+	if newList[0].View.Obs.Rows[0].Label != "new" {
+		t.Error("a stale carried observation displaced a newer one")
 	}
 }

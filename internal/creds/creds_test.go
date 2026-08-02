@@ -1,6 +1,11 @@
 package creds
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/qiushiyan/headroom/internal/tag"
+)
 
 func TestServiceName(t *testing.T) {
 	if got := ServiceName(""); got != "Claude Code-credentials" {
@@ -57,18 +62,70 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestExpired(t *testing.T) {
+// The two expiries answer different questions and must never be conflated:
+// the access token's passing is routine housekeeping, the refresh token's is
+// the only one that means a human has to log in again.
+func TestTokenUsable(t *testing.T) {
 	now := int64(1000)
 	cases := []struct {
-		ms   int64
+		name string
+		blob Blob
 		want bool
 	}{
-		{0, false},  // absent → never expires here; the API decides
-		{999, true}, // in the past
-		{1001, false} /* still valid */}
+		{"no token", Blob{}, false},
+		{"absent expiry — let the endpoint decide", Blob{Token: "t", ExpiresState: tag.None}, true},
+		{"unparseable expiry — don't invent a problem", Blob{Token: "t", ExpiresState: tag.Bad}, true},
+		{"aged out", Blob{Token: "t", ExpiresAtMS: 999, ExpiresState: tag.OK}, false},
+		{"still valid", Blob{Token: "t", ExpiresAtMS: 1001, ExpiresState: tag.OK}, true},
+	}
 	for _, c := range cases {
-		if got := (Blob{ExpiresAtMS: c.ms}).Expired(now); got != c.want {
-			t.Errorf("Expired(%d) = %v, want %v", c.ms, got, c.want)
+		if got := c.blob.TokenUsable(now); got != c.want {
+			t.Errorf("%s: TokenUsable = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestReloginRequired(t *testing.T) {
+	now := int64(1000)
+	cases := []struct {
+		name string
+		blob Blob
+		want bool
+	}{
+		// The regression this whole rework exists for: an access token hours
+		// past its expiry, with a refresh token good for weeks, is a healthy
+		// account. Claiming otherwise sent the user to /login for nothing.
+		{"access aged out, refresh alive", Blob{
+			Token: "t", ExpiresAtMS: 1, ExpiresState: tag.OK,
+			RefreshExpiresMS: 99999, RefreshState: tag.OK}, false},
+		{"refresh genuinely expired", Blob{
+			Token: "t", RefreshExpiresMS: 999, RefreshState: tag.OK}, true},
+		// Positive evidence only — a field the vendor stopped sending must
+		// not be read as an expiry.
+		{"refresh absent", Blob{Token: "t", RefreshState: tag.None}, false},
+		{"refresh unparseable", Blob{Token: "t", RefreshState: tag.Bad}, false},
+	}
+	for _, c := range cases {
+		if got := c.blob.ReloginRequired(now); got != c.want {
+			t.Errorf("%s: ReloginRequired = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestParseExpiryTags(t *testing.T) {
+	b, ok := Parse(`{"claudeAiOauth":{"accessToken":"t","expiresAt":123,"refreshTokenExpiresAt":456}}`)
+	if !ok || b.ExpiresAtMS != 123 || b.ExpiresState != tag.OK ||
+		b.RefreshExpiresMS != 456 || b.RefreshState != tag.OK {
+		t.Errorf("both expiries: %+v ok=%v", b, ok)
+	}
+	b, _ = Parse(`{"claudeAiOauth":{"accessToken":"t"}}`)
+	if b.ExpiresState != tag.None || b.RefreshState != tag.None {
+		t.Errorf("absent must tag none, not bad: %+v", b)
+	}
+	// A malformed timestamp must not degrade to 0, which would read as 1970
+	// and therefore as long expired.
+	b, _ = Parse(`{"claudeAiOauth":{"accessToken":"t","refreshTokenExpiresAt":{"nested":1}}}`)
+	if b.RefreshState != tag.Bad || b.ReloginRequired(time.Now().UnixMilli()) {
+		t.Errorf("malformed expiry must be bad and must not force relogin: %+v", b)
 	}
 }

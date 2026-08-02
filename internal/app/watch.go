@@ -20,13 +20,13 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/throttle"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
 const (
 	defaultInterval = 2 * time.Minute
 	minInterval     = 30 * time.Second
-	maxBackoff      = 8 // interval multiplier cap while rate-limited
 )
 
 func runWatch(cfg config.Config, args []string) int {
@@ -51,18 +51,21 @@ func runWatch(cfg config.Config, args []string) int {
 
 	p := render.NewPalette(true)
 	fp := &framePrinter{}
+	th := throttle.Load(cfg.AccountsRoot)
 
 	var list []*accountData
 	var updates <-chan fetchUpdate // nil = no round in flight
 	var lastRound time.Time
-	backoff := 1
 	nextAt := time.Now()
 
+	// Rate-limit backoff is per account and lives in the throttle store, not
+	// in this loop: one account being refused says nothing about the others,
+	// and a fleet-wide multiplier punished healthy accounts for it.
 	startRound := func() {
-		newList, _ := prepare(cfg)
+		newList, _ := prepare(cfg, th)
 		carryOver(newList, list)
 		list = newList
-		updates = launchFetches(ctx, cfg, list)
+		updates = launchFetches(ctx, cfg, list, th)
 	}
 
 	draw := func() {
@@ -85,8 +88,8 @@ func runWatch(cfg config.Config, args []string) int {
 				status = append(status, fmt.Sprintf("refreshed %s ago", now.Sub(lastRound).Round(time.Second)))
 			}
 			status = append(status, fmt.Sprintf("next in %s", time.Until(nextAt).Round(time.Second)))
-			if backoff > 1 {
-				status = append(status, "backing off (rate limited)")
+			if n := deferredCount(list); n > 0 {
+				status = append(status, fmt.Sprintf("%d cooling down", n))
 			}
 		}
 		status = append(status, "r refresh · q quit")
@@ -106,14 +109,10 @@ func runWatch(cfg config.Config, args []string) int {
 			if !chOpen {
 				updates = nil
 				lastRound = time.Now()
-				if sawRateLimit(list) {
-					backoff = min(backoff*2, maxBackoff)
-				} else {
-					backoff = 1
-				}
-				nextAt = lastRound.Add(interval * time.Duration(backoff))
+				_ = th.Save()
+				nextAt = lastRound.Add(interval)
 			} else {
-				resolve(list[u.idx], u.res)
+				resolve(list[u.idx], u.res, th, time.Now())
 			}
 			draw()
 		case <-tick.C:
@@ -127,6 +126,10 @@ func runWatch(cfg config.Config, args []string) int {
 				t.Close()
 				return 0
 			case tui.EventRefresh:
+				// A manual refresh asks the same question sooner; it does not
+				// buy exemption from the endpoint's budget. Per-account
+				// eligibility is enforced in prepare, so a held-down `r`
+				// re-reads and redraws without issuing a single request.
 				if updates == nil {
 					startRound()
 					draw()
@@ -167,31 +170,38 @@ func watchInterval(args []string, errw io.Writer) (time.Duration, bool) {
 	return interval, true
 }
 
-// carryOver keeps the previous round's bars for accounts whose fresh fetch
-// hasn't landed yet, so a refresh updates in place instead of blanking back
-// to "fetching…". Only resolved rows carry; header fields (label, plan,
-// current) are always this round's.
+// carryOver keeps the previous round's observation for accounts whose fresh
+// fetch hasn't landed yet, so a refresh updates in place instead of blanking.
+// The observation carries *whole* — its timestamp and source included — so
+// last round's numbers keep saying how old they are instead of passing as
+// this round's. Header fields (label, plan, current) are always this round's.
+//
+// A carried observation is only kept when it beats what prepare already
+// loaded from Claude Code's cache, which is usually much older.
 func carryOver(newList, old []*accountData) {
-	prev := make(map[string]render.AccountView, len(old))
+	prev := make(map[string]*render.Observation, len(old))
 	for _, d := range old {
-		prev[d.Acct.Name] = d.View
+		if d.View.Obs != nil {
+			prev[d.Acct.Name] = d.View.Obs
+		}
 	}
 	for _, d := range newList {
-		if d.View.Status != render.StatusPending {
+		o, ok := prev[d.Acct.Name]
+		if !ok {
 			continue
 		}
-		if v, ok := prev[d.Acct.Name]; ok && v.Status == render.StatusRows {
-			d.View.Status = render.StatusRows
-			d.View.Rows = v.Rows
+		if d.View.Obs == nil || o.ObservedAt > d.View.Obs.ObservedAt {
+			d.View.Obs = o
 		}
 	}
 }
 
-func sawRateLimit(list []*accountData) bool {
+func deferredCount(list []*accountData) int {
+	n := 0
 	for _, d := range list {
-		if d.View.Status == render.StatusHTTPError && d.View.HTTPCode == 429 {
-			return true
+		if d.View.Attempt.State == render.AttemptDeferred {
+			n++
 		}
 	}
-	return false
+	return n
 }

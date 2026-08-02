@@ -16,14 +16,18 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
-type FieldState uint8
+// The degradation vocabulary is shared with credential parsing — see
+// internal/tag. The aliases keep the usage.State* spelling at call sites.
+type FieldState = tag.State
 
 const (
-	StateOK   FieldState = iota
-	StateNone            // legitimately absent (e.g. untouched window)
-	StateBad             // present but no longer parses — shape drift
+	StateOK   = tag.OK
+	StateNone = tag.None
+	StateBad  = tag.Bad
 )
 
 // Row is the response contract: one rendered line per limit.
