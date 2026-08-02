@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 type Account struct {
@@ -105,9 +106,16 @@ type Meta struct {
 	// CachedUsage is the raw `cachedUsageUtilization.utilization` object,
 	// byte-identical in shape to the live endpoint's body, so it goes to
 	// usage.ParseLimits unchanged rather than earning a second parser.
-	// Nil when absent or when the consistency guard rejected it.
+	// Nil unless CacheState is tag.OK.
 	CachedUsage []byte
 	FetchedAtMS int64
+
+	// CacheState distinguishes a cache that isn't there (tag.None — ordinary;
+	// Claude Code writes one only once it has fetched) from one that is there
+	// but unusable (tag.Bad — its provenance couldn't be established). Both
+	// leave CachedUsage nil, and without this tag `check` could not tell the
+	// silent loss of the fallback from its normal absence.
+	CacheState tag.State
 }
 
 // ReadMeta parses one account's .claude.json.
@@ -137,7 +145,10 @@ func ReadMeta(metaPath string) (Meta, error) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Meta{}, err
 	}
-	m := Meta{}
+	// Explicitly None: tag.OK is tag.State's zero value, so leaving this
+	// implicit would have an account with no cache at all claim to have a
+	// valid one.
+	m := Meta{CacheState: tag.None}
 	if doc.OauthAccount.EmailAddress != nil {
 		m.Email, m.EmailOK = *doc.OauthAccount.EmailAddress, true
 	}
@@ -147,11 +158,16 @@ func ReadMeta(metaPath string) (Meta, error) {
 		// current account — the exact failure this guard exists for — and a
 		// cache with no fetch time would render as observed in 1970. If the
 		// vendor stops sending either field we lose a fallback and stay
-		// correct, which is the right way round.
+		// correct, which is the right way round — and CacheState is how
+		// `check` learns the fallback went away instead of it vanishing
+		// silently.
 		owner := doc.OauthAccount.AccountUUID
 		if owner != "" && owner == c.AccountUUID && c.FetchedAtMS > 0 {
 			m.CachedUsage = c.Utilization
 			m.FetchedAtMS = c.FetchedAtMS
+			m.CacheState = tag.OK
+		} else {
+			m.CacheState = tag.Bad
 		}
 	}
 	return m, nil

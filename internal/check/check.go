@@ -23,6 +23,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/throttle"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -200,11 +201,14 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		case code >= 500:
 			skip(label(""), "vendor-side error — no evidence either way")
 			continue
-		case code == http.StatusUnauthorized && tokenChangedSince(c.dir, c.token):
+		case code == http.StatusUnauthorized && recheckToken(c.dir, c.token) == tokenChanged:
 			// Claude Code refreshed the token between our Keychain read and
 			// the request, so the one we spent was already dead. That is a
 			// race, not drift.
 			skip(label(""), "token was refreshed mid-check — no evidence either way")
+			continue
+		case code == http.StatusUnauthorized && recheckToken(c.dir, c.token) == tokenUncertain:
+			skip(label(""), "credential unreadable on re-check — cannot tell a refresh race from drift")
 			continue
 		case code != http.StatusOK:
 			chk(false, label(""), "unexpected status — endpoint or auth drifted")
@@ -257,13 +261,22 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			chk(true, fmt.Sprintf("auth[%s]: claude auth status parses via shared contract", name), "")
 		case auth.OutcomeUnparseable:
 			chk(false, fmt.Sprintf("auth[%s]: claude auth status parses via shared contract", name),
-				"output shape drifted — health now falls back to credential inference")
+				"output shape drifted — account health can no longer be established")
 		default:
 			skip(fmt.Sprintf("auth[%s]: not tested", name), "claude auth status unavailable")
 		}
 
-		// A cache that is present must parse; absent is ordinary and fine.
-		if a.Meta.CachedUsage == nil {
+		// A cache that is present must be usable. Absent is ordinary — Claude
+		// Code writes one only once it has fetched — but present-and-rejected
+		// means the offline fallback silently disappeared, which is exactly
+		// the drift this check exists to catch.
+		cacheLabel := fmt.Sprintf("cache[%s]: Claude Code's cached usage parses via shared contract", name)
+		switch a.Meta.CacheState {
+		case tag.None:
+			continue
+		case tag.Bad:
+			chk(false, cacheLabel,
+				"cached payload present but its account identity or fetch time is missing — fallback lost")
 			continue
 		}
 		rows, err := usage.ParseLimits(a.Meta.CachedUsage)
@@ -273,8 +286,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 				nbad++
 			}
 		}
-		chk(err == nil && nbad == 0,
-			fmt.Sprintf("cache[%s]: Claude Code's cached usage parses via shared contract", name),
+		chk(err == nil && nbad == 0, cacheLabel,
 			"cached payload shape drifted — the offline fallback is unreadable")
 	}
 
@@ -293,12 +305,29 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	}
 }
 
-// tokenChangedSince reports whether the stored access token differs from the
-// one a request was made with — evidence that Claude Code refreshed it while
-// the request was in flight, which turns a 401 into a race rather than drift.
-func tokenChangedSince(configDir, used string) bool {
+// tokenCheck is what a re-read of the Keychain can establish about a 401.
+type tokenCheck int
+
+const (
+	tokenSame      tokenCheck = iota // the token we spent is still the stored one
+	tokenChanged                     // Claude Code refreshed it under us — a race, not drift
+	tokenUncertain                   // the re-read told us nothing
+)
+
+// recheckToken compares the stored access token against the one a request was
+// actually made with. The three outcomes stay distinct because "I could not
+// re-read the credential" is not evidence of a refresh: reporting it as one
+// would have check assert a race it never observed.
+func recheckToken(configDir, used string) tokenCheck {
 	blob, ok := creds.Parse(creds.ReadKeychain(configDir))
-	return !ok || blob.Token != used
+	switch {
+	case !ok:
+		return tokenUncertain
+	case blob.Token != used:
+		return tokenChanged
+	default:
+		return tokenSame
+	}
 }
 
 func claudeBinary() string {

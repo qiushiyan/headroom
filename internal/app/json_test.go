@@ -148,3 +148,19 @@ func TestJSONSeparatesStaleDataFromFailedRefresh(t *testing.T) {
 		t.Errorf("attempt: %v", at)
 	}
 }
+
+// Every attempt state a run can actually produce needs a wire name. A missing
+// map entry serialises as "", which is worse than a wrong value: a consumer
+// can't tell it from an absent field, and the schema is a versioned contract.
+func TestEveryAttemptStateHasAWireName(t *testing.T) {
+	for s := render.AttemptNone; s <= render.AttemptNoLimits; s++ {
+		if attemptNames[s] == "" {
+			t.Errorf("attempt state %d has no wire name", s)
+		}
+	}
+	for h := render.HealthOK; h <= render.HealthUnknown; h++ {
+		if healthNames[h] == "" {
+			t.Errorf("health state %d has no wire name", h)
+		}
+	}
+}

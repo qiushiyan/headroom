@@ -72,16 +72,17 @@ var healthNames = map[render.Health]string{
 }
 
 var attemptNames = map[render.AttemptState]string{
-	render.AttemptNone:        "none",
-	render.AttemptPending:     "pending", // unreachable after a full drain
-	render.AttemptOK:          "ok",
-	render.AttemptRefused:     "rate_limited",
-	render.AttemptDeferred:    "deferred",
-	render.AttemptTokenStale:  "access_token_stale",
-	render.AttemptTransport:   "transport_error",
-	render.AttemptHTTP:        "http_error",
-	render.AttemptUnparseable: "unparseable",
-	render.AttemptNoLimits:    "no_limits",
+	render.AttemptNone:                 "none",
+	render.AttemptPending:              "pending", // unreachable after a full drain
+	render.AttemptOK:                   "ok",
+	render.AttemptRefused:              "rate_limited",
+	render.AttemptDeferred:             "deferred",
+	render.AttemptTokenStale:           "access_token_stale",
+	render.AttemptCredentialUnreadable: "credential_unreadable",
+	render.AttemptTransport:            "transport_error",
+	render.AttemptHTTP:                 "http_error",
+	render.AttemptUnparseable:          "unparseable",
+	render.AttemptNoLimits:             "no_limits",
 }
 
 var sourceNames = map[render.Source]string{

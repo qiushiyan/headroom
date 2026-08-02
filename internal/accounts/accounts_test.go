@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -300,5 +301,38 @@ func TestReadMetaCacheGuardRequiresPositiveEvidence(t *testing.T) {
 		if m.Email != "a@x.com" {
 			t.Errorf("%s: the email is independent and must survive", c.name)
 		}
+	}
+}
+
+// A rejected cache and an absent one must be distinguishable, or the day the
+// vendor drops accountUuid the fallback disappears silently and check still
+// passes.
+func TestReadMetaTagsRejectedCacheDistinctlyFromAbsent(t *testing.T) {
+	write := func(body string) Meta {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), ".claude.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		m, err := ReadMeta(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := write(`{"oauthAccount":{"emailAddress":"a@x.com"}}`); m.CacheState != tag.None {
+		t.Errorf("no cache should tag none, got %v", m.CacheState)
+	}
+	rejected := write(`{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
+	  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"other",
+	    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`)
+	if rejected.CacheState != tag.Bad || rejected.CachedUsage != nil {
+		t.Errorf("rejected cache: state=%v usable=%v", rejected.CacheState, rejected.CachedUsage != nil)
+	}
+	good := write(`{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
+	  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"u",
+	    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`)
+	if good.CacheState != tag.OK || good.CachedUsage == nil {
+		t.Errorf("valid cache: state=%v", good.CacheState)
 	}
 }

@@ -279,3 +279,32 @@ func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 		t.Errorf("cooling down is not an account problem: health=%v", d.View.Health)
 	}
 }
+
+// A cache saying "no limit windows" is an answer, not an absence — the same
+// answer the live endpoint is allowed to give. Dropping it left the user with
+// "usage unknown" while a perfectly good cached fact sat on disk.
+func TestPrepareKeepsZeroRowCache(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
+	  "oauthAccount":{"emailAddress":"p@x.com","accountUuid":"u"},
+	  "cachedUsageUtilization":{"fetchedAtMs":%d,"accountUuid":"u",
+	    "utilization":{"limits":[]}}}`, time.Now().UnixMilli()))
+
+	f := prepareFixture{
+		cfg:   cfg,
+		th:    throttle.Load(cfg.AccountsRoot),
+		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
+		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
+	}
+	v := f.run(time.Now())["primary"].View
+	if v.Obs == nil {
+		t.Fatal("a zero-row cache was discarded instead of shown as 'no limits'")
+	}
+	if len(v.Obs.Rows) != 0 || v.Obs.Source != render.SourceCache {
+		t.Errorf("observation: %+v", v.Obs)
+	}
+}

@@ -235,8 +235,12 @@ func (p Palette) ProvenanceLine(v AccountView, now int64) string {
 	if v.Obs.Source == SourceCache {
 		parts = append(parts, "via Claude Code's cache")
 	}
-	if r := p.attemptReason(v, now); v.Attempt.State != AttemptOK && v.Attempt.State != AttemptNone {
-		parts = append(parts, r)
+	// AttemptNoLimits is already the body of an empty observation; repeating
+	// it as a caption would say the same thing twice.
+	sayAttempt := v.Attempt.State != AttemptOK && v.Attempt.State != AttemptNone &&
+		!(v.Attempt.State == AttemptNoLimits && len(v.Obs.Rows) == 0)
+	if sayAttempt {
+		parts = append(parts, p.attemptReason(v, now))
 	}
 	line := "  " + p.Dim + strings.Join(parts, " · ") + p.Rst
 	if !fresh {

@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	st, ok := Parse([]byte(`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
@@ -53,5 +56,34 @@ func TestParseFailureIsUnparseableNotUnavailable(t *testing.T) {
 	st, ok := Parse([]byte(`{"totally":"different"}`))
 	if ok || st.Outcome != OutcomeUnparseable {
 		t.Errorf("drifted output = %+v ok=%v, want unparseable", st, ok)
+	}
+}
+
+// exec.Cmd.Output returns stdout alongside an ExitError, so a command that
+// answered and then exited non-zero has still demonstrably run. Calling that
+// "unavailable" would throw away a real verdict — or hide genuine output
+// drift behind an inconclusive.
+func TestClassifyJudgesOutputBeforeExitStatus(t *testing.T) {
+	exitErr := errors.New("exit status 1")
+	cases := []struct {
+		name string
+		out  string
+		err  error
+		want Outcome
+	}{
+		{"clean answer", `{"loggedIn":true}`, nil, OutcomeOK},
+		{"answer despite non-zero exit", `{"loggedIn":false}`, exitErr, OutcomeOK},
+		{"drifted output despite non-zero exit", `{"other":1}`, exitErr, OutcomeUnparseable},
+		{"drifted output, clean exit", `{"other":1}`, nil, OutcomeUnparseable},
+		{"nothing at all", "", exitErr, OutcomeUnavailable},
+		{"silent success is drift", "", nil, OutcomeUnparseable},
+	}
+	for _, c := range cases {
+		if got := classify([]byte(c.out), c.err); got.Outcome != c.want {
+			t.Errorf("%s: outcome = %v, want %v", c.name, got.Outcome, c.want)
+		}
+	}
+	if st := classify([]byte(`{"loggedIn":false}`), exitErr); st.LoggedIn {
+		t.Error("a logged-out verdict was inverted")
 	}
 }

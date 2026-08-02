@@ -80,7 +80,7 @@ func runSelect(cfg config.Config) int {
 			// An account is grounds for a choice only when it is usable *and*
 			// its figures are current — a logged-out account with a recent
 			// cache satisfies neither test that matters.
-			hint = fmt.Sprintf("%d account(s) not safe to pick on · %s", n, hint)
+			hint = fmt.Sprintf("%d account(s) showing figures you should not pick on · %s", n, hint)
 		}
 		lines = append(lines, "", p.Dim+hint+p.Rst)
 		fp.print(lines)

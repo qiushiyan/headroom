@@ -61,7 +61,15 @@ func runWatch(cfg config.Config, args []string) int {
 	// Rate-limit backoff is per account and lives in the throttle store, not
 	// in this loop: one account being refused says nothing about the others,
 	// and a fleet-wide multiplier punished healthy accounts for it.
+	//
+	// The store is re-read every round rather than held: watch runs for hours,
+	// and a snapshot taken at startup cannot see claims a dashboard, --json,
+	// select or check made since. Holding it would let the longest-running
+	// surface spend budget those had already spent — the exact double-spend
+	// the store exists to stop. Rounds never overlap, so replacing the pointer
+	// here is safe.
 	startRound := func() {
+		th = throttle.Load(cfg.AccountsRoot)
 		newList, _ := prepare(cfg, th)
 		carryOver(newList, list)
 		list = newList

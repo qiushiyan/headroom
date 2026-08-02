@@ -90,12 +90,27 @@ func Query(configDir string) Status {
 		// must be stripped or every account reports that session's login.
 		cmd.Env = environWithout("CLAUDE_CONFIG_DIR")
 	}
-	out, err := cmd.Output()
+	return classify(cmd.Output())
+}
+
+// classify turns the command's result into an outcome. Output is judged
+// before the exit status, because exec.Cmd.Output returns stdout alongside an
+// ExitError: a command that printed a perfectly good answer and then exited
+// non-zero has demonstrably run, and calling that "unavailable" would discard
+// a real verdict — or, worse, hide genuine output drift behind an
+// inconclusive.
+func classify(out []byte, err error) Status {
+	if len(out) > 0 {
+		if st, ok := Parse(out); ok {
+			return st
+		}
+		return Status{Outcome: OutcomeUnparseable}
+	}
 	if err != nil {
 		return Status{Outcome: OutcomeUnavailable}
 	}
-	st, _ := Parse(out)
-	return st
+	// Ran, succeeded, said nothing: the contract changed shape.
+	return Status{Outcome: OutcomeUnparseable}
 }
 
 // environWithout copies the environment minus one variable.

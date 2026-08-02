@@ -169,7 +169,10 @@ func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store
 		// the rate limiter, so it is loaded first: even a refused refresh
 		// then leaves the user with numbers and their age.
 		if a.Meta.CachedUsage != nil {
-			if rows, err := usage.ParseLimits(a.Meta.CachedUsage); err == nil && len(rows) > 0 {
+			// Zero rows is as much an answer here as it is from the live
+			// endpoint — "this account reported no limit windows at time X"
+			// beats showing nothing at all.
+			if rows, err := usage.ParseLimits(a.Meta.CachedUsage); err == nil {
 				v.Obs = &render.Observation{
 					Rows:       rows,
 					ObservedAt: a.Meta.FetchedAtMS / 1000,
