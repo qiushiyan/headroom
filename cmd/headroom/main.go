@@ -1,7 +1,7 @@
 // headroom — Claude Code's /usage view, outside Claude Code, across
-// accounts, plus an interactive account picker. The Bash reference
-// implementation lives in ~/dotfiles (scripts/.local/bin/claude-usage);
-// system model in ~/dotfiles/docs/claude-accounts.md.
+// accounts: a cross-account usage dashboard, an interactive account picker,
+// and a self-check for the reverse-engineered facts underneath. System
+// model and vendor contracts: DESIGN.md.
 package main
 
 import (

@@ -1,6 +1,6 @@
-// Package config resolves where accounts live. Defaults mirror the reference
-// Bash implementation in ~/dotfiles (claude-usage + claude.zsh); HEADROOM_*
-// environment variables override them for other machines.
+// Package config resolves where accounts live. The defaults suit the
+// author's machine; HEADROOM_* environment variables override each of them
+// for other setups.
 package config
 
 import (

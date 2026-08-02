@@ -1,7 +1,7 @@
 // Package accounts discovers Claude Code accounts from the filesystem.
 // There is no account list anywhere: the default ~/.claude plus every dir
-// under the accounts root is the registry, exactly as the zsh launchers see
-// it, so the two can't drift.
+// under the accounts root is the registry — the same tree any shell
+// integration globs, so the two views can't drift.
 package accounts
 
 import (
@@ -112,15 +112,17 @@ func MetaEmail(metaPath string) (string, bool) {
 	return *meta.OauthAccount.EmailAddress, true
 }
 
-// Local parts that never get a short launcher alias: x-<these> are utility
-// commands. Mirrors CLAUDE_X_RESERVED in dotfiles claude.zsh — keep in sync.
+// Local parts that never get a short launcher alias: x-<these> are reserved
+// for utility commands. Shell integration that generates the launcher
+// functions must reserve the same names — see DESIGN.md, "The launcher
+// contract".
 var reservedLocalParts = []string{"usage", "account", "account-add", "select"}
 
-// Launcher is the command to advertise for an account. Mirrors
-// _claude_gen_launchers in dotfiles claude.zsh: x-<email> always exists; the
-// short x-<local-part> alias exists only when the local part is unique among
-// accounts and isn't the primary's name or a reserved utility name — keep
-// the rule and the reserved list in sync.
+// Launcher is the command advertised for an account: x-<email> is the
+// guaranteed identity; a short x-<local-part> alias exists only when the
+// local part is unique among accounts and isn't the primary's name or a
+// reserved utility name. Shell integration generating the actual functions
+// must apply the same rule — see DESIGN.md, "The launcher contract".
 func Launcher(a Account, all []Account, primaryName string) string {
 	if a.IsPrimary() {
 		return "x-" + primaryName
