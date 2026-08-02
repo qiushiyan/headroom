@@ -247,3 +247,53 @@ func TestFreshLiveObservationHasNoProvenanceNoise(t *testing.T) {
 		t.Errorf("expected header + one row only: %#v", p.AccountBlock(v, now, 16))
 	}
 }
+
+// Health must reach the user whether or not rows exist. An account that needs
+// /login but happens to have a recent cache would otherwise render as ordinary
+// coloured bars with no warning — and the picker would offer it as a live
+// choice, which is precisely the class of mistake this model exists to stop.
+func TestNonOKHealthSurfacesEvenWithRows(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	base := AccountView{
+		Label: "a@x.com", Launcher: "x-a",
+		Obs: &Observation{
+			Rows:       []usage.Row{{Label: "5h session", Percent: 12, Severity: "normal"}},
+			ObservedAt: now - 5, Source: SourceCache,
+		},
+		Attempt: Attempt{State: AttemptNone},
+	}
+	for _, c := range []struct {
+		health Health
+		want   string
+	}{
+		{HealthNoLogin, "/login"},
+		{HealthReloginRequired, "/login"},
+		{HealthBadBlob, "headroom check"},
+		{HealthUnknown, "headroom check"},
+	} {
+		v := base
+		v.Health = c.health
+		joined := strings.Join(p.AccountBlock(v, now, 16), "\n")
+		if !strings.Contains(joined, c.want) {
+			t.Errorf("health %v hidden behind cached rows; want %q in:\n%s", c.health, c.want, joined)
+		}
+	}
+}
+
+// "Safe to pick" is health AND freshness. Age alone was letting an unusable
+// account through on a recent cache.
+func TestActionableRequiresHealthAndFreshness(t *testing.T) {
+	now := time.Now().Unix()
+	fresh := &Observation{Rows: []usage.Row{{Label: "5h session"}}, ObservedAt: now - 5}
+	if (AccountView{Health: HealthNoLogin, Obs: fresh}).Actionable(now) {
+		t.Error("a logged-out account with a fresh cache was reported as actionable")
+	}
+	if !(AccountView{Health: HealthOK, Obs: fresh}).Actionable(now) {
+		t.Error("a healthy account with fresh figures should be actionable")
+	}
+	old := &Observation{Rows: []usage.Row{{Label: "5h session"}}, ObservedAt: now - 100000}
+	if (AccountView{Health: HealthOK, Obs: old}).Actionable(now) {
+		t.Error("stale figures are not grounds for a choice")
+	}
+}

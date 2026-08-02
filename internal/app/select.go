@@ -15,13 +15,14 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-// staleCount is how many accounts are showing figures too old to describe
-// current headroom. The picker warns rather than hides: an old number is
-// useful context, but choosing on it is the mistake worth naming.
-func staleCount(list []*accountData, now int64) int {
+// notActionable counts accounts whose displayed figures are not grounds for a
+// choice — either the account isn't usable or its numbers are too old. The
+// picker warns rather than hides: old numbers are useful context, but choosing
+// on them is the mistake worth naming.
+func notActionable(list []*accountData, now int64) int {
 	n := 0
 	for _, d := range list {
-		if d.View.Obs != nil && !d.View.Fresh(now) {
+		if d.View.Obs != nil && !d.View.Actionable(now) {
 			n++
 		}
 	}
@@ -74,11 +75,12 @@ func runSelect(cfg config.Config) int {
 			}
 		}
 		hint := "↑/↓ move · enter select · esc cancel"
-		if n := staleCount(list, now); n > 0 {
+		if n := notActionable(list, now); n > 0 {
 			// The picker's whole purpose is choosing on current headroom.
-			// Numbers too old to mean that are shown but must not be passed
-			// off as grounds for the choice.
-			hint = fmt.Sprintf("%d account(s) showing stale figures · %s", n, hint)
+			// An account is grounds for a choice only when it is usable *and*
+			// its figures are current — a logged-out account with a recent
+			// cache satisfies neither test that matters.
+			hint = fmt.Sprintf("%d account(s) not safe to pick on · %s", n, hint)
 		}
 		lines = append(lines, "", p.Dim+hint+p.Rst)
 		fp.print(lines)

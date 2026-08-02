@@ -23,15 +23,33 @@ import (
 	"time"
 )
 
-// Status is the contract headroom needs from the auth command. Parsed is
-// false when the command produced nothing usable — which is "unknown", never
-// "logged out": an absent binary must not read as a dead account.
+// Outcome separates the two ways there can be no answer, because they mean
+// opposite things. A command that wouldn't run tells us nothing and headroom
+// falls back to credential evidence. A command that ran and produced output
+// we can't read is *drift* — the health oracle changed shape, `check` should
+// fail on it, and the account's health is genuinely unknown rather than
+// quietly inferred.
+type Outcome uint8
+
+const (
+	// Unavailable is deliberately the zero value: an unset Status must mean
+	// "no answer", never "logged out". A struct nobody filled in must not be
+	// able to declare four healthy accounts dead.
+	OutcomeUnavailable Outcome = iota // command absent, failed, or timed out
+	OutcomeOK                         // answered
+	OutcomeUnparseable                // ran, but the output no longer parses
+)
+
+// Status is the contract headroom needs from the auth command.
 type Status struct {
 	LoggedIn         bool
 	Email            string
 	SubscriptionType string
-	Parsed           bool
+	Outcome          Outcome
 }
+
+// Answered reports whether this is a verdict rather than a lack of one.
+func (s Status) Answered() bool { return s.Outcome == OutcomeOK }
 
 // Parse applies the contract to the command's JSON. loggedIn is required —
 // without it there is no answer, only noise.
@@ -42,13 +60,13 @@ func Parse(raw []byte) (Status, bool) {
 		SubscriptionType string `json:"subscriptionType"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil || doc.LoggedIn == nil {
-		return Status{}, false
+		return Status{Outcome: OutcomeUnparseable}, false
 	}
 	return Status{
 		LoggedIn:         *doc.LoggedIn,
 		Email:            doc.Email,
 		SubscriptionType: doc.SubscriptionType,
-		Parsed:           true,
+		Outcome:          OutcomeOK,
 	}, true
 }
 
@@ -74,7 +92,7 @@ func Query(configDir string) Status {
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		return Status{}
+		return Status{Outcome: OutcomeUnavailable}
 	}
 	st, _ := Parse(out)
 	return st

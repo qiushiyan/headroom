@@ -142,8 +142,14 @@ func ReadMeta(metaPath string) (Meta, error) {
 		m.Email, m.EmailOK = *doc.OauthAccount.EmailAddress, true
 	}
 	if c := doc.CachedUsage; c != nil && len(c.Utilization) > 0 {
+		// Both identities must be present and agree. Accepting the cache when
+		// either is missing would attribute a previous login's quota to the
+		// current account — the exact failure this guard exists for — and a
+		// cache with no fetch time would render as observed in 1970. If the
+		// vendor stops sending either field we lose a fallback and stay
+		// correct, which is the right way round.
 		owner := doc.OauthAccount.AccountUUID
-		if owner == "" || c.AccountUUID == "" || owner == c.AccountUUID {
+		if owner != "" && owner == c.AccountUUID && c.FetchedAtMS > 0 {
 			m.CachedUsage = c.Utilization
 			m.FetchedAtMS = c.FetchedAtMS
 		}
@@ -213,7 +219,9 @@ func CurrentTarget(cfg config.Config) string {
 // SetCurrent records the account bare `x` should target from now on,
 // written atomically (temp file + rename) so a concurrent reader — an `x`
 // launcher mid-startup — never observes a truncated or empty file. This is
-// the one file headroom writes; the Keychain is never touched.
+// the only file headroom writes on the user's behalf; the other, .throttle,
+// is headroom's own record of its past requests. The Keychain and every other
+// piece of Claude Code's state are never touched.
 func SetCurrent(cfg config.Config, name string) error {
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		return err

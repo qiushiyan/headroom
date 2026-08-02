@@ -77,16 +77,20 @@ type Observation struct {
 type AttemptState int
 
 const (
-	AttemptNone        AttemptState = iota // no attempt this run
-	AttemptPending                         // in flight
-	AttemptOK                              // fresh rows landed
-	AttemptRefused                         // HTTP 429 — says nothing about the account
-	AttemptDeferred                        // not attempted: still inside a quiet period
-	AttemptTokenStale                      // access token aged out; a session refreshes it
-	AttemptTransport                       // network or timeout
-	AttemptHTTP                            // some other non-200
-	AttemptUnparseable                     // 200 whose body failed the contract
-	AttemptNoLimits                        // 200 reporting no limit windows
+	AttemptNone       AttemptState = iota // no attempt this run
+	AttemptPending                        // in flight
+	AttemptOK                             // fresh rows landed
+	AttemptRefused                        // HTTP 429 — says nothing about the account
+	AttemptDeferred                       // not attempted: still inside a quiet period
+	AttemptTokenStale                     // access token aged out; a session refreshes it
+	// AttemptCredentialUnreadable: headroom can't read a credential to spend.
+	// That blocks *our* request; it is not a statement about the account, so
+	// it lives here and not on the health axis.
+	AttemptCredentialUnreadable
+	AttemptTransport   // network or timeout
+	AttemptHTTP        // some other non-200
+	AttemptUnparseable // 200 whose body failed the contract
+	AttemptNoLimits    // 200 reporting no limit windows
 )
 
 // Attempt is the outcome of the newest refresh, with the time the account
@@ -116,9 +120,17 @@ type AccountView struct {
 }
 
 // Fresh reports whether the observation is recent enough to describe current
-// headroom. The picker must not rank an account on anything else.
+// headroom.
 func (v AccountView) Fresh(now int64) bool {
 	return v.Obs != nil && now-v.Obs.ObservedAt <= int64(FreshWindow/time.Second)
+}
+
+// Actionable is the question the picker actually asks: are these figures
+// grounds for choosing this account right now? Freshness alone is not —
+// a logged-out account can hold a cache minutes old, and offering it as a
+// live choice on that basis is the mistake this model exists to prevent.
+func (v AccountView) Actionable(now int64) bool {
+	return v.Health == HealthOK && v.Fresh(now)
 }
 
 func (p Palette) HeaderLine(v AccountView) string {
@@ -137,19 +149,30 @@ func (p Palette) HeaderLine(v AccountView) string {
 	return fmt.Sprintf("%s%s%s  %s%s%s%s", p.Bold, label, p.Rst, p.Dim, v.Launcher, p.Rst, mark)
 }
 
-// StatusLine is what an account shows when nothing at all is known about its
-// quota. Health outranks attempt here: a dead login is the user's problem to
-// fix, while a refused request is headroom's problem to wait out.
-func (p Palette) StatusLine(v AccountView, now int64) string {
+// HealthLine states what is wrong with the account itself, or "" when nothing
+// is. It is rendered independently of any figures: an account needing /login
+// can still hold a recent cache, and showing those bars without the warning
+// would invite the user to pick an account they cannot use.
+func (p Palette) HealthLine(v AccountView) string {
 	switch v.Health {
 	case HealthNoLogin:
-		return fmt.Sprintf("  %snot logged in — run %s and /login%s", p.Dim, v.Launcher, p.Rst)
+		return fmt.Sprintf("  %snot logged in — run %s and /login%s", p.Red, v.Launcher, p.Rst)
 	case HealthReloginRequired:
-		return fmt.Sprintf("  %slogin expired — run %s and /login%s", p.Dim, v.Launcher, p.Rst)
+		return fmt.Sprintf("  %slogin expired — run %s and /login%s", p.Red, v.Launcher, p.Rst)
 	case HealthBadBlob:
-		return "  " + p.Dim + "credential blob unreadable — format changed? run headroom check" + p.Rst
+		return "  " + p.Red + "credential unreadable — format changed? run headroom check" + p.Rst
 	case HealthUnknown:
-		return "  " + p.Dim + "login state unknown — run headroom check" + p.Rst
+		return "  " + p.Red + "login state unknown — run headroom check" + p.Rst
+	default:
+		return ""
+	}
+}
+
+// StatusLine is what an account with no figures at all shows. When health is
+// the problem, HealthLine has already said so and there is nothing to add.
+func (p Palette) StatusLine(v AccountView, now int64) string {
+	if v.Health != HealthOK {
+		return p.HealthLine(v)
 	}
 	return "  " + p.Dim + "usage unknown — " + p.attemptReason(v, now) + p.Rst
 }
@@ -164,6 +187,8 @@ func (p Palette) attemptReason(v AccountView, now int64) string {
 		return "rate limited" + retryPhrase(v.Attempt.NextEligibleAt, now)
 	case AttemptDeferred:
 		return "live check deferred" + retryPhrase(v.Attempt.NextEligibleAt, now)
+	case AttemptCredentialUnreadable:
+		return "credential unreadable — format changed? run headroom check"
 	case AttemptTokenStale:
 		// The access token ages out every ~8 hours and Claude Code refreshes
 		// it silently. Saying "expired" here sent the user to /login for a
@@ -254,14 +279,26 @@ func LabelWidth(views []AccountView) int {
 	return w
 }
 
-// AccountBlock renders the header plus whatever is known: limit rows when an
-// observation exists — regardless of how the newest refresh went — otherwise
-// a line explaining what is missing. A failed attempt annotates the rows; it
-// never deletes them.
+// AccountBlock renders the three axes independently, because they are three
+// facts: what is wrong with the account (if anything), what is known about its
+// quota, and how the last refresh went. A failed attempt annotates figures
+// rather than deleting them, and a health problem is stated whether or not
+// figures exist.
 func (p Palette) AccountBlock(v AccountView, now int64, labelWidth int) []string {
 	lines := []string{p.HeaderLine(v)}
+	if h := p.HealthLine(v); h != "" {
+		lines = append(lines, h)
+	}
 	if v.Obs == nil {
-		return append(lines, p.StatusLine(v, now))
+		if v.Health == HealthOK {
+			lines = append(lines, p.StatusLine(v, now))
+		}
+		return lines
+	}
+	if len(v.Obs.Rows) == 0 {
+		// A contractual answer, not a failure: this account reports no limit
+		// windows at all.
+		lines = append(lines, "  "+p.Dim+"no limits reported"+p.Rst)
 	}
 	stale := !v.Fresh(now)
 	for _, r := range v.Obs.Rows {

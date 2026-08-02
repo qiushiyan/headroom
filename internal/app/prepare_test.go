@@ -154,22 +154,32 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 		cfg:   cfg,
 		th:    throttle.Load(cfg.AccountsRoot),
 		blobs: map[string]string{"": blob},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Parsed: true}},
+		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	if v := f.run(now)["primary"].View; v.Health != render.HealthOK {
 		t.Errorf("auth status ignored: health=%v", v.Health)
 	}
 
-	f.auth = map[string]auth.Status{"": {LoggedIn: false, Parsed: true}}
+	f.auth = map[string]auth.Status{"": {LoggedIn: false, Outcome: auth.OutcomeOK}}
 	if v := f.run(now)["primary"].View; v.Health != render.HealthNoLogin {
 		t.Errorf("logged-out account not surfaced: health=%v", v.Health)
 	}
 
-	// An unreadable credential is drift, whatever the auth command reports.
-	f.auth = map[string]auth.Status{"": {LoggedIn: true, Parsed: true}}
+	// An unreadable credential blocks headroom's request but is not an
+	// account-health verdict — the first-party oracle still decides that.
+	f.auth = map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}}
 	f.blobs = map[string]string{"": `not json`}
-	if v := f.run(now)["primary"].View; v.Health != render.HealthBadBlob {
-		t.Errorf("bad blob masked by auth status: health=%v", v.Health)
+	if v := f.run(now)["primary"].View; v.Health != render.HealthOK ||
+		v.Attempt.State != render.AttemptCredentialUnreadable {
+		t.Errorf("unreadable credential mishandled: health=%v attempt=%v", v.Health, v.Attempt.State)
+	}
+
+	// The oracle answering in a shape we no longer parse is drift, and must
+	// not be papered over with a credential guess.
+	f.auth = map[string]auth.Status{"": {Outcome: auth.OutcomeUnparseable}}
+	f.blobs = map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`}
+	if v := f.run(now)["primary"].View; v.Health != render.HealthUnknown {
+		t.Errorf("auth output drift not surfaced: health=%v", v.Health)
 	}
 }
 
@@ -193,7 +203,7 @@ func TestPrepareSeedsFromClaudeCache(t *testing.T) {
 		cfg:   cfg,
 		th:    throttle.Load(cfg.AccountsRoot),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Parsed: true}},
+		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	now := time.Now()
 	v := f.run(now)["primary"].View
@@ -228,7 +238,7 @@ func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
 		cfg:   cfg,
 		th:    throttle.Load(cfg.AccountsRoot),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Parsed: true}},
+		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	if v := f.run(time.Now())["primary"].View; v.Obs != nil {
 		t.Errorf("cache belonging to a previous login was used: %+v", v.Obs)
@@ -253,7 +263,7 @@ func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 		cfg:   cfg,
 		th:    th,
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Parsed: true}},
+		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	d := f.run(now)["primary"]
 	if d.NeedsFetch {

@@ -264,3 +264,41 @@ func TestReadMetaWithoutCache(t *testing.T) {
 		t.Errorf("meta without cache: %+v err=%v", m, err)
 	}
 }
+
+// The identity guard needs both sides present. Accepting the cache when
+// either UUID is missing reopens the exact hole it exists to close, and a
+// cache with no fetch time would render as observed in 1970.
+func TestReadMetaCacheGuardRequiresPositiveEvidence(t *testing.T) {
+	cases := []struct {
+		name, meta string
+	}{
+		{"owner uuid missing", `{"oauthAccount":{"emailAddress":"a@x.com"},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"u",
+		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+		{"cache uuid missing", `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,
+		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+		{"both missing", `{"oauthAccount":{"emailAddress":"a@x.com"},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,
+		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+		{"no fetch time", `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
+		  "cachedUsageUtilization":{"accountUuid":"u",
+		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+	}
+	for _, c := range cases {
+		path := filepath.Join(t.TempDir(), ".claude.json")
+		if err := os.WriteFile(path, []byte(c.meta), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		m, err := ReadMeta(path)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if m.CachedUsage != nil {
+			t.Errorf("%s: cache accepted without provable provenance", c.name)
+		}
+		if m.Email != "a@x.com" {
+			t.Errorf("%s: the email is independent and must survive", c.name)
+		}
+	}
+}

@@ -189,6 +189,9 @@ func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store
 			continue
 		}
 		switch {
+		case !blobOK:
+			// Blocks our request, says nothing about the account.
+			v.Attempt.State = render.AttemptCredentialUnreadable
 		case !blob.TokenUsable(nowMS):
 			// Nothing to spend: the stored token aged out. The account is
 			// fine and a session will refresh it — that is not our business.
@@ -205,30 +208,31 @@ func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store
 	return list, current
 }
 
-// resolveHealth decides whether the account is usable at all.
+// resolveHealth decides one thing: can Claude Code use this account.
 //
-// Claude Code's own verdict is the authority on identity, but it does not
-// outrank a credential that fails the contract: an unreadable blob is drift
-// worth surfacing whatever the auth command says. The credential fallback
-// never infers "expired" from a missing field — see creds.ReloginRequired —
-// because sending the user to /login for a non-problem is the exact failure
-// this rework exists to remove.
+// Claude Code's own verdict settles it whenever there is one. A credential
+// headroom cannot read blocks *headroom's* request, not the account — that
+// belongs on the attempt axis, and letting it decide health here would
+// recreate the false alarm this rework exists to remove. Credential evidence
+// is the fallback only when the oracle has no answer, and it never infers
+// "expired" from a missing field (see creds.ReloginRequired).
 func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, nowMS int64) render.Health {
-	switch {
-	case raw == "":
-		if st.Parsed && st.LoggedIn {
-			// Claude Code says logged in, yet no credential is readable:
-			// contradictory, so claim nothing.
-			return render.HealthUnknown
-		}
-		return render.HealthNoLogin
-	case !blobOK:
-		return render.HealthBadBlob
-	case st.Parsed:
+	switch st.Outcome {
+	case auth.OutcomeOK:
 		if st.LoggedIn {
 			return render.HealthOK
 		}
 		return render.HealthNoLogin
+	case auth.OutcomeUnparseable:
+		// The oracle ran and answered in a shape we no longer understand.
+		// Guessing from credentials here would paper over vendor drift.
+		return render.HealthUnknown
+	}
+	switch {
+	case raw == "":
+		return render.HealthNoLogin
+	case !blobOK:
+		return render.HealthBadBlob
 	case blob.ReloginRequired(nowMS):
 		return render.HealthReloginRequired
 	default:
@@ -253,21 +257,29 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 	updates := make(chan fetchUpdate, len(list))
 	var wg sync.WaitGroup
 	now := time.Now()
+
+	// Claim every account's budget and get the claim onto disk *before* any
+	// request leaves. Saving after the goroutines start leaves a window where
+	// traffic is already out while another process still reads the account as
+	// eligible — which is the uncoordinated double-spend this store exists to
+	// prevent.
+	for _, d := range list {
+		if d.NeedsFetch {
+			th.NoteAttempt(d.Acct.Name, now)
+		}
+	}
+	_ = th.Save()
+
 	for i, d := range list {
 		if !d.NeedsFetch {
 			continue
 		}
-		// Claim the account's budget before the request leaves, so another
-		// headroom process starting meanwhile sees it spent rather than
-		// spending it again.
-		th.NoteAttempt(d.Acct.Name, now)
 		wg.Add(1)
 		go func(i int, token string) {
 			defer wg.Done()
 			updates <- fetchUpdate{i, usage.Fetch(ctx, client, cfg.UsageURL, token)}
 		}(i, d.Token)
 	}
-	_ = th.Save()
 	go func() {
 		wg.Wait()
 		close(updates)
@@ -295,20 +307,29 @@ func resolve(d *accountData, res usage.Result, th *throttle.Store, now time.Time
 		v.Attempt.State = render.AttemptHTTP
 		v.Attempt.HTTPCode = res.StatusCode
 	default:
+		// Any 200 proves this account's request budget recovered, whatever
+		// its body turns out to say. Withholding the strike reset until rows
+		// parse would make a later refusal escalate as though refusals had
+		// been consecutive.
+		th.NoteSuccess(name, now)
+
 		rows, err := usage.ParseLimits(res.Body)
-		switch {
-		case err != nil:
+		if err != nil {
 			v.Attempt.State = render.AttemptUnparseable
-		case len(rows) == 0:
+			return
+		}
+		// Zero rows is a contractual answer — "this account reports no limit
+		// windows" — and it is newer truth than any cached bars, so it
+		// replaces them rather than hiding behind them.
+		if len(rows) == 0 {
 			v.Attempt.State = render.AttemptNoLimits
-		default:
+		} else {
 			v.Attempt.State = render.AttemptOK
-			v.Obs = &render.Observation{
-				Rows:       rows,
-				ObservedAt: now.Unix(),
-				Source:     render.SourceLive,
-			}
-			th.NoteSuccess(name, now)
+		}
+		v.Obs = &render.Observation{
+			Rows:       rows,
+			ObservedAt: now.Unix(),
+			Source:     render.SourceLive,
 		}
 	}
 }

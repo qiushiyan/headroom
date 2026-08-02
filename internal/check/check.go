@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -101,7 +102,10 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		modeFetched
 	)
 	type apiCase struct {
-		name   string
+		name   string // for output ("primary" reads better than the configured name)
+		key    string // throttle key — the account's real name, never the label
+		token  string // the token actually spent, for the 401 refresh check
+		dir    string
 		mode   int
 		reason string
 		res    usage.Result
@@ -113,7 +117,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		if !a.IsPrimary() {
 			name = a.Name
 		}
-		c := &apiCase{name: name, mode: modeSkipped}
+		c := &apiCase{name: name, key: a.Name, dir: a.ConfigDir, mode: modeSkipped}
 		cases[i] = c
 		if !a.IsPrimary() {
 			if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
@@ -143,15 +147,23 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 				th.NextEligible(a.Name).Sub(now).Round(time.Second))
 		default:
 			c.mode = modeFetched
-			th.NoteAttempt(a.Name, now)
-			wg.Add(1)
-			go func(c *apiCase, token string) {
-				defer wg.Done()
-				c.res = usage.Fetch(context.Background(), client, cfg.UsageURL, token)
-			}(c, blob.Token)
+			c.token = blob.Token
+			th.NoteAttempt(c.key, now)
 		}
 	}
+	// Claims reach disk before any request leaves — same ordering as the
+	// dashboard's, and for the same reason.
 	_ = th.Save()
+	for _, c := range cases {
+		if c.mode != modeFetched {
+			continue
+		}
+		wg.Add(1)
+		go func(c *apiCase) {
+			defer wg.Done()
+			c.res = usage.Fetch(context.Background(), client, cfg.UsageURL, c.token)
+		}(c)
+	}
 	wg.Wait()
 
 	// Live contract, through the same parser rendering uses: 200, ≥1 row,
@@ -182,16 +194,23 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			skip(label(""), "transport error — no evidence either way")
 			continue
 		case code == http.StatusTooManyRequests:
-			th.NoteRefused(c.name, now)
+			th.NoteRefused(c.key, now)
 			skip(label(""), "rate limited — no evidence either way")
 			continue
 		case code >= 500:
 			skip(label(""), "vendor-side error — no evidence either way")
 			continue
+		case code == http.StatusUnauthorized && tokenChangedSince(c.dir, c.token):
+			// Claude Code refreshed the token between our Keychain read and
+			// the request, so the one we spent was already dead. That is a
+			// race, not drift.
+			skip(label(""), "token was refreshed mid-check — no evidence either way")
+			continue
 		case code != http.StatusOK:
 			chk(false, label(""), "unexpected status — endpoint or auth drifted")
 			continue
 		}
+		th.NoteSuccess(c.key, now)
 
 		// A 200 is evidence, and now the contract is genuinely testable.
 		rows, err := usage.ParseLimits(c.res.Body)
@@ -213,13 +232,51 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		// defines a nil/nil result as "this account reports no limits" — so
 		// it must not be reported as drift.
 		chk(nbad == 0, label(fmt.Sprintf(", %d row(s), fields well-formed", len(rows))), hint)
-		th.NoteSuccess(c.name, now)
 	}
 	_ = th.Save()
 
 	// .claude.json still records the logged-in email (dashboard labels).
 	_, ok := accounts.MetaEmail(cfg.PrimaryMeta())
 	chk(ok, "claude.json: .oauthAccount.emailAddress present", "")
+
+	// The two surfaces this tool grew to depend on are checked through the
+	// same parsers rendering uses, or the checker would pass while the
+	// dashboard silently fell back to guesses.
+	for _, a := range accts {
+		name := "primary"
+		if !a.IsPrimary() {
+			name = a.Name
+		}
+		if !a.IsPrimary() {
+			if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
+				continue
+			}
+		}
+		switch auth.Query(a.ConfigDir).Outcome {
+		case auth.OutcomeOK:
+			chk(true, fmt.Sprintf("auth[%s]: claude auth status parses via shared contract", name), "")
+		case auth.OutcomeUnparseable:
+			chk(false, fmt.Sprintf("auth[%s]: claude auth status parses via shared contract", name),
+				"output shape drifted — health now falls back to credential inference")
+		default:
+			skip(fmt.Sprintf("auth[%s]: not tested", name), "claude auth status unavailable")
+		}
+
+		// A cache that is present must parse; absent is ordinary and fine.
+		if a.Meta.CachedUsage == nil {
+			continue
+		}
+		rows, err := usage.ParseLimits(a.Meta.CachedUsage)
+		nbad := 0
+		for _, r := range rows {
+			if r.Drifted() {
+				nbad++
+			}
+		}
+		chk(err == nil && nbad == 0,
+			fmt.Sprintf("cache[%s]: Claude Code's cached usage parses via shared contract", name),
+			"cached payload shape drifted — the offline fallback is unreadable")
+	}
 
 	fmt.Fprintln(out)
 	switch {
@@ -234,6 +291,14 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		fmt.Fprintln(out, "all checks passed")
 		return ExitPass
 	}
+}
+
+// tokenChangedSince reports whether the stored access token differs from the
+// one a request was made with — evidence that Claude Code refreshed it while
+// the request was in flight, which turns a 401 into a race rather than drift.
+func tokenChangedSince(configDir, used string) bool {
+	blob, ok := creds.Parse(creds.ReadKeychain(configDir))
+	return !ok || blob.Token != used
 }
 
 func claudeBinary() string {
