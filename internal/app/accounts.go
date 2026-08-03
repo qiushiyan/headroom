@@ -71,7 +71,7 @@ func printBoard(cfg config.Config) int {
 	st := state.Open(cfg.AccountsRoot)
 	list, _ := prepare(cfg, st)
 	for u := range launchFetches(context.Background(), cfg, list, st) {
-		resolve(list[u.idx], u.res, st, time.Now())
+		resolve(list[u.idx], u, time.Now())
 	}
 	p := render.NewPalette(stdoutIsTTY())
 	now := time.Now().Unix()
@@ -104,6 +104,7 @@ type picker struct {
 	lastRound time.Time
 	nextAt    time.Time
 	armed     bool      // r pressed inside a quiet period
+	wanted    int       // accounts the last round had anything to ask about
 	lastKey   time.Time // presence
 }
 
@@ -149,7 +150,7 @@ func runPicker(cfg config.Config) int {
 				ui.lastRound = time.Now()
 				ui.schedule()
 			} else {
-				resolve(ui.list[u.idx], u.res, ui.st, time.Now())
+				resolve(ui.list[u.idx], u, time.Now())
 			}
 			ui.draw()
 		case <-tick.C:
@@ -192,6 +193,15 @@ func (ui *picker) startRound(ctx context.Context) {
 	ui.list = list
 	ui.restoreSelection()
 	ui.armed = false
+	// Counted before the claim, which clears the flag on every account it
+	// denies: what schedule needs to know is whether anything was worth asking
+	// about at all, not how that asking went.
+	ui.wanted = 0
+	for _, d := range list {
+		if d.WantsFetch {
+			ui.wanted++
+		}
+	}
 	ui.updates = launchFetches(ctx, ui.cfg, list, ui.st)
 }
 
@@ -215,6 +225,14 @@ func (ui *picker) schedule() {
 	if floor := now.Add(refreshFloor); next.IsZero() || next.Before(floor) {
 		next = floor
 	}
+	// Unless nothing was asking in the first place. With every account logged
+	// out or its token aged out there is no eligibility to wait for, and the
+	// floor would become the cadence — spawning `claude auth status` per
+	// account twice a minute to re-learn the same answer. Poll at the rate a
+	// logged-out account can plausibly change instead.
+	if ui.wanted == 0 {
+		next = now.Add(presenceWindow)
+	}
 	ui.nextAt = next
 }
 
@@ -236,6 +254,10 @@ func (ui *picker) due() bool {
 // an unattended board.
 func (ui *picker) refresh(ctx context.Context) {
 	if ui.updates != nil {
+		// A round is already running, but it only carries the accounts that
+		// were eligible when it started. Arming rather than dropping the key
+		// keeps the promise that `r` is never a no-op.
+		ui.armed = true
 		return
 	}
 	if ui.nextAt.IsZero() || !time.Now().Before(ui.nextAt) {

@@ -31,7 +31,7 @@ func Run(args []string) int {
 	if len(args) > 0 {
 		cmd, rest = args[0], args[1:]
 	}
-	// Every command but watch takes no further arguments; a stray one is an
+	// Every command but resume takes no further arguments; a stray one is an
 	// error, not silently ignored — a misspelled flag must not fall through
 	// to a command it wasn't meant for.
 	noArgs := func() bool {
@@ -192,16 +192,14 @@ func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapsho
 			// fine and a session will refresh it — that is not our business.
 			v.Attempt.State = render.AttemptTokenStale
 		default:
-			// What the ledger says right now, for display only. The request is
-			// authorized by the claim in launchFetches and nothing else — this
-			// is the last moment eligibility is a *reading* rather than a
-			// decision, and treating it as permission is how two processes
-			// used to both fetch.
-			if next := snap.NextEligible(d.Key, now); next.After(now) {
-				v.Attempt.State = render.AttemptDeferred
-				v.Attempt.NextEligibleAt = next.Unix()
-				continue
-			}
+			// Spendable credentials and nothing local objecting. Whether a
+			// request actually goes out is the claim's decision in
+			// launchFetches, and *only* the claim's: reading eligibility here
+			// as well, and acting on it, is how an account could be dropped
+			// before the claim ever saw it — which silently emptied the key
+			// list in exactly the states the store answers conservatively
+			// about, so the pass that is supposed to quiet every account
+			// quieted none of them.
 			d.Token = blob.Token
 			d.WantsFetch = true
 			v.Attempt.State = render.AttemptPending
@@ -281,11 +279,60 @@ func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, now
 	}
 }
 
-// fetchUpdate is one finished fetch, addressed by account index. The
-// receiver applies it with resolve.
+// fetchUpdate is one finished fetch, addressed by account index: what the
+// result means, and what the ledger said when it was told. The receiver
+// applies it with resolve.
+//
+// Both the classification and the store write happen on the fetch goroutine.
+// That keeps a locked read-modify-write with an fsync off a picker's draw
+// loop, and it lets the completion afford a longer wait for the lock than the
+// claim does — a claim that fails costs nothing, while a completion that fails
+// throws away a request already spent.
 type fetchUpdate struct {
-	idx int
-	res usage.Result
+	idx  int
+	out  fetchOutcome
+	next time.Time // when this account may next be asked; zero if unrecorded
+}
+
+// fetchOutcome is what one result means for the user, decided without touching
+// a view.
+type fetchOutcome struct {
+	attempt render.AttemptState
+	code    int
+	rows    []usage.Row
+	live    bool // rows are this run's own observation
+}
+
+// classify decides what a fetch result means for the user and for the ledger.
+// Pure, so it can run on the goroutine that fetched: the same body always
+// yields the same verdict, and nothing here writes anything.
+func classify(res usage.Result) (fetchOutcome, state.Outcome, []byte) {
+	switch {
+	case res.Err != nil:
+		return fetchOutcome{attempt: render.AttemptTransport}, state.OutcomeFailed, nil
+	case res.StatusCode == http.StatusTooManyRequests:
+		// Says nothing about the account — only that this request was too
+		// soon. Rows, if any, stay exactly as they were.
+		return fetchOutcome{attempt: render.AttemptRefused, code: res.StatusCode},
+			state.OutcomeRefused, nil
+	case res.StatusCode != http.StatusOK:
+		return fetchOutcome{attempt: render.AttemptHTTP, code: res.StatusCode},
+			state.OutcomeFailed, nil
+	}
+	rows, err := usage.ParseLimits(res.Body)
+	if err != nil {
+		// A 200 still proves the budget recovered, so it is spent, not failed
+		// — but a body that does not parse is not worth storing.
+		return fetchOutcome{attempt: render.AttemptUnparseable}, state.OutcomeSpent, nil
+	}
+	// Zero rows is a contractual answer — "this account reports no limit
+	// windows" — and it is newer truth than any cached bars, so it replaces
+	// them rather than hiding behind them.
+	att := render.AttemptOK
+	if len(rows) == 0 {
+		att = render.AttemptNoLimits
+	}
+	return fetchOutcome{attempt: att, rows: rows, live: true}, state.OutcomeStored, res.Body
 }
 
 // launchFetches claims the budget, then starts the permitted fetches in
@@ -305,17 +352,12 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 
 	idx := make([]int, 0, len(list))
 	keys := make([]state.Key, 0, len(list))
-	all := make([]state.Key, 0, len(list))
 	for i, d := range list {
-		all = append(all, d.Key)
 		if d.WantsFetch {
 			idx = append(idx, i)
 			keys = append(keys, d.Key)
 		}
 	}
-	// This is the one place holding a complete enumeration of the registry,
-	// which is what pruning by absence requires.
-	_ = st.Prune(all)
 	decisions, err := st.Claim(keys, now)
 	for j, dec := range decisions {
 		d := list[idx[j]]
@@ -339,10 +381,21 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 			continue
 		}
 		wg.Add(1)
-		go func(i int, token string) {
+		// Everything the goroutine needs is copied in: it never reads or
+		// writes an accountData, so views stay single-writer by construction
+		// rather than by discipline.
+		go func(i int, k state.Key, permit int64, token string) {
 			defer wg.Done()
-			updates <- fetchUpdate{i, usage.Fetch(ctx, client, cfg.UsageURL, token)}
-		}(i, d.Token)
+			out, outcome, body := classify(usage.Fetch(ctx, client, cfg.UsageURL, token))
+			var next time.Time
+			if ctx.Err() == nil {
+				// A cancelled fetch says nothing about the budget and its claim
+				// already stands. Completing it on the way out would only risk
+				// a half-written temp file as the process exits.
+				next, _ = st.Complete(k, permit, outcome, body, time.Now())
+			}
+			updates <- fetchUpdate{i, out, next}
+		}(i, d.Key, d.Permit, d.Token)
 	}
 	go func() {
 		wg.Wait()
@@ -351,59 +404,28 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 	return updates
 }
 
-// resolve applies one fetch outcome. It writes the attempt axis always and
-// the observation axis only on success: a refusal or a dead network must
-// leave whatever was already known standing, with its own timestamp intact.
+// resolve applies one finished fetch to its account's view, and touches
+// nothing else. It writes the attempt axis always and the observation axis
+// only on success: a refusal or a dead network must leave whatever was already
+// known standing, with its own timestamp intact.
 //
-// The ledger is told the same story through the store, which owns every
-// consequence — strike counts, cooldown arithmetic, and whether the body is
-// worth keeping — and hands back when this account may next be asked, so the
-// row can say so without recomputing it.
-func resolve(d *accountData, res usage.Result, st *state.Store, now time.Time) {
+// The ledger was already told the same story by the fetch goroutine, through
+// the store, which owns every consequence — strike counts, cooldown arithmetic
+// and whether the body is worth keeping — and handed back when this account may
+// next be asked, so the row can say so without recomputing it.
+func resolve(d *accountData, u fetchUpdate, now time.Time) {
 	v := &d.View
-	outcome := state.OutcomeFailed
-	var body []byte
-
-	switch {
-	case res.Err != nil:
-		v.Attempt.State = render.AttemptTransport
-	case res.StatusCode == http.StatusTooManyRequests:
-		// Says nothing about the account — only that this request was too
-		// soon. Rows, if any, stay exactly as they were.
-		v.Attempt.State = render.AttemptRefused
-		v.Attempt.HTTPCode = res.StatusCode
-		outcome = state.OutcomeRefused
-	case res.StatusCode != http.StatusOK:
-		v.Attempt.State = render.AttemptHTTP
-		v.Attempt.HTTPCode = res.StatusCode
-	default:
-		rows, err := usage.ParseLimits(res.Body)
-		if err != nil {
-			// A 200 still proves the budget recovered, so it is spent, not
-			// failed — but a body that does not parse is not worth storing.
-			v.Attempt.State = render.AttemptUnparseable
-			outcome = state.OutcomeSpent
-			break
-		}
-		// Zero rows is a contractual answer — "this account reports no limit
-		// windows" — and it is newer truth than any cached bars, so it
-		// replaces them rather than hiding behind them.
-		if len(rows) == 0 {
-			v.Attempt.State = render.AttemptNoLimits
-		} else {
-			v.Attempt.State = render.AttemptOK
-		}
+	v.Attempt.State = u.out.attempt
+	v.Attempt.HTTPCode = u.out.code
+	if u.out.live {
 		v.Obs = &render.Observation{
-			Rows:       rows,
+			Rows:       u.out.rows,
 			ObservedAt: now.Unix(),
 			Source:     render.SourceLive,
 		}
-		outcome, body = state.OutcomeStored, res.Body
 	}
-
-	next, err := st.Complete(d.Key, d.Permit, outcome, body, now)
-	if err == nil && next.After(now) && v.Attempt.State != render.AttemptOK {
-		v.Attempt.NextEligibleAt = next.Unix()
+	if u.next.After(now) && u.out.attempt != render.AttemptOK {
+		v.Attempt.NextEligibleAt = u.next.Unix()
 	}
 }
 

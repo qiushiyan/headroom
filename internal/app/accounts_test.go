@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys, now); err != nil {
 		t.Fatal(err)
 	}
-	ui := &picker{st: st, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
+	ui := &picker{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait < usage.RequestSpacing-2*time.Second {
@@ -36,7 +37,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys[1:], now); err != nil {
 		t.Fatal(err)
 	}
-	ui = &picker{st: st, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
+	ui = &picker{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait > usage.RequestSpacing/2+2*time.Second {
 		t.Errorf("next round in %v; the sooner account was ignored", wait)
@@ -44,10 +45,19 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 
 	// And an empty ledger — every claim failed, so nothing recorded an
 	// eligibility — must not become a busy loop.
-	ui = &picker{st: state.Open(t.TempDir()), list: []*accountData{{Key: keys[0]}}}
+	ui = &picker{st: state.Open(t.TempDir()), wanted: 1, list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait < refreshFloor-2*time.Second {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
+	}
+
+	// But a board with nothing to ask about — every account logged out, or its
+	// token aged out — must not treat the floor as a cadence. Each round costs
+	// a `claude auth status` per account to re-learn the same answer.
+	ui = &picker{st: state.Open(t.TempDir()), list: []*accountData{{Key: keys[0]}}}
+	ui.schedule()
+	if wait := ui.nextAt.Sub(now); wait < presenceWindow-2*time.Second {
+		t.Errorf("next round in %v; nothing was asking, so there is nothing to wait for", wait)
 	}
 }
 
@@ -74,5 +84,27 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 	ui.updates = make(chan fetchUpdate)
 	if ui.due() {
 		t.Error("rounds must not overlap")
+	}
+}
+
+// `r` is never a no-op. Inside a quiet period it arms the next round, and that
+// has to hold while a round is in flight too: the round already running only
+// carries the accounts that were eligible when it started.
+func TestRefreshIsRememberedNotDropped(t *testing.T) {
+	now := time.Now()
+	st := state.Open(t.TempDir())
+	ui := &picker{st: st, nextAt: now.Add(time.Minute), lastKey: now}
+
+	ui.refresh(context.Background())
+	if !ui.armed {
+		t.Error("r inside a quiet period was dropped instead of arming the next round")
+	}
+
+	ui.armed = false
+	ui.updates = make(chan fetchUpdate)
+	ui.refresh(context.Background())
+	if !ui.armed {
+		t.Error("r during a round was dropped; the round in flight carries only the "+
+			"accounts that were eligible when it started")
 	}
 }

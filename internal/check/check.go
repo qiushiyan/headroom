@@ -494,16 +494,13 @@ func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snaps
 	own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
 		"explicit re-homes are being ignored and cannot be rewritten")
 
-	known := map[string]bool{}
-	for _, a := range accts {
-		known[state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}.ID()] = true
-	}
+	// Deliberately not asserted: records naming an account the filesystem no
+	// longer has. They are how the ledger looks between an account being
+	// removed and the record ageing out, they make headroom more conservative
+	// rather than less, and FAIL is reserved for an assumption that was tested
+	// and contradicted.
 	now := time.Now()
-	orphans := 0
 	for _, r := range snap.Audit() {
-		if !known[r.ID] {
-			orphans++
-		}
 		if r.FetchedAtMS > now.Add(2*time.Minute).UnixMilli() {
 			own(false, fmt.Sprintf("state[%s]: observation is not stamped in the future", r.Name),
 				"clock anomaly — these figures are being ignored, so the board shows older ones")
@@ -526,9 +523,6 @@ func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snaps
 		chk(err == nil && nbad == 0, label,
 			"the response headroom itself stored no longer parses — shape drifted")
 	}
-	own(orphans == 0, "state: no ledger records for accounts that are gone",
-		fmt.Sprintf("%d record(s) name an account the filesystem no longer has", orphans))
-
 	// The interop contract with the shell, which has never been checked: zsh
 	// reads this file at every launch and falls back to the primary when it
 	// names nothing real — silently, and with --dangerously-skip-permissions.

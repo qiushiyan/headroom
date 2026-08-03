@@ -428,27 +428,62 @@ func TestReHomeAndForget(t *testing.T) {
 	}
 }
 
-// Records for accounts that are gone would accumulate forever, but a sweep by
-// absence is only safe against a complete enumeration — an empty one means the
-// registry could not be read, not that every account vanished.
-func TestPruneNeedsACompleteEnumeration(t *testing.T) {
-	s := Open(t.TempDir())
+// Records are bounded by age, never by which accounts a caller could see. The
+// trap this replaced: sweeping by absence deletes a live cooldown the moment
+// an account's key moves, and its key comes from a vendor file that can be
+// read mid-write.
+func TestTheLedgerIsBoundedByAgeAlone(t *testing.T) {
+	root := t.TempDir()
+	s := Open(root)
 	now := time.Now()
-	if _, err := s.Claim([]Key{key("a"), key("b")}, now); err != nil {
+	if _, err := s.Claim([]Key{key("old"), key("recent")}, now.Add(-retention-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Prune(nil); err != nil {
+	if _, err := s.Claim([]Key{key("recent")}, now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Load().Audit()) != 2 {
-		t.Fatal("an empty enumeration swept the ledger")
-	}
-	if err := s.Prune([]Key{key("a")}); err != nil {
+
+	// A claim for neither of them still sweeps, and still keeps the one that
+	// is merely absent from this call.
+	if _, err := s.Claim([]Key{key("other")}, now); err != nil {
 		t.Fatal(err)
 	}
-	recs := s.Load().Audit()
-	if len(recs) != 1 || recs[0].Name != "a" {
-		t.Errorf("prune kept the wrong records: %+v", recs)
+	names := map[string]bool{}
+	for _, r := range s.Load().Audit() {
+		names[r.Name] = true
+	}
+	if names["old"] {
+		t.Error("a record untouched for a month was kept")
+	}
+	if !names["recent"] || !names["other"] {
+		t.Errorf("a live record was swept by a call that did not name it: %v", names)
+	}
+}
+
+// The write gate: a run where every account was inside its quiet period
+// changes nothing, and rewriting the document to say so would be pure
+// contention between surfaces that all start at once.
+func TestADeniedRoundWritesNothing(t *testing.T) {
+	root := t.TempDir()
+	s := Open(root)
+	now := time.Now()
+	claimOne(t, s, key("a"), now)
+
+	path := filepath.Join(root, "state.json")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if claimOne(t, s, key("a"), now.Add(time.Second)).Permit {
+		t.Fatal("the second claim was permitted inside the quiet period")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("a denied round rewrote the document")
 	}
 }
 
@@ -509,7 +544,69 @@ func TestLockAcquisitionIsBounded(t *testing.T) {
 	if dec[0].Permit {
 		t.Error("traffic was authorized by a claim that could not be written")
 	}
-	if elapsed > lockWait+time.Second {
-		t.Errorf("blocked for %v; acquisition must be bounded", elapsed)
+	if elapsed > claimWait+time.Second {
+		t.Errorf("blocked for %v; a claim must give up quickly — nothing is lost by "+
+			"trying again next round", elapsed)
+	}
+}
+
+// A JSON null decodes into a map without error and leaves the map nil, so a
+// section written as `null` passes every readability check this package has
+// and then panics the first write that touches it. Vendor files this tool
+// reads are full of nulls; its own must survive one.
+func TestNullSectionsAreNotNilMaps(t *testing.T) {
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":1,"accounts":null,"sessions":null}`)
+	s := Open(root)
+
+	if !claimOne(t, s, key("a"), time.Now()).Permit {
+		t.Error("a null ledger must read as an empty one, not block the claim")
+	}
+	if err := s.ReHome("s1", "a@x.com", time.Now(), nil); err != nil {
+		t.Errorf("re-home over a null sessions section: %v", err)
+	}
+}
+
+// The section that holds human decisions is validated whole, exactly as the
+// .owners reader it replaced was: a record decoding around empty fields would
+// have `check` report the store readable while routing silently ignores it.
+func TestHollowRehomeRecordsAreRefused(t *testing.T) {
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":1,"sessions":{"s1":{"account":"a@x.com","atMs":1},"s2":{}}}`)
+	snap := Open(root).Load()
+
+	if snap.OwnersReadable() {
+		t.Error("a section with a hollow record must not report itself readable")
+	}
+	if len(snap.Problems()) == 0 {
+		t.Error("the loss must be reportable by check")
+	}
+}
+
+// A file that exists but cannot be read is not an absent file. Treating the
+// two alike lets the next mutation write a fresh document over re-homes that
+// are still there — the one thing in here that cannot be re-derived.
+func TestAnUnreadableFileIsNotAnEmptyStore(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through the permission bits")
+	}
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":1,"sessions":{"s1":{"account":"a@x.com","atMs":1}}}`)
+	path := filepath.Join(root, "state.json")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	s := Open(root)
+
+	if err := s.ReHome("s2", "b@x.com", time.Now(), nil); err != ErrUnreadable {
+		t.Errorf("mutation against a document that could not be read: %v", err)
+	}
+	if dec, _ := s.Claim([]Key{key("a")}, time.Now()); dec[0].Permit {
+		t.Error("traffic was authorized on a ledger that could not be read")
+	}
+	os.Chmod(path, 0o600)
+	if _, ok := Open(root).Load().Owner("s1"); !ok {
+		t.Error("the re-home was destroyed by a write that treated the file as absent")
 	}
 }

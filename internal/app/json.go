@@ -157,7 +157,7 @@ func runDashboardJSON(cfg config.Config) int {
 	st := state.Open(cfg.AccountsRoot)
 	list, current := prepare(cfg, st)
 	for u := range launchFetches(context.Background(), cfg, list, st) {
-		resolve(list[u.idx], u.res, st, time.Now())
+		resolve(list[u.idx], u, time.Now())
 	}
 	data, err := jsonDocument(list, current, time.Now())
 	if err != nil {

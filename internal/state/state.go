@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -72,6 +73,12 @@ var ErrBusy = errors.New("state file is busy")
 
 // ErrCorrupt is returned by mutations against a section that did not decode.
 var ErrCorrupt = errors.New("state section is unreadable")
+
+// ErrUnreadable is returned when the file is there but could not be read at
+// all. It is deliberately not the same as an absent file: a document that
+// exists holds re-homes, and writing a fresh one over bytes nobody could read
+// would destroy them.
+var ErrUnreadable = errors.New("state file could not be read")
 
 // Key identifies an account for the request ledger.
 //
@@ -176,6 +183,11 @@ type doc struct {
 	// moves the old bytes aside instead of overwriting them.
 	corruptDoc bool
 
+	// unreadable means the file exists and could not be read — a permission,
+	// I/O or filesystem failure rather than anything about its contents. There
+	// is then nothing to reason from and nothing this code may overwrite.
+	unreadable bool
+
 	problems []Problem
 
 	// legacy holds .throttle's records until the first successful write
@@ -215,6 +227,21 @@ func read(accountsRoot string) *doc {
 	}
 	data, err := os.ReadFile(statePath(accountsRoot))
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			// The file is there and unreadable — permissions, an I/O error, a
+			// filesystem that went away. Absent and unreadable must not be
+			// conflated: the first means "nothing has happened yet" and the
+			// second means "something is there and I cannot see it", and only
+			// one of them makes it safe to write a fresh document.
+			// Both sections are marked unavailable rather than empty: nothing
+			// in there was read, so claiming the re-homes are readable would
+			// be a second falsehood on top of the first.
+			d.unreadable = true
+			d.badAccounts, d.badSessions = true, true
+			d.problems = append(d.problems, Problem{"document", err.Error() +
+				" — nothing is being written until it can be read"})
+			return d
+		}
 		// No document yet: whatever the legacy files hold is the starting
 		// point, and the first write folds them in.
 		d.absorbLegacy(accountsRoot)
@@ -251,11 +278,23 @@ func read(accountsRoot string) *doc {
 		}
 	}
 	if b, ok := d.raw["sessions"]; ok {
-		if err := json.Unmarshal(b, &d.sessions); err != nil {
+		// Validated whole, exactly as the .owners reader this replaced did: a
+		// section that decodes *around* a hollow record would have check report
+		// it readable while routing silently ignores what it holds.
+		if err := json.Unmarshal(b, &d.sessions); err != nil || !validOwners(d.sessions) {
 			d.sessions = map[string]OwnerRec{}
 			d.badSessions = true
 			d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
 		}
+	}
+	// A JSON null decodes into a map without error and leaves it nil. Nothing
+	// here writes one, but a foreign or hand-edited document may, and a nil map
+	// panics on the first assignment rather than failing any check above.
+	if d.accounts == nil {
+		d.accounts = map[string]accountRec{}
+	}
+	if d.sessions == nil {
+		d.sessions = map[string]OwnerRec{}
 	}
 	d.absorbLegacy(accountsRoot)
 	return d
@@ -360,9 +399,9 @@ func (s Snapshot) Owners() map[string]OwnerRec {
 }
 
 // OwnersReadable reports whether the sessions section decoded. False means
-// routing falls back to derived evidence — visibly, per the resume surface's
-// degradation rules — rather than silently behaving as though no session was
-// ever re-homed.
+// routing falls back to derived evidence, which the resume picker says out
+// loud on open and `check` reports — rather than silently behaving as though
+// no session was ever re-homed.
 func (s Snapshot) OwnersReadable() bool { return !s.d.badSessions }
 
 // AuditRecord is one ledger entry laid open for `check`. Nothing else reads
@@ -418,14 +457,23 @@ func readLegacyOwners(accountsRoot string) (map[string]OwnerRec, bool) {
 	if json.Unmarshal(data, &legacy) != nil || legacy.Owners == nil {
 		return nil, false
 	}
-	for id, rec := range legacy.Owners {
-		if id == "" || rec.Account == "" || rec.AtMS <= 0 {
-			// Records are validated whole, as the file's own reader did:
-			// headroom was its only writer, so a hollow record is corruption.
-			return nil, false
-		}
+	if !validOwners(legacy.Owners) {
+		return nil, false
 	}
 	return legacy.Owners, true
+}
+
+// validOwners reports that every re-home record is whole. headroom is the only
+// writer of these, so a hollow one is corruption rather than an old shape — and
+// one predicate serves both readers, because the section and the legacy file it
+// absorbs hold the same records under the same rule.
+func validOwners(m map[string]OwnerRec) bool {
+	for id, rec := range m {
+		if id == "" || rec.Account == "" || rec.AtMS <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeOwners folds src into dst newest-wins. Timestamps are event times from

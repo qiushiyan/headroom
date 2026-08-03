@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,16 +23,36 @@ type prepareFixture struct {
 }
 
 func (f prepareFixture) run(now time.Time) map[string]*accountData {
+	return byName(f.prepare(now))
+}
+
+func (f prepareFixture) prepare(now time.Time) []*accountData {
 	list, _ := prepareWith(f.cfg, accounts.Discover(f.cfg), f.store.Load(), sources{
 		readRaw: func(dir string) string { return f.blobs[dir] },
 		health:  func(dir string) auth.Status { return f.auth[dir] },
 		now:     now,
 	})
-	byName := map[string]*accountData{}
-	for _, d := range list {
-		byName[d.Acct.Name] = d
+	return list
+}
+
+// round is prepare followed by the claim, which is what every surface runs and
+// where a deferred account is actually decided. Tests about what the user sees
+// go through it: prepare alone now marks every spendable account pending,
+// because deciding earlier is exactly what let an account skip the claim.
+func (f prepareFixture) round(now time.Time) map[string]*accountData {
+	list := f.prepare(now)
+	for u := range launchFetches(context.Background(), f.cfg, list, f.store) {
+		resolve(list[u.idx], u, now)
 	}
-	return byName
+	return byName(list)
+}
+
+func byName(list []*accountData) map[string]*accountData {
+	out := map[string]*accountData{}
+	for _, d := range list {
+		out[d.Acct.Name] = d
+	}
+	return out
 }
 
 func writeJSON(t *testing.T, path, content string) {
@@ -272,7 +293,7 @@ func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
-	d := f.run(now)["primary"]
+	d := f.round(now)["primary"]
 	if d.WantsFetch {
 		t.Error("fetched an account inside its cooldown")
 	}
@@ -441,7 +462,7 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	now := time.Now()
-	d := f.run(now)["primary"]
+	d := f.round(now)["primary"]
 
 	if d.WantsFetch {
 		t.Error("a second run inside the quiet period must not ask again")

@@ -130,6 +130,12 @@ func runResume(cfg config.Config, args []string) int {
 
 	ui := &resumeUI{cfg: cfg, st: st, t: t, p: render.NewPalette(true),
 		listing: listing, refs: refs, accts: accts, current: current}
+	if !st.Load().OwnersReadable() {
+		// Routing has silently fallen back to derived evidence. Degraded
+		// attribution is supposed to be visible, and this is the only moment
+		// the user can be told that a re-home they made is not being applied.
+		ui.message = "re-home records unreadable — routing by vendor evidence only (headroom check)"
+	}
 	ui.refilter("")
 	ui.draw()
 

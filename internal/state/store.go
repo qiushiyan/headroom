@@ -9,11 +9,25 @@ import (
 )
 
 const (
-	// lockWait bounds acquisition. A picker redrawing every second must never
-	// block on another process's transcript walk; it renders "state busy" and
-	// tries again next round.
-	lockWait = 2 * time.Second
-	lockPoll = 20 * time.Millisecond
+	// The two waits differ because the two failures cost opposite amounts. A
+	// claim that cannot take the lock costs nothing — no request was
+	// authorized, and the next round asks again. A completion that cannot take
+	// it throws away a request already spent: a refusal's backoff, or the very
+	// observation this store exists to keep. So a claim gives up quickly and a
+	// completion waits, which it can afford because completions happen on the
+	// fetch goroutine and never on a surface's draw loop.
+	claimWait    = 2 * time.Second
+	completeWait = 10 * time.Second
+	lockPoll     = 20 * time.Millisecond
+
+	// retention bounds the ledger by age. Sweeping by absence instead would
+	// need a complete account registry, which no caller can promise: an
+	// account's key comes from a vendor file Claude Code rewrites constantly,
+	// so a torn read moves it, and a sweep would delete the live cooldown and
+	// stored answer of an account that is sitting right there. Age cannot be
+	// wrong about identity, and a record nobody has touched in a month has
+	// neither a live cooldown nor figures worth showing.
+	retention = 30 * 24 * time.Hour
 )
 
 // Store is the handle to one accounts root's state file. Every mutation is a
@@ -72,7 +86,8 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	for i, k := range keys {
 		out[i] = Decision{Key: k, NextEligible: now.Add(CooldownMax)}
 	}
-	err := s.update(func(d *doc) error {
+	err := s.update(claimWait, func(d *doc) error {
+		d.sweepStale(now)
 		if d.badAccounts {
 			// No readable ledger. "Eligible" is then a guess, and a live
 			// cooldown is exactly when that guess is worst — so the unreadable
@@ -152,7 +167,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 // arithmetic this package owns.
 func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, at time.Time) (time.Time, error) {
 	var next time.Time
-	err := s.update(func(d *doc) error {
+	err := s.update(completeWait, func(d *doc) error {
 		if d.badAccounts {
 			return ErrCorrupt
 		}
@@ -197,33 +212,24 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 	return next, err
 }
 
-// Prune drops ledger entries for accounts that no longer exist.
+// sweepStale drops ledger records nothing has touched in a month, inside
+// whatever locked pass is already running — the ledger is bounded by how many
+// accounts this machine has ever logged into, so it needs no operation of its
+// own and no caller has to remember to call one.
 //
-// `all` must be every account the filesystem registry currently reports, not
-// the subset some surface was interested in — this sweeps by absence, so a
-// partial list would delete the records of every account it omitted. An empty
-// list is therefore read as "the registry could not be enumerated" and sweeps
-// nothing, the same way a failed transcript walk skips the re-home sweep.
-func (s *Store) Prune(all []Key) error {
-	if len(all) == 0 {
-		return nil
+// A record with no attempt time is left alone: this code always writes one, so
+// its absence means a document shape this binary does not fully understand.
+func (d *doc) sweepStale(now time.Time) {
+	if d.badAccounts {
+		return
 	}
-	return s.update(func(d *doc) error {
-		if d.badAccounts {
-			return nil
+	cutoff := now.Add(-retention).UnixMilli()
+	for id, r := range d.accounts {
+		if r.Request.LastAttemptMS > 0 && r.Request.LastAttemptMS < cutoff {
+			delete(d.accounts, id)
+			d.dirty = true
 		}
-		keep := make(map[string]bool, len(all))
-		for _, k := range all {
-			keep[k.ID()] = true
-		}
-		for id := range d.accounts {
-			if !keep[id] {
-				delete(d.accounts, id)
-				d.dirty = true
-			}
-		}
-		return nil
-	})
+	}
 }
 
 // Enumerator lists the session ids that exist right now. It is invoked *inside*
@@ -242,7 +248,7 @@ func (s *Store) ReHome(id, account string, at time.Time, live Enumerator) error 
 	if id == "" || account == "" {
 		return errors.New("state: re-home needs a session and an account")
 	}
-	return s.update(func(d *doc) error {
+	return s.update(claimWait, func(d *doc) error {
 		if d.badSessions {
 			// Re-homes are user decisions. Writing a fresh section over bytes
 			// that merely failed to decode would destroy them for good.
@@ -266,7 +272,7 @@ func (s *Store) ReHome(id, account string, at time.Time, live Enumerator) error 
 // Forget drops a session's re-home — a deleted transcript needs no routing
 // preference. No sweep: this call knows exactly which record it means.
 func (s *Store) Forget(id string) error {
-	return s.update(func(d *doc) error {
+	return s.update(claimWait, func(d *doc) error {
 		if d.badSessions {
 			return ErrCorrupt
 		}
@@ -284,8 +290,8 @@ func (s *Store) Forget(id string) error {
 // invariant this package enforces would become a caller's to remember) and
 // would make re-entry possible — flock is per open file description, so a
 // nested update opens a second descriptor and blocks against itself forever.
-func (s *Store) update(fn func(*doc) error) error {
-	lock, err := s.acquire()
+func (s *Store) update(wait time.Duration, fn func(*doc) error) error {
+	lock, err := s.acquire(wait)
 	if err != nil {
 		return err
 	}
@@ -298,6 +304,11 @@ func (s *Store) update(fn func(*doc) error) error {
 	if d.readOnly() {
 		return ErrReadOnly
 	}
+	if d.unreadable {
+		// Something is in that file and nobody could read it. Writing a fresh
+		// document here is how re-homes get destroyed by an I/O blip.
+		return ErrUnreadable
+	}
 	if err := fn(d); err != nil {
 		return err
 	}
@@ -307,7 +318,7 @@ func (s *Store) update(fn func(*doc) error) error {
 	return s.commit(d)
 }
 
-func (s *Store) acquire() (*os.File, error) {
+func (s *Store) acquire(wait time.Duration) (*os.File, error) {
 	if err := os.MkdirAll(s.root, 0o755); err != nil {
 		return nil, err
 	}
@@ -315,7 +326,7 @@ func (s *Store) acquire() (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(lockWait)
+	deadline := time.Now().Add(wait)
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
