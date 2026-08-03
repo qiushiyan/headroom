@@ -30,6 +30,18 @@ const (
 	StateBad  = tag.Bad
 )
 
+// RequestSpacing is the quiet period headroom keeps between requests for one
+// account. The endpoint's budget is per account and refills in roughly 30-70
+// seconds by measurement; this sits deliberately above that, because headroom
+// is a bystander on an undocumented endpoint and should err toward silence.
+//
+// It lives here, with the endpoint it describes, because two packages need it
+// and neither may depend on the other: the request ledger spends against it,
+// and rendering uses it to decide when an observation is old enough to be
+// worth a caption — no newer answer is obtainable inside this window, so
+// nagging about age inside it would be nagging about nothing.
+const RequestSpacing = 90 * time.Second
+
 // Row is the response contract: one rendered line per limit.
 type Row struct {
 	Label        string
@@ -43,6 +55,18 @@ type Row struct {
 // Drifted reports whether any field was present but unparseable.
 func (r Row) Drifted() bool {
 	return r.PercentState == StateBad || r.ResetState == StateBad
+}
+
+// RolledOver reports that the window this row describes has ended: its own
+// reset instant is in the past.
+//
+// The percent then describes a window nobody is spending against any more. It
+// is not stale in the ordinary sense — the observation can be seconds old and
+// still say this — and it is not drift, because the field parsed. It is simply
+// no longer an answer to "how much headroom is left", and a low percent left
+// standing reads as headroom that may not exist.
+func (r Row) RolledOver(now int64) bool {
+	return r.ResetAt != 0 && r.ResetAt <= now
 }
 
 var ErrUnparseable = errors.New("response not parseable")

@@ -26,11 +26,14 @@ HEADROOM_BIN="$work/headroom"
 export HEADROOM_ACCOUNTS_ROOT="$work/accounts"
 export HEADROOM_PRIMARY_NAME=primary
 export HEADROOM_USAGE_URL="http://127.0.0.1:1/usage"
-for a in a@x.com b@x.com; do
-    mkdir -p "$HEADROOM_ACCOUNTS_ROOT/$a"
-    printf '{"oauthAccount":{"emailAddress":"%s"}}' "$a" \
-        >"$HEADROOM_ACCOUNTS_ROOT/$a/.claude.json"
-done
+# One account carries an accountUuid (every real dir on this machine does —
+# it is what the request ledger keys on) and one deliberately does not, so the
+# degraded dir-name path stays exercised too.
+mkdir -p "$HEADROOM_ACCOUNTS_ROOT/a@x.com" "$HEADROOM_ACCOUNTS_ROOT/b@x.com"
+printf '{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"11111111-aaaa-4bbb-8ccc-dddddddddddd"}}' \
+    >"$HEADROOM_ACCOUNTS_ROOT/a@x.com/.claude.json"
+printf '{"oauthAccount":{"emailAddress":"b@x.com"}}' \
+    >"$HEADROOM_ACCOUNTS_ROOT/b@x.com/.claude.json"
 export HEADROOM_BIN
 export STTY_OUT="$work/stty.out"
 
@@ -77,6 +80,9 @@ export RESUME_OUT="$work/resume.out"
 fail=0
 run() {
     rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$RESUME_OUT"
+    # Each case starts from an unclaimed budget, or the board would open
+    # inside a quiet period the previous case paid for.
+    rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
     if expect -f "$here/$1.exp" >"$work/$1.log" 2>&1; then
         echo "ok   $1"
     else
@@ -87,12 +93,14 @@ run() {
 }
 
 # The non-interactive surfaces run at all (a dispatch regression once
-# panicked on the bare invocation and only live use caught it).
+# panicked on the bare invocation and only live use caught it). Off a
+# terminal the bare invocation prints the board once instead of opening the
+# picker — deleting the dashboard *command* must not delete the rendering.
 if ! "$HEADROOM_BIN" >/dev/null 2>&1; then
-    echo "FAIL dashboard: bare invocation failed"
+    echo "FAIL board: bare invocation off a terminal failed"
     fail=1
 else
-    echo "ok   dashboard"
+    echo "ok   board"
 fi
 if ! "$HEADROOM_BIN" --json >/dev/null 2>&1; then
     echo "FAIL json: --json invocation failed"
@@ -102,28 +110,28 @@ else
 fi
 
 # Arrows + enter select the second account and write state.
-run select_write
+run accounts_write
 if [ "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "a@x.com" ]; then
-    echo "FAIL select_write: .current not written with a@x.com"
+    echo "FAIL accounts_write: .current not written with a@x.com"
     fail=1
 fi
 
 # ESC cancels and writes nothing.
-run select_cancel
+run accounts_cancel
 if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
-    echo "FAIL select_cancel: cancel must write nothing"
+    echo "FAIL accounts_cancel: cancel must write nothing"
     fail=1
 fi
 
-# Watch draws, q quits with exit 0.
-run watch_quit
+# The board redraws its countdown, survives a burst of refresh keys, and quits.
+run accounts_refresh
 
 # SIGTERM mid-session must leave the terminal in canonical echoing mode.
-run select_sigterm
+run accounts_sigterm
 if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
     grep -qE '(^|[[:space:]])-icanon' "$STTY_OUT" 2>/dev/null ||
     grep -qE '(^|[[:space:]])-echo([[:space:]]|$)' "$STTY_OUT" 2>/dev/null; then
-    echo "FAIL select_sigterm: terminal left raw after SIGTERM"
+    echo "FAIL accounts_sigterm: terminal left raw after SIGTERM"
     cat "$STTY_OUT" 2>/dev/null || true
     fail=1
 fi

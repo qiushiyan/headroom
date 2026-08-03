@@ -59,7 +59,7 @@ type Input struct {
 	ProjectsDir string
 	CWD         string // where the picker runs; anchors the local section
 	Accounts    []AccountRef
-	OwnersPath  string
+	Owners      map[string]OwnerRec // explicit re-homes, read from the state store
 	Probe       PIDProbe
 }
 
@@ -74,7 +74,7 @@ type Listing struct {
 // any threshold worth a cache or a skeleton frame, and a cache over vendor
 // files would be a second source of truth with its own invalidation bugs.
 func Collect(in Input) Listing {
-	owners := LoadOwners(in.OwnersPath)
+	owners := in.Owners
 	names := map[string]bool{}
 	hists := map[string]History{}
 	var registry []RegistryEntry

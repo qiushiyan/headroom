@@ -11,18 +11,18 @@ import (
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/throttle"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 type prepareFixture struct {
 	cfg   config.Config
 	blobs map[string]string
 	auth  map[string]auth.Status
-	th    *throttle.Store
+	store *state.Store
 }
 
 func (f prepareFixture) run(now time.Time) map[string]*accountData {
-	list, _ := prepareWith(f.cfg, accounts.Discover(f.cfg), f.th, sources{
+	list, _ := prepareWith(f.cfg, accounts.Discover(f.cfg), f.store.Load(), sources{
 		readRaw: func(dir string) string { return f.blobs[dir] },
 		health:  func(dir string) auth.Status { return f.auth[dir] },
 		now:     now,
@@ -72,8 +72,8 @@ func TestPrepareWith(t *testing.T) {
 	now := time.Now()
 	goodBlob := `{"claudeAiOauth":{"accessToken":"tok-good","rateLimitTier":"default_claude_max_20x"}}`
 	f := prepareFixture{
-		cfg: cfg,
-		th:  throttle.Load(cfg.AccountsRoot),
+		cfg:   cfg,
+		store: state.Open(cfg.AccountsRoot),
 		blobs: map[string]string{
 			"":      "", // primary: no credentials anywhere
 			goodDir: goodBlob,
@@ -107,7 +107,7 @@ func TestPrepareWith(t *testing.T) {
 		v.Attempt.State != render.AttemptPending {
 		t.Errorf("good: %+v", v)
 	}
-	if !good.NeedsFetch || good.Token != "tok-good" {
+	if !good.WantsFetch || good.Token != "tok-good" {
 		t.Errorf("good not fetch-ready: %+v", good)
 	}
 	if v := byName["bad@x.com"].View; v.Health != render.HealthBadBlob {
@@ -121,7 +121,7 @@ func TestPrepareWith(t *testing.T) {
 	if v := stale.View; v.Health != render.HealthOK || v.Attempt.State != render.AttemptTokenStale {
 		t.Errorf("stale access token misclassified: health=%v attempt=%v", v.Health, v.Attempt.State)
 	}
-	if stale.NeedsFetch {
+	if stale.WantsFetch {
 		t.Error("stale token must not be spent on a request")
 	}
 
@@ -152,7 +152,7 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 		now.Add(-100*time.Hour).UnixMilli())
 	f := prepareFixture{
 		cfg:   cfg,
-		th:    throttle.Load(cfg.AccountsRoot),
+		store: state.Open(cfg.AccountsRoot),
 		blobs: map[string]string{"": blob},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -201,7 +201,7 @@ func TestPrepareSeedsFromClaudeCache(t *testing.T) {
 
 	f := prepareFixture{
 		cfg:   cfg,
-		th:    throttle.Load(cfg.AccountsRoot),
+		store: state.Open(cfg.AccountsRoot),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -236,7 +236,7 @@ func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
 
 	f := prepareFixture{
 		cfg:   cfg,
-		th:    throttle.Load(cfg.AccountsRoot),
+		store: state.Open(cfg.AccountsRoot),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -256,17 +256,24 @@ func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com"}}`)
 
 	now := time.Now()
-	th := throttle.Load(cfg.AccountsRoot)
-	th.NoteRefused("primary", now)
+	store := state.Open(cfg.AccountsRoot)
+	key := state.Key{Name: "primary"}
+	dec, err := store.Claim([]state.Key{key}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(key, dec[0].Generation, state.OutcomeRefused, nil, now); err != nil {
+		t.Fatal(err)
+	}
 
 	f := prepareFixture{
 		cfg:   cfg,
-		th:    th,
+		store: store,
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	d := f.run(now)["primary"]
-	if d.NeedsFetch {
+	if d.WantsFetch {
 		t.Error("fetched an account inside its cooldown")
 	}
 	if d.View.Attempt.State != render.AttemptDeferred {
@@ -296,7 +303,7 @@ func TestPrepareKeepsZeroRowCache(t *testing.T) {
 
 	f := prepareFixture{
 		cfg:   cfg,
-		th:    throttle.Load(cfg.AccountsRoot),
+		store: state.Open(cfg.AccountsRoot),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -306,5 +313,149 @@ func TestPrepareKeepsZeroRowCache(t *testing.T) {
 	}
 	if len(v.Obs.Rows) != 0 || v.Obs.Source != render.SourceCache {
 		t.Errorf("observation: %+v", v.Obs)
+	}
+}
+
+// The heir of watch's carry-over tests, and the fix for the reported bug.
+//
+// A previous round's figures used to live in one long-running process's
+// memory, so every other surface — and every later run of watch itself — fell
+// back to Claude Code's cache the moment a refresh was deferred. Measured on
+// the live machine, that cache was 37 hours old while the figures headroom had
+// fetched five seconds earlier were being thrown away with the process. Two
+// consecutive runs therefore showed "current" and then "stale · observed 37h
+// ago" for the same accounts, and the picker warned against choosing on any of
+// them.
+//
+// Now both are on disk, prepare picks the newer, and the observation carries
+// whole — timestamp and source included, never restamped as fresh.
+func TestPrepareSelectsTheNewestObservation(t *testing.T) {
+	body := func(pct int) []byte {
+		return fmt.Appendf(nil, `{"limits":[{"kind":"session","percent":%d}]}`, pct)
+	}
+	const ours, theirs = 10, 20
+
+	cases := []struct {
+		name       string
+		ownAge     time.Duration // 0 = no stored observation
+		cacheAge   time.Duration // 0 = no Claude Code cache
+		wantPct    int           // 0 = nothing shown
+		wantSource render.Source
+	}{
+		{"our seconds-old fetch beats a day-old cache", 5 * time.Second, 37 * time.Hour, ours, render.SourceStore},
+		{"a fresh cache beats our stale fetch", 48 * time.Hour, time.Hour, theirs, render.SourceCache},
+		{"ours alone", 30 * time.Second, 0, ours, render.SourceStore},
+		{"theirs alone", 0, 2 * time.Hour, theirs, render.SourceCache},
+		{"neither", 0, 0, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+			if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			meta := `{"oauthAccount":{"emailAddress":"p@x.com","accountUuid":"uuid-1"}}`
+			if c.cacheAge != 0 {
+				meta = fmt.Sprintf(`{"oauthAccount":{"emailAddress":"p@x.com","accountUuid":"uuid-1"},
+				  "cachedUsageUtilization":{"fetchedAtMs":%d,"accountUuid":"uuid-1",
+				    "utilization":%s}}`, now.Add(-c.cacheAge).UnixMilli(), body(theirs))
+			}
+			writeJSON(t, cfg.PrimaryMeta(), meta)
+
+			store := state.Open(cfg.AccountsRoot)
+			key := state.Key{UUID: "uuid-1", Name: "primary"}
+			var storedAt time.Time
+			if c.ownAge != 0 {
+				storedAt = now.Add(-c.ownAge)
+				dec, err := store.Claim([]state.Key{key}, storedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Complete(key, dec[0].Generation, state.OutcomeStored, body(ours), storedAt); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			f := prepareFixture{
+				cfg:   cfg,
+				store: store,
+				blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
+				auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
+			}
+			v := f.run(now)["primary"].View
+
+			if c.wantPct == 0 {
+				if v.Obs != nil {
+					t.Fatalf("invented an observation: %+v", v.Obs)
+				}
+				return
+			}
+			if v.Obs == nil {
+				t.Fatal("no observation chosen")
+			}
+			if v.Obs.Rows[0].Percent != c.wantPct || v.Obs.Source != c.wantSource {
+				t.Errorf("chose %d%% from source %v; want %d%% from %v",
+					v.Obs.Rows[0].Percent, v.Obs.Source, c.wantPct, c.wantSource)
+			}
+			if c.wantSource == render.SourceStore && v.Obs.ObservedAt != storedAt.Unix() {
+				t.Errorf("a replayed observation was restamped: got %d want %d",
+					v.Obs.ObservedAt, storedAt.Unix())
+			}
+		})
+	}
+}
+
+// The bug in one assertion: what headroom fetched moments ago must still read
+// as current on the next run, without a request and without a stale nag.
+func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A Claude Code cache as old as the one measured on the live machine.
+	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
+	  "oauthAccount":{"emailAddress":"p@x.com","accountUuid":"uuid-1"},
+	  "cachedUsageUtilization":{"fetchedAtMs":%d,"accountUuid":"uuid-1",
+	    "utilization":{"limits":[{"kind":"session","percent":58}]}}}`,
+		time.Now().Add(-37*time.Hour).UnixMilli()))
+
+	store := state.Open(cfg.AccountsRoot)
+	key := state.Key{UUID: "uuid-1", Name: "primary"}
+	fetchedAt := time.Now().Add(-5 * time.Second)
+	dec, err := store.Claim([]state.Key{key}, fetchedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(key, dec[0].Generation, state.OutcomeStored,
+		[]byte(`{"limits":[{"kind":"session","percent":8}]}`), fetchedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	f := prepareFixture{
+		cfg:   cfg,
+		store: store,
+		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
+		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
+	}
+	now := time.Now()
+	d := f.run(now)["primary"]
+
+	if d.WantsFetch {
+		t.Error("a second run inside the quiet period must not ask again")
+	}
+	if d.View.Attempt.State != render.AttemptDeferred {
+		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
+	}
+	if !d.View.Fresh(now.Unix()) {
+		t.Error("figures fetched five seconds ago read as stale")
+	}
+	if !d.View.Actionable(now.Unix()) {
+		t.Error("the picker would warn against choosing on five-second-old figures")
+	}
+	if p := render.NewPalette(false).ProvenanceLine(d.View, now.Unix()); p != "" {
+		t.Errorf("a nag was printed over current figures: %q", p)
 	}
 }

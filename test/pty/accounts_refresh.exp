@@ -1,0 +1,40 @@
+#!/usr/bin/expect -f
+# The board refreshes itself while it is open, and `r` cannot turn that into a
+# request storm.
+#
+# What this covers that `go test` cannot: the countdown is redrawn from the
+# loop's own ticker in raw mode, and the refresh key is handled by that same
+# loop. The usage URL points at a closed port, so every round completes in
+# microseconds — exactly the condition under which a key-repeat storm would
+# issue requests as fast as the network answers. Traffic is bounded by the
+# claim inside the store, never by this loop, so hammering `r` must leave the
+# board responsive and exiting cleanly rather than spinning.
+set timeout 10
+spawn $env(HEADROOM_BIN) accounts
+expect {
+    "next refresh in" {}
+    timeout { puts "board never drew its refresh countdown"; exit 2 }
+}
+
+sleep 2
+send -- "r"
+expect {
+    "next refresh in" {}
+    timeout { puts "board stopped redrawing after r"; exit 2 }
+}
+
+# Fifty refresh keys at once, as a held-down key would deliver them.
+send -- "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+sleep 0.5
+expect {
+    "esc cancel" {}
+    timeout { puts "board stopped responding after a burst of r"; exit 2 }
+}
+
+send -- "q"
+expect eof
+catch wait result
+if {[lindex $result 3] != 1} {
+    puts "quit exited [lindex $result 3], want 1 (nothing was picked)"
+    exit 2
+}

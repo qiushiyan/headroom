@@ -20,6 +20,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
+	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
@@ -42,7 +43,7 @@ func psProbe(pid int) (int64, bool) {
 	return t.Unix(), true
 }
 
-func collectSessions(cfg config.Config) (sessions.Listing, []sessions.AccountRef, []accounts.Account, string) {
+func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []sessions.AccountRef, []accounts.Account, string) {
 	accts := accounts.Discover(cfg)
 	refs := make([]sessions.AccountRef, 0, len(accts))
 	for _, a := range accts {
@@ -53,10 +54,23 @@ func collectSessions(cfg config.Config) (sessions.Listing, []sessions.AccountRef
 		ProjectsDir: cfg.ProjectsDir(),
 		CWD:         cwd,
 		Accounts:    refs,
-		OwnersPath:  cfg.OwnersFile(),
+		Owners:      ownerRecords(st.Load()),
 		Probe:       psProbe,
 	})
 	return listing, refs, accts, accounts.CurrentTarget(cfg)
+}
+
+// ownerRecords adapts the store's re-home records to the collector's own type.
+// The two are deliberately separate: sessions reads vendor files and nothing
+// else, and giving it a dependency on the package that flocks and writes would
+// put I/O in the graph of the one place that is meant to be pure parsing.
+func ownerRecords(snap state.Snapshot) map[string]sessions.OwnerRec {
+	src := snap.Owners()
+	out := make(map[string]sessions.OwnerRec, len(src))
+	for id, rec := range src {
+		out[id] = sessions.OwnerRec{Account: rec.Account, AtMS: rec.AtMS}
+	}
+	return out
 }
 
 // resumeUI is the picker's whole mutable state. One mode value at a time —
@@ -64,6 +78,7 @@ func collectSessions(cfg config.Config) (sessions.Listing, []sessions.AccountRef
 // "renaming while a delete is pending" is unrepresentable.
 type resumeUI struct {
 	cfg     config.Config
+	st      *state.Store
 	t       *tui.Terminal
 	p       render.Palette
 	listing sessions.Listing
@@ -104,7 +119,8 @@ func runResume(cfg config.Config, args []string) int {
 		return 2
 	}
 
-	listing, refs, accts, current := collectSessions(cfg)
+	st := state.Open(cfg.AccountsRoot)
+	listing, refs, accts, current := collectSessions(cfg, st)
 	t, err := tui.OpenTTY()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom resume: %v\n", err)
@@ -112,7 +128,7 @@ func runResume(cfg config.Config, args []string) int {
 	}
 	defer t.Close()
 
-	ui := &resumeUI{cfg: cfg, t: t, p: render.NewPalette(true),
+	ui := &resumeUI{cfg: cfg, st: st, t: t, p: render.NewPalette(true),
 		listing: listing, refs: refs, accts: accts, current: current}
 	ui.refilter("")
 	ui.draw()
@@ -358,7 +374,13 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 		// `x`'s user-visible contract is atomic — re-home recorded, then the
 		// launch decision — so a failed write keeps the picker open instead
 		// of launching a session that would route back on the next enter.
-		err := sessions.ReHome(ui.cfg.OwnersFile(), ui.cfg.ProjectsDir(), s.ID, acct.Name, time.Now())
+		// The sweep of records whose transcript is gone runs inside the store's
+		// lock, against a listing taken there — never against one gathered
+		// here, which could not see a session another picker re-homed since.
+		projects := ui.cfg.ProjectsDir()
+		err := ui.st.ReHome(s.ID, acct.Name, time.Now(), func() (map[string]bool, bool) {
+			return sessions.TranscriptIDs(projects)
+		})
 		if err != nil {
 			ui.message = "re-home not recorded (" + err.Error() + ") — enter resumes without it"
 			return false, 0
@@ -418,7 +440,7 @@ func (ui *resumeUI) commitDelete() {
 		ui.message = "delete failed: " + err.Error()
 		return
 	}
-	_ = sessions.ForgetOwner(ui.cfg.OwnersFile(), s.ID)
+	_ = ui.st.Forget(s.ID)
 	kept := ui.listing.Sessions[:0]
 	for _, sess := range ui.listing.Sessions {
 		if sess.ID != s.ID {

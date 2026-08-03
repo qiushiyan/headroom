@@ -45,8 +45,14 @@ func Load() Config {
 	return c
 }
 
-// StateFile records which account bare `x` targets.
-func (c Config) StateFile() string { return filepath.Join(c.AccountsRoot, ".current") }
+// CurrentFile records which account bare `x` targets.
+//
+// It is deliberately not part of state.json: the shell both reads it (at every
+// launch) and writes it (every x-<account> launcher records itself), so it is
+// an interop contract, not headroom's own state. One line of text is the right
+// format for something zsh reads with $(<file), and folding it in would put
+// this tool on the critical path of launching Claude Code.
+func (c Config) CurrentFile() string { return filepath.Join(c.AccountsRoot, ".current") }
 
 // OrderFile sets dashboard display order after the primary (optional, one
 // email per line; unlisted accounts follow alphabetically).
@@ -64,7 +70,3 @@ func (c Config) PrimaryDir() string { return filepath.Join(c.Home, ".claude") }
 // ProjectsDir is the canonical machine-global session store. Every account's
 // projects/ symlinks to it, so this one tree is the whole session registry.
 func (c Config) ProjectsDir() string { return filepath.Join(c.Home, ".claude", "projects") }
-
-// OwnersFile records explicit session re-homes — the third and last file
-// headroom owns, beside .current and .throttle.
-func (c Config) OwnersFile() string { return filepath.Join(c.AccountsRoot, ".owners") }

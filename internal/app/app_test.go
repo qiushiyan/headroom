@@ -15,7 +15,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/throttle"
+	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -36,14 +36,14 @@ func TestResolveAttempt(t *testing.T) {
 	}
 	for _, c := range cases {
 		d := &accountData{}
-		resolve(d, c.res, throttle.Load(t.TempDir()), time.Now())
+		resolve(d, c.res, state.Open(t.TempDir()), time.Now())
 		if d.View.Attempt.State != c.want {
 			t.Errorf("%s: attempt = %v, want %v", c.name, d.View.Attempt.State, c.want)
 		}
 	}
 
 	d := &accountData{}
-	resolve(d, usage.Result{StatusCode: http.StatusUnauthorized}, throttle.Load(t.TempDir()), time.Now())
+	resolve(d, usage.Result{StatusCode: http.StatusUnauthorized}, state.Open(t.TempDir()), time.Now())
 	if d.View.Attempt.HTTPCode != http.StatusUnauthorized {
 		t.Errorf("HTTP code not carried: %+v", d.View.Attempt)
 	}
@@ -54,7 +54,7 @@ func TestResolveAttempt(t *testing.T) {
 	d = &accountData{}
 	resolve(d, usage.Result{StatusCode: 200,
 		Body: []byte(`{"limits":[{"kind":"session","percent":5},{"group":"weekly","percent":9}]}`)},
-		throttle.Load(t.TempDir()), now)
+		state.Open(t.TempDir()), now)
 	if d.View.Obs == nil || len(d.View.Obs.Rows) != 2 {
 		t.Fatalf("rows not carried: %+v", d.View.Obs)
 	}
@@ -73,8 +73,16 @@ func TestRefusalKeepsObservation(t *testing.T) {
 		ObservedAt: now.Add(-30 * time.Second).Unix(),
 		Source:     render.SourceLive,
 	}
-	d := &accountData{View: render.AccountView{Obs: prior}}
-	resolve(d, usage.Result{StatusCode: 429}, throttle.Load(t.TempDir()), now)
+	// Through a real claim: the cooldown a refusal earns belongs to the
+	// request that was authorized, and resolve completes exactly that one.
+	st := state.Open(t.TempDir())
+	key := state.Key{Name: "a"}
+	dec, err := st.Claim([]state.Key{key}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &accountData{Key: key, Permit: dec[0].Generation, View: render.AccountView{Obs: prior}}
+	resolve(d, usage.Result{StatusCode: 429}, st, now)
 
 	if d.View.Obs != prior {
 		t.Fatalf("429 dropped the observation: %+v", d.View.Obs)
@@ -101,7 +109,7 @@ func TestTransportFailureKeepsObservation(t *testing.T) {
 	prior := &render.Observation{Rows: []usage.Row{{Label: "5h session", Percent: 7}},
 		ObservedAt: now.Add(-time.Minute).Unix(), Source: render.SourceCache}
 	d := &accountData{View: render.AccountView{Obs: prior}}
-	resolve(d, usage.Result{Err: errors.New("dial tcp: no route")}, throttle.Load(t.TempDir()), now)
+	resolve(d, usage.Result{Err: errors.New("dial tcp: no route")}, state.Open(t.TempDir()), now)
 	if d.View.Obs != prior || d.View.Attempt.State != render.AttemptTransport {
 		t.Errorf("transport failure mishandled: obs=%+v attempt=%+v", d.View.Obs, d.View.Attempt)
 	}
@@ -121,14 +129,16 @@ func TestLaunchFetchesSingleWriter(t *testing.T) {
 	defer srv.Close()
 
 	cfg := config.Config{UsageURL: srv.URL, AccountsRoot: t.TempDir()}
-	th := throttle.Load(cfg.AccountsRoot)
+	st := state.Open(cfg.AccountsRoot)
 	list := []*accountData{
-		{Token: "fast", NeedsFetch: true, View: render.AccountView{Attempt: render.Attempt{State: render.AttemptPending}}},
-		{Token: "slow", NeedsFetch: true, View: render.AccountView{Attempt: render.Attempt{State: render.AttemptPending}}},
+		{Token: "fast", Key: state.Key{Name: "fast"}, WantsFetch: true,
+			View: render.AccountView{Attempt: render.Attempt{State: render.AttemptPending}}},
+		{Token: "slow", Key: state.Key{Name: "slow"}, WantsFetch: true,
+			View: render.AccountView{Attempt: render.Attempt{State: render.AttemptPending}}},
 	}
 	list[0].Acct.Name, list[1].Acct.Name = "fast", "slow"
-	for u := range launchFetches(context.Background(), cfg, list, th) {
-		resolve(list[u.idx], u.res, th, time.Now())
+	for u := range launchFetches(context.Background(), cfg, list, st) {
+		resolve(list[u.idx], u.res, st, time.Now())
 		for _, d := range list {
 			_ = d.View.Attempt.State
 			if d.View.Obs != nil {
@@ -159,18 +169,20 @@ func TestFetchClaimsBudgetBeforeRequesting(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// What a separate process would see, reading the store off disk right
 		// as this request arrives.
-		eligibleAtRequestTime = throttle.Load(root).Eligible("acct", time.Now())
+		now := time.Now()
+		eligibleAtRequestTime = !state.Open(root).Load().
+			NextEligible(state.Key{Name: "acct"}, now).After(now)
 		<-released
 		w.Write([]byte(`{"limits":[{"kind":"session","percent":1}]}`))
 	}))
 	defer srv.Close()
 
 	cfg := config.Config{UsageURL: srv.URL, AccountsRoot: root}
-	th := throttle.Load(root)
-	list := []*accountData{{Token: "t", NeedsFetch: true}}
+	st := state.Open(root)
+	list := []*accountData{{Token: "t", Key: state.Key{Name: "acct"}, WantsFetch: true}}
 	list[0].Acct.Name = "acct"
 
-	updates := launchFetches(context.Background(), cfg, list, th)
+	updates := launchFetches(context.Background(), cfg, list, st)
 	close(released)
 	for range updates {
 	}
@@ -213,7 +225,7 @@ func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
 		[]byte(`{"oauthAccount":{"emailAddress":"p@x.com"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := prepareWith(cfg, accounts.Discover(cfg), throttle.Load(cfg.AccountsRoot), sources{
+	list, _ := prepareWith(cfg, accounts.Discover(cfg), state.Open(cfg.AccountsRoot).Load(), sources{
 		readRaw: func(string) string { return `not json` },
 		health:  func(string) auth.Status { return auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK} },
 		now:     time.Now(),
@@ -225,7 +237,7 @@ func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
 	if v.Attempt.State != render.AttemptCredentialUnreadable {
 		t.Errorf("attempt should carry the unreadable credential: %v", v.Attempt.State)
 	}
-	if list[0].NeedsFetch {
+	if list[0].WantsFetch {
 		t.Error("must not fetch without a usable credential")
 	}
 }
@@ -235,18 +247,37 @@ func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
 // later refusal escalate as though refusals had been consecutive.
 func TestAnyHTTP200ClearsRefusalStrikes(t *testing.T) {
 	now := time.UnixMilli(time.Now().UnixMilli())
+	key := state.Key{Name: "a"}
+	// refuse drives one full claim→refusal cycle and reports the cooldown it
+	// earned; escalation is visible as that cooldown growing.
+	refuse := func(st *state.Store, at time.Time) time.Duration {
+		t.Helper()
+		dec, err := st.Claim([]state.Key{key}, at)
+		if err != nil || !dec[0].Permit {
+			t.Fatalf("claim at %v: %v (permit %v)", at, err, dec[0].Permit)
+		}
+		next, err := st.Complete(key, dec[0].Generation, state.OutcomeRefused, nil, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return next.Sub(at)
+	}
 	for _, body := range []string{`{}`, `nonsense`} {
-		th := throttle.Load(t.TempDir())
-		th.NoteRefused("a", now)
-		th.NoteRefused("a", now)
-		d := &accountData{}
-		d.Acct.Name = "a"
-		resolve(d, usage.Result{StatusCode: 200, Body: []byte(body)}, th, now)
+		st := state.Open(t.TempDir())
+		refuse(st, now)
+		if got := refuse(st, now.Add(time.Hour)); got != 2*state.CooldownBase {
+			t.Fatalf("body %q: consecutive refusals must escalate; got %v", body, got)
+		}
 
-		th.NoteRefused("a", now)
-		if got := th.NextEligible("a"); !got.Equal(now.Add(throttle.CooldownBase)) {
-			t.Errorf("body %q: strikes survived a 200; next eligible %v after base %v",
-				body, got.Sub(now), throttle.CooldownBase)
+		at := now.Add(2 * time.Hour)
+		dec, _ := st.Claim([]state.Key{key}, at)
+		d := &accountData{Key: key, Permit: dec[0].Generation}
+		d.Acct.Name = "a"
+		resolve(d, usage.Result{StatusCode: 200, Body: []byte(body)}, st, at)
+
+		if got := refuse(st, at.Add(time.Hour)); got != state.CooldownBase {
+			t.Errorf("body %q: strikes survived a 200; cooldown %v, want the base %v",
+				body, got, state.CooldownBase)
 		}
 	}
 }
@@ -262,7 +293,7 @@ func TestZeroRowsBecomesTheNewestObservation(t *testing.T) {
 	}
 	d := &accountData{View: render.AccountView{Obs: stale}}
 	d.Acct.Name = "a"
-	resolve(d, usage.Result{StatusCode: 200, Body: []byte(`{}`)}, throttle.Load(t.TempDir()), now)
+	resolve(d, usage.Result{StatusCode: 200, Body: []byte(`{}`)}, state.Open(t.TempDir()), now)
 
 	if d.View.Obs == stale {
 		t.Fatal("22h-old bars still displayed after the endpoint reported no limits")

@@ -117,7 +117,7 @@ func TestCurrentTarget(t *testing.T) {
 	if got := CurrentTarget(cfg); got != "yan@planlab.ai" {
 		t.Errorf("got %q, want yan@planlab.ai", got)
 	}
-	if err := os.WriteFile(cfg.StateFile(), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got := CurrentTarget(cfg); got != "qiushi" {

@@ -297,3 +297,113 @@ func TestActionableRequiresHealthAndFreshness(t *testing.T) {
 		t.Error("stale figures are not grounds for a choice")
 	}
 }
+
+// The caption is a composition of independent clauses, never one verdict.
+// The trap: a single state per account has no cell for "current figures whose
+// newest refresh was refused" or "current figures from Claude Code's cache",
+// so both facts vanish behind bars that look freshly fetched.
+func TestProvenanceKeepsTheAxesApart(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	obs := func(age time.Duration, src Source) *Observation {
+		return &Observation{
+			Rows:       []usage.Row{{Label: "5h session", Percent: 8}},
+			ObservedAt: now - int64(age.Seconds()),
+			Source:     src,
+		}
+	}
+	cases := []struct {
+		name    string
+		view    AccountView
+		want    []string // substrings the caption must carry
+		notWant []string
+	}{
+		{
+			name: "current and ours says nothing",
+			view: AccountView{Obs: obs(20*time.Second, SourceLive), Attempt: Attempt{State: AttemptOK}},
+		},
+		{
+			name: "current, replayed from our own store, still says nothing",
+			view: AccountView{Obs: obs(20*time.Second, SourceStore), Attempt: Attempt{State: AttemptNone}},
+		},
+		{
+			name: "a deferred refresh over current figures is a non-event",
+			view: AccountView{Obs: obs(20*time.Second, SourceStore), Attempt: Attempt{State: AttemptDeferred}},
+		},
+		{
+			name:    "current figures whose refresh was refused still report it",
+			view:    AccountView{Obs: obs(20*time.Second, SourceLive), Attempt: Attempt{State: AttemptRefused}},
+			want:    []string{"observed 20s ago", "rate limited"},
+			notWant: []string{"stale"},
+		},
+		{
+			name:    "current figures from the vendor cache still name their source",
+			view:    AccountView{Obs: obs(20*time.Second, SourceCache), Attempt: Attempt{State: AttemptOK}},
+			want:    []string{"via Claude Code's cache"},
+			notWant: []string{"stale"},
+		},
+		{
+			name: "old figures are nagged about, whoever fetched them",
+			view: AccountView{Obs: obs(22*time.Hour, SourceStore), Attempt: Attempt{State: AttemptDeferred}},
+			want: []string{"stale", "observed 22h ago", "live check deferred"},
+		},
+		{
+			name:    "a refresh in flight shows over the figures it will replace",
+			view:    AccountView{Obs: obs(20*time.Second, SourceStore), Attempt: Attempt{State: AttemptPending}},
+			want:    []string{"fetching"},
+			notWant: []string{"stale"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := p.ProvenanceLine(c.view, now)
+			if len(c.want) == 0 && got != "" {
+				t.Fatalf("expected no caption, got %q", got)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("caption %q is missing %q", got, w)
+				}
+			}
+			for _, w := range c.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("caption %q should not carry %q", got, w)
+				}
+			}
+		})
+	}
+}
+
+// A row whose own reset instant has passed describes a window that has ended.
+// The percent is a fact about the past, and a low one reads as headroom that
+// may not exist — measured on the live machine as an 8% bar for a window that
+// had rolled over 33 hours earlier.
+func TestRolledOverRowIsNotAnAnswer(t *testing.T) {
+	now := time.Now().Unix()
+	p := NewPalette(false)
+	rolled := usage.Row{Label: "5h session", Percent: 8, ResetAt: now - 33*3600,
+		PercentState: usage.StateOK, ResetState: usage.StateOK}
+
+	line := p.LimitRow(rolled, now, 12, false)
+	if strings.Contains(line, "8%") {
+		t.Errorf("a rolled-over window still shows its old percent: %q", line)
+	}
+	if !strings.Contains(line, "window rolled over") {
+		t.Errorf("a rolled-over window must say so: %q", line)
+	}
+	if strings.Contains(line, "drift") {
+		t.Errorf("rolling over is not drift — the field parsed: %q", line)
+	}
+
+	// And it is not grounds for a choice, however recently it was observed.
+	v := AccountView{
+		Health: HealthOK,
+		Obs:    &Observation{Rows: []usage.Row{rolled}, ObservedAt: now - 5, Source: SourceLive},
+	}
+	if !v.Fresh(now) {
+		t.Fatal("the observation itself is current; only the window ended")
+	}
+	if v.Actionable(now) {
+		t.Error("an account whose window rolled over must not be offered as a live choice")
+	}
+}

@@ -113,6 +113,14 @@ type Meta struct {
 	Email   string
 	EmailOK bool
 
+	// AccountUUID is the vendor's identity for the logged-in account. It is
+	// what the request ledger keys on: the endpoint's budget is per account,
+	// so two config dirs logged into the same account share one bucket, and
+	// keying by dir name would have them double-spend it invisibly. Empty when
+	// the field is absent — the ledger falls back to the dir name and simply
+	// loses that sharing.
+	AccountUUID string
+
 	// CachedUsage is the raw `cachedUsageUtilization.utilization` object,
 	// byte-identical in shape to the live endpoint's body, so it goes to
 	// usage.ParseLimits unchanged rather than earning a second parser.
@@ -158,7 +166,7 @@ func ReadMeta(metaPath string) (Meta, error) {
 	// Explicitly None: tag.OK is tag.State's zero value, so leaving this
 	// implicit would have an account with no cache at all claim to have a
 	// valid one.
-	m := Meta{CacheState: tag.None}
+	m := Meta{CacheState: tag.None, AccountUUID: doc.OauthAccount.AccountUUID}
 	if doc.OauthAccount.EmailAddress != nil {
 		m.Email, m.EmailOK = *doc.OauthAccount.EmailAddress, true
 	}
@@ -231,7 +239,7 @@ func Launcher(a Account, all []Account, primaryName string) string {
 
 // CurrentTarget is the account name bare `x` targets right now.
 func CurrentTarget(cfg config.Config) string {
-	data, err := os.ReadFile(cfg.StateFile())
+	data, err := os.ReadFile(cfg.CurrentFile())
 	if err != nil {
 		return cfg.PrimaryName
 	}
@@ -268,5 +276,5 @@ func SetCurrent(cfg config.Config, name string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), cfg.StateFile())
+	return os.Rename(tmp.Name(), cfg.CurrentFile())
 }

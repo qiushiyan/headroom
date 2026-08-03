@@ -24,8 +24,8 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
+	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tag"
-	"github.com/qiushiyan/headroom/internal/throttle"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -41,7 +41,7 @@ const (
 
 func Run(cfg config.Config, out io.Writer, color bool) int {
 	p := render.NewPalette(color)
-	fails, unknowns := 0, 0
+	fails, unknowns, ownFails := 0, 0, 0
 
 	chk := func(ok bool, label, hint string) {
 		if ok {
@@ -53,6 +53,18 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		}
 		fmt.Fprintf(out, "%sFAIL%s  %s%s\n", p.Red, p.Rst, label, hint)
 		fails++
+	}
+	// own is chk for headroom's own files. A FAIL here means *this tool*
+	// wrote or lost something, not that Claude Code changed a format — and
+	// the closing line says which, because reporting vendor drift for a
+	// corrupt state file would confirm a false diagnosis at exactly the
+	// moment someone reaches for this command.
+	own := func(ok bool, label, hint string) {
+		before := fails
+		chk(ok, label, hint)
+		if fails > before {
+			ownFails++
+		}
 	}
 	// skip records a fact that could not be tested. It never fails the run.
 	skip := func(label, why string) {
@@ -95,20 +107,22 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	accts := accounts.Discover(cfg)
 	now := time.Now()
 	nowMS := now.UnixMilli()
-	th := throttle.Load(cfg.AccountsRoot)
+	st := state.Open(cfg.AccountsRoot)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	const (
 		modeNeverLoggedIn = iota // nothing to verify
 		modeSkipped              // logged in but no usable token
+		modeCandidate            // spendable — the claim decides
 		modeFetched
 	)
 	type apiCase struct {
 		name   string // for output ("primary" reads better than the configured name)
-		key    string // throttle key — the account's real name, never the label
+		key    state.Key
 		token  string // the token actually spent, for the 401 refresh check
 		dir    string
 		mode   int
+		permit int64
 		reason string
 		res    usage.Result
 	}
@@ -119,7 +133,12 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		if !a.IsPrimary() {
 			name = a.Name
 		}
-		c := &apiCase{name: name, key: a.Name, dir: a.ConfigDir, mode: modeSkipped}
+		c := &apiCase{
+			name: name,
+			key:  state.Key{UUID: a.Meta.AccountUUID, Name: a.Name},
+			dir:  a.ConfigDir,
+			mode: modeSkipped,
+		}
 		cases[i] = c
 		if !a.IsPrimary() {
 			if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
@@ -142,20 +161,41 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			// Routine: the access token ages out every ~8 hours. Nothing is
 			// broken and nothing can be tested against the live endpoint.
 			c.reason = fmt.Sprintf("access token stale — any %s session refreshes it", launcher)
-		case !th.Eligible(a.Name, now):
-			// Spending a request here to "diagnose" would deepen exactly the
-			// rate limiting the user is likely running check about.
-			c.reason = fmt.Sprintf("inside this account's quiet period — %s remaining",
-				th.NextEligible(a.Name).Sub(now).Round(time.Second))
 		default:
-			c.mode = modeFetched
+			c.mode = modeCandidate
 			c.token = blob.Token
-			th.NoteAttempt(c.key, now)
 		}
 	}
-	// Claims reach disk before any request leaves — same ordering as the
-	// dashboard's, and for the same reason.
-	_ = th.Save()
+
+	// The claim is the authorization, here as everywhere: check goes through
+	// the same locked test-and-set the board does, or the one place that
+	// closes the double-spend would have a second place that bypasses it.
+	// Spending a request to "diagnose" inside a quiet period would deepen
+	// exactly the rate limiting the user is likely running check about.
+	var keys []state.Key
+	var candidates []*apiCase
+	for _, c := range cases {
+		if c.mode == modeCandidate {
+			keys = append(keys, c.key)
+			candidates = append(candidates, c)
+		}
+	}
+	decisions, claimErr := st.Claim(keys, now)
+	for j, dec := range decisions {
+		c := candidates[j]
+		switch {
+		case dec.Permit:
+			c.mode, c.permit = modeFetched, dec.Generation
+		case claimErr != nil:
+			c.mode = modeSkipped
+			c.reason = "headroom's own state file could not be claimed against — " + claimErr.Error()
+		default:
+			c.mode = modeSkipped
+			c.reason = fmt.Sprintf("inside this account's quiet period — %s remaining",
+				dec.NextEligible.Sub(now).Round(time.Second))
+		}
+	}
+
 	for _, c := range cases {
 		if c.mode != modeFetched {
 			continue
@@ -196,7 +236,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			skip(label(""), "transport error — no evidence either way")
 			continue
 		case code == http.StatusTooManyRequests:
-			th.NoteRefused(c.key, now)
+			_, _ = st.Complete(c.key, c.permit, state.OutcomeRefused, nil, now)
 			skip(label(""), "rate limited — no evidence either way")
 			continue
 		case code >= 500:
@@ -215,14 +255,18 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			chk(false, label(""), "unexpected status — endpoint or auth drifted")
 			continue
 		}
-		th.NoteSuccess(c.key, now)
-
 		// A 200 is evidence, and now the contract is genuinely testable.
 		rows, err := usage.ParseLimits(c.res.Body)
 		if err != nil {
+			_, _ = st.Complete(c.key, c.permit, state.OutcomeSpent, nil, now)
 			chk(false, label(", unparseable body"), "shape drifted")
 			continue
 		}
+		// check spends the same budget the board does, so it stores what it
+		// bought: the next board render is entitled to figures this run paid
+		// for, and a check that threw them away would leave the user staring
+		// at older numbers immediately after verifying the endpoint works.
+		_, _ = st.Complete(c.key, c.permit, state.OutcomeStored, c.res.Body, now)
 		nbad := 0
 		for _, r := range rows {
 			if r.Drifted() {
@@ -238,7 +282,6 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		// it must not be reported as drift.
 		chk(nbad == 0, label(fmt.Sprintf(", %d row(s), fields well-formed", len(rows))), hint)
 	}
-	_ = th.Save()
 
 	// .claude.json still records the logged-in email (dashboard labels).
 	_, ok := accounts.MetaEmail(cfg.PrimaryMeta())
@@ -291,10 +334,15 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			"cached payload shape drifted — the offline fallback is unreadable")
 	}
 
+	checkOwnState(cfg, accts, st.Load(), chk, own, skip)
 	checkSessionStore(cfg, accts, chk, skip)
 
 	fmt.Fprintln(out)
 	switch {
+	case fails > 0 && fails == ownFails:
+		fmt.Fprintf(out, "%d check(s) failed, all against headroom's own files — "+
+			"nothing here says Claude Code changed anything\n", fails)
+		return ExitFail
 	case fails > 0:
 		fmt.Fprintf(out, "%d check(s) failed — Claude Code likely changed a format\n", fails)
 		return ExitFail
@@ -368,7 +416,7 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 	listing := sessions.Collect(sessions.Input{
 		ProjectsDir: cfg.ProjectsDir(),
 		CWD:         cfg.Home,
-		OwnersPath:  cfg.OwnersFile(),
+		Owners:      ownerRecords(state.Open(cfg.AccountsRoot).Load()),
 	})
 	if len(listing.Sessions) == 0 {
 		skip("sessions: not tested", "store is empty")
@@ -415,16 +463,96 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 			fmt.Sprintf("%d transcript(s) resolve differently — a record drifted out of the reader's reach", over))
 	}
 
-	// .owners is headroom's own file, but a corrupt one silently reads as
-	// empty (by design, so the picker keeps working) — check is where that
-	// loss becomes visible instead of staying silent. Through the same
-	// parser routing uses: a checker-local decode once passed a document
-	// the loader was rejecting wholesale.
-	if data, err := os.ReadFile(cfg.OwnersFile()); err == nil && len(data) > 0 {
-		_, perr := sessions.ParseOwners(data)
-		chk(perr == nil, "owners: re-home records parse via shared contract",
-			"file corrupt — explicit re-homes are being ignored")
+}
+
+// checkOwnState audits state.json — the one file headroom writes for itself.
+//
+// Every failure here degrades silently by design, so that the surfaces keep
+// working: an unreadable section reads as empty, a future timestamp is
+// ignored, a stale record is skipped. That design is only honest if something
+// says so out loud, and this is it. `own` and `chk` are separate on purpose:
+// a section headroom could not write is headroom's problem, while a stored
+// response that no longer parses is the vendor's, and the closing summary must
+// not confuse the two.
+func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snapshot,
+	chk, own func(bool, string, string), skip func(string, string)) {
+
+	if snap.ReadOnly() {
+		// Not a failure: a newer headroom wrote it, and this binary correctly
+		// refuses to rewrite what it cannot fully understand.
+		skip(fmt.Sprintf("state: schema %d understood", snap.Version()),
+			fmt.Sprintf("written by a newer headroom (this one writes %d) — it is being read, never written",
+				state.Version))
+		return
 	}
+	for _, p := range snap.Problems() {
+		own(false, fmt.Sprintf("state[%s]: section readable", p.Section), p.Detail)
+	}
+	if len(snap.Problems()) == 0 {
+		own(true, "state: every section readable", "")
+	}
+	own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
+		"explicit re-homes are being ignored and cannot be rewritten")
+
+	known := map[string]bool{}
+	for _, a := range accts {
+		known[state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}.ID()] = true
+	}
+	now := time.Now()
+	orphans := 0
+	for _, r := range snap.Audit() {
+		if !known[r.ID] {
+			orphans++
+		}
+		if r.FetchedAtMS > now.Add(2*time.Minute).UnixMilli() {
+			own(false, fmt.Sprintf("state[%s]: observation is not stamped in the future", r.Name),
+				"clock anomaly — these figures are being ignored, so the board shows older ones")
+		}
+		if len(r.Body) == 0 {
+			continue
+		}
+		// The strongest drift assertion available, and free: this body came
+		// from the endpoint, headroom stored it verbatim, and it is re-parsed
+		// here by the function rendering uses. A cached copy of Claude Code's
+		// is second-hand evidence next to it.
+		label := fmt.Sprintf("state[%s]: stored usage response parses via shared contract", r.Name)
+		rows, err := usage.ParseLimits(r.Body)
+		nbad := 0
+		for _, row := range rows {
+			if row.Drifted() {
+				nbad++
+			}
+		}
+		chk(err == nil && nbad == 0, label,
+			"the response headroom itself stored no longer parses — shape drifted")
+	}
+	own(orphans == 0, "state: no ledger records for accounts that are gone",
+		fmt.Sprintf("%d record(s) name an account the filesystem no longer has", orphans))
+
+	// The interop contract with the shell, which has never been checked: zsh
+	// reads this file at every launch and falls back to the primary when it
+	// names nothing real — silently, and with --dangerously-skip-permissions.
+	current := accounts.CurrentTarget(cfg)
+	found := false
+	for _, a := range accts {
+		if a.Name == current {
+			found = true
+		}
+	}
+	own(found, fmt.Sprintf("current: .current names a real account (%s)", current),
+		"bare x will silently fall back to the primary")
+}
+
+// ownerRecords adapts the store's re-home records to the collector's own type.
+// The two stay separate types on purpose: a session's owner is a session-domain
+// fact, and where it happens to be persisted is not the collector's business.
+func ownerRecords(snap state.Snapshot) map[string]sessions.OwnerRec {
+	src := snap.Owners()
+	out := make(map[string]sessions.OwnerRec, len(src))
+	for id, rec := range src {
+		out[id] = sessions.OwnerRec{Account: rec.Account, AtMS: rec.AtMS}
+	}
+	return out
 }
 
 // tokenCheck is what a re-read of the Keychain can establish about a 401.

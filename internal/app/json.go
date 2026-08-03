@@ -14,7 +14,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/throttle"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 type jsonDoc struct {
@@ -83,17 +83,23 @@ var attemptNames = map[render.AttemptState]string{
 	render.AttemptHTTP:                 "http_error",
 	render.AttemptUnparseable:          "unparseable",
 	render.AttemptNoLimits:             "no_limits",
+	render.AttemptStateUnavailable:     "state_unavailable",
 }
 
+// A consumer must be able to tell "this run asked the endpoint" from "a
+// previous run asked and this one replayed the answer" — both are headroom's
+// own reading, but only the first was made now. observed_at already carries
+// the age; source carries who.
 var sourceNames = map[render.Source]string{
 	render.SourceLive:  "live",
+	render.SourceStore: "headroom_cache",
 	render.SourceCache: "claude_cache",
 }
 
 func jsonDocument(list []*accountData, current string, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
-		Schema:      2,
+		Schema:      3,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
 		Current:     current,
 		Accounts:    make([]jsonAccount, 0, len(list)),
@@ -148,12 +154,11 @@ func jsonDocument(list []*accountData, current string, generatedAt time.Time) ([
 func runDashboardJSON(cfg config.Config) int {
 	// current comes from prepare's snapshot: envelope and per-account flags
 	// must agree even if a concurrent select rewrites .current mid-fetch.
-	th := throttle.Load(cfg.AccountsRoot)
-	list, current := prepare(cfg, th)
-	for u := range launchFetches(context.Background(), cfg, list, th) {
-		resolve(list[u.idx], u.res, th, time.Now())
+	st := state.Open(cfg.AccountsRoot)
+	list, current := prepare(cfg, st)
+	for u := range launchFetches(context.Background(), cfg, list, st) {
+		resolve(list[u.idx], u.res, st, time.Now())
 	}
-	_ = th.Save()
 	data, err := jsonDocument(list, current, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)

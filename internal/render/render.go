@@ -59,9 +59,17 @@ const (
 type Source int
 
 const (
-	SourceLive  Source = iota // headroom's own fetch, this run
+	SourceLive  Source = iota // headroom's own fetch, in this process
+	SourceStore               // headroom's own fetch, replayed from the state file
 	SourceCache               // Claude Code's own cache in .claude.json
 )
+
+// Ours reports that headroom fetched this observation itself, whether in this
+// process or an earlier one. The distinction between the two matters to a
+// machine consumer — it is the difference between "this run asked" and "a
+// previous run asked" — but not to the caption: both are headroom's own
+// reading of the endpoint, at the time the observation carries.
+func (s Source) Ours() bool { return s == SourceLive || s == SourceStore }
 
 // Observation is quota data plus the provenance that makes it interpretable.
 // Rows never travel without ObservedAt: an unlabelled number from an unknown
@@ -91,6 +99,10 @@ const (
 	AttemptHTTP        // some other non-200
 	AttemptUnparseable // 200 whose body failed the contract
 	AttemptNoLimits    // 200 reporting no limit windows
+	// AttemptStateUnavailable: headroom's own state file could not be read or
+	// claimed against, so no request was authorized. Like every value here it
+	// is about the request; unlike the others the fault is headroom's own.
+	AttemptStateUnavailable
 )
 
 // Attempt is the outcome of the newest refresh, with the time the account
@@ -102,10 +114,16 @@ type Attempt struct {
 }
 
 // FreshWindow bounds how recent an observation must be to count as current
-// headroom. It is a display and ranking policy, not a vendor promise — quota
-// can move the moment after a fetch. Anything older still renders, labelled
-// with its age, because stale context beats a blank.
-const FreshWindow = 90 * time.Second
+// headroom. It is a display policy, not a vendor promise — quota can move the
+// moment after a fetch. Anything older still renders, labelled with its age,
+// because stale context beats a blank.
+//
+// It is the request spacing rather than a number of its own: inside that
+// window no newer answer is obtainable, so nagging that figures are old would
+// be nagging about something nobody can act on. Two independent 90s constants
+// happened to be equal, and the day one moved the other would have started
+// marking every second run stale.
+const FreshWindow = usage.RequestSpacing
 
 // AccountView is everything needed to draw one account.
 type AccountView struct {
@@ -129,8 +147,25 @@ func (v AccountView) Fresh(now int64) bool {
 // grounds for choosing this account right now? Freshness alone is not —
 // a logged-out account can hold a cache minutes old, and offering it as a
 // live choice on that basis is the mistake this model exists to prevent.
+//
+// Nor is a fresh observation enough on its own. A row whose own reset instant
+// has passed describes a window that has since ended: the percent is a fact
+// about the past, and a *low* one reads as headroom that may not exist.
 func (v AccountView) Actionable(now int64) bool {
-	return v.Health == HealthOK && v.Fresh(now)
+	return v.Health == HealthOK && v.Fresh(now) && !v.RolledOver(now)
+}
+
+// RolledOver reports that some row has outlived the window it describes.
+func (v AccountView) RolledOver(now int64) bool {
+	if v.Obs == nil {
+		return false
+	}
+	for _, r := range v.Obs.Rows {
+		if r.RolledOver(now) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Palette) HeaderLine(v AccountView) string {
@@ -202,9 +237,24 @@ func (p Palette) attemptReason(v AccountView, now int64) string {
 		return "response not parseable — format changed? run headroom check"
 	case AttemptNoLimits:
 		return "no limits reported"
+	case AttemptStateUnavailable:
+		return "headroom's own state file unavailable — run headroom check"
 	default:
 		return "not checked"
 	}
+}
+
+// expected reports that this attempt state says nothing a caption needs to
+// carry when the figures are current.
+//
+// Deferred belongs here and Refused does not, which is the whole reason the
+// two are separate states. Deferred is headroom's own politeness — it declined
+// to ask because no newer answer is obtainable yet — so over current figures
+// there is nothing to report; captioning it would put "live check deferred" on
+// a row that is telling the truth right now. Refused is the endpoint saying
+// no, which is a fact about the budget worth stating even beside fresh bars.
+func expected(s AttemptState) bool {
+	return s == AttemptOK || s == AttemptNone || s == AttemptDeferred
 }
 
 func retryPhrase(nextAt, now int64) string {
@@ -225,10 +275,13 @@ func (p Palette) ProvenanceLine(v AccountView, now int64) string {
 	if v.Obs == nil {
 		return ""
 	}
+	// Three independent clauses, never one verdict: how old the figures are,
+	// where they came from, and how the newest refresh went. All three can be
+	// true at once — twenty seconds old, from Claude Code's cache, refresh
+	// refused — and collapsing them is how a failed refresh used to vanish
+	// behind figures that looked current.
 	fresh := v.Fresh(now)
-	quiet := fresh && v.Obs.Source == SourceLive &&
-		(v.Attempt.State == AttemptOK || v.Attempt.State == AttemptNone)
-	if quiet {
+	if fresh && v.Obs.Source.Ours() && expected(v.Attempt.State) {
 		return ""
 	}
 	parts := []string{"observed " + agePhrase(now-v.Obs.ObservedAt) + " ago"}
@@ -334,14 +387,24 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int, stale bool) st
 	}
 	bar := Bar(r.Percent)
 	pct := fmt.Sprintf("%3d%%", r.Percent)
-	if r.PercentState == usage.StateBad {
+	phrase := ResetPhrase(r.ResetAt, now)
+	switch {
+	case r.PercentState == usage.StateBad:
 		// A percent that no longer parses must not read as real headroom.
 		color = p.Red
 		bar = strings.Repeat("?", BarWidth)
 		pct = "  ?%"
+	case r.RolledOver(now):
+		// The window ended; whatever is being spent against the new one is
+		// unknown. Showing the old number here is the same lie as showing a
+		// drifted one — smaller, and in the direction that invites a choice.
+		color = p.Dim
+		bar = strings.Repeat("·", BarWidth)
+		pct = "  ?%"
+		phrase = "window rolled over"
 	}
 	line := fmt.Sprintf("  %-*s %s[%s]%s %s  %s%s%s",
-		labelWidth, r.Label, color, bar, p.Rst, pct, p.Dim, ResetPhrase(r.ResetAt, now), p.Rst)
+		labelWidth, r.Label, color, bar, p.Rst, pct, p.Dim, phrase, p.Rst)
 	if r.Drifted() {
 		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
 	}

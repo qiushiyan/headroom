@@ -2,7 +2,7 @@
 # Down arrow + enter: pick the second account (a@x.com), exit 0. run.sh
 # asserts the .current write afterward.
 set timeout 10
-spawn $env(HEADROOM_BIN) select
+spawn $env(HEADROOM_BIN) accounts
 expect {
     "esc cancel" {}
     timeout { puts "picker never drew its footer"; exit 2 }

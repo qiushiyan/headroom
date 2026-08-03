@@ -14,6 +14,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 type resumeDoc struct {
@@ -45,7 +46,7 @@ type jsonSession struct {
 }
 
 func runResumeJSON(cfg config.Config) int {
-	listing, _, _, current := collectSessions(cfg)
+	listing, _, _, current := collectSessions(cfg, state.Open(cfg.AccountsRoot))
 	doc := resumeDoc{
 		Schema:      2, // 2: added per-session "model"
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),

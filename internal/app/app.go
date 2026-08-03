@@ -4,7 +4,6 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -21,7 +20,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/throttle"
+	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -44,8 +43,13 @@ func Run(args []string) int {
 		return false
 	}
 	switch cmd {
-	case "":
-		return runDashboard(cfg)
+	// "select" is what this surface was called before it became the whole
+	// board; accepted so a shell integration mid-update keeps working.
+	case "", "accounts", "select":
+		if !noArgs() {
+			return 2
+		}
+		return runAccounts(cfg)
 	case "--json":
 		if !noArgs() {
 			return 2
@@ -56,15 +60,8 @@ func Run(args []string) int {
 			return 2
 		}
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
-	case "select":
-		if !noArgs() {
-			return 2
-		}
-		return runSelect(cfg)
 	case "resume":
 		return runResume(cfg, rest)
-	case "watch":
-		return runWatch(cfg, rest)
 	case "-h", "--help", "help":
 		if !noArgs() {
 			return 2
@@ -81,25 +78,31 @@ func Run(args []string) int {
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: headroom [command]
 
-  (none)   usage dashboard for every account
-  --json   the dashboard as JSON (schema versioned)
-  select   interactively pick the account bare x targets
-  resume   interactively pick a session to resume, on the account that
-           last drove it (--json lists the sessions instead)
-  watch    the dashboard on a lazy refresh loop (--interval <duration>)
-  check    verify the reverse-engineered assumptions still hold
+  (none)     the account board: live usage for every account, refreshing
+  accounts   while it is open; enter picks the account bare x targets.
+             Off a terminal, prints the board once and exits.
+  --json     the board as JSON (schema versioned)
+  resume     interactively pick a session to resume, on the account that
+             last drove it (--json lists the sessions instead)
+  check      verify the reverse-engineered assumptions still hold
 `)
 }
 
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
-// accountData carries one account through the prepare → fetch → render
-// pipeline.
+// accountData carries one account through the prepare → claim → fetch →
+// render pipeline.
 type accountData struct {
-	Acct       accounts.Account
-	View       render.AccountView
-	Token      string
-	NeedsFetch bool
+	Acct accounts.Account
+	Key  state.Key
+	View render.AccountView
+
+	Token string
+	// WantsFetch means the credentials are spendable and nothing local
+	// objects. It is not permission: only a claim granted by the store
+	// authorizes traffic, and Permit is where that lands.
+	WantsFetch bool
+	Permit     int64 // claim generation; 0 = no permit, no request
 }
 
 // sources are the three inputs prepare reads about each account, injected so
@@ -117,9 +120,9 @@ type sources struct {
 // It also returns the current-target name it marked the views with —
 // consumers that report the current account must use this value, not re-read
 // the state file, or a concurrent `select` could make the two disagree.
-func prepare(cfg config.Config, th *throttle.Store) ([]*accountData, string) {
+func prepare(cfg config.Config, st *state.Store) ([]*accountData, string) {
 	accts := accounts.Discover(cfg)
-	return prepareWith(cfg, accts, th, sources{
+	return prepareWith(cfg, accts, st.Load(), sources{
 		readRaw: creds.ReadRaw,
 		health:  queryHealthParallel(accts),
 		now:     time.Now(),
@@ -148,14 +151,14 @@ func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
 }
 
 // prepareWith is prepare with its inputs injected.
-func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store, src sources) ([]*accountData, string) {
+func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapshot, src sources) ([]*accountData, string) {
 	current := accounts.CurrentTarget(cfg)
 	now := src.now
 	nowMS := now.UnixMilli()
 
 	list := make([]*accountData, 0, len(accts))
 	for _, a := range accts {
-		d := &accountData{Acct: a}
+		d := &accountData{Acct: a, Key: state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}}
 		list = append(list, d)
 
 		v := &d.View
@@ -168,22 +171,7 @@ func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store
 		}
 		v.Launcher = accounts.Launcher(a, accts, cfg.PrimaryName)
 		v.Current = current == a.Name
-
-		// Whatever Claude Code last saw is free and needs no permission from
-		// the rate limiter, so it is loaded first: even a refused refresh
-		// then leaves the user with numbers and their age.
-		if a.Meta.CachedUsage != nil {
-			// Zero rows is as much an answer here as it is from the live
-			// endpoint — "this account reported no limit windows at time X"
-			// beats showing nothing at all.
-			if rows, err := usage.ParseLimits(a.Meta.CachedUsage); err == nil {
-				v.Obs = &render.Observation{
-					Rows:       rows,
-					ObservedAt: a.Meta.FetchedAtMS / 1000,
-					Source:     render.SourceCache,
-				}
-			}
-		}
+		v.Obs = newestObservation(snap, d.Key, a.Meta, now)
 
 		raw := src.readRaw(a.ConfigDir)
 		blob, blobOK := creds.Parse(raw)
@@ -203,16 +191,62 @@ func prepareWith(cfg config.Config, accts []accounts.Account, th *throttle.Store
 			// Nothing to spend: the stored token aged out. The account is
 			// fine and a session will refresh it — that is not our business.
 			v.Attempt.State = render.AttemptTokenStale
-		case !th.Eligible(a.Name, now):
-			v.Attempt.State = render.AttemptDeferred
-			v.Attempt.NextEligibleAt = th.NextEligible(a.Name).Unix()
 		default:
+			// What the ledger says right now, for display only. The request is
+			// authorized by the claim in launchFetches and nothing else — this
+			// is the last moment eligibility is a *reading* rather than a
+			// decision, and treating it as permission is how two processes
+			// used to both fetch.
+			if next := snap.NextEligible(d.Key, now); next.After(now) {
+				v.Attempt.State = render.AttemptDeferred
+				v.Attempt.NextEligibleAt = next.Unix()
+				continue
+			}
 			d.Token = blob.Token
-			d.NeedsFetch = true
+			d.WantsFetch = true
 			v.Attempt.State = render.AttemptPending
 		}
 	}
 	return list, current
+}
+
+// newestObservation picks the better of the two things known about an account
+// before any request goes out: what headroom itself last saw, and what Claude
+// Code last cached.
+//
+// Both are free and neither needs permission from the rate limiter, so even a
+// refused refresh leaves the user with numbers and their age. Newest wins
+// outright — headroom's own fetch is usually seconds old and Claude Code's
+// cache hours, but an account driven in a live session while headroom sat idle
+// inverts that, and the timestamp is the only honest way to choose.
+//
+// A body that no longer parses is skipped rather than rendered: a stored
+// response that has stopped meaning anything must not present itself as "no
+// limits reported". `check` is where that loss becomes a report.
+func newestObservation(snap state.Snapshot, k state.Key, meta accounts.Meta, now time.Time) *render.Observation {
+	var best *render.Observation
+	consider := func(body []byte, atMS int64, source render.Source) {
+		if len(body) == 0 || atMS <= 0 {
+			return
+		}
+		// Zero rows is as much an answer here as it is from the live endpoint
+		// — "this account reported no limit windows at time X" beats showing
+		// nothing at all.
+		rows, err := usage.ParseLimits(body)
+		if err != nil {
+			return
+		}
+		at := atMS / 1000
+		if best != nil && at <= best.ObservedAt {
+			return
+		}
+		best = &render.Observation{Rows: rows, ObservedAt: at, Source: source}
+	}
+	if obs, ok := snap.Observation(k, now); ok {
+		consider(obs.Body, obs.FetchedAtMS, render.SourceStore)
+	}
+	consider(meta.CachedUsage, meta.FetchedAtMS, render.SourceCache)
+	return best
 }
 
 // resolveHealth decides one thing: can Claude Code use this account.
@@ -254,31 +288,54 @@ type fetchUpdate struct {
 	res usage.Result
 }
 
-// launchFetches starts all usage fetches in parallel; the channel closes
-// when all are done. Fetch goroutines never touch a view — the caller
-// applies each result with resolve, so views have exactly one writer and a
-// redraw may read every view between receives. The buffer lets senders
-// finish even if the caller stops receiving early.
-func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, th *throttle.Store) <-chan fetchUpdate {
+// launchFetches claims the budget, then starts the permitted fetches in
+// parallel; the channel closes when all are done.
+//
+// The claim is a test-and-set inside the store's lock and its result is what
+// authorizes traffic — an account that wanted a fetch but lost the race is
+// turned back into a deferred row here. Fetch goroutines never touch a view;
+// the caller applies each result with resolve, so views have exactly one
+// writer and a redraw may read every view between receives. The buffer lets
+// senders finish even if the caller stops receiving early.
+func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, st *state.Store) <-chan fetchUpdate {
 	client := &http.Client{Timeout: 10 * time.Second}
 	updates := make(chan fetchUpdate, len(list))
 	var wg sync.WaitGroup
 	now := time.Now()
 
-	// Claim every account's budget and get the claim onto disk *before* any
-	// request leaves. Saving after the goroutines start leaves a window where
-	// traffic is already out while another process still reads the account as
-	// eligible — which is the uncoordinated double-spend this store exists to
-	// prevent.
-	for _, d := range list {
-		if d.NeedsFetch {
-			th.NoteAttempt(d.Acct.Name, now)
+	idx := make([]int, 0, len(list))
+	keys := make([]state.Key, 0, len(list))
+	all := make([]state.Key, 0, len(list))
+	for i, d := range list {
+		all = append(all, d.Key)
+		if d.WantsFetch {
+			idx = append(idx, i)
+			keys = append(keys, d.Key)
 		}
 	}
-	_ = th.Save()
+	// This is the one place holding a complete enumeration of the registry,
+	// which is what pruning by absence requires.
+	_ = st.Prune(all)
+	decisions, err := st.Claim(keys, now)
+	for j, dec := range decisions {
+		d := list[idx[j]]
+		switch {
+		case dec.Permit:
+			d.Permit = dec.Generation
+		case err != nil:
+			// The claim could not be written, so no request may go out: a
+			// claim that never reached disk is one another process cannot see.
+			d.WantsFetch = false
+			d.View.Attempt.State = render.AttemptStateUnavailable
+		default:
+			d.WantsFetch = false
+			d.View.Attempt.State = render.AttemptDeferred
+			d.View.Attempt.NextEligibleAt = dec.NextEligible.Unix()
+		}
+	}
 
 	for i, d := range list {
-		if !d.NeedsFetch {
+		if !d.WantsFetch || d.Permit == 0 {
 			continue
 		}
 		wg.Add(1)
@@ -297,9 +354,16 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 // resolve applies one fetch outcome. It writes the attempt axis always and
 // the observation axis only on success: a refusal or a dead network must
 // leave whatever was already known standing, with its own timestamp intact.
-func resolve(d *accountData, res usage.Result, th *throttle.Store, now time.Time) {
+//
+// The ledger is told the same story through the store, which owns every
+// consequence — strike counts, cooldown arithmetic, and whether the body is
+// worth keeping — and hands back when this account may next be asked, so the
+// row can say so without recomputing it.
+func resolve(d *accountData, res usage.Result, st *state.Store, now time.Time) {
 	v := &d.View
-	name := d.Acct.Name
+	outcome := state.OutcomeFailed
+	var body []byte
+
 	switch {
 	case res.Err != nil:
 		v.Attempt.State = render.AttemptTransport
@@ -308,22 +372,18 @@ func resolve(d *accountData, res usage.Result, th *throttle.Store, now time.Time
 		// soon. Rows, if any, stay exactly as they were.
 		v.Attempt.State = render.AttemptRefused
 		v.Attempt.HTTPCode = res.StatusCode
-		th.NoteRefused(name, now)
-		v.Attempt.NextEligibleAt = th.NextEligible(name).Unix()
+		outcome = state.OutcomeRefused
 	case res.StatusCode != http.StatusOK:
 		v.Attempt.State = render.AttemptHTTP
 		v.Attempt.HTTPCode = res.StatusCode
 	default:
-		// Any 200 proves this account's request budget recovered, whatever
-		// its body turns out to say. Withholding the strike reset until rows
-		// parse would make a later refusal escalate as though refusals had
-		// been consecutive.
-		th.NoteSuccess(name, now)
-
 		rows, err := usage.ParseLimits(res.Body)
 		if err != nil {
+			// A 200 still proves the budget recovered, so it is spent, not
+			// failed — but a body that does not parse is not worth storing.
 			v.Attempt.State = render.AttemptUnparseable
-			return
+			outcome = state.OutcomeSpent
+			break
 		}
 		// Zero rows is a contractual answer — "this account reports no limit
 		// windows" — and it is newer truth than any cached bars, so it
@@ -338,30 +398,13 @@ func resolve(d *accountData, res usage.Result, th *throttle.Store, now time.Time
 			ObservedAt: now.Unix(),
 			Source:     render.SourceLive,
 		}
+		outcome, body = state.OutcomeStored, res.Body
 	}
-}
 
-func runDashboard(cfg config.Config) int {
-	th := throttle.Load(cfg.AccountsRoot)
-	list, _ := prepare(cfg, th)
-	for u := range launchFetches(context.Background(), cfg, list, th) {
-		resolve(list[u.idx], u.res, th, time.Now())
+	next, err := st.Complete(d.Key, d.Permit, outcome, body, now)
+	if err == nil && next.After(now) && v.Attempt.State != render.AttemptOK {
+		v.Attempt.NextEligibleAt = next.Unix()
 	}
-	_ = th.Save()
-	p := render.NewPalette(stdoutIsTTY())
-	now := time.Now().Unix()
-	labelWidth := render.LabelWidth(views(list))
-	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush()
-	for i, d := range list {
-		if i > 0 {
-			fmt.Fprintln(out)
-		}
-		for _, line := range p.AccountBlock(d.View, now, labelWidth) {
-			fmt.Fprintln(out, line)
-		}
-	}
-	return 0
 }
 
 func views(list []*accountData) []render.AccountView {

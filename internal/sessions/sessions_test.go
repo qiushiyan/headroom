@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 func TestMunge(t *testing.T) {
@@ -226,71 +228,34 @@ func TestLiveness(t *testing.T) {
 	}
 }
 
-func TestOwnersStore(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".owners")
-	now := time.UnixMilli(1000)
-	if err := ReHome(path, "", "s1", "a@x.com", now); err != nil {
-		t.Fatal(err)
-	}
-	if err := ReHome(path, "", "s2", "b@x.com", now); err != nil {
-		t.Fatal(err)
-	}
-	m := LoadOwners(path)
-	if m["s1"].Account != "a@x.com" || m["s2"].AtMS != 1000 {
-		t.Fatalf("LoadOwners = %v", m)
-	}
-	if err := ForgetOwner(path, "s2"); err != nil {
-		t.Fatal(err)
-	}
-	if m = LoadOwners(path); len(m) != 1 || m["s2"].Account != "" {
-		t.Fatalf("after forget = %v", m)
-	}
-	// Corrupt file = empty store, and the next write recovers it.
-	os.WriteFile(path, []byte("{broken"), 0o644)
-	if m = LoadOwners(path); len(m) != 0 {
-		t.Fatal("corrupt file must read as empty")
-	}
-	if err := ReHome(path, "", "s4", "d@x.com", now); err != nil {
-		t.Fatal(err)
-	}
-	if m = LoadOwners(path); m["s4"].Account != "d@x.com" {
-		t.Fatal("write over corrupt file must recover")
-	}
-	// A fresh machine has no accounts root yet; the first re-home must
-	// create it rather than fail and strand `x` as an unrecorded routing.
-	fresh := filepath.Join(t.TempDir(), "not-yet", ".owners")
-	if err := ReHome(fresh, "", "s5", "e@x.com", now); err != nil {
-		t.Fatalf("re-home into missing parent: %v", err)
-	}
-	if m = LoadOwners(fresh); m["s5"].Account != "e@x.com" {
-		t.Fatal("re-home into missing parent must persist")
-	}
-}
-
-// GC enumerates the store inside the lock, at write time — never from a
-// caller's snapshot. The trap this pins: picker A collected before session
-// s-new existed; a re-home of s-new (by any picker) must survive A's later
-// write, because the sweep consults the store as it is now, not as A saw it.
+// The GC invariant spans both packages — TranscriptIDs enumerates, the store
+// holds the lock — so it is pinned here, where the transcript fixture lives.
+//
+// GC must consult the store inside the lock, at write time, never a caller's
+// snapshot. The trap: picker A listed before session s-new existed; a re-home
+// of s-new (by any picker) must survive A's later write, because the sweep
+// sees the store as it is now, not as A saw it.
 func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
 	projects, write := storeFixture(t)
-	path := filepath.Join(t.TempDir(), ".owners")
+	st := state.Open(t.TempDir())
+	live := func() (map[string]bool, bool) { return TranscriptIDs(projects) }
 	now := time.Now()
 	write("-tmp-p", "s-old.jsonl", rec("s-old", "/tmp/p", "old"), now)
 
 	// A re-home for a session that has since lost its transcript…
-	if err := ReHome(path, projects, "s-gone", "a@x.com", now); err != nil {
+	if err := st.ReHome("s-gone", "a@x.com", now, live); err != nil {
 		t.Fatal(err)
 	}
 	// …then s-new appears (created after any earlier listing), is re-homed…
 	write("-tmp-p", "s-new.jsonl", rec("s-new", "/tmp/p", "new"), now)
-	if err := ReHome(path, projects, "s-new", "b@x.com", now); err != nil {
+	if err := st.ReHome("s-new", "b@x.com", now, live); err != nil {
 		t.Fatal(err)
 	}
 	// …and a further write GCs: s-gone (no transcript) goes, s-new stays.
-	if err := ReHome(path, projects, "s-old", "c@x.com", now); err != nil {
+	if err := st.ReHome("s-old", "c@x.com", now, live); err != nil {
 		t.Fatal(err)
 	}
-	m := LoadOwners(path)
+	m := st.Load().Owners()
 	if _, ok := m["s-gone"]; ok {
 		t.Error("transcriptless record must be swept")
 	}
@@ -483,31 +448,17 @@ func TestCollectWidensPastModellessTail(t *testing.T) {
 	}
 }
 
-// A hollow record ({"s":{}}) is corruption, not data: headroom is the only
-// writer, and a container-level decode once let `check` pass a store that
-// routing was silently ignoring.
-func TestParseOwnersRejectsHollowRecords(t *testing.T) {
-	if _, err := ParseOwners([]byte(`{"owners":{"s":{}}}`)); err == nil {
-		t.Error("hollow record must not parse")
-	}
-	if _, err := ParseOwners([]byte(`{"owners":{"s":{"account":"a","atMs":0}}}`)); err == nil {
-		t.Error("zero timestamp must not parse")
-	}
-	if m, err := ParseOwners([]byte(`{"owners":{"s":{"account":"a","atMs":5}}}`)); err != nil || m["s"].Account != "a" {
-		t.Errorf("valid record rejected: %v %v", m, err)
-	}
-}
-
 // A store walk that fails anywhere concludes nothing: one unreadable project
 // dir must suspend GC entirely, not sweep the re-homes whose transcripts
 // live inside it.
 func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 	projects, write := storeFixture(t)
-	path := filepath.Join(t.TempDir(), ".owners")
+	st := state.Open(t.TempDir())
+	live := func() (map[string]bool, bool) { return TranscriptIDs(projects) }
 	now := time.Now()
 	write("-p-hidden", "s-hidden.jsonl", rec("s-hidden", "/p/hidden", "hidden"), now)
 	write("-p-open", "s-open.jsonl", rec("s-open", "/p/open", "open"), now)
-	if err := ReHome(path, projects, "s-hidden", "a@x.com", now); err != nil {
+	if err := st.ReHome("s-hidden", "a@x.com", now, live); err != nil {
 		t.Fatal(err)
 	}
 	hidden := filepath.Join(projects, "-p-hidden")
@@ -515,10 +466,10 @@ func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
-	if err := ReHome(path, projects, "s-open", "b@x.com", now); err != nil {
+	if err := st.ReHome("s-open", "b@x.com", now, live); err != nil {
 		t.Fatal(err)
 	}
-	m := LoadOwners(path)
+	m := st.Load().Owners()
 	if m["s-hidden"].Account != "a@x.com" {
 		t.Errorf("partial enumeration must not GC: %v", m)
 	}
