@@ -31,6 +31,13 @@ Everything derives from that tree:
   constructs absolute dirs: `config.Load` refuses relative `HEADROOM_*`
   overrides (and never rewrites an accepted spelling — the Keychain hash is
   keyed on it), and `launch.Extra` refuses a relative dir at construction.
+  A second door into the same chimera, found while auditing the first:
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` redirects the *credential* lookup
+  independently of the config dir (verified 2.1.220 by experiment — with it
+  set, `auth status` answers from the named dir's Keychain item while
+  config state stays the config dir's). headroom never sets it and
+  `launch.Target.Env` strips any inherited value, with the usual
+  said-out-loud reporting on launch stderr and in `check`.
 - **Labels, and a free usage cache.** Each dir's `.claude.json` records the
   email actually logged in (`.oauthAccount.emailAddress`); the board warns
   when that contradicts the dir's name — `/login` picked the wrong account in

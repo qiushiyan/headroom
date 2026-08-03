@@ -160,6 +160,11 @@ parse:
 		fmt.Fprintf(os.Stderr, "headroom launch: ignoring inherited CLAUDE_CONFIG_DIR=%s; launching %s (%s)\n",
 			v, a.Name, a.Dir(cfg))
 	}
+	if v, present := launch.AmbientSecureStorage(base); present {
+		// Same treatment: obeying it would take credentials from a dir the
+		// decision never named — one account's tokens under another's state.
+		fmt.Fprintf(os.Stderr, "headroom launch: ignoring inherited CLAUDE_SECURESTORAGE_CONFIG_DIR=%s\n", v)
+	}
 	if err := execClaude(rest, tgt.Env(base)); err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1

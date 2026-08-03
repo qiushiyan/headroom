@@ -2,6 +2,7 @@ package launch
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -141,5 +142,23 @@ func TestExtraAndForRefuseRelativeDirs(t *testing.T) {
 	}
 	if tgt, err := For("/abs/dir"); err != nil || tgt.IsPrimary() {
 		t.Errorf("For(\"/abs/dir\") = (%v, %v), want an extra", tgt, err)
+	}
+}
+
+// The credential-redirect variable (verified 2.1.220: it selects which
+// Keychain item answers, independently of the config dir) must never survive
+// into a child: an inherited value would pair one account's tokens with
+// another's state on any managed launch.
+func TestEnvStripsSecureStorageVar(t *testing.T) {
+	base := []string{"HOME=/u", SecureStorageVar + "=/somewhere/else", "TERM=xterm"}
+	for _, tgt := range []Target{Primary(), extra(t, "/abs/dir")} {
+		for _, kv := range tgt.Env(base) {
+			if strings.HasPrefix(kv, SecureStorageVar+"=") {
+				t.Errorf("%v leaked %q", tgt, kv)
+			}
+		}
+	}
+	if v, present := AmbientSecureStorage(base); !present || v != "/somewhere/else" {
+		t.Errorf("AmbientSecureStorage = (%q, %v)", v, present)
 	}
 }

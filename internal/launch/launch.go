@@ -29,6 +29,16 @@ import (
 // EnvVar is the vendor's config-dir selector.
 const EnvVar = "CLAUDE_CONFIG_DIR"
 
+// SecureStorageVar redirects the vendor's *credential* lookup independently
+// of EnvVar (verified 2.1.220 by experiment: with it set, `auth status`
+// answers from the named dir's Keychain item while config state stays the
+// config dir's). An ambient value would therefore split any managed launch
+// into a chimera — one account's tokens under another's state — so the
+// environment constructor strips it unconditionally; headroom never sets it,
+// because per-config-dir credential selection is exactly the verified
+// default this package builds on.
+const SecureStorageVar = "CLAUDE_SECURESTORAGE_CONFIG_DIR"
+
 // Target is a validated routing decision: the primary, or one non-primary
 // config dir. The zero value is the primary, so a forgotten construction
 // fails toward the account selected by an *absent* variable rather than
@@ -74,12 +84,13 @@ func For(configDir string) (Target, error) {
 func (t Target) IsPrimary() bool { return t.configDir == "" }
 
 // Env builds a child environment for this target from base (normally
-// os.Environ()). Every inherited EnvVar entry — duplicates included — is
-// removed; a non-primary target's dir is then appended exactly once.
+// os.Environ()). Every inherited EnvVar and SecureStorageVar entry —
+// duplicates included — is removed; a non-primary target's dir is then
+// appended exactly once.
 func (t Target) Env(base []string) []string {
 	out := make([]string, 0, len(base)+1)
 	for _, kv := range base {
-		if !strings.HasPrefix(kv, EnvVar+"=") {
+		if !strings.HasPrefix(kv, EnvVar+"=") && !strings.HasPrefix(kv, SecureStorageVar+"=") {
 			out = append(out, kv)
 		}
 	}
@@ -87,6 +98,18 @@ func (t Target) Env(base []string) []string {
 		out = append(out, EnvVar+"="+t.configDir)
 	}
 	return out
+}
+
+// AmbientSecureStorage reports an inherited SecureStorageVar. Always
+// conflicting when present: headroom never produces one, and obeying it
+// would take credentials from a dir the routing decision never named.
+func AmbientSecureStorage(base []string) (value string, present bool) {
+	for _, kv := range base {
+		if v, ok := strings.CutPrefix(kv, SecureStorageVar+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // Ambient returns what base carries for EnvVar: its value, and whether the

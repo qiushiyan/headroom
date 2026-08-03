@@ -581,6 +581,13 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 		}
 	}
 
+	// The credential-redirect variable gets the same reporting: managed
+	// launches strip it (obeying it would pair one account's tokens with
+	// another's state — verified 2.1.220), unmanaged tools still obey it.
+	if v, present := launch.AmbientSecureStorage(environ); present {
+		chk(true, fmt.Sprintf("env: inherited CLAUDE_SECURESTORAGE_CONFIG_DIR is neutralized by managed launches (%q)", v), "")
+	}
+
 	// Every discovered config dir must be absolute: config.Load refuses
 	// relative roots and launch.Extra refuses relative dirs, so a relative
 	// path here means a construction this binary no longer performs — or a
