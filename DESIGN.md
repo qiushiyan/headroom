@@ -153,7 +153,10 @@ engineered from the 2.1.220 store and all perishable:
 - **Transcripts describe themselves, from the tail.** Titles live *inside*
   each `<uuid>.jsonl` as repeated `ai-title` records (latest wins) and
   `custom-title` records (user rename; outranks), previews as `last-prompt`
-  records; there is no session index file. The first pass reads
+  records, and the newest assistant record's `message.model` names the model
+  that last drove the session (`"<synthetic>"` marks vendor error
+  placeholders, never a model, and is skipped); there is no session index
+  file. The first pass reads
   `sessions.TailBudget` (64KB) from EOF — measured to resolve everything
   for almost every transcript — and when no cwd verifies there (a session
   can end in one message bigger than the budget) the window widens until

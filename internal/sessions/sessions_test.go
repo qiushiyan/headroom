@@ -43,6 +43,23 @@ func TestParseTailTitleChain(t *testing.T) {
 	}
 }
 
+func TestParseTailModel(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"a"}]}}`,
+		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"claude-fable-5","content":[{"type":"tool_use"}]}}`,
+		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"err"}]}}`,
+	}
+	tail := ParseTail([]byte(strings.Join(lines, "\n")+"\n"), "-tmp-proj", true)
+	if tail.Model != "claude-fable-5" {
+		t.Errorf("Model = %q: newest wins, tool-use-only records count, <synthetic> never does", tail.Model)
+	}
+	// The synthetic placeholder must not surface even when it is the only claim.
+	only := `{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"<synthetic>","content":[]}}` + "\n"
+	if got := ParseTail([]byte(only), "-tmp-proj", true).Model; got != "" {
+		t.Errorf("Model = %q, want empty for synthetic-only", got)
+	}
+}
+
 func TestParseTailCwdVerifiedNotDemunged(t *testing.T) {
 	// The transcript visits several cwds; only the one whose munge equals the
 	// store dir name is the resume target — the newest such value wins, and a

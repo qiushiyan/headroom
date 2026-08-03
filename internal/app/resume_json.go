@@ -33,6 +33,7 @@ type jsonSession struct {
 	Repo        string `json:"repo,omitempty"`
 	Checkout    string `json:"checkout,omitempty"` // worktree/checkout root
 	Branch      string `json:"branch,omitempty"`
+	Model       string `json:"model,omitempty"` // newest assistant model id, verbatim
 	Local       bool   `json:"local"`
 	ModifiedAt  string `json:"modified_at"` // RFC3339 UTC
 	SizeBytes   int64  `json:"size_bytes"`
@@ -46,7 +47,7 @@ type jsonSession struct {
 func runResumeJSON(cfg config.Config) int {
 	listing, _, _, current := collectSessions(cfg)
 	doc := resumeDoc{
-		Schema:      1,
+		Schema:      2, // 2: added per-session "model"
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Current:     current,
 		LocalKey:    listing.LocalKey,
@@ -61,6 +62,7 @@ func runResumeJSON(cfg config.Config) int {
 			Repo:        s.RepoKey,
 			Checkout:    s.RepoRoot,
 			Branch:      s.Tail.Branch,
+			Model:       s.Tail.Model,
 			Local:       s.Local,
 			ModifiedAt:  s.MTime.UTC().Format(time.RFC3339),
 			SizeBytes:   s.Size,

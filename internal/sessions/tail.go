@@ -46,6 +46,7 @@ type Tail struct {
 	LastReply   string // newest assistant text
 	CWD         string // newest cwd whose munge equals the store dir name
 	Branch      string // display hint only, never repo identity
+	Model       string // newest assistant record's model id, verbatim
 
 	Lines int // complete lines parsed
 	Bad   int // complete lines that failed to parse — drift, tagged not hidden
@@ -82,6 +83,7 @@ type tailRec struct {
 	IsMeta       bool    `json:"isMeta"`
 	Message      *struct {
 		Role    string          `json:"role"`
+		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
@@ -154,6 +156,12 @@ func ParseTail(data []byte, storeDirName string, whole bool) Tail {
 			}
 		case "assistant":
 			if r.Message != nil {
+				// "<synthetic>" is the vendor's placeholder on error records —
+				// a marker, not a model that drove anything. Tool-use-only
+				// records still name the model, so this doesn't gate on text.
+				if r.Message.Model != "" && r.Message.Model != "<synthetic>" {
+					t.Model = r.Message.Model
+				}
 				if s := textBlocks(r.Message.Content); s != "" {
 					t.LastReply = s
 				}

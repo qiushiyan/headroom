@@ -286,7 +286,7 @@ func (ui *resumeUI) refilter(query string) {
 
 func matches(s *sessions.Session, q string) bool {
 	hay := strings.ToLower(strings.Join([]string{
-		s.Tail.Title(), s.Tail.Branch, projectLabel(s), s.Owner, s.ID,
+		s.Tail.Title(), s.Tail.Branch, projectLabel(s), s.Owner, s.ID, s.Tail.Model,
 	}, " "))
 	return strings.Contains(hay, q)
 }
@@ -432,12 +432,18 @@ func (ui *resumeUI) commitDelete() {
 
 // ---- rendering ----
 
+// pageSize counts sessions per screen, not lines: every entry is two lines,
+// and ctrl-d/u move in sessions.
 func (ui *resumeUI) pageSize() int {
 	_, h, err := ui.t.Size()
 	if err != nil || h < 8 {
 		h = 24
 	}
-	return h - 5 // header, section labels amortized, footer
+	n := (h - 5) / 2 // header, section labels amortized, footer
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 func projectLabel(s *sessions.Session) string {
@@ -496,13 +502,13 @@ func (ui *resumeUI) draw() {
 	if body < 3 {
 		body = 3
 	}
-	// Scroll to keep the selected row in view.
+	// Scroll to keep the selected entry — both of its lines — in view.
 	if selLine >= 0 {
 		if selLine < ui.top {
 			ui.top = selLine
 		}
-		if selLine >= ui.top+body {
-			ui.top = selLine - body + 1
+		if selLine+1 >= ui.top+body {
+			ui.top = selLine + 2 - body
 		}
 	}
 	if ui.top > len(rowLines)-body {
@@ -576,7 +582,7 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
 		if i == ui.sel {
 			selLine = len(lines)
 		}
-		lines = append(lines, ui.rowLine(s, i == ui.sel, w, now))
+		lines = append(lines, ui.sessionLines(s, i == ui.sel, w, now)...)
 		if i == ui.sel && ui.preview {
 			lines = append(lines, ui.previewLines(s, w)...)
 		}
@@ -591,12 +597,14 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
 	return lines, selLine
 }
 
-func (ui *resumeUI) rowLine(s *sessions.Session, selected bool, w int, now int64) string {
+// sessionLines renders one session as a two-line entry. The first line
+// carries what muscle memory recognizes a session by — where it ran (branch
+// or worktree locally, branch·project elsewhere), whether it is open right
+// now, which model last drove it, and when. The second line, dimmed, is the
+// confirming detail: the title on the left, the owner account on the right,
+// sharing the first line's right edge.
+func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now int64) []string {
 	p := ui.p
-	title := render.Sanitize(s.Tail.Title())
-	if title == "" {
-		title = "⟨untitled⟩"
-	}
 
 	var marks []string
 	if s.Live == sessions.Live {
@@ -608,36 +616,111 @@ func (ui *resumeUI) rowLine(s *sessions.Session, selected bool, w int, now int64
 	if !s.DirOK {
 		marks = append(marks, p.Red+"✗ dir gone"+p.Rst)
 	}
-	label := localLabel(s)
-	if !s.Local {
-		label = projectLabel(s)
-	}
-	meta := []string{}
-	if label != "" {
-		meta = append(meta, render.Sanitize(label))
-	}
-	meta = append(meta, ownerTag(s, ui.current), render.Age(now-s.MTime.Unix()))
-	metaStr := strings.Join(meta, " · ")
-	if len(marks) > 0 {
-		metaStr = strings.Join(marks, " ") + " " + metaStr
+	marksStr := strings.Join(marks, " ")
+
+	right := render.Age(now - s.MTime.Unix())
+	if m := modelLabel(s.Tail.Model); m != "" {
+		right = m + " · " + right
 	}
 
 	prefix := "  "
 	if selected {
 		prefix = p.Bold + "▶ " + p.Rst
 	}
-	// Fixed right column, flexing title. Cell arithmetic, not runes: titles
-	// are the first place a CJK string meets framePrinter-style layouts.
-	metaCells := render.Cells(stripSGR(metaStr))
-	titleWidth := w - 2 - metaCells - 2
+	// Fixed right column, flexing label. Cell arithmetic, not runes: vendor
+	// text is the first place a CJK string meets framePrinter-style layouts.
+	label := render.Sanitize(primaryLabel(s))
+	labelWidth := w - 2 - render.Cells(right) - 2
+	if marksStr != "" {
+		labelWidth -= render.Cells(stripSGR(marksStr)) + 2
+	}
+	if labelWidth < 8 {
+		labelWidth = 8
+	}
+	if render.Cells(label) > labelWidth {
+		label = render.TrimCells(label, labelWidth-1) + "…"
+	}
+	left := prefix + label
+	if marksStr != "" {
+		left += "  " + marksStr
+	}
+	pad := w - render.Cells(stripSGR(left)) - render.Cells(right)
+	if pad < 2 {
+		pad = 2
+	}
+	line1 := left + strings.Repeat(" ", pad) + p.Dim + right + p.Rst
+
+	title := render.Sanitize(s.Tail.Title())
+	if title == "" {
+		title = "⟨untitled⟩"
+	}
+	owner := ownerTag(s, ui.current)
+	titleWidth := w - 4 - render.Cells(owner) - 2
 	if titleWidth < 8 {
 		titleWidth = 8
 	}
-	line := prefix + render.PadCell(title, titleWidth) + "  " + p.Dim + metaStr + p.Rst
-	if selected {
-		return line
+	line2 := "    " + p.Dim + render.PadCell(title, titleWidth) + "  " + owner + p.Rst
+	return []string{line1, line2}
+}
+
+// primaryLabel is a session's first-line identity — where it ran. In the
+// local section that is the checkout (branch in the main checkout, worktree
+// dir name elsewhere); in the global section the branch leads when one is
+// known, with the project after it as the disambiguator.
+func primaryLabel(s *sessions.Session) string {
+	if s.Local {
+		if l := localLabel(s); l != "" {
+			return l
+		}
+		return projectLabel(s)
 	}
-	return line
+	proj := projectLabel(s)
+	if b := s.Tail.Branch; b != "" && b != proj {
+		return b + " · " + proj
+	}
+	return proj
+}
+
+// modelLabel compresses a vendor model id for the meta column:
+// "claude-opus-4-5-20251101" → "opus-4.5", "claude-fable-5" → "fable-5".
+// Unknown shapes pass through minus the claude- prefix — a new id must stay
+// identifiable, never disappear.
+func modelLabel(id string) string {
+	if id == "" {
+		return ""
+	}
+	parts := strings.Split(id, "-")
+	if parts[0] == "claude" {
+		parts = parts[1:]
+	}
+	var name, ver []string
+	for _, part := range parts {
+		switch {
+		case !allDigits(part):
+			name = append(name, part)
+		case len(part) == 8:
+			// date stamp — precision the row doesn't need
+		default:
+			ver = append(ver, part)
+		}
+	}
+	label := strings.Join(name, "-")
+	if len(ver) > 0 {
+		if label != "" {
+			label += "-"
+		}
+		label += strings.Join(ver, ".")
+	}
+	return label
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // stripSGR removes escape sequences for width computation.
