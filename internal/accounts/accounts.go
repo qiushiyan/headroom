@@ -205,7 +205,7 @@ func MetaEmail(metaPath string) (string, bool) {
 // for utility commands. Shell integration that generates the launcher
 // functions must reserve the same names — see DESIGN.md, "The launcher
 // contract".
-var reservedLocalParts = []string{"usage", "account", "account-add", "select", "accounts", "acc"}
+var reservedLocalParts = []string{"usage", "account", "account-add", "select", "accounts", "acc", "check"}
 
 // Launcher is the command advertised for an account: x-<email> is the
 // guaranteed identity; a short x-<local-part> alias exists only when the

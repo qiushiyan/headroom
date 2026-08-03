@@ -280,12 +280,12 @@ shell-launcher family is expected to provide: `x-<email>` as the guaranteed
 identity, with a short `x-<local-part>` alias only when the local part is
 unique among accounts, isn't the primary account's name, and isn't a
 reserved utility name (`usage`, `account`, `account-add`, `select`,
-`accounts`, `acc`) — the rule and list live in `accounts.Launcher`. Shell
-integration that generates the actual functions must apply the same rule, and
-must read `.current` the way headroom writes it: the account's dir name (or
-the primary's configured name), newline-terminated, renamed into place
-atomically. The board's job ends at that state write — launching interactive
-sessions belongs to the shell.
+`accounts`, `acc`, `check`) — the rule and list live in `accounts.Launcher`.
+Shell integration that generates the actual functions must apply the same
+rule, and must read `.current` the way headroom writes it: the account's dir
+name (or the primary's configured name), newline-terminated, renamed into
+place atomically. The board's job ends at that state write — launching
+interactive sessions belongs to the shell.
 
 ## Dependencies and shape
 
