@@ -77,6 +77,30 @@ EOF2
 done
 export RESUME_OUT="$work/resume.out"
 
+# The exec-success fixture: an extra account with valid topology owning one
+# session, and a stub claude that records the config dir and argv it
+# received. PATH gains the stub only inside sessions_exec.exp — every other
+# test keeps the real claude (auth probes must stay honest).
+mkdir -p "$work/stub"
+cat >"$work/stub/claude" <<'EOS'
+#!/bin/sh
+echo "STUB-CLAUDE cfg=${CLAUDE_CONFIG_DIR-unset} args=$*"
+exit 0
+EOS
+chmod +x "$work/stub/claude"
+export STUB_DIR="$work/stub"
+sid2="99999999-8888-7777-6666-555555555555"
+cat >"$store2/$sid2.jsonl" <<EOF3
+{"type":"user","sessionId":"$sid2","cwd":"$proj2","message":{"role":"user","content":"exec me"}}
+{"type":"ai-title","aiTitle":"exec fixture target","sessionId":"$sid2"}
+EOF3
+# Older than the first fixture: row 1 belongs to resume_write/resume_delete,
+# and sessions_exec reaches this one by filter, never by position.
+touch -t 202601011220 "$store2/$sid2.jsonl"
+ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/a@x.com/projects"
+printf '{"display":"exec me","sessionId":"%s","timestamp":2000}\n' "$sid2" \
+    >"$HEADROOM_ACCOUNTS_ROOT/a@x.com/history.jsonl"
+
 fail=0
 run() {
     rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$RESUME_OUT"
@@ -161,6 +185,18 @@ fi
 run resume_write
 if [ ! -e "$RESUME_OUT" ] || [ -s "$RESUME_OUT" ]; then
     echo "FAIL resume_write: cd file missing or non-empty after a refusal"
+    fail=1
+fi
+
+# Enter on a session owned by an extra account with valid topology: the
+# picker becomes claude — here the stub, which prints the routing it
+# received. Pins the whole exec path through a real terminal: owner
+# resolution, topology pass, chdir, environment, --resume placement, and
+# the cd file carrying the entered dir.
+run sessions_exec
+if [ "$(cat "$RESUME_OUT" 2>/dev/null)" != "$proj2" ]; then
+    echo "FAIL sessions_exec: cd file should carry the entered dir:"
+    cat "$RESUME_OUT" 2>/dev/null | sed 's/^/     /'
     fail=1
 fi
 

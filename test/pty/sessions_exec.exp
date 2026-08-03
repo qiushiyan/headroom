@@ -1,0 +1,29 @@
+#!/usr/bin/expect -f
+# The commit path end to end, through a real terminal: filter to the fixture
+# session owned by the extra account, enter, and the picker process becomes
+# claude — the stub, which prints the config dir and argv it received. What
+# this pins that go test cannot: the real TTY teardown → chdir → exec chain,
+# and that the child's stdout is this same terminal.
+set timeout 10
+set env(PATH) "$env(STUB_DIR):$env(PATH)"
+spawn $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT) -- --dangerously-skip-permissions
+expect {
+    "q quit" {}
+    timeout { puts "picker never drew its footer"; exit 2 }
+}
+send -- "/exec fixture target\r"
+expect {
+    "exec fixture target" {}
+    timeout { puts "filter never found the fixture session"; exit 2 }
+}
+send -- "\r"
+expect {
+    -re {STUB-CLAUDE cfg=[^ ]*a@x\.com args=--dangerously-skip-permissions --resume 99999999-8888-7777-6666-555555555555} {}
+    timeout { puts "stub claude never ran with the expected routing"; exit 2 }
+}
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} {
+    puts "exit [lindex $result 3], want 0 (the stub's own status passes through)"
+    exit 2
+}
