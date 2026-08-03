@@ -552,8 +552,14 @@ func TestLockAcquisitionIsBounded(t *testing.T) {
 
 // A JSON null decodes into a map without error and leaves the map nil, so a
 // section written as `null` passes every readability check this package has
-// and then panics the first write that touches it. Vendor files this tool
-// reads are full of nulls; its own must survive one.
+// and then panics the first write that touches it.
+//
+// It is read as "no records", not as corruption, and that is deliberate: null
+// is JSON's own way of spelling absence, and an absent section already means
+// an empty one. The asymmetry with a wrong-typed section is the point — `5`
+// has no reading, while `null` has exactly one. Nor does the lenient reading
+// grant anything: whatever can write `null` here can equally delete the file,
+// which lands in the same place by the documented path.
 func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"accounts":null,"sessions":null}`)
@@ -564,6 +570,11 @@ func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	}
 	if err := s.ReHome("s1", "a@x.com", time.Now(), nil); err != nil {
 		t.Errorf("re-home over a null sessions section: %v", err)
+	}
+	// Nothing was destroyed to get there — a null section held no re-home to
+	// lose, which is what separates this from the hollow-record case.
+	if _, ok := Open(root).Load().Owner("s1"); !ok {
+		t.Error("the re-home did not survive")
 	}
 }
 

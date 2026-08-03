@@ -26,7 +26,11 @@ expect {
     timeout { puts "board did not arm a refresh on r"; exit 2 }
 }
 
-# Fifty refresh keys at once, as a held-down key would deliver them.
+# Fifty refresh keys at once, as a held-down key would deliver them. What this
+# proves is that the loop stays alive and responsive; that the burst cannot
+# become fifty requests is the claim's property, pinned in go test — the
+# fixture accounts have no credentials, so nothing here ever reaches the
+# endpoint to be counted.
 send -- "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
 sleep 0.5
 expect {

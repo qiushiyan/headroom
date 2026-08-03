@@ -353,8 +353,9 @@ func (s Snapshot) Observation(k Key, now time.Time) (Observation, bool) {
 }
 
 // NextEligible is when this account may next be asked; the zero time means
-// "now". Surfaces render it so a deferred account explains itself instead of
-// looking broken.
+// "now". The board's scheduler uses it to pick the instant of the next round;
+// what a *row* says comes from the claim's own answer, so that a rendered
+// deadline is always the one the claim actually applied.
 //
 // A deadline further out than the maximum cooldown cannot have been written by
 // this code and is clamped: a clock step forward while a cooldown was live

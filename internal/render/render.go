@@ -103,6 +103,10 @@ const (
 	// claimed against, so no request was authorized. Like every value here it
 	// is about the request; unlike the others the fault is headroom's own.
 	AttemptStateUnavailable
+	// AttemptIdentityUnknown: this account's .claude.json could not be parsed,
+	// so which per-account budget it shares is unknown. Asking anyway would
+	// spend against a bucket that might not be its own.
+	AttemptIdentityUnknown
 )
 
 // Attempt is the outcome of the newest refresh, with the time the account
@@ -239,6 +243,8 @@ func (p Palette) attemptReason(v AccountView, now int64) string {
 		return "no limits reported"
 	case AttemptStateUnavailable:
 		return "headroom's own state file unavailable — run headroom check"
+	case AttemptIdentityUnknown:
+		return "account identity unreadable — .claude.json did not parse"
 	default:
 		return "not checked"
 	}

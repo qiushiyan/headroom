@@ -51,13 +51,14 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
 	}
 
-	// But a board with nothing to ask about — every account logged out, or its
-	// token aged out — must not treat the floor as a cadence. Each round costs
-	// a `claude auth status` per account to re-learn the same answer.
+	// A board with nothing to ask about must not treat the floor as a cadence
+	// either — each round costs a `claude auth status` spawn per account to
+	// re-learn the same answer. How far it backs off is
+	// TestAnIdleBoardStillComesBack's business.
 	ui = &picker{st: state.Open(t.TempDir()), list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
-	if wait := ui.nextAt.Sub(now); wait < presenceWindow-2*time.Second {
-		t.Errorf("next round in %v; nothing was asking, so there is nothing to wait for", wait)
+	if wait := ui.nextAt.Sub(now); wait <= refreshFloor {
+		t.Errorf("idle board polls every %v, at a subprocess spawn per account", wait)
 	}
 }
 
@@ -93,7 +94,9 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 func TestRefreshIsRememberedNotDropped(t *testing.T) {
 	now := time.Now()
 	st := state.Open(t.TempDir())
-	ui := &picker{st: st, nextAt: now.Add(time.Minute), lastKey: now}
+	// wanted > 0: an account is genuinely waiting on the endpoint's budget,
+	// which is the only thing arming is polite about.
+	ui := &picker{st: st, wanted: 1, nextAt: now.Add(time.Minute), lastKey: now}
 
 	ui.refresh(context.Background())
 	if !ui.armed {
@@ -106,5 +109,38 @@ func TestRefreshIsRememberedNotDropped(t *testing.T) {
 	if !ui.armed {
 		t.Error("r during a round was dropped; the round in flight carries only the "+
 			"accounts that were eligible when it started")
+	}
+}
+
+// A board with nothing to fetch — every token aged out, say — still has to
+// come back. Two ways the quiet cadence can be wrong, both introduced by
+// slowing it down: the round can be scheduled past the presence window that
+// gates it, in which case it never fires at all, and `r` can be made to wait
+// for an interval that nothing is actually waiting on.
+func TestAnIdleBoardStillComesBack(t *testing.T) {
+	now := time.Now()
+	ui := &picker{st: state.Open(t.TempDir()), list: []*accountData{{Key: state.Key{Name: "a"}}}}
+	ui.schedule()
+
+	if wait := ui.nextAt.Sub(now); wait >= presenceWindow {
+		t.Errorf("next round in %v, but presence expires at %v — measured from the same "+
+			"instant, so the round can never fire", wait, presenceWindow)
+	}
+
+	// `r` with nothing spendable is not waiting on the endpoint's budget: no
+	// claim was attempted, so there is nothing to be polite about.
+	ui.lastRound = now.Add(-refreshFloor - time.Second)
+	if !ui.canRunNow(now) {
+		t.Error("r was deferred behind an interval with no budget behind it")
+	}
+	// But not so freely that a held key can spin prepare's subprocess spawns.
+	ui.lastRound = now
+	if ui.canRunNow(now) {
+		t.Error("a held r would re-run prepare as fast as keys arrive")
+	}
+	// And with work actually pending, the claim's cadence still rules.
+	ui.wanted, ui.lastRound = 1, now.Add(-time.Hour)
+	if ui.canRunNow(now) {
+		t.Error("an account waiting on the budget must not be re-asked early")
 	}
 }

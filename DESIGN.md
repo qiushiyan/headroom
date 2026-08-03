@@ -159,11 +159,15 @@ ledger, the responses, and the session re-homes.
   the generation its claim was issued under, so a slow request that outlived
   its claim is dropped instead of overwriting a newer answer.
 - **The ledger keys on the account's own UUID**, from `.claude.json`, falling
-  back to the dir name when the vendor reports none. The budget is per
-  account, so two config dirs logged into the same account share one bucket —
-  and keying by identity *deletes* the guard against replaying a re-logged
-  dir's old quota rather than adding one: a re-logged dir simply has a
-  different key.
+  back to the dir name only when that file parsed and reported none. The
+  budget is per account, so two config dirs logged into the same account share
+  one bucket — and keying by identity *deletes* the guard against replaying a
+  re-logged dir's old quota rather than adding one: a re-logged dir simply has
+  a different key. The distinction between "parsed, no UUID" and "did not
+  parse" is load-bearing rather than pedantic: Claude Code rewrites that file
+  constantly, so a torn read would otherwise move the key to a second, empty
+  bucket and spend the same account's budget twice within seconds. An account
+  whose identity cannot be read is not asked about at all until it can.
 - **It records what was bought, not only what was spent.** A ledger of
   requests alone leaves every run inside its quiet period with nothing of its
   own to show, falling back to Claude Code's cache — which is written only
@@ -311,9 +315,10 @@ What `go test` can't reach — signal-time terminal restoration, real picker
 interaction — lives in the committed expect(1) harness (`make test-pty`,
 `test/pty/`): SIGTERM must leave the terminal sane; arrows + enter must select
 and write state; ESC must cancel writing nothing; the board must redraw its
-own countdown and survive a held-down refresh key without turning it into a
-request storm; resume must emit exactly its decision line on stdout, write
-nothing on cancel,
+own countdown from its own ticker and stay responsive under a held-down
+refresh key (that the key cannot *become* traffic is the claim's property, and
+is pinned in `go test`); resume must emit exactly its decision line on stdout,
+write nothing on cancel,
 survive SIGTERM inside the alternate screen, and delete only inside the
 harness's fixture store — `HEADROOM_HOME` re-points the primary config dir
 and session store, and exists so a `dd` test can never touch the real

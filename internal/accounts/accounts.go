@@ -121,6 +121,14 @@ type Meta struct {
 	// loses that sharing.
 	AccountUUID string
 
+	// Readable distinguishes "this file parsed and reports no UUID" from "this
+	// file could not be read at all". Both leave AccountUUID empty, and only
+	// the first may fall back to the dir name: Claude Code rewrites
+	// .claude.json constantly, so a torn read would otherwise move the ledger
+	// key to a second, empty bucket and spend the same account's budget twice
+	// within seconds.
+	Readable bool
+
 	// CachedUsage is the raw `cachedUsageUtilization.utilization` object,
 	// byte-identical in shape to the live endpoint's body, so it goes to
 	// usage.ParseLimits unchanged rather than earning a second parser.
@@ -166,7 +174,7 @@ func ReadMeta(metaPath string) (Meta, error) {
 	// Explicitly None: tag.OK is tag.State's zero value, so leaving this
 	// implicit would have an account with no cache at all claim to have a
 	// valid one.
-	m := Meta{CacheState: tag.None, AccountUUID: doc.OauthAccount.AccountUUID}
+	m := Meta{CacheState: tag.None, AccountUUID: doc.OauthAccount.AccountUUID, Readable: true}
 	if doc.OauthAccount.EmailAddress != nil {
 		m.Email, m.EmailOK = *doc.OauthAccount.EmailAddress, true
 	}

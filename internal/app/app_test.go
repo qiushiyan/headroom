@@ -400,12 +400,21 @@ func TestACorruptLedgerDoesNotFanOutOnTheNextRun(t *testing.T) {
 	writeJSON(t, filepath.Join(cfg.AccountsRoot, "state.json"), `{"version":1,"accounts":5}`)
 
 	now := time.Now()
-	oneRound(t, cfg, blobs, now)
+	first := oneRound(t, cfg, blobs, now)
 	oneRound(t, cfg, blobs, now.Add(time.Second))
 
 	if n := requests.Load(); n != 0 {
 		t.Errorf("an unreadable ledger issued %d request(s); the quarantine is supposed to "+
 			"leave every account quiet for one cooldown", n)
+	}
+	// And the run that met the corruption must say so as headroom's own
+	// problem: "live check deferred" is a statement about the endpoint's
+	// budget, and the endpoint has said nothing. (The run after it is
+	// ordinarily deferred — by then the quarantine has left a real cooldown
+	// record, and `check` is where the corruption itself gets reported.)
+	if got := first["a@x.com"].View.Attempt.State; got != render.AttemptStateUnavailable {
+		t.Errorf("attempt = %v, want state_unavailable: the ledger could not be read, "+
+			"so nothing here is news about the account's budget", got)
 	}
 }
 
@@ -445,9 +454,10 @@ func TestATornAccountFileDoesNotCostTheStoredObservation(t *testing.T) {
 	writeJSON(t, metaPath, goodMeta)
 	back := oneRound(t, cfg, blobs, now.Add(2*time.Second))["a@x.com"]
 
-	if n := requests.Load(); n > 2 {
-		t.Errorf("%d requests in three seconds for one account: the torn read cost it "+
-			"its cooldown, which is the fan-out the ledger exists to prevent", n)
+	if n := requests.Load(); n != 1 {
+		t.Errorf("%d requests in three seconds for one account, want 1: the budget is per "+
+			"account, so a key that moves because a vendor file was read mid-write must "+
+			"not buy a second bucket", n)
 	}
 	if back.View.Obs == nil || back.View.Obs.Source != render.SourceStore {
 		t.Errorf("the stored observation did not survive the torn read: %+v", back.View.Obs)

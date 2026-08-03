@@ -84,6 +84,7 @@ var attemptNames = map[render.AttemptState]string{
 	render.AttemptUnparseable:          "unparseable",
 	render.AttemptNoLimits:             "no_limits",
 	render.AttemptStateUnavailable:     "state_unavailable",
+	render.AttemptIdentityUnknown:      "identity_unknown",
 }
 
 // A consumer must be able to tell "this run asked the endpoint" from "a

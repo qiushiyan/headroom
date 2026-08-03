@@ -48,6 +48,13 @@ type Decision struct {
 	Permit       bool
 	Generation   int64     // pass back to Complete; identifies this attempt
 	NextEligible time.Time // when to try again; zero means now
+
+	// Degraded means the denial is headroom's own problem, not the endpoint's
+	// budget. The store knows the difference — an unreadable ledger is not a
+	// refusal — and a caller that cannot see it renders "live check deferred"
+	// over a file nobody could read, which is a statement about a budget the
+	// endpoint has said nothing about.
+	Degraded bool
 }
 
 // Outcome is what became of a permitted request. It is deliberately about the
@@ -102,7 +109,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 				r.Name = k.Name
 				r.Request.NextEligibleMS = now.Add(CooldownMax).UnixMilli()
 				d.accounts[k.ID()] = r
-				out[i] = Decision{Key: k, NextEligible: now.Add(CooldownMax)}
+				out[i] = Decision{Key: k, NextEligible: now.Add(CooldownMax), Degraded: true}
 			}
 			return nil
 		}

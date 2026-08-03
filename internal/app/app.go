@@ -191,6 +191,14 @@ func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapsho
 			// Nothing to spend: the stored token aged out. The account is
 			// fine and a session will refresh it — that is not our business.
 			v.Attempt.State = render.AttemptTokenStale
+		case !a.Meta.Readable:
+			// Which quota bucket this dir shares is unknown, so any claim would
+			// be against a bucket that might not be this account's — and the
+			// budget is per account. Spending on a guess is the double-spend
+			// the ledger exists to prevent, so this run asks nothing and says
+			// why. Ordinarily transient: Claude Code rewrites the file
+			// constantly, and the next run reads it whole.
+			v.Attempt.State = render.AttemptIdentityUnknown
 		default:
 			// Spendable credentials and nothing local objecting. Whether a
 			// request actually goes out is the claim's decision in
@@ -364,8 +372,9 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 		switch {
 		case dec.Permit:
 			d.Permit = dec.Generation
-		case err != nil:
-			// The claim could not be written, so no request may go out: a
+		case err != nil || dec.Degraded:
+			// The claim could not be written or could not be reasoned from, so
+			// no request may go out — and the row says whose problem that is. A
 			// claim that never reached disk is one another process cannot see.
 			d.WantsFetch = false
 			d.View.Attempt.State = render.AttemptStateUnavailable

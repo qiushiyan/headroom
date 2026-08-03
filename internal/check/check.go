@@ -266,7 +266,12 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		// bought: the next board render is entitled to figures this run paid
 		// for, and a check that threw them away would leave the user staring
 		// at older numbers immediately after verifying the endpoint works.
-		_, _ = st.Complete(c.key, c.permit, state.OutcomeStored, c.res.Body, now)
+		// A failure to store is headroom's own, and this command is the one
+		// place that reports on headroom's own files — swallowing it here is
+		// how a run pays for a response and silently loses it.
+		_, storeErr := st.Complete(c.key, c.permit, state.OutcomeStored, c.res.Body, now)
+		own(storeErr == nil, fmt.Sprintf("state[%s]: response this run paid for was stored", c.name),
+			fmt.Sprintf("%v — the board will fall back to older figures", storeErr))
 		nbad := 0
 		for _, r := range rows {
 			if r.Drifted() {

@@ -27,6 +27,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
+	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // presenceWindow is how long after the last keypress the board keeps
@@ -228,12 +229,27 @@ func (ui *picker) schedule() {
 	// Unless nothing was asking in the first place. With every account logged
 	// out or its token aged out there is no eligibility to wait for, and the
 	// floor would become the cadence — spawning `claude auth status` per
-	// account twice a minute to re-learn the same answer. Poll at the rate a
-	// logged-out account can plausibly change instead.
+	// account twice a minute to re-learn the same answer. The request spacing
+	// is the right rate for that too: it is the slowest cadence at which this
+	// board ever tells the user something new, and it must stay *under* the
+	// presence window, which is measured from the same instant and would
+	// otherwise have expired by the time the round came due — a poll scheduled
+	// past its own gate never fires at all.
 	if ui.wanted == 0 {
-		next = now.Add(presenceWindow)
+		next = now.Add(usage.RequestSpacing)
 	}
 	ui.nextAt = next
+}
+
+// canRunNow reports that `r` should re-run immediately rather than arm.
+//
+// Arming is politeness toward the endpoint's budget, and with nothing
+// spendable there is no budget in play — no claim was attempted, so no request
+// is being deferred. What still applies is the cost of `prepare` itself, a
+// `claude auth status` spawn per account, so the floor holds against a held
+// key.
+func (ui *picker) canRunNow(now time.Time) bool {
+	return ui.wanted == 0 && !now.Before(ui.lastRound.Add(refreshFloor))
 }
 
 const refreshFloor = 30 * time.Second
@@ -260,7 +276,8 @@ func (ui *picker) refresh(ctx context.Context) {
 		ui.armed = true
 		return
 	}
-	if ui.nextAt.IsZero() || !time.Now().Before(ui.nextAt) {
+	now := time.Now()
+	if ui.nextAt.IsZero() || !now.Before(ui.nextAt) || ui.canRunNow(now) {
 		ui.startRound(ctx)
 		return
 	}
