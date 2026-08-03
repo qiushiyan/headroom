@@ -411,8 +411,8 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 				over++
 			}
 		}
-		chk(over == 0, fmt.Sprintf("sessions: %dKB tail resolves the same title/cwd as the whole file", sessions.TailBudget>>10),
-			fmt.Sprintf("%d transcript(s) resolve differently — a record drifted beyond the budget", over))
+		chk(over == 0, "sessions: the adaptive tail reader resolves the same title/cwd as a full parse",
+			fmt.Sprintf("%d transcript(s) resolve differently — a record drifted out of the reader's reach", over))
 	}
 
 	// .owners is headroom's own file, but a corrupt one silently reads as

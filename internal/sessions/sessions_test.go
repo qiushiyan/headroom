@@ -439,3 +439,44 @@ func TestCollectWidensPastCwdlessTail(t *testing.T) {
 		t.Errorf("title = %q", s.Tail.Title())
 	}
 }
+
+// A hollow record ({"s":{}}) is corruption, not data: headroom is the only
+// writer, and a container-level decode once let `check` pass a store that
+// routing was silently ignoring.
+func TestParseOwnersRejectsHollowRecords(t *testing.T) {
+	if _, err := ParseOwners([]byte(`{"owners":{"s":{}}}`)); err == nil {
+		t.Error("hollow record must not parse")
+	}
+	if _, err := ParseOwners([]byte(`{"owners":{"s":{"account":"a","atMs":0}}}`)); err == nil {
+		t.Error("zero timestamp must not parse")
+	}
+	if m, err := ParseOwners([]byte(`{"owners":{"s":{"account":"a","atMs":5}}}`)); err != nil || m["s"].Account != "a" {
+		t.Errorf("valid record rejected: %v %v", m, err)
+	}
+}
+
+// A store walk that fails anywhere concludes nothing: one unreadable project
+// dir must suspend GC entirely, not sweep the re-homes whose transcripts
+// live inside it.
+func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
+	projects, write := storeFixture(t)
+	path := filepath.Join(t.TempDir(), ".owners")
+	now := time.Now()
+	write("-p-hidden", "s-hidden.jsonl", rec("s-hidden", "/p/hidden", "hidden"), now)
+	write("-p-open", "s-open.jsonl", rec("s-open", "/p/open", "open"), now)
+	if err := ReHome(path, projects, "s-hidden", "a@x.com", now); err != nil {
+		t.Fatal(err)
+	}
+	hidden := filepath.Join(projects, "-p-hidden")
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
+	if err := ReHome(path, projects, "s-open", "b@x.com", now); err != nil {
+		t.Fatal(err)
+	}
+	m := LoadOwners(path)
+	if m["s-hidden"].Account != "a@x.com" {
+		t.Errorf("partial enumeration must not GC: %v", m)
+	}
+}

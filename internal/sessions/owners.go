@@ -3,6 +3,7 @@ package sessions
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,10 @@ type ownersDoc struct {
 
 // ParseOwners is the one reader of the .owners document, shared by routing
 // and by `check` — a checker with its own looser decode once passed a file
-// the loader was rejecting wholesale.
+// the loader was rejecting wholesale. Records are validated whole: headroom
+// is this file's only writer, so an id without an account or a timestamp is
+// corruption, and a container that decodes around hollow records would have
+// `check` pass a store routing silently ignores.
 func ParseOwners(data []byte) (map[string]OwnerRec, error) {
 	var doc ownersDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -43,6 +47,11 @@ func ParseOwners(data []byte) (map[string]OwnerRec, error) {
 	}
 	if doc.Owners == nil {
 		return nil, errors.New("no owners object")
+	}
+	for id, rec := range doc.Owners {
+		if id == "" || rec.Account == "" || rec.AtMS <= 0 {
+			return nil, fmt.Errorf("malformed record for %q", id)
+		}
 	}
 	return doc.Owners, nil
 }
@@ -130,7 +139,9 @@ func UpdateOwners(path, projectsDir string, mutate func(map[string]OwnerRec)) er
 
 // transcriptIDs enumerates the ids present in the store right now, by
 // filename (the uuid before any suffix — canonical and orphaned alike).
-// ok=false means the walk itself failed and nothing may be concluded.
+// ok=false means the walk failed *anywhere* and nothing may be concluded:
+// a partial set that silently omitted one unreadable project dir would GC
+// every re-home whose transcript lives there.
 func transcriptIDs(projectsDir string) (map[string]bool, bool) {
 	dirs, err := os.ReadDir(projectsDir)
 	if err != nil {
@@ -143,7 +154,7 @@ func transcriptIDs(projectsDir string) (map[string]bool, bool) {
 		}
 		files, err := os.ReadDir(filepath.Join(projectsDir, d.Name()))
 		if err != nil {
-			continue
+			return nil, false
 		}
 		for _, f := range files {
 			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {

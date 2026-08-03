@@ -391,6 +391,12 @@ func (ui *resumeUI) commitRename() {
 	if s == nil || title == "" || title == s.Tail.Title() {
 		return
 	}
+	// Re-checked at commit, not only at mode entry: the user can sit in the
+	// editor while another terminal opens this very session.
+	if ui.liveNow(s) != sessions.NotLive {
+		ui.message = "session is open elsewhere — rename there (Ctrl+R)"
+		return
+	}
 	if err := sessions.AppendCustomTitle(s.Path, s.ID, title); err != nil {
 		ui.message = "rename failed: " + err.Error()
 		return
