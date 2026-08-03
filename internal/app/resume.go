@@ -457,6 +457,24 @@ func projectLabel(s *sessions.Session) string {
 	}
 }
 
+// localSectionLabel names the local group the way the user thinks of it: the
+// repo — worktree-aware, since not every checkout lives under the cwd — with
+// the directory (~-abbreviated) as the non-repo fallback.
+func (ui *resumeUI) localSectionLabel() string {
+	for _, s := range ui.listing.Sessions {
+		if s.Local && s.RepoKey != "" {
+			return render.Sanitize(filepath.Base(s.RepoKey))
+		}
+	}
+	if k := ui.listing.LocalKey; k != "" {
+		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(k, home+"/") {
+			k = "~" + strings.TrimPrefix(k, home)
+		}
+		return render.Sanitize(k)
+	}
+	return "this repo"
+}
+
 // localLabel distinguishes the checkouts of one repo: the branch in the main
 // checkout, the worktree dir name elsewhere.
 func localLabel(s *sessions.Session) string {
@@ -570,7 +588,7 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
 		}
 		if sec != section {
 			section = sec
-			label := "this repo"
+			label := ui.localSectionLabel()
 			if sec == 1 {
 				label = "elsewhere"
 			}
@@ -600,9 +618,8 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
 // sessionLines renders one session as a two-line entry. The first line
 // carries what muscle memory recognizes a session by — where it ran (branch
 // or worktree locally, branch·project elsewhere), whether it is open right
-// now, which model last drove it, and when. The second line, dimmed, is the
-// confirming detail: the title on the left, the owner account on the right,
-// sharing the first line's right edge.
+// now, and the meta column: model, account, age. The second line, dimmed,
+// is just the confirming title.
 func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now int64) []string {
 	p := ui.p
 
@@ -618,10 +635,12 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	}
 	marksStr := strings.Join(marks, " ")
 
-	right := render.Age(now - s.MTime.Unix())
+	var meta []string
 	if m := modelLabel(s.Tail.Model); m != "" {
-		right = m + " · " + right
+		meta = append(meta, m)
 	}
+	meta = append(meta, ownerTag(s, ui.current), render.Age(now-s.MTime.Unix()))
+	right := strings.Join(meta, " · ")
 
 	prefix := "  "
 	if selected {
@@ -654,12 +673,14 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	if title == "" {
 		title = "⟨untitled⟩"
 	}
-	owner := ownerTag(s, ui.current)
-	titleWidth := w - 4 - render.Cells(owner) - 2
+	titleWidth := w - 4
 	if titleWidth < 8 {
 		titleWidth = 8
 	}
-	line2 := "    " + p.Dim + render.PadCell(title, titleWidth) + "  " + owner + p.Rst
+	if render.Cells(title) > titleWidth {
+		title = render.TrimCells(title, titleWidth-1) + "…"
+	}
+	line2 := "    " + p.Dim + title + p.Rst
 	return []string{line1, line2}
 }
 
