@@ -84,13 +84,29 @@ func startMatches(e RegistryEntry, startUnix int64) bool {
 	return d >= -startTolerance && d <= startTolerance
 }
 
+// liveRank orders states by strength of evidence: proof of life beats
+// uncertainty beats absence. The enum's numeric order can't serve here —
+// LiveUnknown's value is the largest, and comparing raw values once let an
+// unverifiable stale claim demote a session the probe had *proven* open,
+// past the resume guard that refuses only Live.
+func liveRank(s LiveState) int {
+	switch s {
+	case Live:
+		return 2
+	case LiveUnknown:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // Liveness resolves registry entries against a probe into per-session state.
 // Verified live wins over unverifiable; a claim whose pid is gone or whose
 // start instant mismatches (a recycled pid) is not live at all.
 func Liveness(entries []RegistryEntry, probe PIDProbe) map[string]LiveState {
 	m := map[string]LiveState{}
 	set := func(id string, s LiveState) {
-		if s > m[id] {
+		if liveRank(s) > liveRank(m[id]) {
 			m[id] = s
 		}
 	}
@@ -111,6 +127,18 @@ func Liveness(entries []RegistryEntry, probe PIDProbe) map[string]LiveState {
 		}
 	}
 	return m
+}
+
+// LiveNow re-establishes one session's liveness at action time. The
+// listing's snapshot is for display; a mutation (or a resume refusal) must
+// not trust it — a session opened after the picker drew would otherwise be
+// renamed or deleted while a vendor process holds the file.
+func LiveNow(id string, accts []AccountRef, probe PIDProbe) LiveState {
+	var entries []RegistryEntry
+	for _, a := range accts {
+		entries = append(entries, ReadRegistry(a.Name, a.Dir)...)
+	}
+	return Liveness(entries, probe)[id]
 }
 
 // LiveAccount is which account holds a verified-live claim for a session —

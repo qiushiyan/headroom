@@ -2,8 +2,10 @@ package sessions
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -19,7 +21,7 @@ import (
 //
 // A missing or corrupt file is an empty store, like .throttle: losing a
 // re-home downgrades routing to derived evidence, visibly, never breaks the
-// tool.
+// tool. `check` is where that loss becomes a report instead of a silence.
 
 // OwnerRec is one explicit re-home.
 type OwnerRec struct {
@@ -31,17 +33,31 @@ type ownersDoc struct {
 	Owners map[string]OwnerRec `json:"owners"`
 }
 
-// LoadOwners reads the re-home records.
+// ParseOwners is the one reader of the .owners document, shared by routing
+// and by `check` — a checker with its own looser decode once passed a file
+// the loader was rejecting wholesale.
+func ParseOwners(data []byte) (map[string]OwnerRec, error) {
+	var doc ownersDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Owners == nil {
+		return nil, errors.New("no owners object")
+	}
+	return doc.Owners, nil
+}
+
+// LoadOwners reads the re-home records; any failure is an empty store.
 func LoadOwners(path string) map[string]OwnerRec {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return map[string]OwnerRec{}
 	}
-	var doc ownersDoc
-	if json.Unmarshal(data, &doc) != nil || doc.Owners == nil {
+	m, err := ParseOwners(data)
+	if err != nil {
 		return map[string]OwnerRec{}
 	}
-	return doc.Owners
+	return m
 }
 
 // UpdateOwners applies one mutation under an exclusive lock: reload, mutate,
@@ -50,11 +66,17 @@ func LoadOwners(path string) map[string]OwnerRec {
 // protects readers from torn files, not writers from each other, and unlike
 // a lost throttle claim a lost re-home is a lost user decision.
 //
-// keep reports whether an id's record is still worth holding; records for
-// transcripts that no longer exist (and aren't live) are dropped here, on
-// write, so the file tracks the store instead of growing forever. keep=nil
-// skips GC — correct when the caller can't enumerate the store.
-func UpdateOwners(path string, mutate func(map[string]OwnerRec), keep func(id string) bool) error {
+// GC — dropping records whose transcript no longer exists, so the file
+// tracks the store instead of growing forever — enumerates the store *here,
+// inside the lock*, from projectsDir. It must never be a caller-supplied
+// predicate: a predicate is a snapshot of the caller's listing, and a
+// concurrent picker's re-home of a session created after that listing would
+// be swept away by the very lock that claims to protect it. Empty
+// projectsDir skips GC.
+func UpdateOwners(path, projectsDir string, mutate func(map[string]OwnerRec)) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return err
@@ -66,14 +88,21 @@ func UpdateOwners(path string, mutate func(map[string]OwnerRec), keep func(id st
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
 	m := LoadOwners(path)
-	mutate(m)
-	if keep != nil {
-		for id := range m {
-			if !keep(id) {
-				delete(m, id)
+	// GC before the mutation, so the record this very call writes can never
+	// be swept by it — the sweep only ever removes entries that predate this
+	// lock acquisition and lost their transcript.
+	if projectsDir != "" {
+		if exists, ok := transcriptIDs(projectsDir); ok {
+			for id := range m {
+				if !exists[id] {
+					delete(m, id)
+				}
 			}
 		}
+		// A store that failed to enumerate skips GC entirely: an empty or
+		// unreadable walk must not mass-delete every re-home.
 	}
+	mutate(m)
 	data, err := json.Marshal(ownersDoc{Owners: m})
 	if err != nil {
 		return err
@@ -99,17 +128,47 @@ func UpdateOwners(path string, mutate func(map[string]OwnerRec), keep func(id st
 	return os.Rename(tmp.Name(), path)
 }
 
+// transcriptIDs enumerates the ids present in the store right now, by
+// filename (the uuid before any suffix — canonical and orphaned alike).
+// ok=false means the walk itself failed and nothing may be concluded.
+func transcriptIDs(projectsDir string) (map[string]bool, bool) {
+	dirs, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil, false
+	}
+	ids := map[string]bool{}
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(projectsDir, d.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			id, _, _ := strings.Cut(f.Name(), ".")
+			if id != "" {
+				ids[id] = true
+			}
+		}
+	}
+	return ids, true
+}
+
 // ReHome records that the user explicitly routed a session to an account.
-func ReHome(path, id, account string, at time.Time, keep func(string) bool) error {
-	return UpdateOwners(path, func(m map[string]OwnerRec) {
+func ReHome(path, projectsDir, id, account string, at time.Time) error {
+	return UpdateOwners(path, projectsDir, func(m map[string]OwnerRec) {
 		m[id] = OwnerRec{Account: account, AtMS: at.UnixMilli()}
-	}, keep)
+	})
 }
 
 // ForgetOwner drops a session's record — a deleted transcript needs no
 // routing preference.
 func ForgetOwner(path, id string) error {
-	return UpdateOwners(path, func(m map[string]OwnerRec) {
+	return UpdateOwners(path, "", func(m map[string]OwnerRec) {
 		delete(m, id)
-	}, nil)
+	})
 }

@@ -44,7 +44,7 @@ type jsonSession struct {
 }
 
 func runResumeJSON(cfg config.Config) int {
-	listing, _, current := collectSessions(cfg)
+	listing, _, _, current := collectSessions(cfg)
 	doc := resumeDoc{
 		Schema:      1,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),

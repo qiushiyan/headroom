@@ -42,7 +42,7 @@ func psProbe(pid int) (int64, bool) {
 	return t.Unix(), true
 }
 
-func collectSessions(cfg config.Config) (sessions.Listing, []accounts.Account, string) {
+func collectSessions(cfg config.Config) (sessions.Listing, []sessions.AccountRef, []accounts.Account, string) {
 	accts := accounts.Discover(cfg)
 	refs := make([]sessions.AccountRef, 0, len(accts))
 	for _, a := range accts {
@@ -56,7 +56,7 @@ func collectSessions(cfg config.Config) (sessions.Listing, []accounts.Account, s
 		OwnersPath:  cfg.OwnersFile(),
 		Probe:       psProbe,
 	})
-	return listing, accts, accounts.CurrentTarget(cfg)
+	return listing, refs, accts, accounts.CurrentTarget(cfg)
 }
 
 // resumeUI is the picker's whole mutable state. One mode value at a time —
@@ -67,6 +67,7 @@ type resumeUI struct {
 	t       *tui.Terminal
 	p       render.Palette
 	listing sessions.Listing
+	refs    []sessions.AccountRef
 	accts   []accounts.Account
 	current string // account name bare x targets; also the affinity fallback
 
@@ -103,7 +104,7 @@ func runResume(cfg config.Config, args []string) int {
 		return 2
 	}
 
-	listing, accts, current := collectSessions(cfg)
+	listing, refs, accts, current := collectSessions(cfg)
 	t, err := tui.OpenTTY()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom resume: %v\n", err)
@@ -112,7 +113,7 @@ func runResume(cfg config.Config, args []string) int {
 	defer t.Close()
 
 	ui := &resumeUI{cfg: cfg, t: t, p: render.NewPalette(true),
-		listing: listing, accts: accts, current: current}
+		listing: listing, refs: refs, accts: accts, current: current}
 	ui.refilter("")
 	ui.draw()
 
@@ -182,7 +183,7 @@ func (ui *resumeUI) handle(k tui.Key) (bool, int) {
 		ui.mode = modeNormal
 		if k == (tui.Key{Kind: tui.KeyRune, Rune: 'd'}) && time.Now().Before(ui.deadline) {
 			if s := ui.selected(); s != nil {
-				if s.Live != sessions.NotLive {
+				if ui.liveNow(s) != sessions.NotLive {
 					ui.message = "session is open elsewhere — not deleting"
 				} else {
 					ui.mode = modeConfirmD
@@ -313,6 +314,15 @@ func (ui *resumeUI) resumeAccount(s *sessions.Session, override bool) (accounts.
 	return accounts.Account{}, false
 }
 
+// liveNow re-establishes the selected session's liveness at action time —
+// the listing's snapshot is display state, and a session opened since the
+// picker drew must still gate every mutation and the resume refusal. The
+// fresh answer also lands back on the row so the display tells the truth.
+func (ui *resumeUI) liveNow(s *sessions.Session) sessions.LiveState {
+	s.Live = sessions.LiveNow(s.ID, ui.refs, psProbe)
+	return s.Live
+}
+
 // commitResume ends the session with the decision line on stdout. The frame
 // goes down first (Close restores the alt screen), then exactly one write:
 // project dir, session id, config dir — tab-separated, which is safe because
@@ -323,7 +333,7 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 		return false, 0
 	}
 	switch {
-	case s.Live == sessions.Live:
+	case ui.liveNow(s) == sessions.Live:
 		ui.message = "open in another terminal — switch there instead"
 		return false, 0
 	case !s.DirOK:
@@ -345,17 +355,13 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 	if override {
 		// Recorded before the launch: source "the user pointed it here", to
 		// be outranked by any newer vendor evidence on the same time axis.
-		ids := map[string]bool{}
-		for _, sess := range ui.listing.Sessions {
-			ids[sess.ID] = true
-		}
-		err := sessions.ReHome(ui.cfg.OwnersFile(), s.ID, acct.Name, time.Now(),
-			func(id string) bool { return ids[id] })
+		// `x`'s user-visible contract is atomic — re-home recorded, then the
+		// launch decision — so a failed write keeps the picker open instead
+		// of launching a session that would route back on the next enter.
+		err := sessions.ReHome(ui.cfg.OwnersFile(), ui.cfg.ProjectsDir(), s.ID, acct.Name, time.Now())
 		if err != nil {
-			ui.t.Close()
-			fmt.Fprintf(os.Stderr, "headroom resume: re-home not recorded: %v\n", err)
-			fmt.Printf("%s\t%s\t%s\n", s.CWD, s.ID, acct.ConfigDir)
-			return true, 0
+			ui.message = "re-home not recorded (" + err.Error() + ") — enter resumes without it"
+			return false, 0
 		}
 	}
 	ui.t.Close()
@@ -368,7 +374,7 @@ func (ui *resumeUI) startRename() {
 	if s == nil {
 		return
 	}
-	if s.Live != sessions.NotLive {
+	if ui.liveNow(s) != sessions.NotLive {
 		// The vendor's writer may hold this file open; interleaving with a
 		// buffered append could land our record mid-line. The one mutation
 		// exception stays bounded to files nobody else has open.
@@ -398,7 +404,7 @@ func (ui *resumeUI) commitDelete() {
 	if s == nil {
 		return
 	}
-	if s.Live != sessions.NotLive {
+	if ui.liveNow(s) != sessions.NotLive {
 		ui.message = "session is open elsewhere — not deleting"
 		return
 	}

@@ -153,12 +153,16 @@ engineered from the 2.1.220 store and all perishable:
 - **Transcripts describe themselves, from the tail.** Titles live *inside*
   each `<uuid>.jsonl` as repeated `ai-title` records (latest wins) and
   `custom-title` records (user rename; outranks), previews as `last-prompt`
-  records; there is no session index file. Everything the list needs sits
-  within `sessions.TailBudget` (64KB) of EOF — measured, and asserted by
-  `check`, because the day a title drifts past the budget the picker shows
-  ⟨untitled⟩ while believing itself healthy. Listability is structural:
-  top-level `<uuid>.jsonl` files are sessions; `<uuid>/` closure dirs hold
-  subagent transcripts and are not.
+  records; there is no session index file. The first pass reads
+  `sessions.TailBudget` (64KB) from EOF — measured to resolve everything
+  for almost every transcript — and when no cwd verifies there (a session
+  can end in one message bigger than the budget) the window widens until
+  one does or the file is exhausted, because a resumable row rendered
+  "dir gone" is the picker lying. `check` asserts the tail resolves the
+  same title and cwd as a full-file parse for every oversized transcript —
+  the assertion that fires the day a load-bearing record drifts out of
+  reach. Listability is structural: top-level `<uuid>.jsonl` files are
+  sessions; `<uuid>/` closure dirs hold subagent transcripts and are not.
 - **The cd target is verified, never de-munged.** `claude --resume <id>`
   resolves only from the session's owning project dir, and store dir names
   munge `/` and `.` to `-` — lossily. The resume target is therefore the

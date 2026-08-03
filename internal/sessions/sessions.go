@@ -146,7 +146,13 @@ func Collect(in Input) Listing {
 	return out
 }
 
-// readSession stats and tail-parses one transcript file.
+// readSession stats and tail-parses one transcript file. The first pass
+// reads TailBudget bytes, which resolves every field for almost every
+// transcript — but a session can end in one enormous message, starving the
+// tail of any munge-verifiable cwd while the file plainly holds one. A row
+// wrongly marked unresumable is the picker lying, so the window widens
+// geometrically until a cwd verifies or the whole file has been read (rare:
+// 5 of 178 in the live store, and only ever on multi-MB files).
 func readSession(storeDir, storeDirName, name string) *Session {
 	path := filepath.Join(storeDir, name)
 	fi, err := os.Stat(path)
@@ -159,13 +165,19 @@ func readSession(storeDir, storeDirName, name string) *Session {
 	}
 	defer f.Close()
 	size := fi.Size()
-	off := int64(0)
-	if size > TailBudget {
-		off = size - TailBudget
+	var tail Tail
+	for window := int64(TailBudget); ; window *= 2 {
+		off := size - window
+		if off < 0 {
+			off = 0
+		}
+		buf := make([]byte, size-off)
+		n, _ := f.ReadAt(buf, off)
+		tail = ParseTail(buf[:n], storeDirName, off == 0)
+		if tail.CWD != "" || off == 0 {
+			break
+		}
 	}
-	buf := make([]byte, size-off)
-	n, _ := f.ReadAt(buf, off)
-	tail := ParseTail(buf[:n], storeDirName, off == 0)
 
 	id := tail.ID
 	if id == "" {
@@ -203,14 +215,11 @@ func resolveOwner(id string, registry []RegistryEntry, probe PIDProbe,
 			bestAcct, bestTS, bestState = acct, ts, st
 			conflict = false
 		case ts == bestTS && ts > 0 && acct != bestAcct:
-			// Two accounts claiming the same newest moment: an explicit
-			// re-home outranks derived history at the same instant (the user
-			// said so); two history claims are genuinely undecidable.
-			if st == OwnerRehome {
-				bestAcct, bestState = acct, st
-			} else if bestState != OwnerRehome {
-				conflict = true
-			}
+			// Two accounts claiming the same newest moment is undecidable,
+			// whatever the sources — the contract has exactly one tie rule,
+			// visible fallback, and a re-home exception here would make the
+			// spec lie about the rare case it exists to keep honest.
+			conflict = true
 		}
 	}
 	if rec, ok := owners[id]; ok {

@@ -157,9 +157,9 @@ func TestResolveOwner(t *testing.T) {
 			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerMissing},
 		{"same-instant history claims are undecidable", nil, nil,
 			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 100}}), "", OwnerConflict},
-		{"rehome breaks a same-instant tie", nil,
+		{"same-instant rehome vs history is a conflict too", nil,
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 100}},
-			hist(map[string]map[string]int64{"a": {"s": 100}}), "b", OwnerRehome},
+			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerConflict},
 	}
 	for _, c := range cases {
 		acct, st := resolveOwner("s", c.registry, probe, c.owners, c.hists, names)
@@ -191,6 +191,13 @@ func TestLiveness(t *testing.T) {
 	if m["live"] != Live {
 		t.Errorf("live = %v", m["live"])
 	}
+	// A verified-live claim beside an unverifiable one for the same session:
+	// proof outranks uncertainty — Live, never LiveUnknown, or the resume
+	// guard (which refuses only Live) would resume a session proven open.
+	both := append(entries[:1:1], RegistryEntry{Account: "b", SessionID: "live", PID: 99, OK: false})
+	if got := Liveness(both, probe)["live"]; got != Live {
+		t.Errorf("verified live + unverifiable claim = %v, want Live", got)
+	}
 	if m["recycled"] != NotLive {
 		t.Errorf("recycled pid must not read live: %v", m["recycled"])
 	}
@@ -205,28 +212,20 @@ func TestLiveness(t *testing.T) {
 func TestOwnersStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".owners")
 	now := time.UnixMilli(1000)
-	if err := ReHome(path, "s1", "a@x.com", now, nil); err != nil {
+	if err := ReHome(path, "", "s1", "a@x.com", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReHome(path, "s2", "b@x.com", now, nil); err != nil {
+	if err := ReHome(path, "", "s2", "b@x.com", now); err != nil {
 		t.Fatal(err)
 	}
 	m := LoadOwners(path)
 	if m["s1"].Account != "a@x.com" || m["s2"].AtMS != 1000 {
 		t.Fatalf("LoadOwners = %v", m)
 	}
-	// GC drops what keep rejects; the entry being written survives.
-	if err := ReHome(path, "s3", "c@x.com", now, func(id string) bool { return id == "s3" }); err != nil {
+	if err := ForgetOwner(path, "s2"); err != nil {
 		t.Fatal(err)
 	}
-	m = LoadOwners(path)
-	if len(m) != 1 || m["s3"].Account != "c@x.com" {
-		t.Fatalf("after GC = %v", m)
-	}
-	if err := ForgetOwner(path, "s3"); err != nil {
-		t.Fatal(err)
-	}
-	if m = LoadOwners(path); len(m) != 0 {
+	if m = LoadOwners(path); len(m) != 1 || m["s2"].Account != "" {
 		t.Fatalf("after forget = %v", m)
 	}
 	// Corrupt file = empty store, and the next write recovers it.
@@ -234,11 +233,69 @@ func TestOwnersStore(t *testing.T) {
 	if m = LoadOwners(path); len(m) != 0 {
 		t.Fatal("corrupt file must read as empty")
 	}
-	if err := ReHome(path, "s4", "d@x.com", now, nil); err != nil {
+	if err := ReHome(path, "", "s4", "d@x.com", now); err != nil {
 		t.Fatal(err)
 	}
 	if m = LoadOwners(path); m["s4"].Account != "d@x.com" {
 		t.Fatal("write over corrupt file must recover")
+	}
+	// A fresh machine has no accounts root yet; the first re-home must
+	// create it rather than fail and strand `x` as an unrecorded routing.
+	fresh := filepath.Join(t.TempDir(), "not-yet", ".owners")
+	if err := ReHome(fresh, "", "s5", "e@x.com", now); err != nil {
+		t.Fatalf("re-home into missing parent: %v", err)
+	}
+	if m = LoadOwners(fresh); m["s5"].Account != "e@x.com" {
+		t.Fatal("re-home into missing parent must persist")
+	}
+}
+
+// GC enumerates the store inside the lock, at write time — never from a
+// caller's snapshot. The trap this pins: picker A collected before session
+// s-new existed; a re-home of s-new (by any picker) must survive A's later
+// write, because the sweep consults the store as it is now, not as A saw it.
+func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
+	projects, write := storeFixture(t)
+	path := filepath.Join(t.TempDir(), ".owners")
+	now := time.Now()
+	write("-tmp-p", "s-old.jsonl", rec("s-old", "/tmp/p", "old"), now)
+
+	// A re-home for a session that has since lost its transcript…
+	if err := ReHome(path, projects, "s-gone", "a@x.com", now); err != nil {
+		t.Fatal(err)
+	}
+	// …then s-new appears (created after any earlier listing), is re-homed…
+	write("-tmp-p", "s-new.jsonl", rec("s-new", "/tmp/p", "new"), now)
+	if err := ReHome(path, projects, "s-new", "b@x.com", now); err != nil {
+		t.Fatal(err)
+	}
+	// …and a further write GCs: s-gone (no transcript) goes, s-new stays.
+	if err := ReHome(path, projects, "s-old", "c@x.com", now); err != nil {
+		t.Fatal(err)
+	}
+	m := LoadOwners(path)
+	if _, ok := m["s-gone"]; ok {
+		t.Error("transcriptless record must be swept")
+	}
+	if m["s-new"].Account != "b@x.com" || m["s-old"].Account != "c@x.com" {
+		t.Errorf("live records must survive every write: %v", m)
+	}
+}
+
+// Mutations must not trust the listing's liveness snapshot: a registry claim
+// that appears after collection is exactly the session dd must refuse.
+func TestLiveNowSeesClaimsAfterCollect(t *testing.T) {
+	home := t.TempDir()
+	refs := []AccountRef{{Name: "a", Dir: home}}
+	probe := func(pid int) (int64, bool) { return 5_000, true }
+	if got := LiveNow("s-late", refs, probe); got != NotLive {
+		t.Fatalf("empty registry = %v, want NotLive", got)
+	}
+	os.MkdirAll(filepath.Join(home, "sessions"), 0o755)
+	os.WriteFile(filepath.Join(home, "sessions", "77.json"),
+		[]byte(`{"sessionId":"s-late","pid":77,"startedAt":5001000}`), 0o644)
+	if got := LiveNow("s-late", refs, probe); got != Live {
+		t.Errorf("claim appearing after an earlier check = %v, want Live", got)
 	}
 }
 
@@ -356,5 +413,29 @@ func TestDeleteTranscript(t *testing.T) {
 	// An id that could escape the store dir is refused outright.
 	if err := DeleteTranscript(&Session{ID: "../evil", StoreDir: projects}); err == nil {
 		t.Error("path-escaping id must be refused")
+	}
+}
+
+// A transcript ending in one message larger than the tail budget must still
+// resolve its cwd — the window widens until a record verifies. Without this,
+// a resumable session renders "dir gone" (5 real transcripts did).
+func TestCollectWidensPastCwdlessTail(t *testing.T) {
+	projects, write := storeFixture(t)
+	dir := t.TempDir()
+	filler := strings.Repeat("x", TailBudget) // one record larger than the budget
+	content := rec("s-big", dir, "big session") +
+		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n"
+	write(Munge(dir), "s-big.jsonl", content, time.Now())
+
+	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
+	if len(l.Sessions) != 1 {
+		t.Fatalf("sessions = %d", len(l.Sessions))
+	}
+	s := l.Sessions[0]
+	if s.CWD != dir || !s.DirOK {
+		t.Errorf("cwd starved by an oversized tail: CWD=%q DirOK=%v", s.CWD, s.DirOK)
+	}
+	if s.Tail.Title() != "big session" {
+		t.Errorf("title = %q", s.Tail.Title())
 	}
 }

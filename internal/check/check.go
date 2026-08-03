@@ -7,7 +7,6 @@ package check
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -356,8 +355,10 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 	if regFiles == 0 {
 		skip("registry: not tested", "no live-session records right now")
 	} else {
-		chk(regOK > 0, "registry: live-session records carry sessionId + pid + startedAt",
-			"none parse — dd would no longer refuse open sessions")
+		// Every claim file must parse, not merely one: a single malformed
+		// record is a session the dd guard can no longer see.
+		chk(regOK == regFiles, "registry: live-session records carry sessionId + pid + startedAt",
+			fmt.Sprintf("%d of %d records unparseable — those sessions lost the dd guard", regFiles-regOK, regFiles))
 	}
 
 	// Transcripts, through the same collector the picker uses. Per-file
@@ -373,12 +374,9 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 		skip("sessions: not tested", "store is empty")
 	} else {
 		titled, cwdOK := 0, 0
-		var untitled []*sessions.Session
 		for _, s := range listing.Sessions {
 			if s.Tail.Title() != "" {
 				titled++
-			} else {
-				untitled = append(untitled, s)
 			}
 			if s.CWD != "" {
 				cwdOK++
@@ -389,36 +387,43 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 		chk(cwdOK > 0, "sessions: cwd records verify against store dir names",
 			"no transcript's cwd munges to its dir — resume targets are gone")
 
-		// The tail budget is the assertion most likely to actually fire: a
-		// transcript whose newest title sits beyond TailBudget bytes from EOF
-		// renders untitled while claiming the budget holds. Only tail-untitled
-		// files need the full pass — and it must be the shared parser, not a
-		// substring scan: transcripts *about* these tools quote the record
-		// types verbatim in message bodies, and a raw needle match reads that
-		// as a title (it did, on this very repo's own sessions).
+		// The tail budget is the assertion most likely to actually fire, and
+		// it must test the whole claim: for every transcript larger than the
+		// budget, the tail-derived title *and* cwd must equal what a
+		// full-file parse resolves — a custom rename beyond the budget with
+		// a newer last-prompt inside it renders the wrong title while "some
+		// title exists" still passes. The comparison runs through the shared
+		// parser, never a substring scan: transcripts about these tools
+		// quote the record types verbatim in message bodies, and a raw
+		// needle match reads that as a title (it did, on this very repo's
+		// own sessions).
 		over := 0
-		for _, s := range untitled {
+		for _, s := range listing.Sessions {
+			if s.Size <= sessions.TailBudget {
+				continue // the tail pass already saw the whole file
+			}
 			data, err := os.ReadFile(s.Path)
 			if err != nil {
 				continue
 			}
-			if sessions.ParseTail(data, filepath.Base(s.StoreDir), true).Title() != "" {
+			full := sessions.ParseTail(data, filepath.Base(s.StoreDir), true)
+			if full.Title() != s.Tail.Title() || full.CWD != s.CWD {
 				over++
 			}
 		}
-		chk(over == 0, fmt.Sprintf("sessions: titles live within the %dKB tail budget", sessions.TailBudget>>10),
-			fmt.Sprintf("%d transcript(s) hold their title beyond it — raise the budget", over))
+		chk(over == 0, fmt.Sprintf("sessions: %dKB tail resolves the same title/cwd as the whole file", sessions.TailBudget>>10),
+			fmt.Sprintf("%d transcript(s) resolve differently — a record drifted beyond the budget", over))
 	}
 
 	// .owners is headroom's own file, but a corrupt one silently reads as
 	// empty (by design, so the picker keeps working) — check is where that
-	// loss becomes visible instead of staying silent.
+	// loss becomes visible instead of staying silent. Through the same
+	// parser routing uses: a checker-local decode once passed a document
+	// the loader was rejecting wholesale.
 	if data, err := os.ReadFile(cfg.OwnersFile()); err == nil && len(data) > 0 {
-		var probe struct {
-			Owners map[string]json.RawMessage `json:"owners"`
-		}
-		chk(json.Unmarshal(data, &probe) == nil && probe.Owners != nil,
-			"owners: re-home records parse", "file corrupt — explicit re-homes are being ignored")
+		_, perr := sessions.ParseOwners(data)
+		chk(perr == nil, "owners: re-home records parse via shared contract",
+			"file corrupt — explicit re-homes are being ignored")
 	}
 }
 
