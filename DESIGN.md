@@ -162,7 +162,8 @@ engineered from the 2.1.220 store and all perishable:
   can end in one message bigger than the budget) the window widens until
   one does or the file is exhausted, because a resumable row rendered
   "dir gone" is the picker lying. `check` asserts the tail resolves the
-  same title and cwd as a full-file parse for every oversized transcript —
+  same title, cwd and model as a full-file parse for every oversized
+  transcript —
   the assertion that fires the day a load-bearing record drifts out of
   reach. Listability is structural: top-level `<uuid>.jsonl` files are
   sessions; `<uuid>/` closure dirs hold subagent transcripts and are not.

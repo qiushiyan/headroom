@@ -515,18 +515,20 @@ func (ui *resumeUI) draw() {
 	lines = append(lines, p.Bold+"resume"+p.Rst+p.Dim+
 		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), shortAccount(ui.current), title)+p.Rst)
 
-	rowLines, selLine := ui.rowLines(w, now)
+	rowLines, selLine, selSpan := ui.rowLines(w, now)
 	body := h - 3 // header + footer + input/message line
 	if body < 3 {
 		body = 3
 	}
-	// Scroll to keep the selected entry — both of its lines — in view.
+	// Scroll to keep the selected entry's whole span — both lines plus the
+	// expanded preview — in view; when the span outgrows the viewport, the
+	// entry's first line wins.
 	if selLine >= 0 {
+		if bottom := selLine + selSpan; bottom > ui.top+body {
+			ui.top = bottom - body
+		}
 		if selLine < ui.top {
 			ui.top = selLine
-		}
-		if selLine+1 >= ui.top+body {
-			ui.top = selLine + 2 - body
 		}
 	}
 	if ui.top > len(rowLines)-body {
@@ -575,11 +577,12 @@ func (ui *resumeUI) selectedTitleForHeader() string {
 }
 
 // rowLines renders every visible row (plus section labels and the expanded
-// preview) and reports which line the selection sits on.
-func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
+// preview) and reports where the selection starts and how many lines it
+// spans — preview included, so the scroll can keep all of it in view.
+func (ui *resumeUI) rowLines(w int, now int64) ([]string, int, int) {
 	p := ui.p
 	var lines []string
-	selLine := -1
+	selLine, selSpan := -1, 0
 	section := -1
 	for i, s := range ui.rows {
 		sec := 0
@@ -601,8 +604,11 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
 			selLine = len(lines)
 		}
 		lines = append(lines, ui.sessionLines(s, i == ui.sel, w, now)...)
-		if i == ui.sel && ui.preview {
-			lines = append(lines, ui.previewLines(s, w)...)
+		if i == ui.sel {
+			if ui.preview {
+				lines = append(lines, ui.previewLines(s, w)...)
+			}
+			selSpan = len(lines) - selLine
 		}
 	}
 	if len(ui.rows) == 0 {
@@ -612,7 +618,7 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int) {
 		}
 		lines = append(lines, p.Dim+msg+p.Rst)
 	}
-	return lines, selLine
+	return lines, selLine, selSpan
 }
 
 // sessionLines renders one session as a two-line entry. The first line
@@ -635,26 +641,43 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	}
 	marksStr := strings.Join(marks, " ")
 
+	marksCells := 0
+	if marksStr != "" {
+		marksCells = render.Cells(stripSGR(marksStr)) + 2
+	}
+
+	// The meta column budgets itself before the label flexes, and sheds from
+	// its own left when the terminal is narrow — the model first, the account
+	// second, the age never: the final Clip cuts lines from the right, and a
+	// row without its timestamp is the one degradation this repo forbids.
 	var meta []string
 	if m := modelLabel(s.Tail.Model); m != "" {
 		meta = append(meta, m)
 	}
 	meta = append(meta, ownerTag(s, ui.current), render.Age(now-s.MTime.Unix()))
+	metaAvail := w - 2 - 4 - 2 - marksCells // prefix, minimum label, gap
+	if metaAvail < 2 {
+		metaAvail = 2
+	}
+	for len(meta) > 1 && render.Cells(strings.Join(meta, " · ")) > metaAvail {
+		meta = meta[1:]
+	}
 	right := strings.Join(meta, " · ")
+	if render.Cells(right) > metaAvail {
+		right = render.TrimCells(right, metaAvail)
+	}
 
 	prefix := "  "
 	if selected {
 		prefix = p.Bold + "▶ " + p.Rst
 	}
-	// Fixed right column, flexing label. Cell arithmetic, not runes: vendor
-	// text is the first place a CJK string meets framePrinter-style layouts.
+	// Flexing label over a fixed right column. Cell arithmetic, not runes:
+	// vendor text is the first place a CJK string meets framePrinter-style
+	// layouts.
 	label := render.Sanitize(primaryLabel(s))
-	labelWidth := w - 2 - render.Cells(right) - 2
-	if marksStr != "" {
-		labelWidth -= render.Cells(stripSGR(marksStr)) + 2
-	}
-	if labelWidth < 8 {
-		labelWidth = 8
+	labelWidth := w - 2 - render.Cells(right) - 2 - marksCells
+	if labelWidth < 4 {
+		labelWidth = 4
 	}
 	if render.Cells(label) > labelWidth {
 		label = render.TrimCells(label, labelWidth-1) + "…"
@@ -684,10 +707,11 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	return []string{line1, line2}
 }
 
-// primaryLabel is a session's first-line identity — where it ran. In the
-// local section that is the checkout (branch in the main checkout, worktree
-// dir name elsewhere); in the global section the branch leads when one is
-// known, with the project after it as the disambiguator.
+// primaryLabel is a session's first-line identity — where it ran: the
+// checkout (branch in the main checkout, worktree dir name elsewhere), with
+// the project appended as the disambiguator in the global section. Both
+// sections resolve the checkout the same way — a worktree session must not
+// change identity by scrolling past the section break.
 func primaryLabel(s *sessions.Session) string {
 	if s.Local {
 		if l := localLabel(s); l != "" {
@@ -696,8 +720,8 @@ func primaryLabel(s *sessions.Session) string {
 		return projectLabel(s)
 	}
 	proj := projectLabel(s)
-	if b := s.Tail.Branch; b != "" && b != proj {
-		return b + " · " + proj
+	if l := localLabel(s); l != "" && l != proj {
+		return l + " · " + proj
 	}
 	return proj
 }

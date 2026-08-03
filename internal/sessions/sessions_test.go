@@ -457,6 +457,32 @@ func TestCollectWidensPastCwdlessTail(t *testing.T) {
 	}
 }
 
+// The model must be part of the adaptive reader's contract like title and
+// cwd: a tail window that starts inside one enormous assistant record skips
+// it as a partial line, and a later small cwd record must not stop the
+// widening while the session's only model claim sits unread.
+func TestCollectWidensPastModellessTail(t *testing.T) {
+	projects, write := storeFixture(t)
+	dir := t.TempDir()
+	filler := strings.Repeat("x", TailBudget)
+	content := rec("s-model", dir, "model session") +
+		`{"type":"assistant","sessionId":"s-model","message":{"role":"assistant","model":"claude-fable-5","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n" +
+		`{"type":"user","sessionId":"s-model","cwd":` + fmt.Sprintf("%q", dir) + `,"message":{"role":"user","content":"after"}}` + "\n"
+	write(Munge(dir), "s-model.jsonl", content, time.Now())
+
+	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
+	if len(l.Sessions) != 1 {
+		t.Fatalf("sessions = %d", len(l.Sessions))
+	}
+	s := l.Sessions[0]
+	if s.CWD != dir {
+		t.Errorf("CWD = %q", s.CWD)
+	}
+	if s.Tail.Model != "claude-fable-5" {
+		t.Errorf("Model = %q: cwd resolving must not end the search for the model", s.Tail.Model)
+	}
+}
+
 // A hollow record ({"s":{}}) is corruption, not data: headroom is the only
 // writer, and a container-level decode once let `check` pass a store that
 // routing was silently ignoring.

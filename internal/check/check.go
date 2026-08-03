@@ -407,11 +407,11 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 				continue
 			}
 			full := sessions.ParseTail(data, filepath.Base(s.StoreDir), true)
-			if full.Title() != s.Tail.Title() || full.CWD != s.CWD {
+			if full.Title() != s.Tail.Title() || full.CWD != s.CWD || full.Model != s.Tail.Model {
 				over++
 			}
 		}
-		chk(over == 0, "sessions: the adaptive tail reader resolves the same title/cwd as a full parse",
+		chk(over == 0, "sessions: the adaptive tail reader resolves the same title/cwd/model as a full parse",
 			fmt.Sprintf("%d transcript(s) resolve differently — a record drifted out of the reader's reach", over))
 	}
 

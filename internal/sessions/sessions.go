@@ -174,7 +174,11 @@ func readSession(storeDir, storeDirName, name string) *Session {
 		buf := make([]byte, size-off)
 		n, _ := f.ReadAt(buf, off)
 		tail = ParseTail(buf[:n], storeDirName, off == 0)
-		if tail.CWD != "" || off == 0 {
+		// Both load-bearing rendered facts, or the whole file: a window that
+		// starts inside one enormous assistant record skips it as a partial
+		// line, and a later small cwd record must not end the search while
+		// the session's only model claim sits unread.
+		if (tail.CWD != "" && tail.Model != "") || off == 0 {
 			break
 		}
 	}

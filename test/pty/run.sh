@@ -50,6 +50,28 @@ cat >"$store/$sid.jsonl" <<EOF
 EOF
 printf '{"display":"hello","sessionId":"%s","timestamp":1000}\n' "$sid" \
     >"$HEADROOM_HOME/.claude/history.jsonl"
+
+# More sessions than one screen holds, all older than the first fixture (it
+# must stay row 1 for resume_write), so resume_preview has a bottom entry to
+# expand at the viewport's edge.
+proj2="$work/p2"
+mkdir -p "$proj2"
+store2="$HEADROOM_HOME/.claude/projects/$(printf '%s' "$proj2" | tr '/.' '--')"
+mkdir -p "$store2"
+i=0
+while [ "$i" -lt 14 ]; do
+    fsid="00000000-0000-4000-8000-$(printf '%012d' "$i")"
+    prompt="filler prompt $i"
+    if [ "$i" -eq 13 ]; then
+        prompt="bottom preview marker"
+    fi
+    cat >"$store2/$fsid.jsonl" <<EOF2
+{"type":"user","sessionId":"$fsid","cwd":"$proj2","message":{"role":"user","content":"$prompt"}}
+{"type":"ai-title","aiTitle":"filler $i","sessionId":"$fsid"}
+EOF2
+    touch -t "2026010112$(printf '%02d' $((30 - i)))" "$store2/$fsid.jsonl"
+    i=$((i + 1))
+done
 export RESUME_OUT="$work/resume.out"
 
 fail=0
@@ -125,6 +147,7 @@ fi
 
 # q cancels: nothing on stdout.
 run resume_cancel
+run resume_preview
 if [ -s "$RESUME_OUT" ]; then
     echo "FAIL resume_cancel: cancel must write nothing to stdout"
     fail=1

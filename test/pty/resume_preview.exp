@@ -1,0 +1,23 @@
+#!/usr/bin/expect -f
+# space on the viewport's bottom entry must scroll the preview into view —
+# before the span-aware scroll, the preview lines were appended entirely
+# below the visible body, so the keypress appeared to do nothing.
+set timeout 10
+set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
+spawn sh -c $cmd
+expect {
+    "q quit" {}
+    timeout { puts "resume picker never drew its footer"; exit 2 }
+}
+send -- "G"
+expect {
+    "filler 13" {}
+    timeout { puts "G never scrolled the bottom entry into view"; exit 2 }
+}
+send -- " "
+expect {
+    "bottom preview marker" {}
+    timeout { puts "preview stayed below the viewport"; exit 2 }
+}
+send -- "q"
+expect eof

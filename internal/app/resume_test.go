@@ -1,8 +1,12 @@
 package app
 
 import (
+	"strings"
+	"time"
+
 	"testing"
 
+	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
@@ -23,6 +27,30 @@ func TestModelLabel(t *testing.T) {
 	}
 }
 
+// On a narrow terminal the meta column must shed from its left — model
+// first, then account — never lose the age: the final Clip in draw cuts
+// from the right, and a row without its timestamp violates the house rule
+// that observations always carry one.
+func TestSessionLinesNarrowKeepsAge(t *testing.T) {
+	ui := &resumeUI{p: render.NewPalette(false), current: "someone@example.com"}
+	s := &sessions.Session{
+		Local: true, DirOK: true, Live: sessions.Live,
+		MTime: time.Now().Add(-2 * time.Hour),
+		Owner: "someone@example.com", OwnerState: sessions.OwnerHistory,
+		Tail: sessions.Tail{AITitle: "a title", Branch: "a-longish-branch-name", Model: "claude-fable-5"},
+	}
+	for _, w := range []int{20, 30, 40, 120} {
+		lines := ui.sessionLines(s, false, w, time.Now().Unix())
+		line1 := lines[0]
+		if got := render.Cells(line1); got > w {
+			t.Errorf("w=%d: first line is %d cells — Clip would eat the right column", w, got)
+		}
+		if !strings.HasSuffix(line1, "2h") {
+			t.Errorf("w=%d: age missing from %q", w, line1)
+		}
+	}
+}
+
 func TestPrimaryLabel(t *testing.T) {
 	branch := func(b string) sessions.Tail { return sessions.Tail{Branch: b} }
 	cases := []struct {
@@ -39,6 +67,9 @@ func TestPrimaryLabel(t *testing.T) {
 		{"local non-git falls back to the dir",
 			sessions.Session{Local: true, CWD: "/Users/q/training"},
 			"training"},
+		{"global worktree keeps its checkout identity",
+			sessions.Session{RepoKey: "/dev/headroom", RepoRoot: "/dev/.worktrees/headroom/session-picker", Tail: branch("other-branch")},
+			"session-picker · headroom"},
 		{"global leads with the branch, project disambiguates",
 			sessions.Session{RepoKey: "/dev/planlab", RepoRoot: "/dev/planlab", CWD: "/dev/planlab", Tail: branch("chart-axis")},
 			"chart-axis · planlab"},
