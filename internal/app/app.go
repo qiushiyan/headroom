@@ -91,7 +91,8 @@ func printUsage(w io.Writer) {
   launch     [--remember] [--account <name>] [-- <claude args>]
              exec claude on the resolved account; the child environment is
              built from the decision alone, never inherited
-  resolve    [<name>] print canonical-name<TAB>config-dir for shell preflight
+  resolve    [<name>] print canonical-name<TAB>config-dir<TAB>kind
+             (kind: primary|extra) for shell preflight
   check      verify the reverse-engineered assumptions still hold
 `)
 }

@@ -24,7 +24,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
@@ -364,8 +363,10 @@ func (ui *picker) status(now time.Time) string {
 		// `claude`; managed launches neutralize it, and the board must not
 		// silently rely on that. The classifier is launch's, so this note
 		// and the environment actually built cannot disagree.
-		if _, conflicting := launch.For(d.Acct.ConfigDir).Conflicts(os.Environ()); conflicting {
-			parts = append(parts, "inherited CLAUDE_CONFIG_DIR ignored by managed launches")
+		if tgt, err := target(d.Acct); err == nil {
+			if _, conflicting := tgt.Conflicts(os.Environ()); conflicting {
+				parts = append(parts, "inherited CLAUDE_CONFIG_DIR ignored by managed launches")
+			}
 		}
 		break
 	}

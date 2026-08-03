@@ -46,9 +46,10 @@ func Extra(configDir string) (Target, error) {
 	return Target{configDir: configDir}, nil
 }
 
-// For maps the account layer's dir-or-empty convention to a Target. This is
-// the one sanctioned crossing for that sentinel, named so call sites say
-// what they are doing.
+// For maps a dir-or-empty parameter to a Target — the vendor's own
+// convention, since CLAUDE_CONFIG_DIR itself means "primary" by absence.
+// auth's per-config-dir probe seam is its one production caller; the launch
+// surface constructs Primary/Extra explicitly after validation instead.
 func For(configDir string) Target { return Target{configDir: configDir} }
 
 // IsPrimary reports which variant this is.

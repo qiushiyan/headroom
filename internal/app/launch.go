@@ -25,9 +25,17 @@ import (
 // can capture the argv and environment a launch would have used.
 var execClaude = launch.Exec
 
-// target maps a validated account to the launch package's vocabulary — the
-// one place the account layer's dir-or-empty convention crosses that seam.
-func target(a accounts.Account) launch.Target { return launch.For(a.ConfigDir) }
+// target maps a validated account to the launch package's vocabulary through
+// the validating constructors: the launch surface never hands the seam a raw
+// dir string. The error is impossible for a discovered account — a
+// non-primary always carries its real dir — and refusing on it anyway is
+// what "impossible" is worth at a routing boundary.
+func target(a accounts.Account) (launch.Target, error) {
+	if a.IsPrimary() {
+		return launch.Primary(), nil
+	}
+	return launch.Extra(a.ConfigDir)
+}
 
 // runResolve prints one line: canonical-name<TAB>config-dir<TAB>kind, kind
 // being "primary" or "extra". It exists for shell preflight — topology
@@ -125,7 +133,11 @@ parse:
 		}
 	}
 
-	tgt := target(a)
+	tgt, err := target(a)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+		return 1
+	}
 	base := os.Environ()
 	if v, conflicting := tgt.Conflicts(base); conflicting {
 		// Neutralized either way; said out loud because obeying it would
