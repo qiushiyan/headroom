@@ -21,6 +21,7 @@ bob@example.com (max 5x · x-bob)  ← x
 | `headroom` / `headroom accounts` | The board: live limit bars for every account, refreshing itself while it is open; enter picks the account the shell's bare launcher targets. Off a terminal, prints one frame and exits |
 | `headroom --json` | The same data as a versioned JSON document, for scripts and status lines |
 | `headroom resume` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
+| `headroom launch` | Exec `claude` on the chosen account (`--account <name>`, or the recorded choice), with the child environment built from that decision — an inherited `CLAUDE_CONFIG_DIR` is stripped, never obeyed. `--remember` also records the choice; `headroom resolve` prints the account's name/dir/kind for shell preflight |
 | `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
 
 ## How it works
@@ -44,10 +45,14 @@ headroom is **read-only** toward that system: it never writes the Keychain
 and never refreshes a token — Claude Code owns both. It keeps two files of its
 own (`state.json` and `.current`), and the session picker's explicit
 `rename`/`delete` commands are the only two vendor-state mutations, both
-refused while a session is open. The launcher commands it advertises
-(`x-<name>`) are provided by shell integration, not by headroom; the contract
-between the two is spelled out in [DESIGN.md](DESIGN.md), along with the
-reverse-engineered vendor facts everything rests on.
+refused while a session is open. Launch routing is headroom's too: `launch`
+validates the account and constructs the child environment from that decision
+alone, so a shell whose environment already carries a `CLAUDE_CONFIG_DIR`
+(a tmux server started inside a Claude Code session, say) can never re-route
+a launch. The `x-<name>` wrapper commands are shell integration — personal
+preflight and flags over `headroom launch`; that split, and the
+reverse-engineered vendor facts everything rests on, are spelled out in
+[DESIGN.md](DESIGN.md).
 
 ## Building
 

@@ -6,9 +6,10 @@ Code logins on one machine, each keyed to its own config dir. It answers
 account board, `accounts`: live and self-refreshing on a terminal, one frame
 off it, a versioned document under `--json`), answers "which session do I get
 back into, and on which account?" (`resume` — see The session surface below),
-and proves its own assumptions still hold (`check`). This file records the
-mental model and the vendor contracts — the things the code can't say about
-itself.
+turns the chosen account into a running session (`launch`/`resolve` — see
+The launch surface), and proves its own assumptions still hold (`check`).
+This file records the mental model and the vendor contracts — the things the
+code can't say about itself.
 
 ## The system observed: the filesystem is the registry
 
@@ -38,12 +39,14 @@ Everything derives from that tree:
   dir, from local state: ~170ms, no network, no usage budget. headroom infers
   account health from credential timestamps only when that command can't
   answer.
-- **Two files are the shell's, not headroom's.** `.current` names the account
-  the shell's bare launcher should target — the board writes it atomically,
-  and the shell's own per-account launchers rewrite it at every launch.
-  `.order` (optional; one email per line, `#` comments) sets display order
-  after the primary; unlisted accounts follow alphabetically. Both stay
-  outside headroom's own state on purpose; see The one file headroom writes.
+- **Two one-line files beside the accounts.** `.current` names the account
+  bare `x` targets next — written atomically by headroom alone (the board's
+  enter, `launch --remember`) and read strictly by headroom alone
+  (`accounts.Select`; see The launch surface for why corrupt state refuses
+  rather than defaulting). `.order` (optional; one email per line, `#`
+  comments) sets display order after the primary; unlisted accounts follow
+  alphabetically — configuration a human edits. Both stay outside
+  `state.json` on purpose; see The one file headroom writes.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
 Keychain, never refreshes a token, and never touches vendor login or quota
@@ -191,9 +194,11 @@ ledger, the responses, and the session re-homes.
   promise one: an account's key comes from a vendor file Claude Code rewrites
   constantly, so a torn read moves the key and the sweep deletes the live
   cooldown and stored answer of an account sitting right there.
-- **`.current` and `.order` stay out of it.** `.current` has two writers, one
-  of them a shell reading it with `$(<file)` at every launch; folding it in
-  would put headroom on the critical path of starting Claude Code. `.order` is
+- **`.current` and `.order` stay out of it.** `.current` is one human-legible
+  routing fact with its own failure policy — corrupt refuses the launch,
+  visibly — while this document's ledger section is disposable and
+  self-heals by quarantine; folding the two together would put a routing
+  decision under the ledger's corruption policy or vice versa. `.order` is
   configuration a human edits, comments included.
 
 Two policies fall out of the budget. Figures are labelled stale only once they
@@ -265,31 +270,81 @@ engineered from the 2.1.220 store and all perishable:
   time, so string equality fails everywhere but UTC.) Live and
   unverifiable sessions refuse `dd` and `r`; deleting an open transcript
   loses the conversation to an unlinked inode.
-- **headroom decides and records; the shell executes.** The TUI runs on
+- **headroom decides and records; the shell only cds.** The TUI runs on
   `/dev/tty` (alternate screen, restored in the same signal path as raw
   mode); stdout carries exactly one decision line —
-  `<project-dir>\t<session-id>\t<config-dir>`, empty config dir = primary —
-  after the terminal is restored. The wrapper cds (the cd sticks) and
-  launches with `CLAUDE_CONFIG_DIR`, deliberately *without* touching
-  `.current`: `x-accounts` owns where new sessions go, resume never moves
-  it, and when the two accounts differ the header says both. Paths that
-  would break the line protocol make a row unlaunchable rather than being
-  escaped. This surface does no network I/O and never spends the usage
-  budget.
+  `<project-dir>\t<session-id>\t<account-name>`, the primary by its
+  configured name — after the terminal is restored. The wrapper cds (the
+  cd must stick in the parent shell, which is why this step stays in zsh)
+  and hands the name back to `headroom launch`, which revalidates it: the
+  name, never a config dir, because a raw path crossing the protocol would
+  be a permanent bypass around the validated launch seam. Resume
+  deliberately launches without `--remember` — `x-accounts` owns where new
+  sessions go, resume never moves it, and when the two accounts differ the
+  header says both. Fields that would break the line protocol make a row
+  unlaunchable rather than being escaped. This surface does no network I/O
+  and never spends the usage budget.
 
-## The launcher contract
+## The launch surface
 
-headroom launches nothing. It *advertises*, per account, the command a
-shell-launcher family is expected to provide: `x-<email>` as the guaranteed
-identity, with a short `x-<local-part>` alias only when the local part is
-unique among accounts, isn't the primary account's name, and isn't a
-reserved utility name (`usage`, `account`, `account-add`, `select`,
-`accounts`, `acc`, `check`) — the rule and list live in `accounts.Launcher`.
-Shell integration that generates the actual functions must apply the same
-rule, and must read `.current` the way headroom writes it: the account's dir
-name (or the primary's configured name), newline-terminated, renamed into
-place atomically. The board's job ends at that state write — launching
-interactive sessions belongs to the shell.
+Launch routing is headroom's own semantics, not the shell's. The incident
+that forced this: a tmux server started inside a Claude Code session carries
+that session's `CLAUDE_CONFIG_DIR` in its global environment, and a wrapper
+that set the variable for extra accounts but left the ambient environment
+alone for the primary silently routed every "primary" launch to whatever
+account that session ran on — while the board truthfully reported the
+primary as pinned. The invariant, and the reason `internal/launch` exists:
+
+- **The child environment is a total function of the validated decision.**
+  Every inherited `CLAUDE_CONFIG_DIR` is stripped; exactly one is set for a
+  non-primary account; the primary is selected by the variable being
+  *absent* — the only behavior verified against the binary (present-but-
+  empty is unverified territory and is never produced). The decision crosses
+  the seam only as a validated target ("primary plus a dir" and "extra
+  without one" are unrepresentable), and auth's per-account probes build
+  their environments through the same constructor, so a polluted shell can
+  neither re-route a launch nor make every health answer come from one
+  login.
+- **`headroom launch [--remember] [--account <name>] [-- args]`** resolves
+  the account (omitted `--account` means the recorded choice), optionally
+  records it as where bare `x` goes next — before the exec, and a failed
+  record refuses the launch — then execs `claude`, preserving stdio,
+  signals and exit status by replacement rather than proxying.
+  **`headroom resolve [<name>]`** prints
+  `canonical-name<TAB>config-dir<TAB>kind` (kind: `primary`|`extra`) for
+  shell preflight: the dir so personal checks can run against it, the kind
+  so *which* preflight applies is headroom's classification — a wrapper
+  that re-derives it by prefix-matching its own idea of the accounts root
+  silently skips its checks whenever a `HEADROOM_*` override moves the real
+  one. Resolve is advice, not a capability: launch revalidates whatever
+  comes back.
+- **Selection fails closed.** An absent `.current` is the documented
+  fresh-start default (the primary); an empty, unreadable one, or one
+  naming a deleted account, refuses with an actionable message — on the
+  launch, in `check` (an own-state FAIL), and as an unset `← x` marker on
+  the board. The old shell fallback turned all of those into "launch the
+  primary with permissions bypassed", which made corruption
+  indistinguishable from a choice; no surface may mint a primary decision
+  from corrupt routing state, resume's attribution fallback included (owner
+  → valid current → refuse — never a final fall to primary).
+- **A neutralized inherited value is visible, never silent.** One stderr
+  line at launch when the ambient variable would have routed elsewhere, a
+  board note, and an ok-with-detail line in `check` — reported because
+  tools *outside* the managed path still obey the variable. One classifier
+  (the target's own) backs all three, so the diagnostics and the
+  environment actually built cannot disagree.
+
+headroom *advertises* only guaranteed launcher identities:
+`x-<email>` per account dir, the configured name for the primary
+(`accounts.Launcher`). Short local-part aliases are shell convenience,
+invisible to headroom — the old shared naming policy ("keep the two rule
+copies in sync") was a cross-repo contract that could drift. Wrappers own
+what is personal: seeding, topology preflight, flags, aliases — and they
+never touch `CLAUDE_CONFIG_DIR` or parse `.current`. When headroom is
+missing or refuses, the wrapper stops loudly rather than degrading to bare
+`claude`, which in a polluted shell is exactly the misroute the managed
+path exists to prevent; the unmanaged escape hatch is deliberately explicit
+(`env -u CLAUDE_CONFIG_DIR claude`, or the variable set by hand).
 
 ## Dependencies and shape
 
@@ -309,8 +364,13 @@ keypress only after a pause.
 ## Verification
 
 Contract behavior is table-tested (`go test -race ./...`), drift tags
-included; the fetch pipeline's single-writer property and the claim's
-test-and-set both have dedicated regression tests under the race detector.
+included; the fetch pipeline's single-writer property, the claim's
+test-and-set, launch environment construction (a polluted environment must
+be stripped, never inherited) and the fail-closed selection states all have
+dedicated regression tests under the race detector. The zsh→exec seam —
+wrappers delegating to a real headroom binary — is covered by the dotfiles
+repo's sandbox harness, which builds this checkout and pins routing
+end-to-end against a recording claude stub.
 What `go test` can't reach — signal-time terminal restoration, real picker
 interaction — lives in the committed expect(1) harness (`make test-pty`,
 `test/pty/`): SIGTERM must leave the terminal sane; arrows + enter must select

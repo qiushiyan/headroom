@@ -45,13 +45,14 @@ func Load() Config {
 	return c
 }
 
-// CurrentFile records which account bare `x` targets.
+// CurrentFile records which account bare `x` targets. headroom is its only
+// reader (accounts.Select, strictly — corruption refuses, never defaults)
+// and only writer (the board's enter, `launch --remember`).
 //
-// It is deliberately not part of state.json: the shell both reads it (at every
-// launch) and writes it (every x-<account> launcher records itself), so it is
-// an interop contract, not headroom's own state. One line of text is the right
-// format for something zsh reads with $(<file), and folding it in would put
-// this tool on the critical path of launching Claude Code.
+// It is deliberately not part of state.json: one human-legible routing fact
+// with a fail-closed policy of its own, kept apart from a ledger that is
+// disposable and self-heals by quarantine — neither failure policy should
+// govern the other.
 func (c Config) CurrentFile() string { return filepath.Join(c.AccountsRoot, ".current") }
 
 // OrderFile sets dashboard display order after the primary (optional, one

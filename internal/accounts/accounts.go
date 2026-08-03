@@ -267,11 +267,10 @@ func primaryOf(accts []Account) (Account, error) {
 }
 
 // SetCurrent records the account bare `x` should target from now on,
-// written atomically (temp file + rename) so a concurrent reader — an `x`
-// launcher mid-startup — never observes a truncated or empty file. This is
-// the only file headroom writes on the user's behalf; the other, .throttle,
-// is headroom's own record of its past requests. The Keychain and every other
-// piece of Claude Code's state are never touched.
+// written atomically (temp file + rename) so a concurrent reader — a
+// `headroom launch` resolving mid-write — never observes a truncated or
+// empty file. The Keychain and every other piece of Claude Code's state are
+// never touched.
 func SetCurrent(cfg config.Config, name string) error {
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		return err
