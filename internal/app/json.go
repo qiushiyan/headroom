@@ -157,7 +157,7 @@ func runDashboardJSON(cfg config.Config) int {
 	// must agree even if a concurrent select rewrites .current mid-fetch.
 	st := state.Open(cfg.AccountsRoot)
 	list, current := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, time.Now())
 	}
 	data, err := jsonDocument(list, current, time.Now())

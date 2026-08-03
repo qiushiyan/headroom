@@ -247,12 +247,24 @@ func Select(cfg config.Config, accts []Account, selector string) (Account, error
 			return Account{}, errors.New(".current is empty — run headroom accounts")
 		}
 	}
+	var matches []Account
 	for _, a := range accts {
 		if a.Name == name {
-			return a, nil
+			matches = append(matches, a)
 		}
 	}
-	return Account{}, fmt.Errorf("%q is not a discovered account — run headroom accounts", name)
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return Account{}, fmt.Errorf("%q is not a discovered account — run headroom accounts", name)
+	}
+	// Two accounts answer to one name — an extra dir named like the primary
+	// (dir basenames are otherwise unique). Returning the first match would
+	// route the name to whichever discovery listed first, silently; ambiguity
+	// refuses, same policy as corrupt `.current`. Discovery stays total so
+	// both rows still render — one bad dir must not become a process failure.
+	return Account{}, fmt.Errorf("%q names %d accounts (an extra dir shares the primary's name) — rename %s", name, len(matches), matches[1].ConfigDir)
 }
 
 func primaryOf(accts []Account) (Account, error) {

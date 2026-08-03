@@ -25,11 +25,18 @@ import (
 )
 
 func Run(args []string) int {
-	cfg := config.Load()
 	cmd := ""
 	var rest []string
 	if len(args) > 0 {
 		cmd, rest = args[0], args[1:]
+	}
+	// Command dispatch precedes configuration on purpose: a retired verb's
+	// tombstone (see runSessions) must speak even under a broken override —
+	// the shell it diagnoses is stale, and stale shells come with old envs.
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
+		return 2
 	}
 	// Every command but resume takes no further arguments; a stray one is an
 	// error, not silently ignored — a misspelled flag must not fall through
@@ -290,6 +297,11 @@ func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, now
 		// The oracle ran and answered in a shape we no longer understand.
 		// Guessing from credentials here would paper over vendor drift.
 		return render.HealthUnknown
+	case auth.OutcomeUnrunnable:
+		// The probe's environment could not be built (launch refused the
+		// dir). The credential fallback below reads the same broken spelling
+		// and would report "no login" — a /login errand for a path bug.
+		return render.HealthUnknown
 	}
 	switch {
 	case raw == "":
@@ -313,9 +325,10 @@ func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, now
 // claim does — a claim that fails costs nothing, while a completion that fails
 // throws away a request already spent.
 type fetchUpdate struct {
-	idx  int
-	out  fetchOutcome
-	next time.Time // when this account may next be asked; zero if unrecorded
+	idx   int
+	out   fetchOutcome
+	next  time.Time // when this account may next be asked; zero if unrecorded
+	round int64     // the round idx addresses; a consumer on a later round drops it
 }
 
 // fetchOutcome is what one result means for the user, decided without touching
@@ -367,8 +380,11 @@ func classify(res usage.Result) (fetchOutcome, state.Outcome, []byte) {
 // turned back into a deferred row here. Fetch goroutines never touch a view;
 // the caller applies each result with resolve, so views have exactly one
 // writer and a redraw may read every view between receives. The buffer lets
-// senders finish even if the caller stops receiving early.
-func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, st *state.Store) <-chan fetchUpdate {
+// senders finish even if the caller stops receiving early. Every update
+// carries the caller's round stamp: idx addresses positions in the list this
+// round was built over, and stamping makes "never applied to a rebuilt list"
+// a property of the data rather than of caller discipline.
+func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, st *state.Store, round int64) <-chan fetchUpdate {
 	client := &http.Client{Timeout: 10 * time.Second}
 	updates := make(chan fetchUpdate, len(list))
 	var wg sync.WaitGroup
@@ -419,7 +435,7 @@ func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, 
 				// a half-written temp file as the process exits.
 				next, _ = st.Complete(k, permit, outcome, body, time.Now())
 			}
-			updates <- fetchUpdate{i, out, next}
+			updates <- fetchUpdate{i, out, next, round}
 		}(i, d.Key, d.Permit, d.Token)
 	}
 	go func() {

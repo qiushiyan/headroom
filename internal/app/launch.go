@@ -122,6 +122,21 @@ parse:
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}
+	// Both refusals sit before the .current write: a recorded choice that
+	// then refuses to launch would move where bare `x` goes as a side effect
+	// of a launch that never happened.
+	if a.IsPrimary() && cfg.PrimaryRelocated {
+		// The primary is selected by CLAUDE_CONFIG_DIR being *absent*, which
+		// claude resolves against the real home — HEADROOM_HOME re-points
+		// what headroom observes but cannot re-point that. Launching would
+		// start a session on a tree the board never described.
+		fmt.Fprintln(os.Stderr, "headroom launch: HEADROOM_HOME is set, so the primary headroom describes is not the primary claude would launch — refusing (extras are unaffected)")
+		return 1
+	}
+	if err := accounts.VerifyTopology(cfg, a); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: not launching — %v\n", err)
+		return 1
+	}
 	if remember {
 		// Before the exec, necessarily — and a failure refuses the launch:
 		// "chosen and recorded" is one step to the user, and launching on a

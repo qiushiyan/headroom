@@ -19,7 +19,9 @@ package launch
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -38,10 +40,18 @@ func Primary() Target { return Target{} }
 
 // Extra is a non-primary account at configDir. An empty dir is refused here,
 // at construction: letting it through would build a primary-shaped
-// environment under an extra-shaped call.
+// environment under an extra-shaped call. A relative dir is refused for a
+// worse reason, verified against the 2.1.220 binary: claude resolves a
+// relative CLAUDE_CONFIG_DIR against the cwd for its config files but reads
+// credentials from the *default* Keychain item — the child would run as the
+// primary while writing its state into a stray dir beside the project, which
+// is exactly the misroute this package exists to make unrepresentable.
 func Extra(configDir string) (Target, error) {
 	if configDir == "" {
 		return Target{}, errors.New("launch: an extra account needs a config dir")
+	}
+	if !filepath.IsAbs(configDir) {
+		return Target{}, fmt.Errorf("launch: config dir %q is not absolute — claude would take the primary's credentials from the default Keychain item while writing state beside the cwd", configDir)
 	}
 	return Target{configDir: configDir}, nil
 }
@@ -49,8 +59,16 @@ func Extra(configDir string) (Target, error) {
 // For maps a dir-or-empty parameter to a Target — the vendor's own
 // convention, since CLAUDE_CONFIG_DIR itself means "primary" by absence.
 // auth's per-config-dir probe seam is its one production caller; the launch
-// surface constructs Primary/Extra explicitly after validation instead.
-func For(configDir string) Target { return Target{configDir: configDir} }
+// surface constructs Primary/Extra explicitly after validation instead. It
+// applies Extra's full validation: a probe under a relative dir would answer
+// with the default Keychain item's identity — the primary's — and health for
+// the wrong account is worse than no answer.
+func For(configDir string) (Target, error) {
+	if configDir == "" {
+		return Target{}, nil
+	}
+	return Extra(configDir)
+}
 
 // IsPrimary reports which variant this is.
 func (t Target) IsPrimary() bool { return t.configDir == "" }

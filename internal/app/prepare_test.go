@@ -11,6 +11,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -41,7 +42,7 @@ func (f prepareFixture) prepare(now time.Time) []*accountData {
 // because deciding earlier is exactly what let an account skip the claim.
 func (f prepareFixture) round(now time.Time) map[string]*accountData {
 	list := f.prepare(now)
-	for u := range launchFetches(context.Background(), f.cfg, list, f.store) {
+	for u := range launchFetches(context.Background(), f.cfg, list, f.store, 1) {
 		resolve(list[u.idx], u, now)
 	}
 	return byName(list)
@@ -478,5 +479,15 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	}
 	if p := render.NewPalette(false).ProvenanceLine(d.View, now.Unix()); p != "" {
 		t.Errorf("a nag was printed over current figures: %q", p)
+	}
+}
+
+// A probe whose environment the launch seam refused (a relative dir) answers
+// "unknown", never "not logged in": the credential fallback reads the same
+// broken spelling and would send the user to /login for a path bug.
+func TestUnrunnableProbeIsUnknownNotLoggedOut(t *testing.T) {
+	h := resolveHealth(auth.Status{Outcome: auth.OutcomeUnrunnable}, "", creds.Blob{}, false, 0)
+	if h != render.HealthUnknown {
+		t.Errorf("health = %v, want HealthUnknown", h)
 	}
 }

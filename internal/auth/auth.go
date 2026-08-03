@@ -39,6 +39,13 @@ const (
 	OutcomeUnavailable Outcome = iota // command absent, failed, or timed out
 	OutcomeOK                         // answered
 	OutcomeUnparseable                // ran, but the output no longer parses
+	// Unrunnable: the probe's environment could not be safely constructed
+	// (a config dir launch.Extra refuses, e.g. a relative path). Distinct
+	// from Unavailable because the fallback differs: credential evidence is
+	// read from the same broken dir spelling, so falling through to it would
+	// convert a path-configuration bug into "not logged in — run /login".
+	// Health is unknown here, and not inferable.
+	OutcomeUnrunnable
 )
 
 // Status is the contract headroom needs from the auth command.
@@ -87,8 +94,13 @@ func Query(configDir string) Status {
 	// inherited one (headroom run from inside a Claude Code session) must be
 	// stripped or every account reports that session's login. launch owns
 	// that rule; For is the sanctioned crossing for this dir-or-empty
-	// parameter.
-	cmd.Env = launch.For(configDir).Env(os.Environ())
+	// parameter, and a dir it refuses must not be probed at all — the child
+	// would answer with the default Keychain item's login, not this dir's.
+	tgt, err := launch.For(configDir)
+	if err != nil {
+		return Status{Outcome: OutcomeUnrunnable}
+	}
+	cmd.Env = tgt.Env(os.Environ())
 	return classify(cmd.Output())
 }
 

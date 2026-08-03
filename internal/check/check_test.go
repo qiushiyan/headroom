@@ -122,3 +122,62 @@ func TestCheckRouting(t *testing.T) {
 		t.Errorf("present-but-empty: want env line, got %v", lines)
 	}
 }
+
+// A non-empty relative inherited value is the stale-wrapper incident's
+// signature — unmanaged claude in that shell runs as the primary while
+// writing state beside the cwd — and fails as own-state, never as drift.
+func TestCheckRoutingFailsRelativeAmbientDir(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "qiushi"}
+	accts := accounts.Discover(cfg)
+
+	var ownFails []string
+	own := func(ok bool, label, hint string) {
+		if !ok {
+			ownFails = append(ownFails, label)
+		}
+	}
+	chk := func(bool, string, string) {}
+	checkRouting(cfg, accts, []string{"CLAUDE_CONFIG_DIR=yan@planlab.ai"}, chk, own)
+	found := false
+	for _, l := range ownFails {
+		if strings.Contains(l, "relative") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("relative ambient dir did not fail: %v", ownFails)
+	}
+}
+
+// The topology assertion runs per extra account through the same verifier
+// launch refuses with, so the gate and the report cannot disagree.
+func TestCheckRoutingAssertsTopology(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "qiushi"}
+	extra := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
+	if err := os.MkdirAll(filepath.Join(extra, "projects"), 0o755); err != nil { // real dir: the fork
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.ProjectsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	accts := accounts.Discover(cfg)
+
+	var ownFails []string
+	own := func(ok bool, label, hint string) {
+		if !ok {
+			ownFails = append(ownFails, label)
+		}
+	}
+	checkRouting(cfg, accts, nil, func(bool, string, string) {}, own)
+	found := false
+	for _, l := range ownFails {
+		if strings.Contains(l, "topology[yan@planlab.ai]") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("forked topology not reported: %v", ownFails)
+	}
+}

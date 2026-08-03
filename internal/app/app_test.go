@@ -166,7 +166,7 @@ func TestLaunchFetchesSingleWriter(t *testing.T) {
 			View: render.AccountView{Attempt: render.Attempt{State: render.AttemptPending}}},
 	}
 	list[0].Acct.Name, list[1].Acct.Name = "fast", "slow"
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, time.Now())
 		for _, d := range list {
 			_ = d.View.Attempt.State
@@ -211,7 +211,7 @@ func TestFetchClaimsBudgetBeforeRequesting(t *testing.T) {
 	list := []*accountData{{Token: "t", Key: state.Key{Name: "acct"}, WantsFetch: true}}
 	list[0].Acct.Name = "acct"
 
-	updates := launchFetches(context.Background(), cfg, list, st)
+	updates := launchFetches(context.Background(), cfg, list, st, 1)
 	close(released)
 	for range updates {
 	}
@@ -346,7 +346,7 @@ func oneRound(t *testing.T, cfg config.Config, blobs map[string]string, now time
 		health:  func(string) auth.Status { return auth.Status{} },
 		now:     now,
 	})
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, now)
 	}
 	byName := map[string]*accountData{}

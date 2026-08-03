@@ -312,6 +312,12 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		case auth.OutcomeUnparseable:
 			chk(false, fmt.Sprintf("auth[%s]: claude auth status parses via shared contract", name),
 				"output shape drifted — account health can no longer be established")
+		case auth.OutcomeUnrunnable:
+			// Not the vendor's problem: launch refused to build the probe's
+			// environment (a dir it will not hand to CLAUDE_CONFIG_DIR).
+			// The dirs-absolute assertion in checkRouting names the dir.
+			own(false, fmt.Sprintf("auth[%s]: probe environment could not be constructed", name),
+				"this account's config dir was refused by the launch seam")
 		default:
 			skip(fmt.Sprintf("auth[%s]: not tested", name), "claude auth status unavailable")
 		}
@@ -560,9 +566,59 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 	// spawns. It is reported because tools *outside* headroom that read the
 	// variable are still being steered by it. Presence is the condition —
 	// a present-but-empty value is unverified vendor territory, not the
-	// verified absent state, so it is reported too.
+	// verified absent state, so it is reported too. A *relative* value is the
+	// stale-wrapper incident's signature and does fail: every unmanaged
+	// `claude` in that shell runs as the primary while writing state beside
+	// whatever directory it happens to start in (verified 2.1.220).
 	if v, present := launch.Ambient(environ); present {
-		chk(true, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches (%q)", v), "")
+		if v != "" && !filepath.IsAbs(v) {
+			// Present-but-empty stays the ok-with-detail line below: it is
+			// unverified vendor territory, not this signature.
+			own(false, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is relative (%q)", v),
+				"the stale-wrapper signature — unmanaged claude runs as the primary while writing state beside the cwd; exec zsh")
+		} else {
+			chk(true, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches (%q)", v), "")
+		}
+	}
+
+	// Every discovered config dir must be absolute: config.Load refuses
+	// relative roots and launch.Extra refuses relative dirs, so a relative
+	// path here means a construction this binary no longer performs — or a
+	// bug in it.
+	badDir := ""
+	for _, a := range accts {
+		if !a.IsPrimary() && !filepath.IsAbs(a.ConfigDir) {
+			badDir = a.ConfigDir
+			break
+		}
+	}
+	own(badDir == "", "dirs: every account config dir is absolute",
+		fmt.Sprintf("%q is relative — claude would run it as the primary", badDir))
+
+	// A relocated home (HEADROOM_HOME) re-points what headroom observes but
+	// not what a primary launch would use — the primary is selected by the
+	// variable being absent, resolved by the vendor against the real home.
+	// Own-state, not drift: launch refuses the primary until it is unset.
+	if cfg.PrimaryRelocated {
+		own(false, "home: HEADROOM_HOME re-points the primary headroom describes",
+			"primary launches refuse; the board describes a tree bare `claude` would not use")
+	}
+
+	// The shared-sessions topology is headroom's own invariant — the session
+	// picker sees every conversation only while every extra's projects/ is a
+	// symlink to the canonical store — and launch refuses on its violation,
+	// so it is asserted here with the same shared verifier, per account:
+	// accounts fail independently.
+	for _, a := range accts {
+		if a.IsPrimary() {
+			continue
+		}
+		err := accounts.VerifyTopology(cfg, a)
+		hint := ""
+		if err != nil {
+			hint = err.Error() + " — launches on this account refuse until it is fixed"
+		}
+		own(err == nil, fmt.Sprintf("topology[%s]: projects/ resolves to the canonical store", a.Name), hint)
 	}
 }
 

@@ -71,7 +71,7 @@ func runAccounts(cfg config.Config) int {
 func printBoard(cfg config.Config) int {
 	st := state.Open(cfg.AccountsRoot)
 	list, _ := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, time.Now())
 	}
 	p := render.NewPalette(stdoutIsTTY())
@@ -99,15 +99,21 @@ type picker struct {
 
 	list    []*accountData
 	updates <-chan fetchUpdate // non-nil while a round is in flight
+	round   int64              // stamps fetch updates; a stale round's update is dropped
 	sel     int
 	selName string // survives a round that reorders or re-discovers accounts
 
-	lastRound time.Time
-	nextAt    time.Time
-	armed     bool      // r pressed inside a quiet period
+	lastLocal time.Time // when the local half last ran — the floor's clock
+	nextAt    time.Time // next scheduled cadence round
+	armed     bool      // r pressed while floored or mid-round; fires when the floor allows
+	manual    bool      // current round was asked for by hand: acknowledge on completion
+	ack       string    // transient acknowledgement after a manual round
+	ackUntil  time.Time
 	wanted    int       // accounts the last round had anything to ask about
 	lastKey   time.Time // presence
 }
+
+const ackTTL = 4 * time.Second
 
 func runPicker(cfg config.Config) int {
 	t, err := tui.Open()
@@ -129,7 +135,7 @@ func runPicker(cfg config.Config) int {
 		fp:      &framePrinter{},
 		lastKey: time.Now(),
 	}
-	ui.startRound(ctx)
+	ui.startRound(ctx, false)
 	// The first draw shows the current account selected; after that the
 	// selection follows the user, not the discovery order.
 	for i, d := range ui.list {
@@ -148,15 +154,23 @@ func runPicker(cfg config.Config) int {
 		case u, open := <-ui.updates:
 			if !open {
 				ui.updates = nil
-				ui.lastRound = time.Now()
 				ui.schedule()
+				if ui.manual {
+					// The user asked; the answer is what changed, said once
+					// and briefly — a claim persisting past its moment is how
+					// the old "refresh armed" read as being ignored.
+					now := time.Now()
+					ui.ack, ui.ackUntil = ui.ackString(now), now.Add(ackTTL)
+					ui.manual = false
+				}
 			} else {
-				resolve(ui.list[u.idx], u, time.Now())
+				ui.apply(u, time.Now())
 			}
 			ui.draw()
 		case <-tick.C:
 			if ui.due() {
-				ui.startRound(ctx)
+				// A round due because it was armed is still the user's ask.
+				ui.startRound(ctx, ui.armed)
 			}
 			ui.draw()
 		case k := <-t.Events():
@@ -186,14 +200,25 @@ func runPicker(cfg config.Config) int {
 	}
 }
 
-// startRound re-reads everything and claims what it may. The store is re-read
-// every round rather than held: the picker can sit open for hours, and a
-// snapshot taken at startup cannot see claims another surface made since.
-func (ui *picker) startRound(ctx context.Context) {
+// startRound runs one full round: a local half — re-read everything free
+// (health, discovery, credentials, `.current`, the store's replay) — and a
+// budget half, the claim plus whatever fetches it permits. The two halves are
+// named because only the first needs the floor: it costs a `claude auth
+// status` spawn per account, which a held key must not spin, while the second
+// is priced by the claim itself. They always run together — a round that
+// skipped the claim would freeze the schedule (nothing would recompute
+// nextAt), and one that skipped the local half would fetch against a stale
+// registry. The store is re-read every round rather than held: the picker can
+// sit open for hours, and a snapshot taken at startup cannot see claims
+// another surface made since.
+func (ui *picker) startRound(ctx context.Context, manual bool) {
 	list, _ := prepare(ui.cfg, ui.st)
 	ui.list = list
 	ui.restoreSelection()
+	ui.lastLocal = time.Now()
 	ui.armed = false
+	ui.manual = manual
+	ui.round++
 	// Counted before the claim, which clears the flag on every account it
 	// denies: what schedule needs to know is whether anything was worth asking
 	// about at all, not how that asking went.
@@ -203,7 +228,38 @@ func (ui *picker) startRound(ctx context.Context) {
 			ui.wanted++
 		}
 	}
-	ui.updates = launchFetches(ctx, ui.cfg, list, ui.st)
+	ui.updates = launchFetches(ctx, ui.cfg, list, ui.st, ui.round)
+}
+
+// apply lands one fetch update on its view. The round stamp is what makes
+// the positional idx safe by construction rather than by discipline: idx
+// addresses the list its own round was built over, and an update surviving
+// from a superseded round must never index into a rebuilt one.
+func (ui *picker) apply(u fetchUpdate, now time.Time) {
+	if u.round != ui.round {
+		return
+	}
+	resolve(ui.list[u.idx], u, now)
+}
+
+// ackString is the one-line answer to a manual refresh, composed after the
+// round lands: either everything obtainable was obtained, or the budget is
+// holding some account back and the soonest retry is named. Per-row detail
+// (which account, why) is already on the rows via their attempt captions.
+func (ui *picker) ackString(now time.Time) string {
+	var next time.Time
+	for _, d := range ui.list {
+		if at := d.View.Attempt.NextEligibleAt; at > now.Unix() {
+			t := time.Unix(at, 0)
+			if next.IsZero() || t.Before(next) {
+				next = t
+			}
+		}
+	}
+	if next.IsZero() {
+		return "refreshed · all current"
+	}
+	return "refreshed · usage in " + until(next, now)
 }
 
 // schedule sets the next round for the moment the first account becomes
@@ -241,47 +297,53 @@ func (ui *picker) schedule() {
 	ui.nextAt = next
 }
 
-// canRunNow reports that `r` should re-run immediately rather than arm.
-//
-// Arming is politeness toward the endpoint's budget, and with nothing
-// spendable there is no budget in play — no claim was attempted, so no request
-// is being deferred. What still applies is the cost of `prepare` itself, a
-// `claude auth status` spawn per account, so the floor holds against a held
-// key.
-func (ui *picker) canRunNow(now time.Time) bool {
-	return ui.wanted == 0 && !now.Before(ui.lastRound.Add(refreshFloor))
-}
-
+// refreshFloor is the minimum spacing between rounds, and it exists for the
+// local half's spawn cost alone — never as budget arithmetic, which is the
+// claim's. No scheduled cadence can hit it (every scheduled round is at least
+// a request spacing away); only a hand-delivered `r` can, so treating it as
+// an interval to tune would turn spawn hygiene into a polling rate.
 const refreshFloor = 30 * time.Second
 
 // due reports whether a round should start now. Presence is part of the
-// question: an unattended board stops asking, and says so.
+// question: an unattended board stops asking, and says so. An armed round —
+// one the user asked for — fires the moment the floor allows, attended or
+// not: it was asked for.
 func (ui *picker) due() bool {
-	if ui.updates != nil || ui.nextAt.IsZero() || time.Now().Before(ui.nextAt) {
+	if ui.updates != nil {
 		return false
 	}
-	return ui.armed || time.Since(ui.lastKey) < presenceWindow
+	now := time.Now()
+	if ui.armed {
+		return !now.Before(ui.lastLocal.Add(refreshFloor))
+	}
+	if ui.nextAt.IsZero() || now.Before(ui.nextAt) {
+		return false
+	}
+	return time.Since(ui.lastKey) < presenceWindow
 }
 
-// refresh is the `r` key. It asks the same question sooner; it does not buy
-// exemption from the endpoint's budget, which is enforced by the claim and not
-// by this loop. When nothing is eligible yet, the request is remembered rather
-// than dropped — the round fires the moment the budget allows, including from
-// an unattended board.
+// refresh is the `r` key: ask now. The claim — never this loop — decides per
+// account whether a request may leave, so the round runs immediately and a
+// still-cooling account comes back annotated with when it can next be asked,
+// rather than the key silently re-arming the cadence. The two states that
+// defer it both remember the press (`r` is never a no-op): a round already in
+// flight only carries the accounts eligible at its start, and a press inside
+// the floor is deferred spawn hygiene, not budget politeness — the queued
+// round fires the moment the floor passes, unattended included.
 func (ui *picker) refresh(ctx context.Context) {
-	if ui.updates != nil {
-		// A round is already running, but it only carries the accounts that
-		// were eligible when it started. Arming rather than dropping the key
-		// keeps the promise that `r` is never a no-op.
+	ui.ack, ui.ackUntil = "", time.Time{} // a new ask supersedes the old answer
+	if !ui.refreshNow(time.Now()) {
 		ui.armed = true
 		return
 	}
-	now := time.Now()
-	if ui.nextAt.IsZero() || !now.Before(ui.nextAt) || ui.canRunNow(now) {
-		ui.startRound(ctx)
-		return
-	}
-	ui.armed = true
+	ui.startRound(ctx, true)
+}
+
+// refreshNow reports whether `r` may run a round this instant, as opposed to
+// arming one. Split from refresh so the dispatch is testable without running
+// prepare's subprocess spawns.
+func (ui *picker) refreshNow(now time.Time) bool {
+	return ui.updates == nil && !now.Before(ui.lastLocal.Add(refreshFloor))
 }
 
 func (ui *picker) move(delta int) {
@@ -335,13 +397,21 @@ func (ui *picker) draw() {
 	ui.fp.print(lines)
 }
 
+// status is the board's one footer line. Clause order is clip order —
+// render.Clip cuts from the right, so what must survive a narrow terminal
+// comes first: the refresh state (the user's most recent question), then the
+// two warnings, then the hints as the designated casualty.
 func (ui *picker) status(now time.Time) string {
 	var parts []string
 	switch {
+	case ui.updates != nil && ui.armed:
+		parts = append(parts, "refreshing… · queued")
 	case ui.updates != nil:
 		parts = append(parts, "refreshing…")
 	case ui.armed:
-		parts = append(parts, "refresh armed · in "+until(ui.nextAt, now))
+		parts = append(parts, "queued · refresh in "+until(ui.lastLocal.Add(refreshFloor), now))
+	case ui.ack != "" && now.Before(ui.ackUntil):
+		parts = append(parts, ui.ack)
 	case ui.nextAt.IsZero():
 		// no round has completed yet
 	case time.Since(ui.lastKey) >= presenceWindow:
@@ -349,11 +419,11 @@ func (ui *picker) status(now time.Time) string {
 	default:
 		parts = append(parts, "next refresh in "+until(ui.nextAt, now))
 	}
-	if n := notActionable(ui.list, now.Unix()); n > 0 {
-		// The picker's whole purpose is choosing on current headroom. An
-		// account is grounds for a choice only when it is usable, its figures
-		// are current, and no window has rolled over since they were taken.
-		parts = append(parts, fmt.Sprintf("%d showing figures you should not pick on", n))
+	if ui.cfg.PrimaryRelocated {
+		// launch refuses the primary under a relocated home (the board is
+		// describing a tree bare `claude` would not use); the board must say
+		// so before someone picks it.
+		parts = append(parts, "HEADROOM_HOME set — primary launches refuse")
 	}
 	for _, d := range ui.list {
 		if !d.View.Current {
@@ -365,10 +435,16 @@ func (ui *picker) status(now time.Time) string {
 		// and the environment actually built cannot disagree.
 		if tgt, err := target(d.Acct); err == nil {
 			if _, conflicting := tgt.Conflicts(os.Environ()); conflicting {
-				parts = append(parts, "inherited CLAUDE_CONFIG_DIR ignored by managed launches")
+				parts = append(parts, "ambient CLAUDE_CONFIG_DIR neutralized")
 			}
 		}
 		break
+	}
+	if n := notActionable(ui.list, now.Unix()); n > 0 {
+		// The picker's whole purpose is choosing on current headroom. An
+		// account is grounds for a choice only when it is usable, its figures
+		// are current, and no window has rolled over since they were taken.
+		parts = append(parts, fmt.Sprintf("%d too old to pick on", n))
 	}
 	parts = append(parts, "↑/↓ move · enter select · r refresh · esc cancel")
 	return strings.Join(parts, " · ")

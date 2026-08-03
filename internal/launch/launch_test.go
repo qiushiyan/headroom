@@ -123,3 +123,23 @@ func TestConflicts(t *testing.T) {
 		})
 	}
 }
+
+// A relative dir is the reproduced chimera: claude reads the *default*
+// Keychain item (the primary's login) while writing state beside the cwd.
+// Both constructors refuse it, so Env can never emit one.
+func TestExtraAndForRefuseRelativeDirs(t *testing.T) {
+	for _, dir := range []string{"yan@planlab.ai", "./x", "../x"} {
+		if _, err := Extra(dir); err == nil {
+			t.Errorf("Extra(%q) accepted a relative dir", dir)
+		}
+		if _, err := For(dir); err == nil {
+			t.Errorf("For(%q) accepted a relative dir", dir)
+		}
+	}
+	if tgt, err := For(""); err != nil || !tgt.IsPrimary() {
+		t.Errorf("For(\"\") = (%v, %v), want the primary", tgt, err)
+	}
+	if tgt, err := For("/abs/dir"); err != nil || tgt.IsPrimary() {
+		t.Errorf("For(\"/abs/dir\") = (%v, %v), want an extra", tgt, err)
+	}
+}

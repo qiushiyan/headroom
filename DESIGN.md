@@ -18,12 +18,19 @@ plus every directory under the accounts root (default `~/.claude-accounts`,
 one dir per extra login, named by its email) *is* the account set.
 Everything derives from that tree:
 
-- **Isolation — the load-bearing vendor fact.** Claude Code honors
-  `CLAUDE_CONFIG_DIR` and keys its macOS Keychain item *per config dir*:
-  service `Claude Code-credentials` for the default dir, with
+- **Isolation — the load-bearing vendor fact, and its sharp edge.** Claude
+  Code honors `CLAUDE_CONFIG_DIR` and keys its macOS Keychain item *per
+  config dir*: service `Claude Code-credentials` for the default dir, with
   `-<sha256(dir)[0:8]>` appended for any other (verified against the binary,
   v2.1.220). Every dir is therefore an independent login, and all tokens
-  coexist.
+  coexist — but only for an **absolute** value. A relative one (reproduced
+  twice, same binary) splits the session in two: config state goes to the
+  cwd-relative dir while credentials come from the *default* Keychain item,
+  so the child runs as the primary under a stray state dir — the 2026-08-03
+  stale-wrapper incident's mechanism. headroom therefore only ever
+  constructs absolute dirs: `config.Load` refuses relative `HEADROOM_*`
+  overrides (and never rewrites an accepted spelling — the Keychain hash is
+  keyed on it), and `launch.Extra` refuses a relative dir at construction.
 - **Labels, and a free usage cache.** Each dir's `.claude.json` records the
   email actually logged in (`.oauthAccount.emailAddress`); the board warns
   when that contradicts the dir's name — `/login` picked the wrong account in
@@ -209,9 +216,24 @@ to configure, because asking sooner is refused and asking later says less
 than it could. Presence bounds it: a board left open on a spare tab stops
 asking after a few minutes without a keypress, since a surface that polls for
 hours with nobody looking is the background daemon this design declines to
-have, wearing a TUI. `r` refreshes what is eligible or arms the next round; it
-never buys an exemption, because an override would spend against a bucket
-where a refusal can itself cost more than it buys.
+have, wearing a TUI.
+
+`r` means *ask now*, and the claim — never the board's loop — answers. A
+round has two halves: a local half that re-reads everything free (health,
+discovery, credentials, `.current`, the store's replay of what another
+surface may have bought seconds ago) and a budget half, the claim plus
+whatever fetches it permits. `r` runs both immediately; an account still
+inside its quiet period comes back annotated with when it can next be asked,
+never silently re-armed into the cadence — pre-deciding eligibility in the
+loop was the duplicated-eligibility bug the claim exists to close. It never
+buys an exemption, because an override would spend against a bucket where a
+refusal can itself cost more than it buys. The one veto is a 30-second floor
+between rounds — spawn hygiene for the local half's per-account auth probe
+under a held key, never budget arithmetic — inside which the press queues a
+round that fires the moment the floor passes, unattended included, because
+it was asked for. The board acknowledges a manual round in the status line
+when it lands ("refreshed · usage in 40s"), briefly: a claim that persists
+past its moment is how the old wording read as being ignored.
 
 ## The session surface
 
@@ -309,7 +331,23 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   the account (omitted `--account` means the recorded choice), optionally
   records it as where bare `x` goes next — before the exec, and a failed
   record refuses the launch — then execs `claude`, preserving stdio,
-  signals and exit status by replacement rather than proxying.
+  signals and exit status by replacement rather than proxying. Two more
+  refusals sit before the record, so a refused launch can never move where
+  bare `x` goes: a primary launch under a re-pointed `HEADROOM_HOME`
+  (headroom would be describing one tree while the vendor, selecting the
+  primary by the variable's *absence*, resolved another), and a broken
+  shared-sessions topology (below).
+- **The shared-sessions topology is headroom's invariant, verified at
+  launch.** The session surface's whole model — one picker over one
+  machine-global store — holds only while every extra account's `projects/`
+  is a symlink resolving (by inode, not path spelling) to the canonical
+  store; a violation forks session history silently. So `launch` verifies it
+  before every extra-account exec and refuses with the exact end state
+  required, `check` asserts it per account through the same verifier
+  (`accounts.VerifyTopology` — one function, so the gate and the report
+  cannot disagree), and *creation* deliberately stays with the wrapper's
+  explicit seeding command: a launch that quietly repaired topology would
+  hide exactly the state the refusal exists to surface.
   **`headroom resolve [<name>]`** prints
   `canonical-name<TAB>config-dir<TAB>kind` (kind: `primary`|`extra`) for
   shell preflight: the dir so personal checks can run against it, the kind
@@ -339,12 +377,29 @@ headroom *advertises* only guaranteed launcher identities:
 (`accounts.Launcher`). Short local-part aliases are shell convenience,
 invisible to headroom — the old shared naming policy ("keep the two rule
 copies in sync") was a cross-repo contract that could drift. Wrappers own
-what is personal: seeding, topology preflight, flags, aliases — and they
-never touch `CLAUDE_CONFIG_DIR` or parse `.current`. When headroom is
-missing or refuses, the wrapper stops loudly rather than degrading to bare
-`claude`, which in a polluted shell is exactly the misroute the managed
-path exists to prevent; the unmanaged escape hatch is deliberately explicit
-(`env -u CLAUDE_CONFIG_DIR claude`, or the variable set by hand).
+what is personal: seeding, flags, aliases — and they never touch
+`CLAUDE_CONFIG_DIR`, never parse `.current`, and hold no verification a
+launch depends on (topology verification moved into the binary for exactly
+that reason). When headroom is missing or refuses, the wrapper stops loudly
+rather than degrading to bare `claude`, which in a polluted shell is
+exactly the misroute the managed path exists to prevent; the unmanaged
+escape hatch is deliberately explicit (`env -u CLAUDE_CONFIG_DIR claude`,
+or the variable set by hand).
+
+The division follows from the two layers' lifetime models, and the rule is
+worth stating because both wrong-account incidents violated it: **the shell
+layer is init-frozen — a zsh function loaded at shell start lives for
+weeks, and no code shipped today reaches it — while the binary is
+re-resolved from PATH at every invocation.** Anything whose staleness can
+misroute, mutate, or misparse therefore lives on the binary side; the
+frozen side gets names, personal flags, and the one thing only a parent
+shell can do (make a `cd` stick). The same asymmetry decides how protocols
+may evolve: a version tag inside a line only helps a reader new enough to
+check it, so a breaking change to a wrapper-facing surface ships as a
+*renamed verb* — argv is the one channel where the binary can observe a
+stale caller and refuse it, actionably. (An unchanged surface may keep an
+old spelling — `select` still aliases the board — but a surface whose
+contract changed must never reuse its name.)
 
 ## Dependencies and shape
 

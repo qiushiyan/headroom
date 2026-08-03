@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -13,27 +14,53 @@ type Config struct {
 	AccountsRoot string // one dir per extra subscription, keyed by email
 	PrimaryName  string // launcher name advertised for the primary ~/.claude
 	UsageURL     string
+
+	// PrimaryRelocated records that HEADROOM_HOME points somewhere other than
+	// the process's real home. Observation surfaces keep working against the
+	// configured tree — that is what the pty harness exists on — but a
+	// *primary launch* must refuse: the primary is selected by
+	// CLAUDE_CONFIG_DIR being absent, which the vendor resolves against the
+	// real home, so the child would run on a tree the board never described.
+	PrimaryRelocated bool
 }
 
-func Load() Config {
+// Load resolves the configuration, refusing relative path overrides outright.
+//
+// The refusal is load-bearing, not pedantry: verified against the 2.1.220
+// binary, a relative CLAUDE_CONFIG_DIR makes claude write its config state
+// into a cwd-relative dir while reading credentials from the *default*
+// Keychain item — the session runs as the primary under a stray state dir.
+// Every config-dir path headroom builds derives from these two roots, so
+// absoluteness is established here, once, at the only door.
+//
+// Deliberately no filepath.Clean or EvalSymlinks on an accepted value: the
+// vendor keys its Keychain service name on the config dir's spelling, so
+// rewriting the string could re-key every extra account's credentials.
+// (filepath.Join already normalizes the per-account paths derived below,
+// exactly as it always has.)
+func Load() (Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
 	}
-	// HEADROOM_HOME re-points everything derived from the home directory —
-	// the primary config dir, the session store, the accounts root. The pty
-	// harness depends on it: without it a resume test would list (and a
-	// delete test would delete) the real machine's transcripts.
+	realHome := home
 	if v := os.Getenv("HEADROOM_HOME"); v != "" {
+		if !filepath.IsAbs(v) {
+			return Config{}, fmt.Errorf("HEADROOM_HOME=%q is not absolute — a relative config-dir path would make claude run as the primary while writing state beside the cwd; spell it absolute", v)
+		}
 		home = v
 	}
 	c := Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-		UsageURL:     "https://api.anthropic.com/api/oauth/usage",
+		Home:             home,
+		AccountsRoot:     filepath.Join(home, ".claude-accounts"),
+		PrimaryName:      "qiushi",
+		UsageURL:         "https://api.anthropic.com/api/oauth/usage",
+		PrimaryRelocated: filepath.Clean(home) != filepath.Clean(realHome),
 	}
 	if v := os.Getenv("HEADROOM_ACCOUNTS_ROOT"); v != "" {
+		if !filepath.IsAbs(v) {
+			return Config{}, fmt.Errorf("HEADROOM_ACCOUNTS_ROOT=%q is not absolute — a relative config-dir path would make claude run as the primary while writing state beside the cwd; spell it absolute", v)
+		}
 		c.AccountsRoot = v
 	}
 	if v := os.Getenv("HEADROOM_PRIMARY_NAME"); v != "" {
@@ -42,7 +69,7 @@ func Load() Config {
 	if v := os.Getenv("HEADROOM_USAGE_URL"); v != "" {
 		c.UsageURL = v
 	}
-	return c
+	return c, nil
 }
 
 // CurrentFile records which account bare `x` targets. headroom is its only

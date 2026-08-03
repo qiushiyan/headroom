@@ -16,14 +16,15 @@ expect {
     timeout { puts "board never drew its refresh countdown"; exit 2 }
 }
 
-# `r` inside the quiet period arms the next round and says so. Expecting the
-# countdown here instead would match frames buffered during the sleep above and
-# pass whether or not the key was ever handled.
+# `r` inside the round floor queues the round and says so — the key was
+# heard; only the work is floored. Expecting the countdown here instead would
+# match frames buffered during the sleep above and pass whether or not the
+# key was ever handled.
 sleep 2
 send -- "r"
 expect {
-    "refresh armed" {}
-    timeout { puts "board did not arm a refresh on r"; exit 2 }
+    "queued · refresh in" {}
+    timeout { puts "board did not queue a refresh on r"; exit 2 }
 }
 
 # Fifty refresh keys at once, as a held-down key would deliver them. What this

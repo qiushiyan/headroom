@@ -19,7 +19,15 @@ func launchConfig(t *testing.T) config.Config {
 		AccountsRoot: filepath.Join(home, ".claude-accounts"),
 		PrimaryName:  "qiushi",
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "yan@planlab.ai"), 0o755); err != nil {
+	extra := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Valid shared-sessions topology: launch verifies it before any exec.
+	if err := os.MkdirAll(cfg.ProjectsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cfg.ProjectsDir(), filepath.Join(extra, "projects")); err != nil {
 		t.Fatal(err)
 	}
 	return cfg
@@ -164,5 +172,55 @@ func TestLaunchRefusesExplicitlyEmptyAccount(t *testing.T) {
 	}
 	if *called {
 		t.Error("exec ran on an explicitly empty account name")
+	}
+}
+
+// A broken shared-sessions topology refuses before exec *and* before the
+// .current write: a choice recorded by a launch that then refused would move
+// where bare `x` goes as a side effect of nothing.
+func TestLaunchRefusesBrokenTopology(t *testing.T) {
+	cfg := launchConfig(t)
+	_, _, called := capturedExec(t)
+
+	extra := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
+	if err := os.Remove(filepath.Join(extra, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	// A real directory where the symlink belongs: the history-forking state.
+	if err := os.MkdirAll(filepath.Join(extra, "projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runLaunch(cfg, []string{"--remember", "--account", "yan@planlab.ai"}); code != 1 {
+		t.Errorf("broken topology: exit %d, want 1", code)
+	}
+	if *called {
+		t.Error("exec ran over a topology that forks session history")
+	}
+	if _, err := os.Stat(cfg.CurrentFile()); !os.IsNotExist(err) {
+		t.Error(".current was written by a launch that refused")
+	}
+}
+
+// HEADROOM_HOME re-points what headroom observes, but the primary is selected
+// by CLAUDE_CONFIG_DIR being absent — resolved by the vendor against the real
+// home. Launching the primary would start a session on a tree the board never
+// described, so it refuses; extras carry their dir explicitly and still work.
+func TestLaunchRefusesRelocatedPrimary(t *testing.T) {
+	cfg := launchConfig(t)
+	cfg.PrimaryRelocated = true
+	_, _, called := capturedExec(t)
+
+	if code := runLaunch(cfg, []string{"--account", "qiushi"}); code != 1 {
+		t.Errorf("relocated primary: exit %d, want 1", code)
+	}
+	if *called {
+		t.Error("exec ran for a primary the board cannot describe")
+	}
+	if code := runLaunch(cfg, []string{"--account", "yan@planlab.ai"}); code != 0 {
+		t.Errorf("extra under relocated home: exit %d, want 0", code)
+	}
+	if !*called {
+		t.Error("extra launch should be unaffected by a relocated home")
 	}
 }
