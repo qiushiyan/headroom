@@ -6,10 +6,10 @@ package app
 // the ambient environment alone for the primary, so a tmux server started
 // inside a Claude Code session silently routed every "primary" launch to
 // whatever account that session ran on. Here the child environment is
-// constructed from the validated decision alone (launch.Env), the selection
-// fails closed on corrupt state (accounts.Select), and a neutralized ambient
-// value is said out loud — the shell wrappers shrink to personal preflight
-// and flags.
+// constructed from the validated decision alone (launch.Target), the
+// selection fails closed on corrupt state (accounts.Select), and a
+// neutralized ambient value is said out loud — the shell wrappers shrink to
+// personal preflight and flags.
 
 import (
 	"fmt"
@@ -25,18 +25,33 @@ import (
 // can capture the argv and environment a launch would have used.
 var execClaude = launch.Exec
 
-// runResolve prints one line: canonical-account-name<TAB>config-dir (the
-// primary's real ~/.claude path, not the empty internal sentinel). It exists
-// for shell preflight — seeding, topology checks — which needs the dir before
-// a launch; the launch itself revalidates, so this answer is advice, not a
-// capability.
+// target maps a validated account to the launch package's vocabulary — the
+// one place the account layer's dir-or-empty convention crosses that seam.
+func target(a accounts.Account) launch.Target { return launch.For(a.ConfigDir) }
+
+// runResolve prints one line: canonical-name<TAB>config-dir<TAB>kind, kind
+// being "primary" or "extra". It exists for shell preflight — topology
+// checks need the dir, and *which preflight applies* must come from this
+// classification rather than from the shell re-deriving headroom's paths: a
+// wrapper that prefix-matches its own idea of the accounts root silently
+// skips the check whenever a HEADROOM_* override moves the real one. The
+// dir is the primary's real ~/.claude path, never an empty sentinel; the
+// launch itself revalidates, so this answer is advice, not a capability.
 func runResolve(cfg config.Config, args []string) int {
-	selector := ""
+	selector, explicitEmpty := "", false
 	if len(args) > 0 {
 		selector, args = args[0], args[1:]
+		explicitEmpty = selector == ""
 	}
 	if len(args) > 0 {
 		fmt.Fprintf(os.Stderr, "headroom resolve: unexpected argument %q\n", args[0])
+		return 2
+	}
+	if explicitEmpty {
+		// "" is not a name. Resolving it as "current" would let a caller's
+		// expansion bug (`headroom resolve "$broken"`) silently answer with
+		// the recorded account; launch refuses the same spelling.
+		fmt.Fprintln(os.Stderr, "headroom resolve: an account selector must be non-empty")
 		return 2
 	}
 	a, err := accounts.Select(cfg, accounts.Discover(cfg), selector)
@@ -49,7 +64,11 @@ func runResolve(cfg config.Config, args []string) int {
 		fmt.Fprintln(os.Stderr, "headroom resolve: account name or dir contains control characters — not launchable")
 		return 1
 	}
-	fmt.Printf("%s\t%s\n", a.Name, dir)
+	kind := "extra"
+	if a.IsPrimary() {
+		kind = "primary"
+	}
+	fmt.Printf("%s\t%s\t%s\n", a.Name, dir, kind)
 	return 0
 }
 
@@ -59,7 +78,7 @@ func runResolve(cfg config.Config, args []string) int {
 // verbatim.
 func runLaunch(cfg config.Config, args []string) int {
 	remember := false
-	account := ""
+	account, accountSet := "", false
 	rest := []string(nil)
 parse:
 	for i := 0; i < len(args); i++ {
@@ -72,7 +91,7 @@ parse:
 				return 2
 			}
 			i++
-			account = args[i]
+			account, accountSet = args[i], true
 		case "--":
 			rest = args[i+1:]
 			break parse
@@ -80,6 +99,14 @@ parse:
 			fmt.Fprintf(os.Stderr, "headroom launch: unknown argument %q (claude args go after --)\n", args[i])
 			return 2
 		}
+	}
+	if accountSet && account == "" {
+		// Omitted --account means "the recorded choice"; an explicitly empty
+		// one is a malformed name, and collapsing the two would let a
+		// caller's expansion bug (`--account "$broken"`) silently launch the
+		// recorded account instead of refusing.
+		fmt.Fprintln(os.Stderr, "headroom launch: --account needs a non-empty name")
+		return 2
 	}
 
 	a, err := accounts.Select(cfg, accounts.Discover(cfg), account)
@@ -98,14 +125,15 @@ parse:
 		}
 	}
 
+	tgt := target(a)
 	base := os.Environ()
-	if inherited := launch.Inherited(base); inherited != "" && inherited != a.Dir(cfg) {
-		// Neutralized either way; said out loud only when it would have
-		// re-routed the launch. One line, stderr, then business as usual.
+	if v, conflicting := tgt.Conflicts(base); conflicting {
+		// Neutralized either way; said out loud because obeying it would
+		// have routed elsewhere. One line, stderr, then business as usual.
 		fmt.Fprintf(os.Stderr, "headroom launch: ignoring inherited CLAUDE_CONFIG_DIR=%s; launching %s (%s)\n",
-			inherited, a.Name, a.Dir(cfg))
+			v, a.Name, a.Dir(cfg))
 	}
-	if err := execClaude(rest, launch.Env(base, a.ConfigDir)); err != nil {
+	if err := execClaude(rest, tgt.Env(base)); err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}

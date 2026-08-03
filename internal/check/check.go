@@ -341,6 +341,11 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	}
 
 	checkOwnState(cfg, accts, st.Load(), chk, own, skip)
+	// Deliberately outside checkOwnState: these depend on .current and the
+	// process environment, not on state.json, so a state document written by
+	// a newer headroom (which rightly short-circuits the state audit) must
+	// not silence them.
+	checkRouting(cfg, accts, os.Environ(), chk, own)
 	checkSessionStore(cfg, accts, chk, skip)
 
 	fmt.Fprintln(out)
@@ -529,6 +534,14 @@ func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snaps
 		chk(err == nil && nbad == 0, label,
 			"the response headroom itself stored no longer parses — shape drifted")
 	}
+}
+
+// checkRouting audits the launch-routing state: the `.current` selection and
+// the process environment. It runs from Run unconditionally — nothing here
+// reads state.json, so no state-schema condition may suppress it.
+func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
+	chk, own func(bool, string, string)) {
+
 	// The launch path's own resolver, applied exactly as `headroom launch`
 	// applies it: absent is the documented fresh-start default, while empty,
 	// unreadable or naming a deleted account is corrupt routing state — launch
@@ -545,9 +558,11 @@ func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snaps
 	// server started inside a Claude Code session, a nested shell) is
 	// neutralized by every managed launch and every health probe headroom
 	// spawns. It is reported because tools *outside* headroom that read the
-	// variable are still being steered by it.
-	if ambient := launch.Inherited(os.Environ()); ambient != "" {
-		chk(true, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches (%s)", ambient), "")
+	// variable are still being steered by it. Presence is the condition —
+	// a present-but-empty value is unverified vendor territory, not the
+	// verified absent state, so it is reported too.
+	if v, present := launch.Ambient(environ); present {
+		chk(true, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches (%q)", v), "")
 	}
 }
 

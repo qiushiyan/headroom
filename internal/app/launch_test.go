@@ -94,8 +94,8 @@ func TestLaunchRememberRecordsBeforeExec(t *testing.T) {
 	if !*called {
 		t.Fatal("exec never ran")
 	}
-	if got := accounts.CurrentTarget(cfg); got != "yan@planlab.ai" {
-		t.Errorf(".current = %q, want yan@planlab.ai", got)
+	if a, err := accounts.Select(cfg, accounts.Discover(cfg), ""); err != nil || a.Name != "yan@planlab.ai" {
+		t.Errorf(".current = (%q, %v), want yan@planlab.ai", a.Name, err)
 	}
 }
 
@@ -141,10 +141,28 @@ func TestResolvePrintsNameAndRealDir(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, want 0", code)
 	}
-	// The primary resolves to its real dir, never an empty sentinel: the
-	// wrapper's preflight must not have to interpret "" as "the primary".
-	want := "qiushi\t" + cfg.PrimaryDir() + "\n"
+	// The primary resolves to its real dir, never an empty sentinel, and the
+	// kind field is what the wrapper's preflight keys on — re-deriving
+	// primary-vs-extra from path prefixes is exactly what a HEADROOM_* root
+	// override silently breaks.
+	want := "qiushi\t" + cfg.PrimaryDir() + "\tprimary\n"
 	if string(out[:n]) != want {
 		t.Errorf("resolve output %q, want %q", out[:n], want)
+	}
+}
+
+func TestLaunchRefusesExplicitlyEmptyAccount(t *testing.T) {
+	cfg := launchConfig(t)
+	_, _, called := capturedExec(t)
+
+	// An explicitly empty --account is a malformed name, not "the recorded
+	// choice": collapsing the two lets a caller's expansion bug launch the
+	// recorded account instead of refusing. Pinned red against the pre-fix
+	// binary, which launched the primary here.
+	if code := runLaunch(cfg, []string{"--account", ""}); code != 2 {
+		t.Errorf("--account \"\": exit %d, want 2", code)
+	}
+	if *called {
+		t.Error("exec ran on an explicitly empty account name")
 	}
 }

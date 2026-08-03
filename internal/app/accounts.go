@@ -356,16 +356,18 @@ func (ui *picker) status(now time.Time) string {
 		// are current, and no window has rolled over since they were taken.
 		parts = append(parts, fmt.Sprintf("%d showing figures you should not pick on", n))
 	}
-	if ambient := launch.Inherited(os.Environ()); ambient != "" {
-		for _, d := range ui.list {
-			if d.View.Current && ambient != d.Acct.Dir(ui.cfg) {
-				// An inherited value that disagrees with `← x` would re-route
-				// a bare `claude`; managed launches neutralize it, and the
-				// board must not silently rely on that.
-				parts = append(parts, "inherited CLAUDE_CONFIG_DIR ignored by managed launches")
-				break
-			}
+	for _, d := range ui.list {
+		if !d.View.Current {
+			continue
 		}
+		// An inherited value that disagrees with `← x` would re-route a bare
+		// `claude`; managed launches neutralize it, and the board must not
+		// silently rely on that. The classifier is launch's, so this note
+		// and the environment actually built cannot disagree.
+		if _, conflicting := launch.For(d.Acct.ConfigDir).Conflicts(os.Environ()); conflicting {
+			parts = append(parts, "inherited CLAUDE_CONFIG_DIR ignored by managed launches")
+		}
+		break
 	}
 	parts = append(parts, "↑/↓ move · enter select · r refresh · esc cancel")
 	return strings.Join(parts, " · ")

@@ -227,11 +227,11 @@ func Launcher(a Account, primaryName string) string {
 // Select resolves a selector to a discovered account, strictly. selector ""
 // means the recorded choice: an absent .current is the documented fresh-start
 // default (the primary), but an empty, unreadable or unmatched one is an
-// error — never a silent primary. This is the launch path's resolver, and it
-// fails closed on purpose: the old shell fallback turned a torn `.current` or
-// a deleted account into "launch the primary with permissions bypassed",
-// which makes corruption indistinguishable from a valid choice. Display
-// surfaces that only mark a row keep using the tolerant CurrentTarget.
+// error — never a silent primary. This is the one resolver of `.current`,
+// and it fails closed on purpose: the old shell fallback turned a torn
+// `.current` or a deleted account into "launch the primary with permissions
+// bypassed", which makes corruption indistinguishable from a valid choice.
+// Display surfaces treat the error as "no current account" and mark nothing.
 func Select(cfg config.Config, accts []Account, selector string) (Account, error) {
 	name := selector
 	if name == "" {
@@ -264,22 +264,6 @@ func primaryOf(accts []Account) (Account, error) {
 	// Discover always lists the primary; an account slice without one was not
 	// built by discovery and cannot be resolved against.
 	return Account{}, errors.New("no primary account in the discovered set")
-}
-
-// CurrentTarget is the account name bare `x` targets right now. Tolerant on
-// purpose: it answers "where does the marker go", and a display fallback to
-// the primary misleads nobody the way a launch fallback does — the launch
-// path resolves through Select and refuses instead.
-func CurrentTarget(cfg config.Config) string {
-	data, err := os.ReadFile(cfg.CurrentFile())
-	if err != nil {
-		return cfg.PrimaryName
-	}
-	name := strings.TrimRight(string(data), "\n")
-	if name == "" {
-		return cfg.PrimaryName
-	}
-	return name
 }
 
 // SetCurrent records the account bare `x` should target from now on,

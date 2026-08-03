@@ -160,7 +160,14 @@ func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
 
 // prepareWith is prepare with its inputs injected.
 func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapshot, src sources) ([]*accountData, string) {
-	current := accounts.CurrentTarget(cfg)
+	// Strict, exactly as launch resolves it: a corrupt or dangling .current
+	// marks nothing as current — the `← x` marker is a claim about where
+	// bare `x` lands, and bare `x` refuses on that state. check FAILs on it;
+	// enter on this board is what repairs it.
+	current := ""
+	if sel, err := accounts.Select(cfg, accts, ""); err == nil {
+		current = sel.Name
+	}
 	now := src.now
 	nowMS := now.UnixMilli()
 

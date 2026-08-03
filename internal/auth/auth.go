@@ -85,9 +85,10 @@ func Query(configDir string) Status {
 	cmd := exec.CommandContext(ctx, "claude", "auth", "status", "--json")
 	// The default dir is selected by the variable being absent, so an
 	// inherited one (headroom run from inside a Claude Code session) must be
-	// stripped or every account reports that session's login. launch.Env is
-	// the one place that rule lives.
-	cmd.Env = launch.Env(os.Environ(), configDir)
+	// stripped or every account reports that session's login. launch owns
+	// that rule; For is the sanctioned crossing for this dir-or-empty
+	// parameter.
+	cmd.Env = launch.For(configDir).Env(os.Environ())
 	return classify(cmd.Output())
 }
 

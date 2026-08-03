@@ -141,35 +141,18 @@ func TestSelect(t *testing.T) {
 	}
 }
 
-func TestCurrentTarget(t *testing.T) {
-	cfg := testConfig(t)
-	if got := CurrentTarget(cfg); got != "qiushi" {
-		t.Errorf("no state file: got %q, want primary", got)
-	}
-	if err := SetCurrent(cfg, "yan@planlab.ai"); err != nil {
-		t.Fatal(err)
-	}
-	if got := CurrentTarget(cfg); got != "yan@planlab.ai" {
-		t.Errorf("got %q, want yan@planlab.ai", got)
-	}
-	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := CurrentTarget(cfg); got != "qiushi" {
-		t.Errorf("empty state file: got %q, want primary", got)
-	}
-}
-
 func TestSetCurrentAtomicWrite(t *testing.T) {
 	cfg := testConfig(t)
+	mkAccount(t, cfg, "first@x.com")
+	mkAccount(t, cfg, "second@x.com")
 	if err := SetCurrent(cfg, "first@x.com"); err != nil {
 		t.Fatal(err)
 	}
 	if err := SetCurrent(cfg, "second@x.com"); err != nil {
 		t.Fatal(err)
 	}
-	if got := CurrentTarget(cfg); got != "second@x.com" {
-		t.Errorf("got %q, want second@x.com", got)
+	if a, err := Select(cfg, Discover(cfg), ""); err != nil || a.Name != "second@x.com" {
+		t.Errorf("got (%q, %v), want second@x.com", a.Name, err)
 	}
 	// The write goes through a temp file + rename; nothing may be left over.
 	entries, err := os.ReadDir(cfg.AccountsRoot)
@@ -177,7 +160,7 @@ func TestSetCurrentAtomicWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if e.Name() != ".current" {
+		if !e.IsDir() && e.Name() != ".current" {
 			t.Errorf("stray file after SetCurrent: %q", e.Name())
 		}
 	}

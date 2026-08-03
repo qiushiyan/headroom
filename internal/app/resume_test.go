@@ -6,6 +6,7 @@ import (
 
 	"testing"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
@@ -81,5 +82,26 @@ func TestPrimaryLabel(t *testing.T) {
 		if got := primaryLabel(&c.s); got != c.want {
 			t.Errorf("%s: primaryLabel = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// The two fail-closed rules of resume routing. Pinned red against the
+// pre-review code, which fell back to the primary in both cases — minting a
+// launch decision no evidence had chosen.
+func TestResumeAccountFailsClosedOnInvalidCurrent(t *testing.T) {
+	ui := &resumeUI{current: "", accts: []accounts.Account{{Name: "qiushi"}}}
+	if a, ok := ui.resumeAccount(&sessions.Session{}, false); ok {
+		t.Errorf("ownerless session with no valid current resumed on %q — a decision minted from corrupt routing state", a.Name)
+	}
+}
+
+func TestResumeAccountDeletedOwnerFallsToCurrentNeverPrimary(t *testing.T) {
+	ui := &resumeUI{
+		current: "b@x.com",
+		accts:   []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}},
+	}
+	a, ok := ui.resumeAccount(&sessions.Session{Owner: "gone@x.com"}, false)
+	if !ok || a.Name != "b@x.com" {
+		t.Errorf("deleted owner resumed on (%q, %v) — degraded attribution falls back to current, never primary", a.Name, ok)
 	}
 }

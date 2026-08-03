@@ -1,9 +1,14 @@
 package check
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/config"
 )
 
 // The overlap carry is the subtle part: a needle split across a chunk
@@ -53,5 +58,67 @@ func TestSearchReader(t *testing.T) {
 	r := iotest.DataErrReader(strings.NewReader("xxxxxxNEEDLE"))
 	if got := searchReader(r, []string{"NEEDLE"}, 8); !got["NEEDLE"] {
 		t.Error("data+EOF read dropped the final chunk")
+	}
+}
+
+// checkRouting is deliberately independent of state.json — it must report
+// corrupt `.current` and an inherited CLAUDE_CONFIG_DIR even when the state
+// document was written by a newer headroom and the state audit
+// short-circuits. Run-level coverage of that placement isn't feasible (Run
+// spawns claude and talks HTTP), so the function is pinned directly and the
+// call site sits outside checkOwnState by review.
+func TestCheckRouting(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.Config{
+		Home:         home,
+		AccountsRoot: filepath.Join(home, ".claude-accounts"),
+		PrimaryName:  "qiushi",
+	}
+	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	accts := accounts.Discover(cfg)
+
+	run := func(environ []string) (ownFails, envLines []string) {
+		chk := func(ok bool, label, hint string) {
+			if ok {
+				envLines = append(envLines, label)
+			}
+		}
+		own := func(ok bool, label, hint string) {
+			if !ok {
+				ownFails = append(ownFails, label)
+			}
+		}
+		checkRouting(cfg, accts, environ, chk, own)
+		return
+	}
+
+	// Absent .current: the documented default — no failure, and a clean
+	// environment earns no env line.
+	if fails, lines := run([]string{"HOME=" + home}); len(fails) != 0 || len(lines) != 0 {
+		t.Errorf("clean state: ownFails=%v envLines=%v", fails, lines)
+	}
+
+	// Corrupt (empty) .current: an own-state FAIL — headroom's file, never
+	// vendor drift.
+	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if fails, _ := run([]string{"HOME=" + home}); len(fails) != 1 {
+		t.Errorf("empty .current: want one own FAIL, got %v", fails)
+	}
+	if err := os.Remove(cfg.CurrentFile()); err != nil {
+		t.Fatal(err)
+	}
+
+	// An inherited variable — present-but-empty included, which is
+	// unverified vendor territory rather than the verified absent state —
+	// earns the ok-with-detail line.
+	if _, lines := run([]string{"CLAUDE_CONFIG_DIR=/leak"}); len(lines) != 1 {
+		t.Errorf("inherited value: want env line, got %v", lines)
+	}
+	if _, lines := run([]string{"CLAUDE_CONFIG_DIR="}); len(lines) != 1 {
+		t.Errorf("present-but-empty: want env line, got %v", lines)
 	}
 }

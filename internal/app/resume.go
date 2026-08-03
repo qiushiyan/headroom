@@ -57,7 +57,15 @@ func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []se
 		Owners:      ownerRecords(st.Load()),
 		Probe:       psProbe,
 	})
-	return listing, refs, accts, accounts.CurrentTarget(cfg)
+	// Strict, exactly as launch resolves it: corrupt or dangling `.current`
+	// yields "" — no current — rather than a primary nobody chose. Rows fall
+	// back to the current account by doctrine, so a tolerant read here would
+	// be the resume surface's route around the launch path's refusal.
+	current := ""
+	if sel, err := accounts.Select(cfg, accts, ""); err == nil {
+		current = sel.Name
+	}
+	return listing, refs, accts, current
 }
 
 // ownerRecords adapts the store's re-home records to the collector's own type.
@@ -315,22 +323,32 @@ func matches(s *sessions.Session, q string) bool {
 
 // resumeAccount resolves which account a session resumes on: its owner when
 // one is known and still exists, else the current account — visibly, via
-// the row's owner tag, never silently.
+// the row's owner tag, never silently. There is no further rung: ui.current
+// is "" when `.current` failed strict resolution, and a session neither the
+// owner evidence nor a valid current can place is refused rather than routed
+// to the primary — a fallback the launch path just stopped minting from
+// corrupt state must not reappear here as an attribution courtesy.
 func (ui *resumeUI) resumeAccount(s *sessions.Session, override bool) (accounts.Account, bool) {
 	name := s.Owner
 	if override || name == "" {
 		name = ui.current
+	}
+	if name == "" {
+		return accounts.Account{}, false
 	}
 	for _, a := range ui.accts {
 		if a.Name == name {
 			return a, true
 		}
 	}
-	// The current account itself can be missing (state file names a removed
-	// dir); the primary always exists.
-	for _, a := range ui.accts {
-		if a.IsPrimary() {
-			return a, true
+	// The owner names an account the filesystem no longer has: degraded
+	// attribution falls back to the *current* account — the row's owner tag
+	// already says so — never to the primary, which no evidence chose.
+	if name != ui.current && ui.current != "" {
+		for _, a := range ui.accts {
+			if a.Name == ui.current {
+				return a, true
+			}
 		}
 	}
 	return accounts.Account{}, false
@@ -370,7 +388,7 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 	}
 	acct, ok := ui.resumeAccount(s, override)
 	if !ok {
-		ui.message = "no account to resume on"
+		ui.message = "no account to resume on — run headroom accounts"
 		return false, 0
 	}
 	if strings.ContainsAny(acct.Name, "\t\n\r") {
@@ -529,6 +547,11 @@ func ownerTag(s *sessions.Session, current string) string {
 }
 
 func shortAccount(name string) string {
+	if name == "" {
+		// No valid current account: `.current` failed strict resolution.
+		// "?" over a name nobody chose.
+		return "?"
+	}
 	local, _, _ := strings.Cut(name, "@")
 	return local
 }
