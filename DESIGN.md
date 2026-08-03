@@ -158,12 +158,13 @@ engineered from the 2.1.220 store and all perishable:
   placeholders, never a model, and is skipped); there is no session index
   file. The first pass reads
   `sessions.TailBudget` (64KB) from EOF — measured to resolve everything
-  for almost every transcript — and when no cwd verifies there (a session
-  can end in one message bigger than the budget) the window widens until
-  one does or the file is exhausted, because a resumable row rendered
-  "dir gone" is the picker lying. `check` asserts the tail resolves the
-  same title, cwd and model as a full-file parse for every oversized
-  transcript —
+  for almost every transcript — and when the cwd or the model is still
+  unresolved (a session can end in one message bigger than the budget,
+  and a window starting inside it skips it as a partial line) the window
+  widens until both resolve or the file is exhausted: a resumable row
+  rendered "dir gone" is the picker lying, and a silently blank model is
+  the same lie smaller. `check` asserts the tail resolves the same title,
+  cwd and model as a full-file parse for every oversized transcript —
   the assertion that fires the day a load-bearing record drifts out of
   reach. Listability is structural: top-level `<uuid>.jsonl` files are
   sessions; `<uuid>/` closure dirs hold subagent transcripts and are not.
