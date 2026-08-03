@@ -18,11 +18,9 @@ bob@example.com (max 5x · x-bob)  ← x
 
 | Command | What it does |
 | --- | --- |
-| `headroom` | Live limit bars for every account, fetched in parallel |
+| `headroom` / `headroom accounts` | The board: live limit bars for every account, refreshing itself while it is open; enter picks the account the shell's bare launcher targets. Off a terminal, prints one frame and exits |
 | `headroom --json` | The same data as a versioned JSON document, for scripts and status lines |
-| `headroom select` | Interactive account picker; records the chosen account for the shell's bare launcher |
 | `headroom resume` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
-| `headroom watch` | The dashboard, refreshed on a deliberately lazy interval |
 | `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
 
 ## How it works
@@ -32,7 +30,10 @@ directory under `~/.claude-accounts` (one per extra login, named by its
 email) *is* the account set. Claude Code keys its macOS Keychain credentials
 per config dir, so every dir is an independent login and all tokens coexist.
 headroom reads each account's credentials, calls the same usage endpoint
-Claude Code's own `/usage` screen calls, and renders the result.
+Claude Code's own `/usage` screen calls, and renders the result. That endpoint
+budgets roughly one request per minute *per account*, so headroom keeps a
+record of both what it asked and what came back: a refresh that is too soon to
+send replays its own newest answer instead of showing you something older.
 
 Session transcripts on this setup are machine-global (every account's
 `projects/` links to one store), so `resume` lists every conversation
@@ -40,13 +41,13 @@ regardless of account and routes each back to the account that last drove
 it — quota switching steers new sessions, never old ones.
 
 headroom is **read-only** toward that system: it never writes the Keychain
-and never refreshes a token — Claude Code owns both. It keeps three small
-files of its own (`.current`, `.throttle`, `.owners`), and the session
-picker's explicit `rename`/`delete` commands are the only two vendor-state
-mutations, both refused while a session is open. The launcher commands it
-advertises (`x-<name>`) are provided by shell integration, not by headroom;
-the contract between the two is spelled out in [DESIGN.md](DESIGN.md),
-along with the reverse-engineered vendor facts everything rests on.
+and never refreshes a token — Claude Code owns both. It keeps two files of its
+own (`state.json` and `.current`), and the session picker's explicit
+`rename`/`delete` commands are the only two vendor-state mutations, both
+refused while a session is open. The launcher commands it advertises
+(`x-<name>`) are provided by shell integration, not by headroom; the contract
+between the two is spelled out in [DESIGN.md](DESIGN.md), along with the
+reverse-engineered vendor facts everything rests on.
 
 ## Building
 

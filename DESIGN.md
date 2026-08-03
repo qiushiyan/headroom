@@ -2,12 +2,13 @@
 
 headroom is a read-only observer of a system it doesn't own: several Claude
 Code logins on one machine, each keyed to its own config dir. It answers
-"which account has headroom left?" (the dashboard — printed once, serialized
-by `--json`, kept live by `watch`), lets the user act on the answer
-(`select`), answers "which session do I get back into, and on which
-account?" (`resume` — see The session surface below), and proves its own
-assumptions still hold (`check`). This file records the mental model and the
-vendor contracts — the things the code can't say about itself.
+"which account has headroom left?" and lets the user act on the answer (the
+account board, `accounts`: live and self-refreshing on a terminal, one frame
+off it, a versioned document under `--json`), answers "which session do I get
+back into, and on which account?" (`resume` — see The session surface below),
+and proves its own assumptions still hold (`check`). This file records the
+mental model and the vendor contracts — the things the code can't say about
+itself.
 
 ## The system observed: the filesystem is the registry
 
@@ -23,7 +24,7 @@ Everything derives from that tree:
   v2.1.220). Every dir is therefore an independent login, and all tokens
   coexist.
 - **Labels, and a free usage cache.** Each dir's `.claude.json` records the
-  email actually logged in (`.oauthAccount.emailAddress`); the dashboard warns
+  email actually logged in (`.oauthAccount.emailAddress`); the board warns
   when that contradicts the dir's name — `/login` picked the wrong account in
   that dir's session. The same file carries `cachedUsageUtilization`: the last
   usage response *Claude Code itself* fetched, stamped with `fetchedAtMs`. Its
@@ -37,23 +38,23 @@ Everything derives from that tree:
   dir, from local state: ~170ms, no network, no usage budget. headroom infers
   account health from credential timestamps only when that command can't
   answer.
-- **Three state files are the integration surface with the user's shell.**
-  `.current` names the account the shell's bare launcher should target;
-  `select` writes it atomically. `.owners` records explicit session
-  re-homes (see The session surface). `.order` (optional; one email per
-  line, `#` comments) sets display order after the primary; unlisted
-  accounts follow alphabetically.
+- **Two files are the shell's, not headroom's.** `.current` names the account
+  the shell's bare launcher should target — the board writes it atomically,
+  and the shell's own per-account launchers rewrite it at every launch.
+  `.order` (optional; one email per line, `#` comments) sets display order
+  after the primary; unlisted accounts follow alphabetically. Both stay
+  outside headroom's own state on purpose; see The one file headroom writes.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
 Keychain, never refreshes a token, and never touches vendor login or quota
-state — Claude Code owns all of it. It writes three things of its own:
-`.current`, `.throttle` (non-secret timestamps recording its own past
-requests) and `.owners`; none contains credentials or quota data. The
-session surface carries the two documented exceptions to the rule, both
-explicit user commands against the shared transcript store: `r` appends one
-vendor-format `custom-title` record (exactly what the native Ctrl+R rename
-writes), and `dd` deletes a transcript. Both are refused while any process
-holds the session open.
+state — Claude Code owns all of it. What it writes is its own: `.current`,
+and one `state.json` holding non-secret request timestamps, the usage
+responses it fetched itself, and explicit session re-homes. The session
+surface carries the two documented exceptions to the rule, both explicit user
+commands against the shared transcript store: `r` appends one vendor-format
+`custom-title` record (exactly what the native Ctrl+R rename writes), and `dd`
+deletes a transcript. Both are refused while any process holds the session
+open.
 
 `claude auth status` is used for its answer only. It may or may not refresh a
 token as a side effect; headroom neither relies on that nor invokes it hoping
@@ -62,7 +63,7 @@ mistake as reading `expiresAt` as account health.
 
 ## The data source, and drift as a design input
 
-The dashboard calls the endpoint Claude Code's own `/usage` screen calls —
+The board calls the endpoint Claude Code's own `/usage` screen calls —
 `GET https://api.anthropic.com/api/oauth/usage` with a Bearer token from the
 Keychain (falling back to a `.credentials.json` file where no keychain
 exists). The endpoint is **undocumented and has already drifted once**
@@ -88,9 +89,12 @@ of it as perishable. That expectation shapes the core seam:
   (exit 2) means it could not be tested: rate limited, network down, or an
   access token mid-refresh. A checker that reports "Claude Code likely changed
   a format" because it couldn't reach the endpoint actively misleads the
-  person running it *because* the dashboard misbehaved — which is the exact
-  moment it is reached for. It also respects the request budget rather than
-  spending one to "diagnose".
+  person running it *because* the board misbehaved — which is the exact moment
+  it is reached for. For the same reason it separates failures in headroom's
+  own files from vendor drift, and says so in the closing line when every
+  failure was its own. It also respects the request budget rather than
+  spending one to "diagnose" — and it stores what it bought, since it spends
+  the same budget the board does.
 
 Two deliberate tolerances beyond strict inherited behavior: numeric-epoch
 `resets_at` values are accepted, and timestamps may carry offsets or
@@ -109,7 +113,14 @@ now says so:
   fallback.
 - **Observation** — rows, *always* carrying `ObservedAt` and `Source`. Rows
   never travel without their timestamp; that is what let carried-over data
-  pass itself off as current.
+  pass itself off as current. `Source` separates headroom's own fetch in this
+  process from its own answer replayed off disk from Claude Code's cache: the
+  first two are equally headroom's reading of the endpoint and the caption
+  treats them alike, while a machine consumer can still tell "this run asked"
+  from "a previous run asked". A row whose own reset instant has passed is not
+  an answer at all — the window it describes has ended, so it renders as
+  unknown rather than as a low percent that reads like free headroom, and it
+  disqualifies the account from being called a live choice.
 - **Attempt** — what happened to the newest request. Never a statement about
   the account.
 
@@ -117,10 +128,10 @@ Two consequences worth stating. An access token aging out is an *attempt*
 fact: the token lives ~8 hours, Claude Code refreshes it silently, and the
 account is fine — only `refreshTokenExpiresAt` passing means a human must act.
 And a failed refresh annotates an observation rather than replacing it, so the
-dashboard degrades to "58%, observed 22h ago, refresh rate-limited" instead of
+board degrades to "58%, observed 22h ago, refresh rate-limited" instead of
 to a bare error.
 
-## Spending a budget that is per account
+## The one file headroom writes
 
 The usage endpoint rate-limits **per account** — account A can be refused in
 the same second B and C succeed — and refills in roughly a minute. There is no
@@ -128,19 +139,70 @@ the same second B and C succeed — and refills in roughly a minute. There is no
 the budget, so probing to discover recovery can prevent it. Backoff therefore
 means *no traffic*, never a faster loop.
 
-headroom's own surfaces were the main consumer: dashboard, `--json`, `select`,
-`check` and every `watch` round each fetch all accounts, so two within a minute
-refuse each other — and because they fan out in parallel, the whole fleet goes
-dark together rather than one account at a time. `internal/throttle` is the
-fix: a per-account record of when a request last went out and when the next
-may, shared across processes, written *before* the request so a concurrent run
-sees the budget spent. Coordination is best-effort; two processes racing
-between read and write can still both fetch, and the cost is one wasted
-request that falls back to cached rows — degraded freshness, never a wrong
-verdict.
+headroom's own surfaces are the main consumer: the board, `--json` and `check`
+each ask about every account, and they fan out in parallel, so without
+coordination the whole fleet would go dark together rather than one account at
+a time. Every process is short-lived and there is no daemon, so coordination
+has to live on disk. `internal/state` owns that file — one JSON document under
+the accounts root, written atomically under an flock, holding the request
+ledger, the responses, and the session re-homes.
 
-`watch` keeps its hard 30-second interval floor, and a manual `r` re-reads and
-redraws but buys no exemption from per-account eligibility.
+- **A claim is a test-and-set, and the claim is the authorization.**
+  Eligibility is decided and the claim recorded inside one locked section, so
+  the permit handed back — not a flag computed earlier — is what lets a
+  request leave. Deciding eligibility in one place and recording it in
+  another leaves the window where two processes both read "eligible" — and a
+  design that has that window can only call itself best-effort. Every surface
+  goes through the same call, `check` included: a second route to the endpoint
+  would be a second way to double-spend. Failing to lock, decode or write
+  denies, rather than falling through to "try anyway". A completion carries
+  the generation its claim was issued under, so a slow request that outlived
+  its claim is dropped instead of overwriting a newer answer.
+- **The ledger keys on the account's own UUID**, from `.claude.json`, falling
+  back to the dir name when the vendor reports none. The budget is per
+  account, so two config dirs logged into the same account share one bucket —
+  and keying by identity *deletes* the guard against replaying a re-logged
+  dir's old quota rather than adding one: a re-logged dir simply has a
+  different key.
+- **It records what was bought, not only what was spent.** A ledger of
+  requests alone leaves every run inside its quiet period with nothing of its
+  own to show, falling back to Claude Code's cache — which is written only
+  when Claude Code itself fetches, and has been observed 37 hours stale. So a
+  deferred refresh replays headroom's own answer, usually seconds old, under
+  its own provenance. The body is stored raw: `usage.ParseLimits` stays its
+  only reader, and no second row shape exists to drift from it.
+- **Corruption degrades per section, and the two sections are not alike.** The
+  ledger is disposable: unreadable bytes are set aside under a name nothing
+  reads, and every account starts one full cooldown quiet, so the file
+  self-heals rather than bricking — and never by guessing "eligible", which is
+  the guess that generates traffic. Re-homes are human decisions: an
+  unreadable sessions section refuses mutation outright rather than being
+  written over, and records are validated whole, because a section that
+  decodes *around* a hollow record reads as healthy while routing silently
+  ignores it. Sections this binary cannot decode at all are carried through
+  writes verbatim, and a document from a newer headroom is read but never
+  rewritten.
+- **Records are bounded by age, never by which accounts a caller could see.**
+  Sweeping by absence needs a complete account registry, and no caller can
+  promise one: an account's key comes from a vendor file Claude Code rewrites
+  constantly, so a torn read moves the key and the sweep deletes the live
+  cooldown and stored answer of an account sitting right there.
+- **`.current` and `.order` stay out of it.** `.current` has two writers, one
+  of them a shell reading it with `$(<file)` at every launch; folding it in
+  would put headroom on the critical path of starting Claude Code. `.order` is
+  configuration a human edits, comments included.
+
+Two policies fall out of the budget. Figures are labelled stale only once they
+are older than the request spacing — inside that window no newer answer is
+obtainable, so nagging about age would be nagging about something nobody can
+act on. And the board's refresh cadence *is* eligibility: there is no interval
+to configure, because asking sooner is refused and asking later says less
+than it could. Presence bounds it: a board left open on a spare tab stops
+asking after a few minutes without a keypress, since a surface that polls for
+hours with nobody looking is the background daemon this design declines to
+have, wearing a TUI. `r` refreshes what is eligible or arms the next round; it
+never buys an exemption, because an override would spend against a bucket
+where a refusal can itself cost more than it buys.
 
 ## The session surface
 
@@ -180,10 +242,10 @@ engineered from the 2.1.220 store and all perishable:
   given** — transcripts carry no account identity, so "the account that
   drove this session" is evidence, not ground truth, and the contract says
   so. Three sources, one precedence: a *verified* live-registry claim (that
-  account runs it now) beats everything; otherwise the newest of the
-  explicit `.owners` re-home and each account's newest `history.jsonl`
-  prompt for that session id — all timestamps from this machine's clock, on
-  one axis, never re-stamped. Attribution parses the decoded `sessionId`
+  account runs it now) beats everything; otherwise the newest of the explicit
+  re-home and each account's newest `history.jsonl` prompt for that session
+  id — all timestamps from this machine's clock, on one axis, never
+  re-stamped. Attribution parses the decoded `sessionId`
   field, never substrings: prompt bodies quote other sessions' UUIDs.
   `enter` resumes on the owner and writes nothing — the launch itself
   becomes vendor evidence. The override key re-homes: it records the one
@@ -218,20 +280,21 @@ shell-launcher family is expected to provide: `x-<email>` as the guaranteed
 identity, with a short `x-<local-part>` alias only when the local part is
 unique among accounts, isn't the primary account's name, and isn't a
 reserved utility name (`usage`, `account`, `account-add`, `select`,
-`accounts`, `acc`) — the rule and list live in `accounts.Launcher`. Shell integration that generates
-the actual functions must apply the same rule, and must read `.current` the
-way headroom writes it: the account's dir name (or the primary's configured
-name), newline-terminated, renamed into place atomically. The picker's job
-ends at that state write — launching interactive sessions belongs to the
-shell.
+`accounts`, `acc`) — the rule and list live in `accounts.Launcher`. Shell
+integration that generates the actual functions must apply the same rule, and
+must read `.current` the way headroom writes it: the account's dir name (or
+the primary's configured name), newline-terminated, renamed into place
+atomically. The board's job ends at that state write — launching interactive
+sessions belongs to the shell.
 
 ## Dependencies and shape
 
-stdlib plus `golang.org/x/term` (raw-mode terminal control for the picker
-and watch), nothing else: no CLI framework, no TUI framework — the
-interactive surfaces share one small in-place redraw loop. No cgo either:
-the Keychain is read by exec'ing `security(1)`, which keeps builds trivial. Parsing is pure functions (`[]byte` in, tagged
-structs out) tested by table; exec and HTTP stay in thin edges.
+stdlib plus `golang.org/x/term` (raw-mode terminal control for the two
+pickers), nothing else: no CLI framework, no TUI framework — the interactive
+surfaces share one small in-place redraw loop. No cgo either:
+the Keychain is read by exec'ing `security(1)`, which keeps builds trivial.
+Parsing is pure functions (`[]byte` in, tagged structs out) tested by table;
+exec and HTTP stay in thin edges.
 
 `internal/tui` owns the terminal session whole: raw-mode lifetime,
 restoration on SIGTERM/SIGHUP/SIGINT (restore first, then re-raise so the
@@ -242,13 +305,15 @@ keypress only after a pause.
 ## Verification
 
 Contract behavior is table-tested (`go test -race ./...`), drift tags
-included; the fetch pipeline's single-writer property has a dedicated
-regression test under the race detector. What `go test` can't reach —
-signal-time terminal restoration, real picker and watch interaction — lives
-in the committed expect(1) harness (`make test-pty`, `test/pty/`): SIGTERM
-must leave the terminal sane; arrows + enter must select and write state;
-ESC must cancel writing nothing; watch must draw and quit cleanly; resume
-must emit exactly its decision line on stdout, write nothing on cancel,
+included; the fetch pipeline's single-writer property and the claim's
+test-and-set both have dedicated regression tests under the race detector.
+What `go test` can't reach — signal-time terminal restoration, real picker
+interaction — lives in the committed expect(1) harness (`make test-pty`,
+`test/pty/`): SIGTERM must leave the terminal sane; arrows + enter must select
+and write state; ESC must cancel writing nothing; the board must redraw its
+own countdown and survive a held-down refresh key without turning it into a
+request storm; resume must emit exactly its decision line on stdout, write
+nothing on cancel,
 survive SIGTERM inside the alternate screen, and delete only inside the
 harness's fixture store — `HEADROOM_HOME` re-points the primary config dir
 and session store, and exists so a `dd` test can never touch the real
