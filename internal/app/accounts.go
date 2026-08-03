@@ -24,6 +24,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
@@ -354,6 +355,17 @@ func (ui *picker) status(now time.Time) string {
 		// account is grounds for a choice only when it is usable, its figures
 		// are current, and no window has rolled over since they were taken.
 		parts = append(parts, fmt.Sprintf("%d showing figures you should not pick on", n))
+	}
+	if ambient := launch.Inherited(os.Environ()); ambient != "" {
+		for _, d := range ui.list {
+			if d.View.Current && ambient != d.Acct.Dir(ui.cfg) {
+				// An inherited value that disagrees with `← x` would re-route
+				// a bare `claude`; managed launches neutralize it, and the
+				// board must not silently rely on that.
+				parts = append(parts, "inherited CLAUDE_CONFIG_DIR ignored by managed launches")
+				break
+			}
+		}
 	}
 	parts = append(parts, "↑/↓ move · enter select · r refresh · esc cancel")
 	return strings.Join(parts, " · ")

@@ -347,8 +347,11 @@ func (ui *resumeUI) liveNow(s *sessions.Session) sessions.LiveState {
 
 // commitResume ends the session with the decision line on stdout. The frame
 // goes down first (Close restores the alt screen), then exactly one write:
-// project dir, session id, config dir — tab-separated, which is safe because
-// rows whose paths embed a tab or newline were refused above.
+// project dir, session id, canonical account name — tab-separated, which is
+// safe because rows whose fields embed a tab or newline were refused above.
+// The name, not the config dir: the wrapper hands it to `headroom launch`,
+// which revalidates and owns the environment, so no raw path (and no
+// empty-means-primary sentinel) ever crosses this protocol.
 func (ui *resumeUI) commitResume(override bool) (bool, int) {
 	s := ui.selected()
 	if s == nil {
@@ -370,8 +373,8 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 		ui.message = "no account to resume on"
 		return false, 0
 	}
-	if strings.ContainsAny(acct.ConfigDir, "\t\n\r") {
-		ui.message = "account dir contains control characters — not launchable"
+	if strings.ContainsAny(acct.Name, "\t\n\r") {
+		ui.message = "account name contains control characters — not launchable"
 		return false, 0
 	}
 	if override {
@@ -393,7 +396,7 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 		}
 	}
 	ui.t.Close()
-	fmt.Printf("%s\t%s\t%s\n", s.CWD, s.ID, acct.ConfigDir)
+	fmt.Printf("%s\t%s\t%s\n", s.CWD, s.ID, acct.Name)
 	return true, 0
 }
 

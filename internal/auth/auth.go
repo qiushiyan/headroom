@@ -19,8 +19,9 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/launch"
 )
 
 // Outcome separates the two ways there can be no answer, because they mean
@@ -82,14 +83,11 @@ func Query(configDir string) Status {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "claude", "auth", "status", "--json")
-	if configDir != "" {
-		cmd.Env = append(environWithout("CLAUDE_CONFIG_DIR"), "CLAUDE_CONFIG_DIR="+configDir)
-	} else {
-		// The default dir is selected by the variable being absent, so an
-		// inherited one (headroom run from inside a Claude Code session)
-		// must be stripped or every account reports that session's login.
-		cmd.Env = environWithout("CLAUDE_CONFIG_DIR")
-	}
+	// The default dir is selected by the variable being absent, so an
+	// inherited one (headroom run from inside a Claude Code session) must be
+	// stripped or every account reports that session's login. launch.Env is
+	// the one place that rule lives.
+	cmd.Env = launch.Env(os.Environ(), configDir)
 	return classify(cmd.Output())
 }
 
@@ -111,17 +109,4 @@ func classify(out []byte, err error) Status {
 	}
 	// Ran, succeeded, said nothing: the contract changed shape.
 	return Status{Outcome: OutcomeUnparseable}
-}
-
-// environWithout copies the environment minus one variable.
-func environWithout(key string) []string {
-	prefix := key + "="
-	env := os.Environ()
-	kept := make([]string, 0, len(env))
-	for _, kv := range env {
-		if !strings.HasPrefix(kv, prefix) {
-			kept = append(kept, kv)
-		}
-	}
-	return kept
 }

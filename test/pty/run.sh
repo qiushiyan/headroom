@@ -145,9 +145,11 @@ else
 fi
 
 # Enter emits exactly one decision line on stdout: project dir, session id,
-# empty config dir (the owner is the primary account).
+# canonical account name — the primary by its configured name, never an
+# empty trailing field (`headroom launch` revalidates the name; no raw
+# config dir crosses this protocol).
 run resume_write
-if [ "$(cat "$RESUME_OUT" 2>/dev/null)" != "$(printf '%s\t%s\t' "$proj" "$sid")" ]; then
+if [ "$(cat "$RESUME_OUT" 2>/dev/null)" != "$(printf '%s\t%s\t%s' "$proj" "$sid" "primary")" ]; then
     echo "FAIL resume_write: decision line wrong:"
     cat "$RESUME_OUT" 2>/dev/null | sed 's/^/     /'
     fail=1

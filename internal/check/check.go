@@ -22,6 +22,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -153,7 +154,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		blob, ok := creds.Parse(creds.ReadKeychain(a.ConfigDir))
 		chk(ok, fmt.Sprintf("blob[%s]: parses via shared contract (accessToken present)", name), "")
 
-		launcher := accounts.Launcher(a, accts, cfg.PrimaryName)
+		launcher := accounts.Launcher(a, cfg.PrimaryName)
 		switch {
 		case !ok:
 			c.reason = "credential blob did not parse"
@@ -528,18 +529,26 @@ func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snaps
 		chk(err == nil && nbad == 0, label,
 			"the response headroom itself stored no longer parses — shape drifted")
 	}
-	// The interop contract with the shell, which has never been checked: zsh
-	// reads this file at every launch and falls back to the primary when it
-	// names nothing real — silently, and with --dangerously-skip-permissions.
-	current := accounts.CurrentTarget(cfg)
-	found := false
-	for _, a := range accts {
-		if a.Name == current {
-			found = true
-		}
+	// The launch path's own resolver, applied exactly as `headroom launch`
+	// applies it: absent is the documented fresh-start default, while empty,
+	// unreadable or naming a deleted account is corrupt routing state — launch
+	// refuses on it, so the board is where the user hears about it first only
+	// if this line is missing.
+	sel, err := accounts.Select(cfg, accts, "")
+	label := "current: .current resolves to a launchable account"
+	if err == nil {
+		label = fmt.Sprintf("%s (%s)", label, sel.Name)
 	}
-	own(found, fmt.Sprintf("current: .current names a real account (%s)", current),
-		"bare x will silently fall back to the primary")
+	own(err == nil, label, fmt.Sprintf("%v — headroom launch refuses until it is fixed", err))
+
+	// Not a failure and not drift: an inherited CLAUDE_CONFIG_DIR (a tmux
+	// server started inside a Claude Code session, a nested shell) is
+	// neutralized by every managed launch and every health probe headroom
+	// spawns. It is reported because tools *outside* headroom that read the
+	// variable are still being steered by it.
+	if ambient := launch.Inherited(os.Environ()); ambient != "" {
+		chk(true, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches (%s)", ambient), "")
+	}
 }
 
 // ownerRecords adapts the store's re-home records to the collector's own type.

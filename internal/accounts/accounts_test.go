@@ -74,35 +74,70 @@ func TestLauncher(t *testing.T) {
 		}
 		return Account{ConfigDir: filepath.Join(cfg.AccountsRoot, name), Name: name}
 	}
-	all := []Account{
-		mk(""),
-		mk("yan@planlab.ai"),
-		mk("dup@x.com"),
-		mk("dup@y.com"),
-		mk("select@x.com"),
-		mk("accounts@x.com"),
-		mk("acc@x.com"),
-		mk("qiushi@z.com"),
-		mk("noatsign"),
-	}
+	// Guaranteed identities only: short local-part aliases are a shell
+	// convenience headroom no longer advertises, so there are no collision or
+	// reserved-name cases to encode here.
 	cases := []struct {
 		name string
 		want string
 	}{
-		{"", "x-qiushi"},                       // primary
-		{"yan@planlab.ai", "x-yan"},            // unique local part → short alias
-		{"dup@x.com", "x-dup@x.com"},           // ambiguous local part → full email
-		{"dup@y.com", "x-dup@y.com"},           // ambiguous local part → full email
-		{"select@x.com", "x-select@x.com"},     // reserved utility name → full email
-		{"accounts@x.com", "x-accounts@x.com"}, // reserved: the account picker's wrapper
-		{"acc@x.com", "x-acc@x.com"},           // reserved: its short alias
-		{"qiushi@z.com", "x-qiushi@z.com"},     // primary's name → full email
-		{"noatsign", "x-noatsign"},             // no @ → the name is the email
+		{"", "x-qiushi"}, // primary → its configured name
+		{"yan@planlab.ai", "x-yan@planlab.ai"},
+		{"noatsign", "x-noatsign"}, // no @ → the name is the email
 	}
 	for _, c := range cases {
-		if got := Launcher(mk(c.name), all, cfg.PrimaryName); got != c.want {
+		if got := Launcher(mk(c.name), cfg.PrimaryName); got != c.want {
 			t.Errorf("Launcher(%q) = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+func TestSelect(t *testing.T) {
+	cfg := testConfig(t)
+	mkAccount(t, cfg, "yan@planlab.ai")
+	accts := Discover(cfg)
+
+	// Absent .current: the documented fresh-start default is the primary.
+	a, err := Select(cfg, accts, "")
+	if err != nil || !a.IsPrimary() {
+		t.Errorf("absent .current: got (%v, %v), want primary", a.Name, err)
+	}
+
+	// A recorded, discovered account resolves.
+	if err := SetCurrent(cfg, "yan@planlab.ai"); err != nil {
+		t.Fatal(err)
+	}
+	a, err = Select(cfg, accts, "")
+	if err != nil || a.Name != "yan@planlab.ai" {
+		t.Errorf("recorded account: got (%v, %v)", a.Name, err)
+	}
+
+	// An explicit selector bypasses .current.
+	a, err = Select(cfg, accts, "qiushi")
+	if err != nil || !a.IsPrimary() {
+		t.Errorf("explicit primary selector: got (%v, %v)", a.Name, err)
+	}
+
+	// Empty .current is corruption, not a choice: fail closed, no primary
+	// fallback — the shell used to launch with permissions bypassed on it.
+	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Select(cfg, accts, ""); err == nil {
+		t.Error("empty .current: want error, got none")
+	}
+
+	// A recorded account that no longer exists refuses, naming it.
+	if err := SetCurrent(cfg, "gone@x.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Select(cfg, accts, ""); err == nil {
+		t.Error("deleted account in .current: want error, got none")
+	}
+
+	// An unknown explicit selector refuses; nothing falls back.
+	if _, err := Select(cfg, accts, "nope@x.com"); err == nil {
+		t.Error("unknown selector: want error, got none")
 	}
 }
 

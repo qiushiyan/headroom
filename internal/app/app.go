@@ -62,6 +62,10 @@ func Run(args []string) int {
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
 	case "resume":
 		return runResume(cfg, rest)
+	case "resolve":
+		return runResolve(cfg, rest)
+	case "launch":
+		return runLaunch(cfg, rest)
 	case "-h", "--help", "help":
 		if !noArgs() {
 			return 2
@@ -84,6 +88,10 @@ func printUsage(w io.Writer) {
   --json     the board as JSON (schema versioned)
   resume     interactively pick a session to resume, on the account that
              last drove it (--json lists the sessions instead)
+  launch     [--remember] [--account <name>] [-- <claude args>]
+             exec claude on the resolved account; the child environment is
+             built from the decision alone, never inherited
+  resolve    [<name>] print canonical-name<TAB>config-dir for shell preflight
   check      verify the reverse-engineered assumptions still hold
 `)
 }
@@ -169,7 +177,7 @@ func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapsho
 		if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
 			v.DirMismatch = a.Name
 		}
-		v.Launcher = accounts.Launcher(a, accts, cfg.PrimaryName)
+		v.Launcher = accounts.Launcher(a, cfg.PrimaryName)
 		v.Current = current == a.Name
 		v.Obs = newestObservation(snap, d.Key, a.Meta, now)
 

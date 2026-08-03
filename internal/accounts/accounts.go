@@ -6,9 +6,11 @@ package accounts
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -209,43 +211,65 @@ func MetaEmail(metaPath string) (string, bool) {
 	return m.Email, m.EmailOK
 }
 
-// Local parts that never get a short launcher alias: x-<these> are reserved
-// for utility commands. Shell integration that generates the launcher
-// functions must reserve the same names — see DESIGN.md, "The launcher
-// contract".
-var reservedLocalParts = []string{"usage", "account", "account-add", "select", "accounts", "acc", "check"}
-
-// Launcher is the command advertised for an account: x-<email> is the
-// guaranteed identity; a short x-<local-part> alias exists only when the
-// local part is unique among accounts and isn't the primary's name or a
-// reserved utility name. Shell integration generating the actual functions
-// must apply the same rule — see DESIGN.md, "The launcher contract".
-func Launcher(a Account, all []Account, primaryName string) string {
+// Launcher is the command advertised for an account: the guaranteed identity
+// only — x-<email>, or the primary's configured name. Short local-part
+// aliases (x-yan) are a shell convenience headroom neither knows nor
+// advertises: the old shared naming policy ("keep the two in sync") was a
+// cross-repo contract that could drift, and the board promising a command
+// that resolves is worth more than promising the shortest one.
+func Launcher(a Account, primaryName string) string {
 	if a.IsPrimary() {
 		return "x-" + primaryName
 	}
-	email := a.Name
-	local, _, hasAt := strings.Cut(email, "@")
-	if slices.Contains(reservedLocalParts, local) {
-		return "x-" + email
-	}
-	n := 0
-	for _, other := range all {
-		if other.IsPrimary() {
-			continue
-		}
-		otherLocal, _, _ := strings.Cut(other.Name, "@")
-		if otherLocal == local {
-			n++
-		}
-	}
-	if hasAt && local != primaryName && n == 1 {
-		return "x-" + local
-	}
-	return "x-" + email
+	return "x-" + a.Name
 }
 
-// CurrentTarget is the account name bare `x` targets right now.
+// Select resolves a selector to a discovered account, strictly. selector ""
+// means the recorded choice: an absent .current is the documented fresh-start
+// default (the primary), but an empty, unreadable or unmatched one is an
+// error — never a silent primary. This is the launch path's resolver, and it
+// fails closed on purpose: the old shell fallback turned a torn `.current` or
+// a deleted account into "launch the primary with permissions bypassed",
+// which makes corruption indistinguishable from a valid choice. Display
+// surfaces that only mark a row keep using the tolerant CurrentTarget.
+func Select(cfg config.Config, accts []Account, selector string) (Account, error) {
+	name := selector
+	if name == "" {
+		data, err := os.ReadFile(cfg.CurrentFile())
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return primaryOf(accts)
+		case err != nil:
+			return Account{}, fmt.Errorf(".current could not be read (%v)", err)
+		}
+		name = strings.TrimRight(string(data), "\n")
+		if name == "" {
+			return Account{}, errors.New(".current is empty — run headroom accounts")
+		}
+	}
+	for _, a := range accts {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return Account{}, fmt.Errorf("%q is not a discovered account — run headroom accounts", name)
+}
+
+func primaryOf(accts []Account) (Account, error) {
+	for _, a := range accts {
+		if a.IsPrimary() {
+			return a, nil
+		}
+	}
+	// Discover always lists the primary; an account slice without one was not
+	// built by discovery and cannot be resolved against.
+	return Account{}, errors.New("no primary account in the discovered set")
+}
+
+// CurrentTarget is the account name bare `x` targets right now. Tolerant on
+// purpose: it answers "where does the marker go", and a display fallback to
+// the primary misleads nobody the way a launch fallback does — the launch
+// path resolves through Select and refuses instead.
 func CurrentTarget(cfg config.Config) string {
 	data, err := os.ReadFile(cfg.CurrentFile())
 	if err != nil {

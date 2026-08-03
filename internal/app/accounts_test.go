@@ -107,7 +107,7 @@ func TestRefreshIsRememberedNotDropped(t *testing.T) {
 	ui.updates = make(chan fetchUpdate)
 	ui.refresh(context.Background())
 	if !ui.armed {
-		t.Error("r during a round was dropped; the round in flight carries only the "+
+		t.Error("r during a round was dropped; the round in flight carries only the " +
 			"accounts that were eligible when it started")
 	}
 }
