@@ -1,11 +1,20 @@
 package app
 
-// resume is the session picker: every session on the machine in one list,
-// project-local (the whole repo, worktrees included) above global, resumed
-// on the account that last drove it. The TUI lives on /dev/tty so stdout
-// carries exactly one machine-readable decision line for the shell wrapper —
-// headroom decides and records, the shell cds and launches. This surface
-// does zero network I/O and never touches the usage budget.
+// sessions is the session picker: every session on the machine in one list,
+// project-local (the whole repo, worktrees included) above global, continued
+// on the account that last drove it. The picker itself enters the verified
+// project dir and execs claude through the same launch.Target seam `launch`
+// uses — no routing decision ever leaves this process. The one thing only
+// the parent shell can do, make its own cd stick after the session ends, is
+// served by an advisory --cd-file: headroom writes the entered dir there
+// before exec, and nothing about routing depends on whether anyone reads it.
+// This surface does zero network I/O and never touches the usage budget.
+//
+// Its predecessor printed a dir/id/account decision line for the wrapper to
+// recombine; a stale shell function misread the account field as a relative
+// config dir and claude ran the session as the primary (see DESIGN.md § The
+// launch surface). The verb changed with the contract — resume's tombstone
+// in Run is the only observable remnant of the line protocol.
 
 import (
 	"fmt"
@@ -16,13 +25,21 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
+
+// execSessions is the exec edge, injected for tests. ExecPath, not Exec: the
+// executable is resolved before the chdir, so a relative PATH entry in the
+// project directory can never supply the binary.
+var execSessions = launch.ExecPath
 
 // psProbe asks ps for a pid's start time — the one process inspection the
 // liveness check needs. A dead pid errors, which Liveness reads as "the
@@ -85,14 +102,16 @@ func ownerRecords(snap state.Snapshot) map[string]sessions.OwnerRec {
 // pending-delete, confirm, rename and search each replace it wholesale, so
 // "renaming while a delete is pending" is unrepresentable.
 type resumeUI struct {
-	cfg     config.Config
-	st      *state.Store
-	t       *tui.Terminal
-	p       render.Palette
-	listing sessions.Listing
-	refs    []sessions.AccountRef
-	accts   []accounts.Account
-	current string // account name bare x targets; also the affinity fallback
+	cfg        config.Config
+	st         *state.Store
+	t          *tui.Terminal
+	p          render.Palette
+	listing    sessions.Listing
+	refs       []sessions.AccountRef
+	accts      []accounts.Account
+	current    string   // account name bare x targets; also the affinity fallback
+	cdFile     string   // advisory: the entered dir is written here before exec ("" = none)
+	claudeArgs []string // personal flags, verbatim after --; the session flag is this surface's own
 
 	rows    []*sessions.Session // visible, filtered, local-then-global
 	sel     int
@@ -118,26 +137,82 @@ const (
 
 const pendingDTimeout = 800 * time.Millisecond
 
-func runResume(cfg config.Config, args []string) int {
-	if len(args) == 1 && args[0] == "--json" {
-		return runResumeJSON(cfg)
+func runSessions(cfg config.Config, args []string) int {
+	jsonMode := false
+	cdFile := ""
+	var claudeArgs []string
+parse:
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonMode = true
+		case "--cd-file":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "headroom sessions: --cd-file needs a path")
+				return 2
+			}
+			i++
+			cdFile = args[i]
+		case "--":
+			claudeArgs = args[i+1:]
+			break parse
+		default:
+			fmt.Fprintf(os.Stderr, "headroom sessions: unknown argument %q (claude args go after --)\n", args[i])
+			return 2
+		}
 	}
-	if len(args) > 0 {
-		fmt.Fprintf(os.Stderr, "headroom resume: unexpected argument %q\n", args[0])
-		return 2
+	if jsonMode {
+		if cdFile != "" || len(claudeArgs) > 0 {
+			fmt.Fprintln(os.Stderr, "headroom sessions: --json takes no other arguments")
+			return 2
+		}
+		return runSessionsJSON(cfg)
+	}
+	// This surface's contract is that the picker chooses the session; a
+	// pass-through flag that chooses one contradicts it regardless of how
+	// the vendor would rank the two.
+	for _, a := range claudeArgs {
+		if a == "--resume" || a == "-r" || a == "--continue" || a == "-c" {
+			fmt.Fprintf(os.Stderr, "headroom sessions: %q cannot pass through — the picker chooses the session\n", a)
+			return 2
+		}
+	}
+	if cdFile != "" {
+		// Absolute, same rule as every path here; created (or truncated) now,
+		// before any side effect, so absence-of-content is observable even
+		// through a wrapper that wrongly reuses a fixed path: empty means "no
+		// launch was committed", non-empty means the dir was entered.
+		if !filepath.IsAbs(cdFile) {
+			fmt.Fprintf(os.Stderr, "headroom sessions: --cd-file %q is not absolute\n", cdFile)
+			return 2
+		}
+		f, err := os.OpenFile(cdFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "headroom sessions: --cd-file: %v\n", err)
+			return 2
+		}
+		f.Close()
+	}
+	// Enter execs claude with the fds this process holds. A captured stdout
+	// (`$(headroom sessions)`) would hand claude a pipe and hang the session
+	// — the successor of the old line-protocol capture, refused up front.
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !stdoutIsTTY() {
+		fmt.Fprintln(os.Stderr, "headroom sessions: execs claude in this terminal — run it without capturing stdin or stdout")
+		return 1
 	}
 
 	st := state.Open(cfg.AccountsRoot)
 	listing, refs, accts, current := collectSessions(cfg, st)
 	t, err := tui.OpenTTY()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom resume: %v\n", err)
+		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
 		return 1
 	}
 	defer t.Close()
 
 	ui := &resumeUI{cfg: cfg, st: st, t: t, p: render.NewPalette(true),
-		listing: listing, refs: refs, accts: accts, current: current}
+		listing: listing, refs: refs, accts: accts, current: current,
+		cdFile: cdFile, claudeArgs: claudeArgs}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment
@@ -363,13 +438,20 @@ func (ui *resumeUI) liveNow(s *sessions.Session) sessions.LiveState {
 	return s.Live
 }
 
-// commitResume ends the session with the decision line on stdout. The frame
-// goes down first (Close restores the alt screen), then exactly one write:
-// project dir, session id, canonical account name — tab-separated, which is
-// safe because rows whose fields embed a tab or newline were refused above.
-// The name, not the config dir: the wrapper hands it to `headroom launch`,
-// which revalidates and owns the environment, so no raw path (and no
-// empty-means-primary sentinel) ever crosses this protocol.
+// commitResume ends the picker by becoming the session: every refusal is
+// checked first — returning to the picker with a message, so the user picks
+// another row instead of being dumped onto a torn-down frame — then the
+// terminal is restored, the process enters the verified project dir, the
+// advisory cd file gets the dir, and exec replaces this image with claude on
+// the resolved account's environment. Ordering is load-bearing: refusals
+// (the re-home write included, which must not record a pointing that then
+// refused to launch) precede Close; the executable is resolved before the
+// chdir; the cd file is written only after the chdir succeeds, so non-empty
+// means "this dir was entered".
+//
+// Deliberately absent: --remember. `.current` means "where new sessions go"
+// and only the account board moves it — the exec makes adding it tempting,
+// and it must stay refused (DESIGN.md § The session surface).
 func (ui *resumeUI) commitResume(override bool) (bool, int) {
 	s := ui.selected()
 	if s == nil {
@@ -382,8 +464,17 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 	case !s.DirOK:
 		ui.message = "project directory is gone — dd deletes the session"
 		return false, 0
-	case strings.ContainsAny(s.CWD, "\t\n\r"):
-		ui.message = "project path contains control characters — not launchable"
+	case strings.Contains(s.CWD, "\n"):
+		// The one representational limit left now that no line protocol
+		// exists: the cd file is line-shaped. Tabs and the old account-name
+		// check went with the protocol that needed them.
+		ui.message = "project path contains a newline — not representable in the cd file"
+		return false, 0
+	}
+	// Action-time re-stat: the listing's DirOK is display state, and worktree
+	// churn deletes project dirs constantly.
+	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
+		ui.message = "project directory is gone — dd deletes the session"
 		return false, 0
 	}
 	acct, ok := ui.resumeAccount(s, override)
@@ -391,8 +482,22 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 		ui.message = "no account to resume on — run headroom accounts"
 		return false, 0
 	}
-	if strings.ContainsAny(acct.Name, "\t\n\r") {
-		ui.message = "account name contains control characters — not launchable"
+	tgt, err := target(acct)
+	if err != nil {
+		ui.message = err.Error()
+		return false, 0
+	}
+	if acct.IsPrimary() && ui.cfg.PrimaryRelocated {
+		ui.message = "HEADROOM_HOME re-points the primary — cannot continue on it here"
+		return false, 0
+	}
+	if err := accounts.VerifyTopology(ui.cfg, acct); err != nil {
+		ui.message = "not launching — " + err.Error()
+		return false, 0
+	}
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		ui.message = "claude not found on PATH"
 		return false, 0
 	}
 	if override {
@@ -413,9 +518,60 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 			return false, 0
 		}
 	}
-	ui.t.Close()
-	fmt.Printf("%s\t%s\t%s\n", s.CWD, s.ID, acct.Name)
+	if ui.t != nil { // nil only under go test; the pty harness drives the real terminal
+		ui.t.Close()
+	}
+	if err := os.Chdir(s.CWD); err != nil {
+		// Past the re-stat is a TOCTOU loss; the frame is already down, so
+		// this is a hard exit, not a picker message.
+		fmt.Fprintf(os.Stderr, "headroom sessions: cd %s: %v\n", s.CWD, err)
+		return true, 1
+	}
+	if ui.cdFile != "" {
+		if err := writeCDFile(ui.cdFile, s.CWD); err != nil {
+			// One stderr line, never a refusal: the sticky cd is convenience,
+			// and the decision the user just made is not thrown away for it.
+			fmt.Fprintf(os.Stderr, "headroom sessions: cd file: %v (continuing)\n", err)
+		}
+	}
+	argv := append(append([]string{}, ui.claudeArgs...), "--resume", s.ID)
+	if err := execSessions(claudePath, argv, envWithPWD(tgt.Env(os.Environ()), s.CWD)); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom sessions: exec claude: %v\n", err)
+		return true, 1
+	}
 	return true, 0
+}
+
+// envWithPWD replaces the inherited PWD with the entered dir: os.Chdir moves
+// the kernel cwd but not the environment, and the shell-set PWD would
+// otherwise describe the directory the picker was invoked from.
+func envWithPWD(env []string, cwd string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "PWD=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "PWD="+cwd)
+}
+
+// writeCDFile publishes the entered dir to the advisory file created at flag
+// parse. Truncate-then-write on the already-created path; a Sync so the line
+// survives the process being replaced moments later.
+func writeCDFile(path, cwd string) error {
+	f, err := os.OpenFile(path, os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(cwd); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func (ui *resumeUI) startRename() {

@@ -30,9 +30,23 @@ func Run(args []string) int {
 	if len(args) > 0 {
 		cmd, rest = args[0], args[1:]
 	}
-	// Command dispatch precedes configuration on purpose: a retired verb's
-	// tombstone (see runSessions) must speak even under a broken override —
-	// the shell it diagnoses is stale, and stale shells come with old envs.
+	// retired 2026-08-04: see DESIGN.md § The session surface. The tombstone
+	// dispatches before configuration on purpose — the shell it diagnoses is
+	// stale, and stale shells come with old environments that Load may now
+	// refuse; this message must speak regardless. It stays indefinitely
+	// ("no shell still runs the old wrapper" is unobservable) and the name
+	// must never be rebound: its stdout was a decision protocol, and one
+	// name with two meanings across binary generations is the incident class
+	// this arm exists to close. Nothing parseable goes to stdout.
+	if cmd == "resume" {
+		fmt.Fprint(os.Stderr, `headroom: `+"`resume`"+` was retired. Its stdout was a decision protocol, and a
+shell function loaded before this binary can misread it — that produced a
+session on the wrong account.
+Your shell integration is stale. Fix it:  exec zsh
+The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessions --json`"+`).
+`)
+		return 2
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
@@ -67,8 +81,8 @@ func Run(args []string) int {
 			return 2
 		}
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
-	case "resume":
-		return runResume(cfg, rest)
+	case "sessions":
+		return runSessions(cfg, rest)
 	case "resolve":
 		return runResolve(cfg, rest)
 	case "launch":
@@ -93,8 +107,11 @@ func printUsage(w io.Writer) {
   accounts   while it is open; enter picks the account bare x targets.
              Off a terminal, prints the board once and exits.
   --json     the board as JSON (schema versioned)
-  resume     interactively pick a session to resume, on the account that
-             last drove it (--json lists the sessions instead)
+  sessions   pick any session on this machine, enter its project dir and
+             continue it on the account that last drove it — execs claude
+             in this terminal. --cd-file <abs path> records the entered
+             dir for the shell's own cd; claude args go after "--";
+             --json lists the sessions instead (no terminal needed)
   launch     [--remember] [--account <name>] [-- <claude args>]
              exec claude on the resolved account; the child environment is
              built from the decision alone, never inherited

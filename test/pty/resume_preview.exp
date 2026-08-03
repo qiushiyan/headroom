@@ -3,8 +3,8 @@
 # before the span-aware scroll, the preview lines were appended entirely
 # below the visible body, so the keypress appeared to do nothing.
 set timeout 10
-set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
-spawn sh -c $cmd
+spawn $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT)
+
 expect {
     "q quit" {}
     timeout { puts "resume picker never drew its footer"; exit 2 }

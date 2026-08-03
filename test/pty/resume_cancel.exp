@@ -2,8 +2,8 @@
 # q cancels: nonzero exit and nothing on stdout — the wrapper's `|| return`
 # depends on both.
 set timeout 10
-set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
-spawn sh -c $cmd
+spawn $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT)
+
 expect {
     "q quit" {}
     timeout { puts "resume picker never drew its footer"; exit 2 }

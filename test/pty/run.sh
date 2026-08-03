@@ -137,29 +137,38 @@ if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
 fi
 
 # The session picker lists the fixture store; --json needs no terminal.
-if ! "$HEADROOM_BIN" resume --json | grep -q "$sid"; then
-    echo "FAIL resume-json: fixture session missing from listing"
+if ! "$HEADROOM_BIN" sessions --json | grep -q "$sid"; then
+    echo "FAIL sessions-json: fixture session missing from listing"
     fail=1
 else
-    echo "ok   resume-json"
+    echo "ok   sessions-json"
 fi
 
-# Enter emits exactly one decision line on stdout: project dir, session id,
-# canonical account name — the primary by its configured name, never an
-# empty trailing field (`headroom launch` revalidates the name; no raw
-# config dir crosses this protocol).
+# The retired spelling: exit 2, actionable stderr, and nothing on stdout a
+# positional reader could consume — a stale shell function is exactly who
+# still calls it.
+tomb_out=$("$HEADROOM_BIN" resume 2>/dev/null) && tomb_code=0 || tomb_code=$?
+if [ "$tomb_code" != 2 ] || [ -n "$tomb_out" ]; then
+    echo "FAIL resume-tombstone: exit $tomb_code stdout '$tomb_out', want 2 and empty"
+    fail=1
+else
+    echo "ok   resume-tombstone"
+fi
+
+# Enter under the harness's re-pointed HEADROOM_HOME refuses into the picker
+# (the fixture session's owner is the primary), and the advisory cd file —
+# created at flag parse — stays empty: empty is the shell's "do not cd".
 run resume_write
-if [ "$(cat "$RESUME_OUT" 2>/dev/null)" != "$(printf '%s\t%s\t%s' "$proj" "$sid" "primary")" ]; then
-    echo "FAIL resume_write: decision line wrong:"
-    cat "$RESUME_OUT" 2>/dev/null | sed 's/^/     /'
+if [ ! -e "$RESUME_OUT" ] || [ -s "$RESUME_OUT" ]; then
+    echo "FAIL resume_write: cd file missing or non-empty after a refusal"
     fail=1
 fi
 
-# q cancels: nothing on stdout.
+# q cancels: the cd file stays empty, so the shell does not cd.
 run resume_cancel
 run resume_preview
 if [ -s "$RESUME_OUT" ]; then
-    echo "FAIL resume_cancel: cancel must write nothing to stdout"
+    echo "FAIL resume_cancel: cancel must leave the cd file empty"
     fail=1
 fi
 

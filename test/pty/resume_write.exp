@@ -1,18 +1,28 @@
 #!/usr/bin/expect -f
-# Enter on the first session: the TUI runs on /dev/tty while stdout (here
-# redirected to a file) carries exactly one decision line. run.sh asserts
-# the line's project dir, session id, and (empty = primary) config dir.
+# Enter on the fixture session under the harness's re-pointed HEADROOM_HOME:
+# the session's owner is the primary, and a relocated home makes a primary
+# launch a session on a tree the board never described — so the commit must
+# refuse *into the picker* (message drawn, terminal intact, another row still
+# pickable), and the advisory cd file must stay empty: empty is the shell's
+# "do not cd". This pins the relocated-home refusal through a real terminal
+# with no claude stub — the exec success path lives in the dotfiles sandbox
+# harness, which stubs claude.
 set timeout 10
-set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
-spawn sh -c $cmd
+spawn $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT)
 expect {
     "q quit" {}
-    timeout { puts "resume picker never drew its footer"; exit 2 }
+    timeout { puts "sessions picker never drew its footer"; exit 2 }
 }
 send -- "\r"
+expect {
+    "HEADROOM_HOME re-points the primary" {}
+    timeout { puts "commit under a relocated home did not refuse"; exit 2 }
+}
+# The picker survived the refusal: still interactive, q still cancels.
+send -- "q"
 expect eof
 catch wait result
-if {[lindex $result 3] != 0} {
-    puts "resume exited [lindex $result 3], want 0"
+if {[lindex $result 3] != 1} {
+    puts "sessions exited [lindex $result 3], want 1 (cancelled after refusal)"
     exit 2
 }

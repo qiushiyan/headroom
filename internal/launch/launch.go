@@ -128,6 +128,14 @@ func Exec(claudeArgs []string, env []string) error {
 	if err != nil {
 		return err
 	}
+	return ExecPath(path, claudeArgs, env)
+}
+
+// ExecPath is Exec with the executable already resolved. A caller that
+// chdirs before exec'ing resolves first, from the directory the user invoked
+// in — otherwise a relative PATH entry could supply a project-local `claude`
+// from whatever directory was just entered.
+func ExecPath(path string, claudeArgs []string, env []string) error {
 	argv := append([]string{"claude"}, claudeArgs...)
 	return syscall.Exec(path, argv, env)
 }

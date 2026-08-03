@@ -5,7 +5,7 @@ Code logins on one machine, each keyed to its own config dir. It answers
 "which account has headroom left?" and lets the user act on the answer (the
 account board, `accounts`: live and self-refreshing on a terminal, one frame
 off it, a versioned document under `--json`), answers "which session do I get
-back into, and on which account?" (`resume` — see The session surface below),
+back into, and on which account?" (`sessions` — see The session surface below),
 turns the chosen account into a running session (`launch`/`resolve` — see
 The launch surface), and proves its own assumptions still hold (`check`).
 This file records the mental model and the vendor contracts — the things the
@@ -240,7 +240,7 @@ past its moment is how the old wording read as being ignored.
 Session transcripts are machine-global — every account's `projects/`
 symlinks to `~/.claude/projects` (the dotfiles repo owns that topology) — so
 one picker over that tree sees every conversation regardless of account.
-`headroom resume` is that picker. Its vendor contracts, all reverse-
+`headroom sessions` is that picker. Its vendor contracts, all reverse-
 engineered from the 2.1.220 store and all perishable:
 
 - **Transcripts describe themselves, from the tail.** Titles live *inside*
@@ -292,20 +292,41 @@ engineered from the 2.1.220 store and all perishable:
   time, so string equality fails everywhere but UTC.) Live and
   unverifiable sessions refuse `dd` and `r`; deleting an open transcript
   loses the conversation to an unlinked inode.
-- **headroom decides and records; the shell only cds.** The TUI runs on
-  `/dev/tty` (alternate screen, restored in the same signal path as raw
-  mode); stdout carries exactly one decision line —
-  `<project-dir>\t<session-id>\t<account-name>`, the primary by its
-  configured name — after the terminal is restored. The wrapper cds (the
-  cd must stick in the parent shell, which is why this step stays in zsh)
-  and hands the name back to `headroom launch`, which revalidates it: the
-  name, never a config dir, because a raw path crossing the protocol would
-  be a permanent bypass around the validated launch seam. Resume
-  deliberately launches without `--remember` — `x-accounts` owns where new
-  sessions go, resume never moves it, and when the two accounts differ the
-  header says both. Fields that would break the line protocol make a row
-  unlaunchable rather than being escaped. This surface does no network I/O
-  and never spends the usage budget.
+- **headroom decides, enters, and becomes the session; the shell may cd
+  after.** The TUI runs on `/dev/tty` (alternate screen, restored in the
+  same signal path as raw mode); enter re-checks liveness and the dir,
+  resolves the account through the same validated `launch.Target` the
+  launch surface uses, verifies topology and the relocated-home rule,
+  resolves the `claude` executable *before* changing directory (a relative
+  PATH entry in the project must never supply the binary), then restores
+  the terminal, chdirs to the verified cwd, repairs `PWD` in the child
+  environment, and execs `claude --resume <id>` with the caller's `--`
+  flags ahead of the picker's own. No routing decision leaves the process.
+  Requires real stdin/stdout terminals — a captured stdout would hand
+  claude a pipe — and refuses `--resume`/`--continue` as pass-through
+  flags: the picker chooses the session. The one thing only the parent
+  shell can do — make its own `cd` stick once the session ends — is served
+  by `--cd-file <abs path>`: created (or truncated) at flag parse, written
+  with the entered dir only after a successful chdir, `Sync`ed before the
+  exec. The contract is exactly two states: empty means "no launch was
+  committed — do not cd" (cancel and every refusal), non-empty means "this
+  dir was entered" (regardless of how claude then exited). Nothing
+  routing-relevant is representable in it, and deleting the flag changes
+  no routing — it is advisory by construction. A write failure is one
+  stderr line, never a refusal. Deliberately without `--remember`, which
+  the exec makes tempting: `.current` means "where new sessions go", and
+  only the account board moves it. This surface does no network I/O and
+  never spends the usage budget.
+- **`resume` is a tombstone, permanently.** The predecessor printed a
+  `dir\tid\taccount` line for the wrapper to recombine, and a shell
+  function loaded before the account-name protocol misread the third field
+  as a config-dir path — the 2026-08-03 incident. The verb changed with
+  the contract (see The launch surface on why a renamed verb, not a
+  version tag), and the old spelling now exits 2 with an actionable
+  stale-shell message and nothing on stdout, `--json` included: one name,
+  one meaning, across binary generations. The arm is kept indefinitely —
+  "no shell still runs the old wrapper" is unobservable, and the cost is a
+  case and a string.
 
 ## The launch surface
 
@@ -432,12 +453,15 @@ interaction — lives in the committed expect(1) harness (`make test-pty`,
 and write state; ESC must cancel writing nothing; the board must redraw its
 own countdown from its own ticker and stay responsive under a held-down
 refresh key (that the key cannot *become* traffic is the claim's property, and
-is pinned in `go test`); resume must emit exactly its decision line on stdout,
-write nothing on cancel,
-survive SIGTERM inside the alternate screen, and delete only inside the
-harness's fixture store — `HEADROOM_HOME` re-points the primary config dir
-and session store, and exists so a `dd` test can never touch the real
-machine's transcripts. Its two hard-won patterns are documented in
+is pinned in `go test`); the session picker must refuse a primary commit
+under the harness's re-pointed home *into* a still-live picker with the
+advisory cd file left empty (the exec success path is the dotfiles sandbox
+harness's, which stubs a recording claude), leave the cd file empty on
+cancel, survive SIGTERM inside the alternate screen, and delete only inside
+the harness's fixture store — `HEADROOM_HOME` re-points the primary config
+dir and session store, and exists so a `dd` test can never touch the real
+machine's transcripts (and is also why enter must refuse there: relocated
+homes and primary launches don't mix). Its two hard-won patterns are documented in
 `test/pty/run.sh` — kill with `pkill -nx headroom`, never `-f`, and inspect
 post-mortem terminal state via an sh wrapper running `stty` in the same
 pty.

@@ -3,8 +3,8 @@
 # and that the store is HEADROOM_HOME's, never the real machine's), then q
 # leaves the now-empty picker.
 set timeout 10
-set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
-spawn sh -c $cmd
+spawn $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT)
+
 expect {
     "q quit" {}
     timeout { puts "resume picker never drew its footer"; exit 2 }

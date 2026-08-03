@@ -3,7 +3,7 @@
 # same signal path; the sh wrapper survives headroom's death and records the
 # pty's terminal state, which run.sh asserts is sane again.
 set timeout 10
-set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT); stty -a > $env(STTY_OUT) 2>&1"
+set cmd "$env(HEADROOM_BIN) sessions; stty -a > $env(STTY_OUT) 2>&1"
 spawn sh -c $cmd
 expect {
     "q quit" {}

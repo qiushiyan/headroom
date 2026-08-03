@@ -463,3 +463,31 @@ func TestATornAccountFileDoesNotCostTheStoredObservation(t *testing.T) {
 		t.Errorf("the stored observation did not survive the torn read: %+v", back.View.Obs)
 	}
 }
+
+// The retired verb's tombstone: exit 2, actionable stderr, and nothing on
+// stdout a positional reader could consume — its stdout was a decision
+// protocol, and a stale shell function is exactly who still calls it.
+func TestResumeSpellingIsTombstoned(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdout
+	os.Stdout = w
+	code := Run([]string{"resume"})
+	w.Close()
+	os.Stdout = prev
+	out := make([]byte, 64)
+	n, _ := r.Read(out)
+
+	if code != 2 {
+		t.Errorf("exit %d, want 2", code)
+	}
+	if n != 0 {
+		t.Errorf("stdout carried %q — must be empty", out[:n])
+	}
+	// --json retires with it: one name, one meaning, across generations.
+	if code := Run([]string{"resume", "--json"}); code != 2 {
+		t.Errorf("resume --json: exit %d, want 2", code)
+	}
+}

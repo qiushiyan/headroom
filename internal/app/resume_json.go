@@ -45,7 +45,7 @@ type jsonSession struct {
 	Path        string `json:"path"`
 }
 
-func runResumeJSON(cfg config.Config) int {
+func runSessionsJSON(cfg config.Config) int {
 	listing, _, _, current := collectSessions(cfg, state.Open(cfg.AccountsRoot))
 	doc := resumeDoc{
 		Schema:      2, // 2: added per-session "model"
@@ -77,7 +77,7 @@ func runResumeJSON(cfg config.Config) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(doc); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom resume --json: %v\n", err)
+		fmt.Fprintf(os.Stderr, "headroom sessions --json: %v\n", err)
 		return 1
 	}
 	return 0
