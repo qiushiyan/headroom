@@ -128,12 +128,12 @@ func runWatch(cfg config.Config, args []string) int {
 				startRound()
 			}
 			draw()
-		case ev := <-t.Events():
-			switch ev {
-			case tui.EventCancel:
+		case k := <-t.Events():
+			switch {
+			case isCancelKey(k):
 				t.Close()
 				return 0
-			case tui.EventRefresh:
+			case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
 				// A manual refresh asks the same question sooner; it does not
 				// buy exemption from the endpoint's budget. Per-account
 				// eligibility is enforced in prepare, so a held-down `r`

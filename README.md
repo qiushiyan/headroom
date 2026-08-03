@@ -20,7 +20,8 @@ bob@example.com (max 5x · x-bob)  ← x
 | --- | --- |
 | `headroom` | Live limit bars for every account, fetched in parallel |
 | `headroom --json` | The same data as a versioned JSON document, for scripts and status lines |
-| `headroom select` | Interactive picker; records the chosen account for the shell's bare launcher |
+| `headroom select` | Interactive account picker; records the chosen account for the shell's bare launcher |
+| `headroom resume` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
 | `headroom watch` | The dashboard, refreshed on a deliberately lazy interval |
 | `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
 
@@ -33,13 +34,19 @@ per config dir, so every dir is an independent login and all tokens coexist.
 headroom reads each account's credentials, calls the same usage endpoint
 Claude Code's own `/usage` screen calls, and renders the result.
 
-headroom is strictly **read-only** toward that system: it never writes the
-Keychain and never refreshes a token — Claude Code owns both. The one file
-it ever writes is `.current` (from `select`), which names the account a
-shell launcher should target. The launcher commands it advertises
-(`x-<name>`) are provided by shell integration, not by headroom; the
-contract between the two is spelled out in [DESIGN.md](DESIGN.md), along
-with the reverse-engineered vendor facts everything rests on.
+Session transcripts on this setup are machine-global (every account's
+`projects/` links to one store), so `resume` lists every conversation
+regardless of account and routes each back to the account that last drove
+it — quota switching steers new sessions, never old ones.
+
+headroom is **read-only** toward that system: it never writes the Keychain
+and never refreshes a token — Claude Code owns both. It keeps three small
+files of its own (`.current`, `.throttle`, `.owners`), and the session
+picker's explicit `rename`/`delete` commands are the only two vendor-state
+mutations, both refused while a session is open. The launcher commands it
+advertises (`x-<name>`) are provided by shell integration, not by headroom;
+the contract between the two is spelled out in [DESIGN.md](DESIGN.md),
+along with the reverse-engineered vendor facts everything rests on.
 
 ## Building
 
@@ -56,6 +63,7 @@ Defaults fit the author's machine; environment variables re-point them:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `HEADROOM_HOME` | `~` | Re-points everything home-derived: the primary `~/.claude`, the session store, the accounts root (test isolation) |
 | `HEADROOM_ACCOUNTS_ROOT` | `~/.claude-accounts` | Where the extra account dirs live |
 | `HEADROOM_PRIMARY_NAME` | `qiushi` | Launcher name advertised for the primary `~/.claude` |
 

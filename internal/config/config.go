@@ -20,6 +20,13 @@ func Load() Config {
 	if err != nil {
 		home = os.Getenv("HOME")
 	}
+	// HEADROOM_HOME re-points everything derived from the home directory —
+	// the primary config dir, the session store, the accounts root. The pty
+	// harness depends on it: without it a resume test would list (and a
+	// delete test would delete) the real machine's transcripts.
+	if v := os.Getenv("HEADROOM_HOME"); v != "" {
+		home = v
+	}
 	c := Config{
 		Home:         home,
 		AccountsRoot: filepath.Join(home, ".claude-accounts"),
@@ -48,3 +55,16 @@ func (c Config) OrderFile() string { return filepath.Join(c.AccountsRoot, ".orde
 // PrimaryMeta is the .claude.json of the default ~/.claude account, which
 // Claude Code keeps at ~/.claude.json — not inside the config dir.
 func (c Config) PrimaryMeta() string { return filepath.Join(c.Home, ".claude.json") }
+
+// PrimaryDir is the primary account's config dir. Accounts carry "" for it
+// (the empty CLAUDE_CONFIG_DIR), so readers of per-account files — prompt
+// history, the live-session registry — resolve the real path through here.
+func (c Config) PrimaryDir() string { return filepath.Join(c.Home, ".claude") }
+
+// ProjectsDir is the canonical machine-global session store. Every account's
+// projects/ symlinks to it, so this one tree is the whole session registry.
+func (c Config) ProjectsDir() string { return filepath.Join(c.Home, ".claude", "projects") }
+
+// OwnersFile records explicit session re-homes — the third and last file
+// headroom owns, beside .current and .throttle.
+func (c Config) OwnersFile() string { return filepath.Join(c.AccountsRoot, ".owners") }

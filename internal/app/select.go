@@ -15,6 +15,14 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
+// isCancelKey is the shared "get me out" chord set: esc, q, ctrl-c, ctrl-d.
+func isCancelKey(k tui.Key) bool {
+	return k.Kind == tui.KeyEsc ||
+		k == tui.Key{Kind: tui.KeyRune, Rune: 'q'} ||
+		k == tui.Key{Kind: tui.KeyCtrl, Rune: 'c'} ||
+		k == tui.Key{Kind: tui.KeyCtrl, Rune: 'd'}
+}
+
 // notActionable counts accounts whose displayed figures are not grounds for a
 // choice — either the account isn't usable or its numbers are too old. The
 // picker warns rather than hides: old numbers are useful context, but choosing
@@ -97,22 +105,22 @@ func runSelect(cfg config.Config) int {
 			}
 			resolve(list[u.idx], u.res, th, time.Now())
 			draw()
-		case ev := <-t.Events():
-			switch ev {
-			case tui.EventUp:
+		case k := <-t.Events():
+			switch {
+			case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
 				if sel > 0 {
 					sel--
 					draw()
 				}
-			case tui.EventDown:
+			case k.Kind == tui.KeyDown || k == tui.Key{Kind: tui.KeyRune, Rune: 'j'}:
 				if sel < len(list)-1 {
 					sel++
 					draw()
 				}
-			case tui.EventCancel:
+			case isCancelKey(k):
 				t.Close()
 				return 1
-			case tui.EventSelect:
+			case k.Kind == tui.KeyEnter:
 				chosen := list[sel]
 				t.Close()
 				if err := accounts.SetCurrent(cfg, chosen.Acct.Name); err != nil {

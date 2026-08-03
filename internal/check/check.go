@@ -7,6 +7,7 @@ package check
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/throttle"
 	"github.com/qiushiyan/headroom/internal/usage"
@@ -290,6 +292,8 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			"cached payload shape drifted — the offline fallback is unreadable")
 	}
 
+	checkSessionStore(cfg, accts, chk, skip)
+
 	fmt.Fprintln(out)
 	switch {
 	case fails > 0:
@@ -302,6 +306,119 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	default:
 		fmt.Fprintln(out, "all checks passed")
 		return ExitPass
+	}
+}
+
+// checkSessionStore verifies the contracts the resume surface stands on:
+// prompt history attributes sessions to accounts, transcripts carry their own
+// titles and a verifiable cwd within the tail budget, the live-session
+// registry parses (it is what stops `dd` from deleting an open transcript),
+// and headroom's own .owners file is readable. Shapes, never census numbers —
+// counts are wrong the day after they're written down.
+func checkSessionStore(cfg config.Config, accts []accounts.Account,
+	chk func(bool, string, string), skip func(string, string)) {
+
+	// history.jsonl: the attribution source. Absent or empty is a fresh
+	// account, not drift; present with lines but zero parseable claims means
+	// the shape moved and affinity is silently routing everything to the
+	// current account.
+	for _, a := range accts {
+		name := "primary"
+		if !a.IsPrimary() {
+			name = a.Name
+		}
+		f, err := os.Open(filepath.Join(a.Dir(cfg), "history.jsonl"))
+		if err != nil {
+			continue
+		}
+		h := sessions.ParseHistory(f)
+		f.Close()
+		if h.Lines == 0 {
+			continue
+		}
+		chk(len(h.Newest) > 0,
+			fmt.Sprintf("history[%s]: prompt records carry sessionId + timestamp", name),
+			"no line parses — session→account attribution is gone")
+	}
+
+	// The live-session registry: when claim files exist, they must parse,
+	// or every open session silently reads as deletable.
+	regFiles, regOK := 0, 0
+	for _, a := range accts {
+		files, _ := filepath.Glob(filepath.Join(a.Dir(cfg), "sessions", "*.json"))
+		regFiles += len(files)
+		for _, e := range sessions.ReadRegistry(a.Name, a.Dir(cfg)) {
+			if e.OK {
+				regOK++
+			}
+		}
+	}
+	if regFiles == 0 {
+		skip("registry: not tested", "no live-session records right now")
+	} else {
+		chk(regOK > 0, "registry: live-session records carry sessionId + pid + startedAt",
+			"none parse — dd would no longer refuse open sessions")
+	}
+
+	// Transcripts, through the same collector the picker uses. Per-file
+	// absence of a title is ordinary (print-mode sessions); a store where
+	// *nothing* titles or *nothing* cwd-verifies means the record shapes
+	// drifted.
+	listing := sessions.Collect(sessions.Input{
+		ProjectsDir: cfg.ProjectsDir(),
+		CWD:         cfg.Home,
+		OwnersPath:  cfg.OwnersFile(),
+	})
+	if len(listing.Sessions) == 0 {
+		skip("sessions: not tested", "store is empty")
+	} else {
+		titled, cwdOK := 0, 0
+		var untitled []*sessions.Session
+		for _, s := range listing.Sessions {
+			if s.Tail.Title() != "" {
+				titled++
+			} else {
+				untitled = append(untitled, s)
+			}
+			if s.CWD != "" {
+				cwdOK++
+			}
+		}
+		chk(titled > 0, "sessions: title/prompt records parse via shared contract",
+			"no transcript yields a title — record shapes drifted")
+		chk(cwdOK > 0, "sessions: cwd records verify against store dir names",
+			"no transcript's cwd munges to its dir — resume targets are gone")
+
+		// The tail budget is the assertion most likely to actually fire: a
+		// transcript whose newest title sits beyond TailBudget bytes from EOF
+		// renders untitled while claiming the budget holds. Only tail-untitled
+		// files need the full pass — and it must be the shared parser, not a
+		// substring scan: transcripts *about* these tools quote the record
+		// types verbatim in message bodies, and a raw needle match reads that
+		// as a title (it did, on this very repo's own sessions).
+		over := 0
+		for _, s := range untitled {
+			data, err := os.ReadFile(s.Path)
+			if err != nil {
+				continue
+			}
+			if sessions.ParseTail(data, filepath.Base(s.StoreDir), true).Title() != "" {
+				over++
+			}
+		}
+		chk(over == 0, fmt.Sprintf("sessions: titles live within the %dKB tail budget", sessions.TailBudget>>10),
+			fmt.Sprintf("%d transcript(s) hold their title beyond it — raise the budget", over))
+	}
+
+	// .owners is headroom's own file, but a corrupt one silently reads as
+	// empty (by design, so the picker keeps working) — check is where that
+	// loss becomes visible instead of staying silent.
+	if data, err := os.ReadFile(cfg.OwnersFile()); err == nil && len(data) > 0 {
+		var probe struct {
+			Owners map[string]json.RawMessage `json:"owners"`
+		}
+		chk(json.Unmarshal(data, &probe) == nil && probe.Owners != nil,
+			"owners: re-home records parse", "file corrupt — explicit re-homes are being ignored")
 	}
 }
 

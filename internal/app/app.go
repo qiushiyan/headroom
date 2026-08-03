@@ -61,6 +61,8 @@ func Run(args []string) int {
 			return 2
 		}
 		return runSelect(cfg)
+	case "resume":
+		return runResume(cfg, rest)
 	case "watch":
 		return runWatch(cfg, rest)
 	case "-h", "--help", "help":
@@ -82,6 +84,8 @@ func printUsage(w io.Writer) {
   (none)   usage dashboard for every account
   --json   the dashboard as JSON (schema versioned)
   select   interactively pick the account bare x targets
+  resume   interactively pick a session to resume, on the account that
+           last drove it (--json lists the sessions instead)
   watch    the dashboard on a lazy refresh loop (--interval <duration>)
   check    verify the reverse-engineered assumptions still hold
 `)

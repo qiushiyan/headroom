@@ -80,6 +80,8 @@ func TestLauncher(t *testing.T) {
 		mk("dup@x.com"),
 		mk("dup@y.com"),
 		mk("select@x.com"),
+		mk("accounts@x.com"),
+		mk("acc@x.com"),
 		mk("qiushi@z.com"),
 		mk("noatsign"),
 	}
@@ -87,13 +89,15 @@ func TestLauncher(t *testing.T) {
 		name string
 		want string
 	}{
-		{"", "x-qiushi"},                   // primary
-		{"yan@planlab.ai", "x-yan"},        // unique local part → short alias
-		{"dup@x.com", "x-dup@x.com"},       // ambiguous local part → full email
-		{"dup@y.com", "x-dup@y.com"},       // ambiguous local part → full email
-		{"select@x.com", "x-select@x.com"}, // reserved utility name → full email
-		{"qiushi@z.com", "x-qiushi@z.com"}, // primary's name → full email
-		{"noatsign", "x-noatsign"},         // no @ → the name is the email
+		{"", "x-qiushi"},                       // primary
+		{"yan@planlab.ai", "x-yan"},            // unique local part → short alias
+		{"dup@x.com", "x-dup@x.com"},           // ambiguous local part → full email
+		{"dup@y.com", "x-dup@y.com"},           // ambiguous local part → full email
+		{"select@x.com", "x-select@x.com"},     // reserved utility name → full email
+		{"accounts@x.com", "x-accounts@x.com"}, // reserved: the account picker's wrapper
+		{"acc@x.com", "x-acc@x.com"},           // reserved: its short alias
+		{"qiushi@z.com", "x-qiushi@z.com"},     // primary's name → full email
+		{"noatsign", "x-noatsign"},             // no @ → the name is the email
 	}
 	for _, c := range cases {
 		if got := Launcher(mk(c.name), all, cfg.PrimaryName); got != c.want {

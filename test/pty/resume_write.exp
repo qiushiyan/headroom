@@ -1,0 +1,18 @@
+#!/usr/bin/expect -f
+# Enter on the first session: the TUI runs on /dev/tty while stdout (here
+# redirected to a file) carries exactly one decision line. run.sh asserts
+# the line's project dir, session id, and (empty = primary) config dir.
+set timeout 10
+set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
+spawn sh -c $cmd
+expect {
+    "q quit" {}
+    timeout { puts "resume picker never drew its footer"; exit 2 }
+}
+send -- "\r"
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} {
+    puts "resume exited [lindex $result 3], want 0"
+    exit 2
+}

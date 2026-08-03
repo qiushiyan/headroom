@@ -250,6 +250,10 @@ func (p Palette) ProvenanceLine(v AccountView, now int64) string {
 	return line
 }
 
+// Age is agePhrase for other surfaces: the session picker stamps every row
+// with the same relative-time vocabulary the dashboard uses.
+func Age(sec int64) string { return agePhrase(sec) }
+
 func agePhrase(sec int64) string {
 	switch {
 	case sec < 1:
@@ -344,12 +348,14 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int, stale bool) st
 	return line
 }
 
-// Clip truncates s to at most width printable columns, passing ANSI escape
+// Clip truncates s to at most width display cells, passing ANSI escape
 // sequences through uncut so a truncated line keeps the SGR state changes of
-// the full line. Every printable rune counts one column — true for all the
-// glyphs this program emits.
+// the full line. Cells, not runes: a CJK session title rendered two cells
+// wide would otherwise survive the clip, wrap, and shear framePrinter's
+// move-up arithmetic. A wide rune that would straddle the boundary is
+// dropped whole.
 func Clip(s string, width int) string {
-	if width <= 0 || utf8.RuneCountInString(s) <= width {
+	if width <= 0 {
 		return s
 	}
 	var b strings.Builder
@@ -366,9 +372,9 @@ func Clip(s string, width int) string {
 		case r == 0x1b:
 			inEsc = true
 			b.WriteRune(r)
-		case cols < width:
+		case cols+runeCells(r) <= width:
 			b.WriteRune(r)
-			cols++
+			cols += runeCells(r)
 		}
 	}
 	return b.String()

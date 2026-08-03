@@ -29,6 +29,16 @@ type Account struct {
 
 func (a Account) IsPrimary() bool { return a.ConfigDir == "" }
 
+// Dir is the account's real config dir. ConfigDir is "" for the primary —
+// the value CLAUDE_CONFIG_DIR takes — so per-account files that live inside
+// the dir (prompt history, the live-session registry) resolve through here.
+func (a Account) Dir(cfg config.Config) string {
+	if a.IsPrimary() {
+		return cfg.PrimaryDir()
+	}
+	return a.ConfigDir
+}
+
 // MetaPath is the .claude.json recording the logged-in account.
 func (a Account) MetaPath(cfg config.Config) string {
 	if a.IsPrimary() {
@@ -187,7 +197,7 @@ func MetaEmail(metaPath string) (string, bool) {
 // for utility commands. Shell integration that generates the launcher
 // functions must reserve the same names — see DESIGN.md, "The launcher
 // contract".
-var reservedLocalParts = []string{"usage", "account", "account-add", "select"}
+var reservedLocalParts = []string{"usage", "account", "account-add", "select", "accounts", "acc"}
 
 // Launcher is the command advertised for an account: x-<email> is the
 // guaranteed identity; a short x-<local-part> alias exists only when the

@@ -1,0 +1,17 @@
+#!/usr/bin/expect -f
+# q cancels: nonzero exit and nothing on stdout — the wrapper's `|| return`
+# depends on both.
+set timeout 10
+set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
+spawn sh -c $cmd
+expect {
+    "q quit" {}
+    timeout { puts "resume picker never drew its footer"; exit 2 }
+}
+send -- "q"
+expect eof
+catch wait result
+if {[lindex $result 3] == 0} {
+    puts "cancel must exit nonzero"
+    exit 2
+}

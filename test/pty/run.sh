@@ -34,9 +34,27 @@ done
 export HEADROOM_BIN
 export STTY_OUT="$work/stty.out"
 
+# A session-store fixture for the resume surface. HEADROOM_HOME re-points
+# the primary config dir and the projects store into the sandbox — without
+# it, a resume test would list the real machine's transcripts and the
+# delete test would delete one.
+export HEADROOM_HOME="$work/home"
+proj="$work/p1"
+mkdir -p "$proj"
+sid="11111111-2222-3333-4444-555555555555"
+store="$HEADROOM_HOME/.claude/projects/$(printf '%s' "$proj" | tr '/.' '--')"
+mkdir -p "$store"
+cat >"$store/$sid.jsonl" <<EOF
+{"type":"user","sessionId":"$sid","cwd":"$proj","message":{"role":"user","content":"hello fixture"}}
+{"type":"ai-title","aiTitle":"fixture session","sessionId":"$sid"}
+EOF
+printf '{"display":"hello","sessionId":"%s","timestamp":1000}\n' "$sid" \
+    >"$HEADROOM_HOME/.claude/history.jsonl"
+export RESUME_OUT="$work/resume.out"
+
 fail=0
 run() {
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT"
+    rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$RESUME_OUT"
     if expect -f "$here/$1.exp" >"$work/$1.log" 2>&1; then
         echo "ok   $1"
     else
@@ -85,6 +103,48 @@ if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
     grep -qE '(^|[[:space:]])-echo([[:space:]]|$)' "$STTY_OUT" 2>/dev/null; then
     echo "FAIL select_sigterm: terminal left raw after SIGTERM"
     cat "$STTY_OUT" 2>/dev/null || true
+    fail=1
+fi
+
+# The session picker lists the fixture store; --json needs no terminal.
+if ! "$HEADROOM_BIN" resume --json | grep -q "$sid"; then
+    echo "FAIL resume-json: fixture session missing from listing"
+    fail=1
+else
+    echo "ok   resume-json"
+fi
+
+# Enter emits exactly one decision line on stdout: project dir, session id,
+# empty config dir (the owner is the primary account).
+run resume_write
+if [ "$(cat "$RESUME_OUT" 2>/dev/null)" != "$(printf '%s\t%s\t' "$proj" "$sid")" ]; then
+    echo "FAIL resume_write: decision line wrong:"
+    cat "$RESUME_OUT" 2>/dev/null | sed 's/^/     /'
+    fail=1
+fi
+
+# q cancels: nothing on stdout.
+run resume_cancel
+if [ -s "$RESUME_OUT" ]; then
+    echo "FAIL resume_cancel: cancel must write nothing to stdout"
+    fail=1
+fi
+
+# SIGTERM inside the alt-screen session must still restore the terminal.
+run resume_sigterm
+if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
+    grep -qE '(^|[[:space:]])-icanon' "$STTY_OUT" 2>/dev/null ||
+    grep -qE '(^|[[:space:]])-echo([[:space:]]|$)' "$STTY_OUT" 2>/dev/null; then
+    echo "FAIL resume_sigterm: terminal left raw after SIGTERM"
+    cat "$STTY_OUT" 2>/dev/null || true
+    fail=1
+fi
+
+# dd + y removes the transcript — from the fixture store, proving the
+# HEADROOM_HOME isolation that makes this test safe to run at all.
+run resume_delete
+if [ -e "$store/$sid.jsonl" ]; then
+    echo "FAIL resume_delete: transcript still present"
     fail=1
 fi
 

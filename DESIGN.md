@@ -4,9 +4,10 @@ headroom is a read-only observer of a system it doesn't own: several Claude
 Code logins on one machine, each keyed to its own config dir. It answers
 "which account has headroom left?" (the dashboard — printed once, serialized
 by `--json`, kept live by `watch`), lets the user act on the answer
-(`select`), and proves its own assumptions still hold (`check`). This file
-records the mental model and the vendor contracts — the things the code
-can't say about itself.
+(`select`), answers "which session do I get back into, and on which
+account?" (`resume` — see The session surface below), and proves its own
+assumptions still hold (`check`). This file records the mental model and the
+vendor contracts — the things the code can't say about itself.
 
 ## The system observed: the filesystem is the registry
 
@@ -36,17 +37,23 @@ Everything derives from that tree:
   dir, from local state: ~170ms, no network, no usage budget. headroom infers
   account health from credential timestamps only when that command can't
   answer.
-- **Two state files are the integration surface with the user's shell.**
+- **Three state files are the integration surface with the user's shell.**
   `.current` names the account the shell's bare launcher should target;
-  `select` writes it atomically. `.order` (optional; one email per line, `#`
-  comments) sets display order after the primary; unlisted accounts follow
-  alphabetically.
+  `select` writes it atomically. `.owners` records explicit session
+  re-homes (see The session surface). `.order` (optional; one email per
+  line, `#` comments) sets display order after the primary; unlisted
+  accounts follow alphabetically.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
-Keychain, never refreshes a token, and never touches vendor state — Claude
-Code owns all of it. It writes exactly two things of its own: `.current`, and
-`.throttle`, non-secret timestamps recording its own past requests. Neither
-contains credentials or quota data.
+Keychain, never refreshes a token, and never touches vendor login or quota
+state — Claude Code owns all of it. It writes three things of its own:
+`.current`, `.throttle` (non-secret timestamps recording its own past
+requests) and `.owners`; none contains credentials or quota data. The
+session surface carries the two documented exceptions to the rule, both
+explicit user commands against the shared transcript store: `r` appends one
+vendor-format `custom-title` record (exactly what the native Ctrl+R rename
+writes), and `dd` deletes a transcript. Both are refused while any process
+holds the session open.
 
 `claude auth status` is used for its answer only. It may or may not refresh a
 token as a side effect; headroom neither relies on that nor invokes it hoping
@@ -135,14 +142,74 @@ verdict.
 `watch` keeps its hard 30-second interval floor, and a manual `r` re-reads and
 redraws but buys no exemption from per-account eligibility.
 
+## The session surface
+
+Session transcripts are machine-global — every account's `projects/`
+symlinks to `~/.claude/projects` (the dotfiles repo owns that topology) — so
+one picker over that tree sees every conversation regardless of account.
+`headroom resume` is that picker. Its vendor contracts, all reverse-
+engineered from the 2.1.220 store and all perishable:
+
+- **Transcripts describe themselves, from the tail.** Titles live *inside*
+  each `<uuid>.jsonl` as repeated `ai-title` records (latest wins) and
+  `custom-title` records (user rename; outranks), previews as `last-prompt`
+  records; there is no session index file. Everything the list needs sits
+  within `sessions.TailBudget` (64KB) of EOF — measured, and asserted by
+  `check`, because the day a title drifts past the budget the picker shows
+  ⟨untitled⟩ while believing itself healthy. Listability is structural:
+  top-level `<uuid>.jsonl` files are sessions; `<uuid>/` closure dirs hold
+  subagent transcripts and are not.
+- **The cd target is verified, never de-munged.** `claude --resume <id>`
+  resolves only from the session's owning project dir, and store dir names
+  munge `/` and `.` to `-` — lossily. The resume target is therefore the
+  newest recorded `cwd`/`relocatedCwd` whose munge *equals* the store dir
+  name. No verifiable cwd → the row says so and refuses to resume (worktree
+  churn deletes project dirs constantly; a third of the store's rows point
+  at dirs that no longer exist, and guessing would resume into the wrong
+  project). `dd` is the honest follow-up for those.
+- **Owner = the newest account claim headroom can observe or was explicitly
+  given** — transcripts carry no account identity, so "the account that
+  drove this session" is evidence, not ground truth, and the contract says
+  so. Three sources, one precedence: a *verified* live-registry claim (that
+  account runs it now) beats everything; otherwise the newest of the
+  explicit `.owners` re-home and each account's newest `history.jsonl`
+  prompt for that session id — all timestamps from this machine's clock, on
+  one axis, never re-stamped. Attribution parses the decoded `sessionId`
+  field, never substrings: prompt bodies quote other sessions' UUIDs.
+  `enter` resumes on the owner and writes nothing — the launch itself
+  becomes vendor evidence. The override key re-homes: it records the one
+  fact the vendor never will ("the user pointed this session here before
+  prompting") and is superseded by any newer evidence. Degradation is
+  visible: no evidence, a re-home to a deleted account, or a same-instant
+  conflict each fall back to the current account under their own tag.
+- **Liveness is pid + start instant, and it gates the mutations.** Each
+  account dir's `sessions/<pid>.json` registers a running session. A claim
+  counts only when the pid is alive *and* its kernel start time matches the
+  registry's `startedAt` within tolerance — pids recycle. (Epoch ms, not
+  the `procStart` string: that one is UTC-rendered while `ps` speaks local
+  time, so string equality fails everywhere but UTC.) Live and
+  unverifiable sessions refuse `dd` and `r`; deleting an open transcript
+  loses the conversation to an unlinked inode.
+- **headroom decides and records; the shell executes.** The TUI runs on
+  `/dev/tty` (alternate screen, restored in the same signal path as raw
+  mode); stdout carries exactly one decision line —
+  `<project-dir>\t<session-id>\t<config-dir>`, empty config dir = primary —
+  after the terminal is restored. The wrapper cds (the cd sticks) and
+  launches with `CLAUDE_CONFIG_DIR`, deliberately *without* touching
+  `.current`: `x-accounts` owns where new sessions go, resume never moves
+  it, and when the two accounts differ the header says both. Paths that
+  would break the line protocol make a row unlaunchable rather than being
+  escaped. This surface does no network I/O and never spends the usage
+  budget.
+
 ## The launcher contract
 
 headroom launches nothing. It *advertises*, per account, the command a
 shell-launcher family is expected to provide: `x-<email>` as the guaranteed
 identity, with a short `x-<local-part>` alias only when the local part is
 unique among accounts, isn't the primary account's name, and isn't a
-reserved utility name (`usage`, `account`, `account-add`, `select`) — the
-rule and list live in `accounts.Launcher`. Shell integration that generates
+reserved utility name (`usage`, `account`, `account-add`, `select`,
+`accounts`, `acc`) — the rule and list live in `accounts.Launcher`. Shell integration that generates
 the actual functions must apply the same rule, and must read `.current` the
 way headroom writes it: the account's dir name (or the primary's configured
 name), newline-terminated, renamed into place atomically. The picker's job
@@ -171,10 +238,15 @@ regression test under the race detector. What `go test` can't reach —
 signal-time terminal restoration, real picker and watch interaction — lives
 in the committed expect(1) harness (`make test-pty`, `test/pty/`): SIGTERM
 must leave the terminal sane; arrows + enter must select and write state;
-ESC must cancel writing nothing; watch must draw and quit cleanly. Its two
-hard-won patterns are documented in `test/pty/run.sh` — kill with
-`pkill -nx headroom`, never `-f`, and inspect post-mortem terminal state via
-an sh wrapper running `stty` in the same pty.
+ESC must cancel writing nothing; watch must draw and quit cleanly; resume
+must emit exactly its decision line on stdout, write nothing on cancel,
+survive SIGTERM inside the alternate screen, and delete only inside the
+harness's fixture store — `HEADROOM_HOME` re-points the primary config dir
+and session store, and exists so a `dd` test can never touch the real
+machine's transcripts. Its two hard-won patterns are documented in
+`test/pty/run.sh` — kill with `pkill -nx headroom`, never `-f`, and inspect
+post-mortem terminal state via an sh wrapper running `stty` in the same
+pty.
 
 ## Status
 

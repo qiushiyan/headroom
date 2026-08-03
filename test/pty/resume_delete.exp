@@ -1,0 +1,23 @@
+#!/usr/bin/expect -f
+# dd + y deletes the fixture transcript (run.sh asserts the file is gone —
+# and that the store is HEADROOM_HOME's, never the real machine's), then q
+# leaves the now-empty picker.
+set timeout 10
+set cmd "$env(HEADROOM_BIN) resume > $env(RESUME_OUT)"
+spawn sh -c $cmd
+expect {
+    "q quit" {}
+    timeout { puts "resume picker never drew its footer"; exit 2 }
+}
+send -- "dd"
+expect {
+    "y delete" {}
+    timeout { puts "no delete confirmation prompt"; exit 2 }
+}
+send -- "y"
+expect {
+    "deleted" {}
+    timeout { puts "no deletion feedback"; exit 2 }
+}
+send -- "q"
+expect eof
