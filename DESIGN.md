@@ -359,7 +359,14 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   the account (omitted `--account` means the recorded choice), optionally
   records it as where bare `x` goes next — before the exec, and a failed
   record refuses the launch — then execs `claude`, preserving stdio,
-  signals and exit status by replacement rather than proxying. Two more
+  signals and exit status by replacement rather than proxying. `--remember`
+  is an explicit ask, never a launcher default: the wrappers' generated
+  `x-<name>` launchers deliberately omit it, because a named launch means
+  "this session, that account" — scoped — and a pin riding along as its
+  side effect let a two-minute hop to another account silently retarget
+  every later bare `x`. In ordinary use only the board's enter moves
+  `.current`; the flag remains the scriptable spelling of that decision.
+  Two more
   refusals sit before the record, so a refused launch can never move where
   bare `x` goes: a primary launch under a re-pointed `HEADROOM_HOME`
   (headroom would be describing one tree while the vendor, selecting the
