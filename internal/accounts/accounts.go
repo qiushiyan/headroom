@@ -224,6 +224,24 @@ func Launcher(a Account, primaryName string) string {
 	return "x-" + a.Name
 }
 
+// KnownExtraDir reports whether dir is exactly some discovered non-primary
+// account's config dir — the value a managed launch on that account exports,
+// and therefore the value every shell *inside* such a session inherits.
+// That inheritance is this machine's ordinary environment, not an anomaly:
+// surfaces use this to keep their ambient-variable notices for values that
+// cannot be explained that way (relative, unknown, or the primary dir
+// spelled explicitly — present-but-primary is not the verified absent
+// state). check still reports every present value; this only quiets the
+// board and the launch line for the case that is true all day.
+func KnownExtraDir(accts []Account, dir string) bool {
+	for _, a := range accts {
+		if !a.IsPrimary() && a.ConfigDir == dir {
+			return true
+		}
+	}
+	return false
+}
+
 // Select resolves a selector to a discovered account, strictly. selector ""
 // means the recorded choice: an absent .current is the documented fresh-start
 // default (the primary), but an empty, unreadable or unmatched one is an

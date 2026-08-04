@@ -393,12 +393,21 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   indistinguishable from a choice; no surface may mint a primary decision
   from corrupt routing state, resume's attribution fallback included (owner
   → valid current → refuse — never a final fall to primary).
-- **A neutralized inherited value is visible, never silent.** One stderr
-  line at launch when the ambient variable would have routed elsewhere, a
-  board note, and an ok-with-detail line in `check` — reported because
-  tools *outside* the managed path still obey the variable. One classifier
-  (the target's own) backs all three, so the diagnostics and the
-  environment actually built cannot disagree.
+- **A neutralized inherited value is visible when it cannot be explained,
+  never silently obeyed.** Every managed launch strips the ambient variable
+  regardless; what varies is the reporting. A value naming a discovered
+  extra account's dir is what every shell *inside* a managed session
+  inherits — this machine's ordinary environment all day — and a notice
+  that fires on the ordinary case is noise, so the board and the launch
+  line stay quiet for it (`accounts.KnownExtraDir`, one classifier for
+  both, beside the target's own conflict classifier so diagnostics and the
+  environment built cannot disagree). What stays loud, because tools
+  *outside* the managed path still obey the variable: a relative value
+  (the stale-wrapper incident signature — an own-state FAIL in `check`), a
+  value naming nothing discovered, and the primary dir spelled explicitly
+  (present-but-primary is not the verified absent state). `check` reports
+  every present value either way — full detail is what a diagnostic
+  command is for.
 
 headroom *advertises* only guaranteed launcher identities:
 `x-<email>` per account dir, the configured name for the primary

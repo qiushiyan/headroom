@@ -117,7 +117,8 @@ parse:
 		return 2
 	}
 
-	a, err := accounts.Select(cfg, accounts.Discover(cfg), account)
+	accts := accounts.Discover(cfg)
+	a, err := accounts.Select(cfg, accts, account)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
@@ -154,9 +155,12 @@ parse:
 		return 1
 	}
 	base := os.Environ()
-	if v, conflicting := tgt.Conflicts(base); conflicting {
-		// Neutralized either way; said out loud because obeying it would
-		// have routed elsewhere. One line, stderr, then business as usual.
+	if v, conflicting := tgt.Conflicts(base); conflicting && !accounts.KnownExtraDir(accts, v) {
+		// Neutralized either way; said out loud only when the value cannot
+		// be explained as "this shell lives inside a managed session" — that
+		// inheritance is the ordinary environment on this machine, and a
+		// notice that fires on the ordinary case is noise (check still
+		// reports every present value). One line, stderr, business as usual.
 		fmt.Fprintf(os.Stderr, "headroom launch: ignoring inherited CLAUDE_CONFIG_DIR=%s; launching %s (%s)\n",
 			v, a.Name, a.Dir(cfg))
 	}

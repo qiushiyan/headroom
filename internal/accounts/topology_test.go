@@ -119,3 +119,26 @@ func TestSelectRefusesAmbiguousName(t *testing.T) {
 		t.Error(".current naming an ambiguous account resolved instead of refusing")
 	}
 }
+
+// The quieting rule for ambient-variable notices: only a discovered extra's
+// exact dir is "explainable as a managed session's export". The primary's
+// dir is not — present-but-primary is unverified vendor territory — and
+// neither is anything undiscovered or relative.
+func TestKnownExtraDir(t *testing.T) {
+	accts := []Account{
+		{Name: "qiushi"}, // primary: ConfigDir ""
+		{Name: "yan@planlab.ai", ConfigDir: "/root/yan@planlab.ai"},
+	}
+	cases := map[string]bool{
+		"/root/yan@planlab.ai": true,
+		"/root/other@x.com":    false,
+		"yan@planlab.ai":       false, // relative: the incident signature stays loud
+		"":                     false, // primary's sentinel is not an explanation
+		"/Users/x/.claude":     false,
+	}
+	for dir, want := range cases {
+		if got := KnownExtraDir(accts, dir); got != want {
+			t.Errorf("KnownExtraDir(%q) = %v, want %v", dir, got, want)
+		}
+	}
+}

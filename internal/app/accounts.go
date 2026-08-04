@@ -42,6 +42,15 @@ func isCancelKey(k tui.Key) bool {
 		k == tui.Key{Kind: tui.KeyCtrl, Rune: 'd'}
 }
 
+// knownExtraDir adapts the board's list to accounts.KnownExtraDir.
+func knownExtraDir(list []*accountData, dir string) bool {
+	accts := make([]accounts.Account, len(list))
+	for i, d := range list {
+		accts[i] = d.Acct
+	}
+	return accounts.KnownExtraDir(accts, dir)
+}
+
 // notActionable counts accounts whose displayed figures are not grounds for a
 // choice — the account isn't usable, its numbers are too old, or a limit
 // window has rolled over since they were taken. The picker warns rather than
@@ -432,9 +441,13 @@ func (ui *picker) status(now time.Time) string {
 		// An inherited value that disagrees with `← x` would re-route a bare
 		// `claude`; managed launches neutralize it, and the board must not
 		// silently rely on that. The classifier is launch's, so this note
-		// and the environment actually built cannot disagree.
+		// and the environment actually built cannot disagree. A value that
+		// names a discovered extra's dir stays silent, though: it means only
+		// "this shell lives inside a managed session", which is this
+		// machine's ordinary environment — check reports it, the board does
+		// not caption the normal case.
 		if tgt, err := target(d.Acct); err == nil {
-			if _, conflicting := tgt.Conflicts(os.Environ()); conflicting {
+			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !knownExtraDir(ui.list, v) {
 				parts = append(parts, "ambient CLAUDE_CONFIG_DIR neutralized")
 			}
 		}
