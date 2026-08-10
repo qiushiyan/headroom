@@ -182,6 +182,12 @@ func TestIdentityFields(t *testing.T) {
 		// valid selector.
 		`{"limits":[{"kind":"session","group":"session","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
 		`{"limits":[{"kind":"weekly_all","group":"weekly","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
+		// A known kind under the wrong group: a consumer enumerating by
+		// group equality silently misses the row, so the pair is drift even
+		// though each field alone looks healthy. (An absent group stays
+		// tolerated — the legacy synthesis never carries one.)
+		`{"limits":[{"kind":"session","group":"weekly","percent":1}]}`,
+		`{"limits":[{"kind":"weekly_scoped","group":"session","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
 	} {
 		r := parseOne(t, body)
 		if r.IdentityState != StateBad || !r.Drifted() {

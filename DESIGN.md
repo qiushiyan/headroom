@@ -280,8 +280,9 @@ else, so the two cannot disagree. A consumer that matches the label is
 matching prose that changes the day a model is renamed; `kind` equality is
 the contract. Identity degrades like every other field: a row whose
 identity fields drifted, that lacks the `kind` consumers select by, that is
-scoped without saying to what, or whose known kind contradicts its scope (a
-session or all-models row carrying a model) is tagged
+scoped without saying to what, or whose known kind contradicts its scope or
+group (a session or all-models row carrying a model, a weekly kind under
+another group) is tagged
 `identity_state: "bad"` and counts as drift, so
 `check` fails before a consumer quietly stops matching — the scoped-weekly
 case matters most, because the model-scoped weekly is routinely the binding

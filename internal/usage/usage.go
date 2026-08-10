@@ -182,6 +182,8 @@ func parseEntry(e map[string]any) Row {
 		// Unknown kinds stay untagged — new vendor vocabulary is carried
 		// and selectable, not an alarm.
 		identState = StateBad
+	case contradictsGroup(kind, group):
+		identState = StateBad
 	}
 
 	// Label derives from the decoded fields alone. The fallback prefers kind
@@ -254,6 +256,24 @@ func parseReset(v any) (int64, FieldState) {
 	default:
 		return 0, StateBad
 	}
+}
+
+// contradictsGroup reports a known kind under the wrong group — drift a
+// consumer enumerating by group equality would otherwise miss silently, both
+// fields looking healthy alone. An absent group is tolerated (the legacy
+// five_hour synthesis never carries one), and unknown kinds constrain
+// nothing: new vendor vocabulary is data, not an alarm.
+func contradictsGroup(kind, group string) bool {
+	if group == "" {
+		return false
+	}
+	switch kind {
+	case "session":
+		return group != "session"
+	case "weekly_all", "weekly_scoped":
+		return group != "weekly"
+	}
+	return false
 }
 
 // identField decodes one of the flat identity fields: the string the vendor
