@@ -22,6 +22,18 @@ type jsonDoc struct {
 	GeneratedAt string        `json:"generated_at"` // RFC3339 UTC
 	Current     string        `json:"current"`      // account name bare `x` targets
 	Accounts    []jsonAccount `json:"accounts"`
+
+	// Problems are defects in headroom's own state file, never statements
+	// about Claude Code. They exist so a machine consumer can tell "nothing
+	// has ever been observed" from "something is on disk and this run could
+	// not read it" — without them, an unreadable store and a first run both
+	// serialize as usage:null, and the second is a silence that lies.
+	Problems []jsonProblem `json:"problems,omitempty"`
+}
+
+type jsonProblem struct {
+	Section string `json:"section"`
+	Detail  string `json:"detail"`
 }
 
 // The account's three axes are three fields, for the same reason they are
@@ -107,14 +119,18 @@ var sourceNames = map[render.Source]string{
 	render.SourceCache: "claude_cache",
 }
 
-func jsonDocument(list []*accountData, current string, generatedAt time.Time) ([]byte, error) {
+func jsonDocument(list []*accountData, current string, problems []state.Problem, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
-		// 4: limits carry decoded identity (kind/group/model, identity_state).
+		// 4: limits carry decoded identity (kind/group/model, identity_state);
+		// own-state problems surface at document level.
 		Schema:      4,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
 		Current:     current,
 		Accounts:    make([]jsonAccount, 0, len(list)),
+	}
+	for _, p := range problems {
+		doc.Problems = append(doc.Problems, jsonProblem{Section: p.Section, Detail: p.Detail})
 	}
 	for _, d := range list {
 		v := d.View
@@ -171,11 +187,11 @@ func runDashboardJSON(cfg config.Config) int {
 	// current comes from prepare's snapshot: envelope and per-account flags
 	// must agree even if a concurrent select rewrites .current mid-fetch.
 	st := state.Open(cfg.AccountsRoot)
-	list, current := prepare(cfg, st)
+	list, current, snap := prepare(cfg, st)
 	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, time.Now())
 	}
-	data, err := jsonDocument(list, current, time.Now())
+	data, err := jsonDocument(list, current, snap.Problems(), time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
 		return 1

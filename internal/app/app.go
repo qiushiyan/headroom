@@ -158,13 +158,15 @@ type sources struct {
 // It also returns the current-target name it marked the views with —
 // consumers that report the current account must use this value, not re-read
 // the state file, or a concurrent `select` could make the two disagree.
-func prepare(cfg config.Config, st *state.Store) ([]*accountData, string) {
+func prepare(cfg config.Config, st *state.Store) ([]*accountData, string, state.Snapshot) {
 	accts := accounts.Discover(cfg)
-	return prepareWith(cfg, accts, st.Load(), sources{
+	snap := st.Load()
+	list, current := prepareWith(cfg, accts, snap, sources{
 		readRaw: creds.ReadRaw,
 		health:  queryHealthParallel(accts),
 		now:     time.Now(),
 	})
+	return list, current, snap
 }
 
 // queryHealthParallel runs `claude auth status` for every account at once and

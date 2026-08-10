@@ -79,7 +79,7 @@ func runAccounts(cfg config.Config) int {
 // printBoard is the non-interactive rendering: fetch once, draw once, exit.
 func printBoard(cfg config.Config) int {
 	st := state.Open(cfg.AccountsRoot)
-	list, _ := prepare(cfg, st)
+	list, _, _ := prepare(cfg, st)
 	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, time.Now())
 	}
@@ -221,7 +221,7 @@ func runPicker(cfg config.Config) int {
 // sit open for hours, and a snapshot taken at startup cannot see claims
 // another surface made since.
 func (ui *picker) startRound(ctx context.Context, manual bool) {
-	list, _ := prepare(ui.cfg, ui.st)
+	list, _, _ := prepare(ui.cfg, ui.st)
 	ui.list = list
 	ui.restoreSelection()
 	ui.lastLocal = time.Now()

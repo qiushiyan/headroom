@@ -44,7 +44,7 @@ func TestJSONDocument(t *testing.T) {
 				Attempt: render.Attempt{State: render.AttemptHTTP, HTTPCode: 401}},
 		},
 	}
-	data, err := jsonDocument(list, "primary", generatedAt)
+	data, err := jsonDocument(list, "primary", nil, generatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestJSONSeparatesStaleDataFromFailedRefresh(t *testing.T) {
 			},
 		},
 	}}
-	data, err := jsonDocument(list, "a@x.com", generatedAt)
+	data, err := jsonDocument(list, "a@x.com", nil, generatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

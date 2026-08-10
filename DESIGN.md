@@ -265,7 +265,10 @@ the question must not let its silence pass for an answer. And the attempt
 axis stays `none`, with the ledger's next-eligible instant riding along as
 advice: a consumer deciding when to trigger a real fetch can respect the
 budget that fetch will be claimed against, while the claim alone still
-authorizes.
+authorizes. The same honesty covers headroom's own file: problems reading
+`state.json` surface in the document (the `--json` board's too), because
+without them an unreadable store and a first run both serialize as
+`usage: null` — and the second is a silence that lies.
 
 Rows are selectable by decoded identity, never by prose. Each limit carries
 the vendor's own vocabulary verbatim — `kind` (observed: `session`,
@@ -276,8 +279,10 @@ beside the rendered label, which is derived from those fields and nothing
 else, so the two cannot disagree. A consumer that matches the label is
 matching prose that changes the day a model is renamed; `kind` equality is
 the contract. Identity degrades like every other field: a row whose
-identity fields drifted, that carries none, or that is scoped without
-saying to what is tagged `identity_state: "bad"` and counts as drift, so
+identity fields drifted, that lacks the `kind` consumers select by, that is
+scoped without saying to what, or whose known kind contradicts its scope (a
+session or all-models row carrying a model) is tagged
+`identity_state: "bad"` and counts as drift, so
 `check` fails before a consumer quietly stops matching — the scoped-weekly
 case matters most, because the model-scoped weekly is routinely the binding
 limit while the all-models figure sits far lower, and a scoped row

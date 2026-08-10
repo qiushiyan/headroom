@@ -64,12 +64,13 @@ type Row struct {
 	PercentState FieldState // StateOK or StateBad
 	ResetState   FieldState // StateOK, StateNone, or StateBad
 
-	// IdentityState is StateBad when the row cannot be identified: an
-	// identity field present under a type it has never had, no identity
-	// field at all, or a scoped row that no longer says what it is scoped
-	// to. There is no StateNone — a limit that cannot say which limit it is
-	// isn't legitimately anonymous, it is unselectable, and only `check`
-	// failing will surface that before a consumer quietly stops matching.
+	// IdentityState is StateBad when the row cannot be selected as what it
+	// claims to be: an identity field present under a type it has never
+	// had, a missing kind, a scoped row that no longer says what it is
+	// scoped to, or a known unscoped kind carrying a model. There is no
+	// StateNone — a limit that cannot say which limit it is isn't
+	// legitimately anonymous, it is unselectable, and only `check` failing
+	// will surface that before a consumer quietly stops matching.
 	IdentityState FieldState
 }
 
@@ -165,13 +166,21 @@ func parseEntry(e map[string]any) Row {
 	switch {
 	case !kindOK || !groupOK || !modelOK:
 		identState = StateBad
-	case kind == "" && group == "" && model == "":
-		// No identity at all: the row cannot be selected or labeled.
+	case kind == "":
+		// kind is the selector consumers hold (the legacy five_hour path
+		// synthesizes one, so every well-formed row has it). A row without
+		// it is one they silently stop matching, whatever else it carries.
 		identState = StateBad
 	case kind == "weekly_scoped" && model == "":
 		// A scoped row that no longer names its scope. Left untagged it
 		// would either masquerade under the all-models label or vanish from
 		// every consumer's match — both silent.
+		identState = StateBad
+	case (kind == "session" || kind == "weekly_all") && model != "":
+		// The known unscoped kinds contradicted by a model scope: a "5h
+		// session" carrying a model is drift wearing a valid selector.
+		// Unknown kinds stay untagged — new vendor vocabulary is carried
+		// and selectable, not an alarm.
 		identState = StateBad
 	}
 
@@ -184,7 +193,7 @@ func parseEntry(e map[string]any) Row {
 		label = "5h session"
 	case model != "":
 		label = model + " (7d)"
-	case group == "weekly" && kind != "weekly_scoped":
+	case kind == "weekly_all" || (group == "weekly" && kind != "weekly_scoped"):
 		label = "All models (7d)"
 	case kind != "":
 		label = kind

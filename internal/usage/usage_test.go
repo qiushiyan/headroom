@@ -21,8 +21,8 @@ func parseOne(t *testing.T, body string) Row {
 func TestParseLimitsModern(t *testing.T) {
 	body := `{"limits":[
 		{"kind":"session","percent":42.4,"resets_at":"2026-08-02T15:00:00Z","severity":"normal"},
-		{"group":"weekly","percent":"88","resets_at":"2026-08-05T15:00:00.123+00:00"},
-		{"group":"weekly","scope":{"model":{"display_name":"Claude Opus 4.5"}},"percent":10,"resets_at":null,"severity":"limit_reached"}
+		{"kind":"weekly_all","group":"weekly","percent":"88","resets_at":"2026-08-05T15:00:00.123+00:00"},
+		{"kind":"weekly_scoped","group":"weekly","scope":{"model":{"display_name":"Claude Opus 4.5"}},"percent":10,"resets_at":null,"severity":"limit_reached"}
 	]}`
 	rows, err := ParseLimits([]byte(body))
 	if err != nil {
@@ -173,6 +173,15 @@ func TestIdentityFields(t *testing.T) {
 		`{"limits":[{"group":"weekly","scope":{"model":{"display_name":9}},"percent":1}]}`,
 		`{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":1}]}`,
 		`{"limits":[{"percent":1}]}`,
+		// kind is the selector consumers hold; a modern row without it is a
+		// row they silently stop matching, whatever else it carries.
+		`{"limits":[{"group":"weekly","percent":1}]}`,
+		`{"limits":[{"group":"weekly","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
+		// The known kinds contradict a model scope: a "5h session" carrying a
+		// model, or an all-models weekly scoped to one, is drift wearing a
+		// valid selector.
+		`{"limits":[{"kind":"session","group":"session","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
+		`{"limits":[{"kind":"weekly_all","group":"weekly","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
 	} {
 		r := parseOne(t, body)
 		if r.IdentityState != StateBad || !r.Drifted() {

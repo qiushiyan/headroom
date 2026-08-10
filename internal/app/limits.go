@@ -14,6 +14,7 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -24,6 +25,14 @@ import (
 )
 
 func runLimits(cfg config.Config, args []string) int {
+	return runLimitsTo(os.Stdout, cfg, args)
+}
+
+// runLimitsTo is runLimits with the document's destination injected, so the
+// command — flag policy included — is testable without capturing the process's
+// stdout. Diagnostics still go to stderr: the document stream carries JSON or
+// nothing.
+func runLimitsTo(w io.Writer, cfg config.Config, args []string) int {
 	account, accountSet := "", false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -59,12 +68,12 @@ func runLimits(cfg config.Config, args []string) int {
 		}
 		list = filterAccount(list, a.Name)
 	}
-	data, err := jsonDocument(list, current, now)
+	data, err := jsonDocument(list, current, snap.Problems(), now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", err)
 		return 1
 	}
-	os.Stdout.Write(append(data, '\n'))
+	w.Write(append(data, '\n'))
 	return 0
 }
 
