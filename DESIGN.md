@@ -242,6 +242,47 @@ it was asked for. The board acknowledges a manual round in the status line
 when it lands ("refreshed · usage in 40s"), briefly: a claim that persists
 past its moment is how the old wording read as being ignored.
 
+## The limits surface: reading without spending
+
+Machine consumers exist — a statusline refresher wanting one account's
+weekly numbers a few times a minute — and the board's `--json` is the wrong
+instrument for them twice over: it probes health for every account
+(`claude auth status` at ~170ms each is the dominant term of its ~300ms
+warm), and it may spend every account's request budget to answer about one.
+`headroom limits [--account <name>]` is the read that fits: the same
+versioned document, assembled from disk alone — discovery, `.current`, and
+the newest stored observation through the same replay every surface uses
+(headroom's own store and Claude Code's cache, newest wins). No health
+probe, no Keychain read, no claim, no request: it is not a second door onto
+the endpoint because it never touches the door at all, and it answers in
+about 10ms. Refreshing what it reads stays the fetching surfaces' job — the
+board, `--json`, `check` — all behind the one claim.
+
+Two honesty rules keep the skipped work visible. Health reports `unprobed`,
+a statement about this surface and never about the account, distinct from
+`unknown` (the question was asked and had no answer) — a read that skipped
+the question must not let its silence pass for an answer. And the attempt
+axis stays `none`, with the ledger's next-eligible instant riding along as
+advice: a consumer deciding when to trigger a real fetch can respect the
+budget that fetch will be claimed against, while the claim alone still
+authorizes.
+
+Rows are selectable by decoded identity, never by prose. Each limit carries
+the vendor's own vocabulary verbatim — `kind` (observed: `session`,
+`weekly_all`, `weekly_scoped`), `group` (`session`, `weekly`), and the
+scoped model's display name (`scope.model.id` exists but has only ever been
+observed null; it becomes the better selector the day it is populated) —
+beside the rendered label, which is derived from those fields and nothing
+else, so the two cannot disagree. A consumer that matches the label is
+matching prose that changes the day a model is renamed; `kind` equality is
+the contract. Identity degrades like every other field: a row whose
+identity fields drifted, that carries none, or that is scoped without
+saying to what is tagged `identity_state: "bad"` and counts as drift, so
+`check` fails before a consumer quietly stops matching — the scoped-weekly
+case matters most, because the model-scoped weekly is routinely the binding
+limit while the all-models figure sits far lower, and a scoped row
+mislabeled as all-models would read calm at the exact moment work stops.
+
 ## The session surface
 
 Session transcripts are machine-global — every account's `projects/`

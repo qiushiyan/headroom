@@ -81,6 +81,8 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 			return 2
 		}
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
+	case "limits":
+		return runLimits(cfg, rest)
 	case "sessions":
 		return runSessions(cfg, rest)
 	case "resolve":
@@ -107,6 +109,9 @@ func printUsage(w io.Writer) {
   accounts   while it is open; enter picks the account bare x targets.
              Off a terminal, prints the board once and exits.
   --json     the board as JSON (schema versioned)
+  limits     [--account <name>] what is already known about limits, as the
+             same JSON document, read from disk alone: no health probe, no
+             network — never spends a request. health reads "unprobed"
   sessions   pick any session on this machine, enter its project dir and
              continue it on the account that last drove it — execs claude
              in this terminal. --cd-file <abs path> records the entered
@@ -198,20 +203,9 @@ func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapsho
 
 	list := make([]*accountData, 0, len(accts))
 	for _, a := range accts {
-		d := &accountData{Acct: a, Key: state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}}
+		d := scaffold(cfg, a, current, snap, now)
 		list = append(list, d)
-
 		v := &d.View
-		v.Label = a.Name
-		if a.Email != "" {
-			v.Label = a.Email
-		}
-		if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
-			v.DirMismatch = a.Name
-		}
-		v.Launcher = accounts.Launcher(a, cfg.PrimaryName)
-		v.Current = current == a.Name
-		v.Obs = newestObservation(snap, d.Key, a.Meta, now)
 
 		raw := src.readRaw(a.ConfigDir)
 		blob, blobOK := creds.Parse(raw)
@@ -254,6 +248,26 @@ func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapsho
 		}
 	}
 	return list, current
+}
+
+// scaffold assembles the network-free facts every surface knows about an
+// account — identity, labels, the current marker, and the newest observation
+// already on disk. prepare layers health and fetch eligibility on top; the
+// limits surface stops here.
+func scaffold(cfg config.Config, a accounts.Account, current string, snap state.Snapshot, now time.Time) *accountData {
+	d := &accountData{Acct: a, Key: state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}}
+	v := &d.View
+	v.Label = a.Name
+	if a.Email != "" {
+		v.Label = a.Email
+	}
+	if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
+		v.DirMismatch = a.Name
+	}
+	v.Launcher = accounts.Launcher(a, cfg.PrimaryName)
+	v.Current = current == a.Name
+	v.Obs = newestObservation(snap, d.Key, a.Meta, now)
+	return d
 }
 
 // newestObservation picks the better of the two things known about an account

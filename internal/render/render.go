@@ -51,6 +51,13 @@ const (
 	HealthReloginRequired               // refresh token demonstrably expired
 	HealthBadBlob                       // credential present but off-contract
 	HealthUnknown                       // nothing could establish it either way
+
+	// HealthUnprobed is a statement about the surface, not the account: this
+	// run chose not to ask (the limits surface skips the ~170ms-per-account
+	// auth probe). It is distinct from HealthUnknown — "we asked and could
+	// not establish it" — because a read that skipped the question must not
+	// let its silence pass for an answer.
+	HealthUnprobed
 )
 
 // Source records where an observation came from, because the two have very

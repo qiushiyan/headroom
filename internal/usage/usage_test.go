@@ -33,19 +33,23 @@ func TestParseLimitsModern(t *testing.T) {
 	}
 
 	epoch := time.Date(2026, 8, 2, 15, 0, 0, 0, time.UTC).Unix()
-	want0 := Row{Label: "5h session", Percent: 42, ResetAt: epoch, Severity: "normal"}
+	want0 := Row{Label: "5h session", Kind: "session", Percent: 42, ResetAt: epoch, Severity: "normal"}
 	if rows[0] != want0 {
 		t.Errorf("row0 = %+v, want %+v", rows[0], want0)
 	}
 	if rows[1].Label != "All models (7d)" || rows[1].Percent != 88 || rows[1].PercentState != StateOK {
 		t.Errorf("row1 = %+v", rows[1])
 	}
+	if rows[1].Group != "weekly" || rows[1].IdentityState != StateOK {
+		t.Errorf("row1 identity = %+v", rows[1])
+	}
 	if rows[1].ResetState != StateOK {
 		t.Errorf("fractional+offset timestamp should parse: %+v", rows[1])
 	}
-	// A model-scoped entry labels by model even when a group is present.
-	if rows[2].Label != "Claude Opus 4.5 (7d)" {
-		t.Errorf("row2 label = %q", rows[2].Label)
+	// A model-scoped entry labels by model even when a group is present —
+	// and the model travels decoded beside the label.
+	if rows[2].Label != "Claude Opus 4.5 (7d)" || rows[2].Model != "Claude Opus 4.5" {
+		t.Errorf("row2 = %+v", rows[2])
 	}
 	if rows[2].ResetAt != 0 || rows[2].ResetState != StateNone {
 		t.Errorf("null resets_at should be StateNone: %+v", rows[2])
@@ -131,10 +135,54 @@ func TestLabelFallbacks(t *testing.T) {
 		{`{"limits":[{"kind":"monthly","percent":1}]}`, "monthly"},
 		{`{"limits":[{"group":"monthly","percent":1}]}`, "monthly"},
 		{`{"limits":[{"percent":1}]}`, "?"},
+		// A scoped row that no longer names its scope must not masquerade as
+		// the all-models weekly — a calm number under the wrong identity is
+		// the misread this label exists to prevent.
+		{`{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":1}]}`, "weekly_scoped"},
 	}
 	for _, c := range cases {
 		if r := parseOne(t, c.body); r.Label != c.want {
 			t.Errorf("label for %s = %q, want %q", c.body, r.Label, c.want)
 		}
+	}
+}
+
+func TestIdentityFields(t *testing.T) {
+	// The observed vendor vocabulary, decoded verbatim.
+	r := parseOne(t, `{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":1,
+		"scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}`)
+	if r.Kind != "weekly_scoped" || r.Group != "weekly" || r.Model != "Fable" ||
+		r.IdentityState != StateOK || r.Drifted() {
+		t.Errorf("scoped row = %+v", r)
+	}
+
+	// The legacy five_hour fallback synthesizes an identifiable session row.
+	r = parseOne(t, `{"five_hour":{"utilization":56}}`)
+	if r.Kind != "session" || r.IdentityState != StateOK {
+		t.Errorf("legacy identity = %+v", r)
+	}
+
+	// Identity drift is tagged, never coerced to prose or blanked silently:
+	// present-but-untyped fields, a scope that lost its shape, a scoped row
+	// with no model name, and a row with no identity at all.
+	for _, body := range []string{
+		`{"limits":[{"kind":42,"percent":1}]}`,
+		`{"limits":[{"kind":"session","group":7,"percent":1}]}`,
+		`{"limits":[{"group":"weekly","scope":"model","percent":1}]}`,
+		`{"limits":[{"group":"weekly","scope":{"model":"fable"},"percent":1}]}`,
+		`{"limits":[{"group":"weekly","scope":{"model":{"display_name":9}},"percent":1}]}`,
+		`{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":1}]}`,
+		`{"limits":[{"percent":1}]}`,
+	} {
+		r := parseOne(t, body)
+		if r.IdentityState != StateBad || !r.Drifted() {
+			t.Errorf("identity for %s = %+v, want StateBad", body, r)
+		}
+	}
+
+	// A null scope (the unscoped rows' ordinary spelling) is not drift.
+	r = parseOne(t, `{"limits":[{"kind":"weekly_all","group":"weekly","percent":1,"scope":null}]}`)
+	if r.Model != "" || r.IdentityState != StateOK {
+		t.Errorf("null scope = %+v", r)
 	}
 }

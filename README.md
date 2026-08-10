@@ -19,8 +19,9 @@ bob@example.com (max 5x · x-bob)  ← x
 | Command | What it does |
 | --- | --- |
 | `headroom` / `headroom accounts` | The board: live limit bars for every account, refreshing itself while it is open; enter picks the account the shell's bare launcher targets. Off a terminal, prints one frame and exits |
-| `headroom --json` | The same data as a versioned JSON document, for scripts and status lines |
-| `headroom resume` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
+| `headroom --json` | The board as a versioned JSON document — probes and (budget permitting) fetches, for scripts that want a refresh |
+| `headroom limits` | What is already known, as the same JSON document, read from disk alone (`--account <name>` scopes it): no health probe, no network, never spends a request — ~10ms against the board's ~300ms |
+| `headroom sessions` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
 | `headroom launch` | Exec `claude` on the chosen account (`--account <name>`, or the recorded choice), with the child environment built from that decision — an inherited `CLAUDE_CONFIG_DIR` is stripped, never obeyed. `--remember` also records the choice; `headroom resolve` prints the account's name/dir/kind for shell preflight |
 | `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
 
@@ -37,7 +38,7 @@ record of both what it asked and what came back: a refresh that is too soon to
 send replays its own newest answer instead of showing you something older.
 
 Session transcripts on this setup are machine-global (every account's
-`projects/` links to one store), so `resume` lists every conversation
+`projects/` links to one store), so `sessions` lists every conversation
 regardless of account and routes each back to the account that last drove
 it — quota switching steers new sessions, never old ones.
 

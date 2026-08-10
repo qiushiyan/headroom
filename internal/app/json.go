@@ -54,13 +54,22 @@ type jsonAttempt struct {
 	NextEligibleAt *string `json:"next_eligible_at,omitempty"` // RFC3339 UTC
 }
 
+// kind/group/model are the vendor's decoded identity vocabulary (see
+// usage.Row) — what a machine consumer selects rows by. label stays what a
+// human reads; matching it is matching prose, and prose moves when a model is
+// renamed. identity_state is "bad" when the row could not be identified at
+// all, so a consumer's empty match is distinguishable from a vanished limit.
 type jsonLimit struct {
-	Label        string  `json:"label"`
-	Percent      int     `json:"percent"` // 0 when percent_state is "bad"
-	PercentState string  `json:"percent_state"`
-	ResetsAt     *string `json:"resets_at"` // RFC3339 UTC; null when unknown
-	ResetState   string  `json:"reset_state"`
-	Severity     string  `json:"severity"`
+	Label         string  `json:"label"`
+	Kind          string  `json:"kind,omitempty"`
+	Group         string  `json:"group,omitempty"`
+	Model         string  `json:"model,omitempty"`
+	Percent       int     `json:"percent"` // 0 when percent_state is "bad"
+	PercentState  string  `json:"percent_state"`
+	ResetsAt      *string `json:"resets_at"` // RFC3339 UTC; null when unknown
+	ResetState    string  `json:"reset_state"`
+	Severity      string  `json:"severity"`
+	IdentityState string  `json:"identity_state"`
 }
 
 var healthNames = map[render.Health]string{
@@ -69,6 +78,7 @@ var healthNames = map[render.Health]string{
 	render.HealthReloginRequired: "relogin_required",
 	render.HealthBadBlob:         "bad_blob",
 	render.HealthUnknown:         "unknown",
+	render.HealthUnprobed:        "unprobed", // the limits surface skipped the probe
 }
 
 var attemptNames = map[render.AttemptState]string{
@@ -100,7 +110,8 @@ var sourceNames = map[render.Source]string{
 func jsonDocument(list []*accountData, current string, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
-		Schema:      3,
+		// 4: limits carry decoded identity (kind/group/model, identity_state).
+		Schema:      4,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
 		Current:     current,
 		Accounts:    make([]jsonAccount, 0, len(list)),
@@ -133,11 +144,15 @@ func jsonDocument(list []*accountData, current string, generatedAt time.Time) ([
 			}
 			for _, r := range v.Obs.Rows {
 				l := jsonLimit{
-					Label:        r.Label,
-					Percent:      r.Percent,
-					PercentState: r.PercentState.Name(),
-					ResetState:   r.ResetState.Name(),
-					Severity:     r.Severity,
+					Label:         r.Label,
+					Kind:          r.Kind,
+					Group:         r.Group,
+					Model:         r.Model,
+					Percent:       r.Percent,
+					PercentState:  r.PercentState.Name(),
+					ResetState:    r.ResetState.Name(),
+					Severity:      r.Severity,
+					IdentityState: r.IdentityState.Name(),
 				}
 				if r.ResetAt != 0 {
 					ts := time.Unix(r.ResetAt, 0).UTC().Format(time.RFC3339)

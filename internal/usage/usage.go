@@ -43,18 +43,39 @@ const (
 const RequestSpacing = 90 * time.Second
 
 // Row is the response contract: one rendered line per limit.
+//
+// Kind, Group and Model are the vendor's own identity vocabulary, carried
+// verbatim so a machine consumer selects a row by decoded fields — never by
+// matching the rendered Label, which is prose and changes the day a model is
+// renamed. Observed vocabulary (perishable, like everything here): kind
+// "session" | "weekly_all" | "weekly_scoped", group "session" | "weekly",
+// model the display name a weekly_scoped row is scoped to ("Fable"). The
+// sets are open — an unrecognized kind still carries through and labels
+// itself — and Label stays derived from these fields alone, so the two can
+// never disagree.
 type Row struct {
 	Label        string
-	Percent      int   // 0 when PercentState is StateBad
-	ResetAt      int64 // unix seconds; 0 = unknown or absent
+	Kind         string // decoded "kind"; "" when absent
+	Group        string // decoded "group"; "" when absent
+	Model        string // decoded scope.model.display_name; "" when unscoped
+	Percent      int    // 0 when PercentState is StateBad
+	ResetAt      int64  // unix seconds; 0 = unknown or absent
 	Severity     string
 	PercentState FieldState // StateOK or StateBad
 	ResetState   FieldState // StateOK, StateNone, or StateBad
+
+	// IdentityState is StateBad when the row cannot be identified: an
+	// identity field present under a type it has never had, no identity
+	// field at all, or a scoped row that no longer says what it is scoped
+	// to. There is no StateNone — a limit that cannot say which limit it is
+	// isn't legitimately anonymous, it is unselectable, and only `check`
+	// failing will surface that before a consumer quietly stops matching.
+	IdentityState FieldState
 }
 
 // Drifted reports whether any field was present but unparseable.
 func (r Row) Drifted() bool {
-	return r.PercentState == StateBad || r.ResetState == StateBad
+	return r.PercentState == StateBad || r.ResetState == StateBad || r.IdentityState == StateBad
 }
 
 // RolledOver reports that the window this row describes has ended: its own
@@ -136,32 +157,54 @@ func parseEntry(e map[string]any) Row {
 		sev = jqString(v)
 	}
 
-	model := displayName(e)
+	kind, kindOK := identField(e, "kind")
+	group, groupOK := identField(e, "group")
+	model, modelOK := scopedModel(e)
+
+	identState := StateOK
+	switch {
+	case !kindOK || !groupOK || !modelOK:
+		identState = StateBad
+	case kind == "" && group == "" && model == "":
+		// No identity at all: the row cannot be selected or labeled.
+		identState = StateBad
+	case kind == "weekly_scoped" && model == "":
+		// A scoped row that no longer names its scope. Left untagged it
+		// would either masquerade under the all-models label or vanish from
+		// every consumer's match — both silent.
+		identState = StateBad
+	}
+
+	// Label derives from the decoded fields alone. The fallback prefers kind
+	// over group because kind is the more specific of the two ("weekly_scoped"
+	// says more than "weekly").
 	var label string
 	switch {
-	case strEq(e["kind"], "session"):
+	case kind == "session":
 		label = "5h session"
 	case model != "":
 		label = model + " (7d)"
-	case strEq(e["group"], "weekly"):
+	case group == "weekly" && kind != "weekly_scoped":
 		label = "All models (7d)"
+	case kind != "":
+		label = kind
+	case group != "":
+		label = group
 	default:
-		if v := e["group"]; v != nil {
-			label = jqString(v)
-		} else if v := e["kind"]; v != nil {
-			label = jqString(v)
-		} else {
-			label = "?"
-		}
+		label = "?"
 	}
 
 	return Row{
-		Label:        label,
-		Percent:      pct,
-		ResetAt:      resetAt,
-		Severity:     sev,
-		PercentState: pctState,
-		ResetState:   resetState,
+		Label:         label,
+		Kind:          kind,
+		Group:         group,
+		Model:         model,
+		Percent:       pct,
+		ResetAt:       resetAt,
+		Severity:      sev,
+		PercentState:  pctState,
+		ResetState:    resetState,
+		IdentityState: identState,
 	}
 }
 
@@ -204,19 +247,46 @@ func parseReset(v any) (int64, FieldState) {
 	}
 }
 
-func displayName(e map[string]any) string {
-	scope, _ := e["scope"].(map[string]any)
-	model, _ := scope["model"].(map[string]any)
-	v := model["display_name"]
-	if v == nil {
-		return ""
+// identField decodes one of the flat identity fields: the string the vendor
+// sent, "" when absent or null. ok=false means present under another type —
+// identity is matched by equality, and a number coerced to prose is not an
+// identity, it is drift wearing one.
+func identField(e map[string]any, key string) (string, bool) {
+	v, present := e[key]
+	if !present || v == nil {
+		return "", true
 	}
-	return jqString(v)
+	s, ok := v.(string)
+	return s, ok
 }
 
-func strEq(v any, want string) bool {
-	s, ok := v.(string)
-	return ok && s == want
+// scopedModel decodes scope.model.display_name. Absent or null at any level
+// is an unscoped row; a non-object scope or model, or a non-string name, is
+// drift. (scope.model.id exists in the observed document but has only ever
+// been null; it becomes the better selector the day the vendor populates it.)
+func scopedModel(e map[string]any) (string, bool) {
+	v, present := e["scope"]
+	if !present || v == nil {
+		return "", true
+	}
+	scope, ok := v.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	mv, present := scope["model"]
+	if !present || mv == nil {
+		return "", true
+	}
+	model, ok := mv.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	dv, present := model["display_name"]
+	if !present || dv == nil {
+		return "", true
+	}
+	s, ok := dv.(string)
+	return s, ok
 }
 
 // jqString mirrors jq's tostring for the value kinds the API could send.

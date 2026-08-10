@@ -22,10 +22,17 @@ func TestJSONDocument(t *testing.T) {
 					ObservedAt: generatedAt.Unix() - 10,
 					Source:     render.SourceLive,
 					Rows: []usage.Row{
-						{Label: "5h session", Percent: 42, ResetAt: 1754121600,
+						{Label: "5h session", Kind: "session", Group: "session",
+							Percent: 42, ResetAt: 1754121600,
 							Severity: "normal", PercentState: usage.StateOK, ResetState: usage.StateOK},
-						{Label: "All models (7d)", Severity: "normal",
+						{Label: "All models (7d)", Kind: "weekly_all", Group: "weekly", Severity: "normal",
 							PercentState: usage.StateBad, ResetState: usage.StateNone},
+						{Label: "?", Percent: 81, Severity: "normal",
+							PercentState: usage.StateOK, ResetState: usage.StateNone,
+							IdentityState: usage.StateBad},
+						{Label: "Fable (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fable",
+							Percent: 92, Severity: "critical",
+							PercentState: usage.StateOK, ResetState: usage.StateNone},
 					},
 				},
 				Attempt: render.Attempt{State: render.AttemptOK},
@@ -46,7 +53,7 @@ func TestJSONDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
-	if doc["schema"] != float64(3) || doc["current"] != "primary" {
+	if doc["schema"] != float64(4) || doc["current"] != "primary" {
 		t.Errorf("envelope: %v %v", doc["schema"], doc["current"])
 	}
 	if doc["generated_at"] != "2025-08-02T07:50:00Z" {
@@ -71,6 +78,14 @@ func TestJSONDocument(t *testing.T) {
 		l0["resets_at"] != "2025-08-02T08:00:00Z" || l0["reset_state"] != "ok" {
 		t.Errorf("limit 0: %v", l0)
 	}
+	// Identity travels decoded, beside the label — a consumer selects by
+	// kind/group/model equality, never by matching the rendered prose.
+	if l0["kind"] != "session" || l0["group"] != "session" || l0["identity_state"] != "ok" {
+		t.Errorf("limit 0 identity: %v", l0)
+	}
+	if _, present := l0["model"]; present {
+		t.Errorf("unscoped row should omit model: %v", l0)
+	}
 	// Drift stays visible: zero percent is accompanied by an explicit "bad",
 	// and an absent timestamp is null with state "none", not invented.
 	l1 := limits[1].(map[string]any)
@@ -82,6 +97,18 @@ func TestJSONDocument(t *testing.T) {
 	}
 	if l1["reset_state"] != "none" {
 		t.Errorf("reset state: %v", l1)
+	}
+	// An unidentifiable row says so, and a scoped row carries its model.
+	l2 := limits[2].(map[string]any)
+	if l2["identity_state"] != "bad" {
+		t.Errorf("unidentifiable row not tagged: %v", l2)
+	}
+	if _, present := l2["kind"]; present {
+		t.Errorf("absent kind should be omitted: %v", l2)
+	}
+	l3 := limits[3].(map[string]any)
+	if l3["kind"] != "weekly_scoped" || l3["model"] != "Fable" || l3["identity_state"] != "ok" {
+		t.Errorf("scoped row identity: %v", l3)
 	}
 
 	a1 := accts[1].(map[string]any)
@@ -158,7 +185,7 @@ func TestEveryAttemptStateHasAWireName(t *testing.T) {
 			t.Errorf("attempt state %d has no wire name", s)
 		}
 	}
-	for h := render.HealthOK; h <= render.HealthUnknown; h++ {
+	for h := render.HealthOK; h <= render.HealthUnprobed; h++ {
 		if healthNames[h] == "" {
 			t.Errorf("health state %d has no wire name", h)
 		}
