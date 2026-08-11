@@ -193,10 +193,12 @@ func runPicker(cfg config.Config) int {
 			case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
 				ui.refresh(ctx)
 			case isCancelKey(k):
+				ui.fp.finish()
 				t.Close()
 				return 1
 			case k.Kind == tui.KeyEnter:
 				chosen := ui.list[ui.sel]
+				ui.fp.finish()
 				t.Close()
 				if err := accounts.SetCurrent(cfg, chosen.Acct.Name); err != nil {
 					fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
@@ -413,16 +415,26 @@ func (ui *picker) draw() {
 	footer := []string{"", ui.p.Dim + ui.status(now) + ui.p.Rst}
 	// Fit the board to the terminal — framePrinter's move-up arithmetic
 	// cannot survive a frame taller than the screen, and its own clamp cuts
-	// blindly from the tail. Windowing here instead keeps what a chooser
-	// needs: the footer (warnings, refresh state) always renders, and the
-	// selected block scrolls into view whole so enter is never blind.
-	if _, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
-		if view := h - 1 - len(footer); view >= 1 && len(body) > view {
-			ui.top = fitTop(ui.top, selStart, selEnd, len(body), view)
-			body = body[ui.top : ui.top+view]
-		} else {
-			ui.top = 0
+	// blindly from the tail. Windowing here decides what a chooser needs
+	// most: the selected block scrolls into view whole so enter never
+	// commits an account the user cannot see, the footer (warnings, refresh
+	// state) renders whenever a body row can stand beside it, and on a
+	// terminal too short for both, the selection outranks the footer.
+	_, h := ui.fp.geometry()
+	switch view := h - len(footer); {
+	case len(body)+len(footer) <= h:
+		ui.top = 0
+	case view >= 1:
+		ui.top = fitTop(ui.top, selStart, selEnd, len(body), view)
+		body = body[ui.top : ui.top+view]
+	default:
+		footer = nil
+		view = h
+		if view > len(body) {
+			view = len(body)
 		}
+		ui.top = fitTop(ui.top, selStart, selEnd, len(body), view)
+		body = body[ui.top : ui.top+view]
 	}
 	ui.fp.print(append(body, footer...))
 }

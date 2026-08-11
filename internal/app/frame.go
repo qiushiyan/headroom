@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,20 +11,30 @@ import (
 	"github.com/qiushiyan/headroom/internal/render"
 )
 
-// framePrinter redraws a frame in place: move up over the previous frame,
-// rewrite every line (\x1b[2K clears remnants of longer ones), and blank
-// any rows the previous, taller frame still occupies. The move-up arithmetic
-// holds only while every printed line is one physical row still standing
-// where it was printed, so three guards protect it. Lines are clipped to the
-// terminal width — a wrapped line would occupy two rows. A frame is cut to
-// the terminal height — the cursor cannot move above the screen, so a taller
-// frame would scroll on every redraw and push a copy of its top into
-// scrollback each time (the duplicated-board bug). And a resize that could
-// have rewrapped the previous frame's rows — the terminal narrowed, or
-// shrank below the frame — falsifies prev, so the printer repaints from a
-// cleared screen instead of moving up a count the resize just broke.
-var errUnknownSize = errors.New("terminal size unknown")
+// Geometry assumed when the terminal reports no usable size — a rare tty
+// answers 0×0 without an error. The historical 80×24: a wrong guess costs
+// cosmetic truncation, while trusting an unknown height costs unbounded
+// scrollback duplication.
+const (
+	assumeWidth  = 80
+	assumeHeight = 24
+)
 
+// framePrinter redraws a frame in place: move up over the previous frame and
+// rewrite every line (\x1b[2K clears remnants of longer ones; \x1b[J before
+// the last line clears rows a taller previous frame still occupies). The
+// move-up arithmetic holds only while every printed line is one physical row
+// still standing where it was printed, so three guards protect it. Lines are
+// clipped to the terminal width — a wrapped line would occupy two rows. A
+// frame is cut to the terminal height — the cursor cannot move above the
+// screen, so a taller frame would scroll on every redraw and push a copy of
+// its top into scrollback each time (the duplicated-board bug); the last line
+// carries no trailing newline, which is what lets a frame of exactly the
+// screen's height (a one-row terminal included) redraw without ever
+// scrolling. And a resize that could have rewrapped the previous frame's
+// rows — the terminal narrowed, or shrank below the frame — falsifies prev,
+// so the printer repaints from a cleared screen instead of moving up a count
+// the resize just broke.
 type framePrinter struct {
 	prev int
 	w    int // width the previous frame was printed at
@@ -35,55 +44,74 @@ type framePrinter struct {
 	size func() (w, h int, err error)
 }
 
-func (f *framePrinter) print(lines []string) {
+// geometry is the one answer both the layout and the printer work from:
+// the terminal's size, or the assumed geometry when it reports none.
+func (f *framePrinter) geometry() (w, h int) {
 	getSize := f.size
 	if getSize == nil {
 		getSize = func() (int, int, error) { return term.GetSize(int(os.Stdout.Fd())) }
+	}
+	w, h, err := getSize()
+	if err != nil || w <= 0 || h <= 0 {
+		return assumeWidth, assumeHeight
+	}
+	return w, h
+}
+
+func (f *framePrinter) print(lines []string) {
+	out := f.out
+	if out == nil {
+		out = os.Stdout
+	}
+	width, height := f.geometry()
+	var b strings.Builder
+	// prev counts physical rows, and only these two resizes can change how
+	// many rows the old frame occupies: narrowing rewraps them in a
+	// reflowing terminal, and a height below the frame leaves no room to
+	// move back over it. Growing wider never rewraps a clipped line, so it
+	// keeps the cheap in-place path.
+	if f.prev > 0 && (width < f.w || f.prev > height) {
+		b.WriteString("\x1b[H\x1b[J")
+		f.prev = 0
+	}
+	f.w = width
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	// The leading \r also clears a pending-wrap state a full-width last line
+	// left behind, so the move-up counts whole rows.
+	b.WriteString("\r")
+	if f.prev > 1 {
+		fmt.Fprintf(&b, "\x1b[%dA", f.prev-1)
+	}
+	for i, s := range lines {
+		s = render.Clip(s, width)
+		if i == len(lines)-1 {
+			// Clear-below runs from the start of the last row, before its
+			// text: it erases both this row and every row a taller previous
+			// frame left underneath, and running it here rather than after
+			// the write keeps a full-width line's pending wrap from putting
+			// the erase on top of the line's own last cell.
+			b.WriteString("\x1b[J" + s)
+		} else {
+			b.WriteString("\x1b[2K" + s + "\r\n")
+		}
+	}
+	io.WriteString(out, b.String())
+	f.prev = len(lines)
+}
+
+// finish steps below the frame so cooked-mode output — the selection line,
+// the shell's next prompt — starts on its own row. The frame itself stays on
+// screen: a quit board lingering in the terminal is this surface's contract.
+func (f *framePrinter) finish() {
+	if f.prev == 0 {
+		return
 	}
 	out := f.out
 	if out == nil {
 		out = os.Stdout
 	}
-	width, height, sizeErr := getSize()
-	if sizeErr == nil && (width <= 0 || height <= 0) {
-		// Some ptys report 0×0 without an error; an unknown size must not
-		// masquerade as a resize (prev >= 0 would clear-repaint every frame).
-		sizeErr = errUnknownSize
-	}
-	var b strings.Builder
-	if sizeErr == nil {
-		// prev counts physical rows, and only these two resizes can change
-		// how many rows the old frame occupies: narrowing rewraps them in a
-		// reflowing terminal, and a height below the frame leaves no room to
-		// move back over it. Growing wider never rewraps a clipped line, so
-		// it keeps the cheap in-place path.
-		if f.prev > 0 && (width < f.w || f.prev >= height) {
-			b.WriteString("\x1b[H\x1b[J")
-			f.prev = 0
-		}
-		f.w = width
-		// The frame plus the cursor's resting row must fit the screen; the
-		// last height-1 guard keeps a one-row terminal from cutting to zero
-		// and printing nothing forever.
-		if max := height - 1; max >= 1 && len(lines) > max {
-			lines = lines[:max]
-		}
-	}
-	if f.prev > 0 {
-		fmt.Fprintf(&b, "\x1b[%dA", f.prev)
-	}
-	for _, s := range lines {
-		if sizeErr == nil {
-			s = render.Clip(s, width)
-		}
-		b.WriteString("\x1b[2K" + s + "\r\n")
-	}
-	if extra := f.prev - len(lines); extra > 0 {
-		for range extra {
-			b.WriteString("\x1b[2K\r\n")
-		}
-		fmt.Fprintf(&b, "\x1b[%dA", extra)
-	}
-	io.WriteString(out, b.String())
-	f.prev = len(lines)
+	io.WriteString(out, "\r\n")
+	f.prev = 0
 }

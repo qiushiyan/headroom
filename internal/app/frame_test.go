@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// fixedSize is the test seam: a framePrinter printing to buf on a terminal
-// reporting w×h.
 func testPrinter(buf *strings.Builder, w, h int) *framePrinter {
 	return &framePrinter{
 		out:  buf,
@@ -26,29 +24,65 @@ func frameLines(n int) []string {
 // The duplicated-board bug: a frame taller than the terminal cannot be moved
 // back over (the cursor stops at the top row), so every redraw would scroll
 // its overflow into scrollback. The printer must never emit more rows than
-// the screen keeps — height-1, leaving the cursor its resting row — and must
-// move up exactly as many rows as it last printed.
+// the screen holds, and must move up exactly the rows it last printed.
 func TestFrameTallerThanTerminalIsCutToFit(t *testing.T) {
 	var buf strings.Builder
 	fp := testPrinter(&buf, 80, 8)
 
 	fp.print(frameLines(13))
 	first := buf.String()
-	if got := strings.Count(first, "\x1b[2K"); got != 7 {
-		t.Fatalf("first frame printed %d rows on an 8-row terminal, want 7", got)
+	if got := strings.Count(first, "\r\n"); got != 7 {
+		t.Fatalf("first frame advanced %d rows on an 8-row terminal, want 7", got)
 	}
-	if strings.Contains(first, "line 7") {
+	if strings.Contains(first, "line 8") {
 		t.Fatalf("first frame kept rows past the screen: %q", first)
 	}
 
 	buf.Reset()
 	fp.print(frameLines(13))
 	second := buf.String()
-	if !strings.HasPrefix(second, "\x1b[7A") {
-		t.Fatalf("second frame must move up over the 7 rows actually printed, got %q", second)
+	if !strings.HasPrefix(second, "\r\x1b[7A") {
+		t.Fatalf("second frame must move up over the 8 rows actually printed, got %q", second)
 	}
-	if got := strings.Count(second, "\x1b[2K"); got != 7 {
-		t.Fatalf("second frame printed %d rows, want 7", got)
+	if got := strings.Count(second, "\r\n"); got != 7 {
+		t.Fatalf("second frame advanced %d rows, want 7", got)
+	}
+}
+
+// A one-row terminal is the degenerate frame: one line, rewritten in place.
+// Scrolling is impossible only if the printer never emits a newline at all.
+func TestOneRowTerminalNeverScrolls(t *testing.T) {
+	var buf strings.Builder
+	fp := testPrinter(&buf, 80, 1)
+	for range 3 {
+		fp.print(frameLines(5))
+	}
+	out := buf.String()
+	if strings.Contains(out, "\n") {
+		t.Fatalf("a one-row terminal must never see a newline, got %q", out)
+	}
+	if !strings.Contains(out, "line 0") || strings.Contains(out, "line 1") {
+		t.Fatalf("a one-row terminal shows exactly the first line, got %q", out)
+	}
+}
+
+// A shrinking frame must clear the rows the taller one still occupies, and
+// the next move-up must count the new frame, not the old.
+func TestShrinkingFrameClearsItsLeftovers(t *testing.T) {
+	var buf strings.Builder
+	fp := testPrinter(&buf, 80, 24)
+	fp.print(frameLines(10))
+
+	buf.Reset()
+	fp.print(frameLines(4))
+	if out := buf.String(); !strings.Contains(out, "\x1b[J") {
+		t.Fatalf("shrunk frame must clear below its last line, got %q", out)
+	}
+
+	buf.Reset()
+	fp.print(frameLines(4))
+	if out := buf.String(); !strings.HasPrefix(out, "\r\x1b[3A") {
+		t.Fatalf("move-up must count the shrunk frame, got %q", out)
 	}
 }
 
@@ -81,7 +115,7 @@ func TestResizeThatFalsifiesPrevRepaintsFromClearedScreen(t *testing.T) {
 			if !strings.HasPrefix(out, "\x1b[H\x1b[J") {
 				t.Fatalf("resize must home and clear before repainting, got %q", out)
 			}
-			if strings.Contains(out, "\x1b[10A") {
+			if strings.Contains(out, "\x1b[9A") {
 				t.Fatalf("resize must not trust the stale row count, got %q", out)
 			}
 		})
@@ -89,7 +123,7 @@ func TestResizeThatFalsifiesPrevRepaintsFromClearedScreen(t *testing.T) {
 }
 
 // Growing wider never rewraps a width-clipped line, so it keeps the cheap
-// in-place path: no clear, plain move-up.
+// in-place path: no clear-screen, plain move-up.
 func TestWideningKeepsTheInPlaceRedraw(t *testing.T) {
 	var buf strings.Builder
 	w := 80
@@ -106,30 +140,39 @@ func TestWideningKeepsTheInPlaceRedraw(t *testing.T) {
 	if strings.Contains(out, "\x1b[H") {
 		t.Fatalf("widening must not force a clear-screen repaint, got %q", out)
 	}
-	if !strings.HasPrefix(out, "\x1b[10A") {
+	if !strings.HasPrefix(out, "\r\x1b[9A") {
 		t.Fatalf("widening keeps the move-up redraw, got %q", out)
 	}
 }
 
-// Some ptys report 0×0 without an error. An unknown size must neither cut
-// the frame nor masquerade as a resize that forces a clear-repaint on every
-// draw — it keeps the plain uncut in-place path.
-func TestZeroSizeReportKeepsThePlainPath(t *testing.T) {
+// Some ptys report 0×0 (or an error) without ceasing to be terminals. An
+// unknown size must not reopen the unbounded path: the printer assumes the
+// historical 80×24 and clamps to it — cosmetic truncation, never scrollback
+// duplication.
+func TestUnknownSizeAssumesConservativeGeometry(t *testing.T) {
 	var buf strings.Builder
 	fp := testPrinter(&buf, 0, 0)
-	fp.print(frameLines(10))
-
-	buf.Reset()
-	fp.print(frameLines(10))
+	fp.print(frameLines(40))
 	out := buf.String()
-	if strings.Contains(out, "\x1b[H") {
-		t.Fatalf("unknown size must not force a clear-screen repaint, got %q", out)
+	if got := strings.Count(out, "\r\n") + 1; got != assumeHeight {
+		t.Fatalf("unknown size printed %d rows, want the assumed %d", got, assumeHeight)
 	}
-	if !strings.HasPrefix(out, "\x1b[10A") {
-		t.Fatalf("unknown size keeps the full move-up redraw, got %q", out)
+	if strings.Contains(out, fmt.Sprintf("line %d", assumeHeight)) {
+		t.Fatalf("unknown size must clamp to the assumed height, got %q", out)
 	}
-	if got := strings.Count(out, "\x1b[2K"); got != 10 {
-		t.Fatalf("unknown size must not cut the frame: printed %d rows, want 10", got)
+}
+
+// finish steps below the frame exactly once, so cooked-mode output lands on
+// its own row while the last frame stays on screen.
+func TestFinishStepsBelowTheFrameOnce(t *testing.T) {
+	var buf strings.Builder
+	fp := testPrinter(&buf, 80, 24)
+	fp.print(frameLines(3))
+	buf.Reset()
+	fp.finish()
+	fp.finish()
+	if got := buf.String(); got != "\r\n" {
+		t.Fatalf("finish writes one row step, got %q", got)
 	}
 }
 

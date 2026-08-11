@@ -10,7 +10,10 @@
 # claim inside the store, never by this loop, so hammering `r` must leave the
 # board responsive and exiting cleanly rather than spinning.
 set timeout 10
-spawn $env(HEADROOM_BIN) accounts
+# A sizeless expect pty (0×0) makes headroom assume 80 columns and clip
+# the footer these scripts match on; declare a real geometry like every
+# real terminal does.
+spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts"
 expect {
     "next refresh in" {}
     timeout { puts "board never drew its refresh countdown"; exit 2 }

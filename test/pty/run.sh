@@ -160,6 +160,45 @@ if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
     fail=1
 fi
 
+# The board must not duplicate itself into scrollback — the one behavior
+# that needs a real scrollback buffer, so it runs under tmux and is skipped
+# where tmux is absent (expect alone stays the harness's only requirement).
+# A pane shorter than the board forces the redraw path that once scrolled a
+# frame copy per second; a width round-trip forces the reflow-reset path.
+# The emulator itself archives one pre-resize screen per resize, so after
+# resizing the assertion is a bound, not zero.
+if command -v tmux >/dev/null 2>&1; then
+    rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
+    tmux_sock="$work/tmux.sock"
+    tmx() { tmux -S "$tmux_sock" "$@"; }
+    tmx kill-server 2>/dev/null || true
+    tmx new-session -d -x 100 -y 8 -s board "$HEADROOM_BIN; sleep 30"
+    sleep 6
+    tmx send-keys -t board j j k 2>/dev/null || true
+    sleep 2
+    hist=$(tmx display-message -t board -p '#{history_size}')
+    if [ "$hist" != 0 ]; then
+        echo "FAIL scrollback: $hist lines in scrollback after redraws in a short pane"
+        tmx capture-pane -t board -p -S -50 | sed 's/^/     /'
+        fail=1
+    else
+        tmx resize-window -t board -x 60 -y 8
+        sleep 2
+        tmx resize-window -t board -x 100 -y 8
+        sleep 3
+        hist=$(tmx display-message -t board -p '#{history_size}')
+        if [ "$hist" -gt 40 ]; then
+            echo "FAIL scrollback: $hist lines after a resize round-trip — growing per redraw, not per resize"
+            fail=1
+        else
+            echo "ok   scrollback"
+        fi
+    fi
+    tmx kill-server 2>/dev/null || true
+else
+    echo "skip scrollback (tmux not installed)"
+fi
+
 # The session picker lists the fixture store; --json needs no terminal.
 if ! "$HEADROOM_BIN" sessions --json | grep -q "$sid"; then
     echo "FAIL sessions-json: fixture session missing from listing"

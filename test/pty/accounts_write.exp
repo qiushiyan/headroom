@@ -2,7 +2,10 @@
 # Down arrow + enter: pick the second account (a@x.com), exit 0. run.sh
 # asserts the .current write afterward.
 set timeout 10
-spawn $env(HEADROOM_BIN) accounts
+# A sizeless expect pty (0×0) makes headroom assume 80 columns and clip
+# the footer these scripts match on; declare a real geometry like every
+# real terminal does.
+spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts"
 expect {
     "esc cancel" {}
     timeout { puts "picker never drew its footer"; exit 2 }

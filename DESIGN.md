@@ -527,7 +527,10 @@ is pinned in `go test`); the session picker must refuse a primary commit
 under the harness's re-pointed home *into* a still-live picker with the
 advisory cd file left empty (the exec success path is the dotfiles sandbox
 harness's, which stubs a recording claude), leave the cd file empty on
-cancel, survive SIGTERM inside the alternate screen, and delete only inside
+cancel, survive SIGTERM inside the alternate screen, keep scrollback empty
+while the board redraws in a pane shorter than itself (the one case that
+needs a real scrollback buffer, so it runs under tmux and skips where tmux
+is absent — expect alone remains the harness's requirement), and delete only inside
 the harness's fixture store — `HEADROOM_HOME` re-points the primary config
 dir and session store, and exists so a `dd` test can never touch the real
 machine's transcripts (and is also why enter must refuse there: relocated
