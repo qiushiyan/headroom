@@ -120,6 +120,7 @@ type picker struct {
 	ackUntil  time.Time
 	wanted    int       // accounts the last round had anything to ask about
 	lastKey   time.Time // presence
+	top       int       // first body line in view when the board outgrows the terminal
 }
 
 const ackTTL = 4 * time.Second
@@ -389,21 +390,60 @@ func (ui *picker) restoreSelection() {
 func (ui *picker) draw() {
 	now := time.Now()
 	labelWidth := render.LabelWidth(views(ui.list))
-	var lines []string
+	var body []string
+	selStart, selEnd := 0, 0
 	for i, d := range ui.list {
+		if i == ui.sel {
+			selStart = len(body)
+		}
 		for j, line := range ui.p.AccountBlock(d.View, now.Unix(), labelWidth) {
 			prefix := "  "
 			if i == ui.sel && j == 0 {
 				prefix = ui.p.Bold + "▶ " + ui.p.Rst
 			}
-			lines = append(lines, prefix+line)
+			body = append(body, prefix+line)
+		}
+		if i == ui.sel {
+			selEnd = len(body)
 		}
 		if i < len(ui.list)-1 {
-			lines = append(lines, "")
+			body = append(body, "")
 		}
 	}
-	lines = append(lines, "", ui.p.Dim+ui.status(now)+ui.p.Rst)
-	ui.fp.print(lines)
+	footer := []string{"", ui.p.Dim + ui.status(now) + ui.p.Rst}
+	// Fit the board to the terminal — framePrinter's move-up arithmetic
+	// cannot survive a frame taller than the screen, and its own clamp cuts
+	// blindly from the tail. Windowing here instead keeps what a chooser
+	// needs: the footer (warnings, refresh state) always renders, and the
+	// selected block scrolls into view whole so enter is never blind.
+	if _, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+		if view := h - 1 - len(footer); view >= 1 && len(body) > view {
+			ui.top = fitTop(ui.top, selStart, selEnd, len(body), view)
+			body = body[ui.top : ui.top+view]
+		} else {
+			ui.top = 0
+		}
+	}
+	ui.fp.print(append(body, footer...))
+}
+
+// fitTop scrolls the board's viewport to keep the selected block whole in
+// view; when the block itself outgrows the viewport, its first line wins.
+// Pure so the arithmetic is table-testable.
+func fitTop(top, selStart, selEnd, total, view int) int {
+	if selEnd > top+view {
+		top = selEnd - view
+	}
+	if selStart < top {
+		top = selStart
+	}
+	if top > total-view {
+		top = total - view
+	}
+	if top < 0 {
+		top = 0
+	}
+	return top
 }
 
 // status is the board's one footer line. Clause order is clip order —
