@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"golang.org/x/term"
 
@@ -36,8 +37,16 @@ const (
 // so the printer repaints from a cleared screen instead of moving up a count
 // the resize just broke.
 type framePrinter struct {
-	prev int
-	w    int // width the previous frame was printed at
+	// The mutex is the signal path's seam: finish runs inside the terminal's
+	// close, which a signal delivers from its own goroutine while the main
+	// loop may be mid-print. Serialized, and closed checked under the lock,
+	// a draw can never write after the close began — an unsynchronized
+	// interleaving could put a newline-less frame after finish's step-below
+	// and glue the dying process's shell prompt to it.
+	mu     sync.Mutex
+	prev   int
+	w      int // width the previous frame was printed at
+	closed bool
 
 	// Test seams; nil means the real stdout terminal.
 	out  io.Writer
@@ -63,6 +72,11 @@ func (f *framePrinter) geometry() (w, h int) {
 }
 
 func (f *framePrinter) print(lines []string, width, height int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return
+	}
 	out := f.out
 	if out == nil {
 		out = os.Stdout
@@ -105,9 +119,16 @@ func (f *framePrinter) print(lines []string, width, height int) {
 }
 
 // finish steps below the frame so cooked-mode output — the selection line,
-// the shell's next prompt — starts on its own row. The frame itself stays on
-// screen: a quit board lingering in the terminal is this surface's contract.
+// the shell's next prompt — starts on its own row, and closes the printer:
+// nothing draws after it. The frame itself stays on screen: a quit board
+// lingering in the terminal is this surface's contract.
 func (f *framePrinter) finish() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return
+	}
+	f.closed = true
 	if f.prev == 0 {
 		return
 	}

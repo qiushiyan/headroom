@@ -156,7 +156,8 @@ func TestGeometryAssumesConservativelyWhenTheSizeVanishes(t *testing.T) {
 }
 
 // finish steps below the frame exactly once, so cooked-mode output lands on
-// its own row while the last frame stays on screen.
+// its own row while the last frame stays on screen — and closes the printer,
+// so a draw racing the close cannot write behind it.
 func TestFinishStepsBelowTheFrameOnce(t *testing.T) {
 	var buf strings.Builder
 	fp := testPrinter(&buf)
@@ -166,6 +167,34 @@ func TestFinishStepsBelowTheFrameOnce(t *testing.T) {
 	fp.finish()
 	if got := buf.String(); got != "\r\n" {
 		t.Fatalf("finish writes one row step, got %q", got)
+	}
+	fp.print(frameLines(3), 80, 24)
+	if got := buf.String(); got != "\r\n" {
+		t.Fatalf("print after finish must write nothing, got %q", got)
+	}
+}
+
+// A signal delivers finish from its own goroutine while the main loop may be
+// mid-print. Whatever the interleaving, the output must end the moment
+// finish ran: empty (finish won before any frame) or finish's own row step —
+// never frame bytes after it, which would glue the dying process's shell
+// prompt to a newline-less line. Run under -race, this also pins the
+// synchronization itself.
+func TestFinishRacingPrintAlwaysEndsTheOutput(t *testing.T) {
+	var buf strings.Builder
+	fp := testPrinter(&buf)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			fp.print(frameLines(3), 80, 24)
+		}
+	}()
+	fp.finish()
+	<-done
+	out := buf.String()
+	if out != "" && !strings.HasSuffix(out, "\r\n") {
+		t.Fatalf("output continued past finish: %q", out[max(0, len(out)-40):])
 	}
 }
 
