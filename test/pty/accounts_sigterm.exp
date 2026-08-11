@@ -5,7 +5,10 @@ set timeout 10
 # Expect's pty starts sizeless (0×0); headroom then assumes 80 columns and
 # clips, cutting the fixture's long footer before the "esc cancel" this
 # script waits for. Declare a real geometry the way every real terminal does.
-set cmd "stty rows 24 columns 200; $env(HEADROOM_BIN) accounts; stty -a > $env(STTY_OUT) 2>&1"
+# The trailing echo lands after headroom's close path: run.sh asserts its
+# marker begins a line, proving a signal death stepped below the frame's
+# newline-less last line rather than leaving the shell glued to it.
+set cmd "stty rows 24 columns 200; $env(HEADROOM_BIN) accounts; stty -a > $env(STTY_OUT) 2>&1; echo NEWLINE-OK"
 spawn sh -c $cmd
 expect {
     "esc cancel" {}

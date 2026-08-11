@@ -159,6 +159,15 @@ if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
     cat "$STTY_OUT" 2>/dev/null || true
     fail=1
 fi
+# …and with the cursor below the frame: the wrapper's marker must begin its
+# own line (ANSI stripped — restore sequences precede it legitimately). The
+# board's last line carries no newline, so only the close path's step-below
+# puts it there.
+esc=$(printf '\033')
+if ! sed "s/${esc}\[[0-9;?]*[a-zA-Z]//g" "$work/accounts_sigterm.log" 2>/dev/null | grep -q '^NEWLINE-OK'; then
+    echo "FAIL accounts_sigterm: signal exit left the cursor glued to the frame's last line"
+    fail=1
+fi
 
 # The board must not duplicate itself into scrollback — the one behavior
 # that needs a real scrollback buffer, so it runs under tmux and is skipped
@@ -171,13 +180,22 @@ if command -v tmux >/dev/null 2>&1; then
     rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
     tmux_sock="$work/tmux.sock"
     tmx() { tmux -S "$tmux_sock" "$@"; }
+    # The pane runs the picker directly (exec, no shell lingering), and every
+    # phase re-checks that the pane still runs headroom: an early crash would
+    # leave a static frame that satisfies any scrollback bound vacuously.
+    board_alive() {
+        [ "$(tmx display-message -t board -p '#{pane_current_command}' 2>/dev/null || true)" = headroom ]
+    }
     tmx kill-server 2>/dev/null || true
-    tmx new-session -d -x 100 -y 8 -s board "$HEADROOM_BIN; sleep 30"
+    tmx new-session -d -x 100 -y 8 -s board "exec $HEADROOM_BIN"
     sleep 6
     tmx send-keys -t board j j k 2>/dev/null || true
     sleep 2
-    hist=$(tmx display-message -t board -p '#{history_size}')
-    if [ "$hist" != 0 ]; then
+    hist=$(tmx display-message -t board -p '#{history_size}' 2>/dev/null || echo missing)
+    if ! board_alive; then
+        echo "FAIL scrollback: picker not running after the redraw interval"
+        fail=1
+    elif [ "$hist" != 0 ]; then
         echo "FAIL scrollback: $hist lines in scrollback after redraws in a short pane"
         tmx capture-pane -t board -p -S -50 | sed 's/^/     /'
         fail=1
@@ -186,8 +204,11 @@ if command -v tmux >/dev/null 2>&1; then
         sleep 2
         tmx resize-window -t board -x 100 -y 8
         sleep 3
-        hist=$(tmx display-message -t board -p '#{history_size}')
-        if [ "$hist" -gt 40 ]; then
+        hist=$(tmx display-message -t board -p '#{history_size}' 2>/dev/null || echo missing)
+        if ! board_alive; then
+            echo "FAIL scrollback: picker not running after the resize round-trip"
+            fail=1
+        elif [ "$hist" = missing ] || [ "$hist" -gt 40 ]; then
             echo "FAIL scrollback: $hist lines after a resize round-trip — growing per redraw, not per resize"
             fail=1
         else

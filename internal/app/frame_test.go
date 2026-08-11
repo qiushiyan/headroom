@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-func testPrinter(buf *strings.Builder, w, h int) *framePrinter {
-	return &framePrinter{
-		out:  buf,
-		size: func() (int, int, error) { return w, h, nil },
-	}
+func testPrinter(buf *strings.Builder) *framePrinter {
+	return &framePrinter{out: buf}
 }
 
 func frameLines(n int) []string {
@@ -27,9 +24,9 @@ func frameLines(n int) []string {
 // the screen holds, and must move up exactly the rows it last printed.
 func TestFrameTallerThanTerminalIsCutToFit(t *testing.T) {
 	var buf strings.Builder
-	fp := testPrinter(&buf, 80, 8)
+	fp := testPrinter(&buf)
 
-	fp.print(frameLines(13))
+	fp.print(frameLines(13), 80, 8)
 	first := buf.String()
 	if got := strings.Count(first, "\r\n"); got != 7 {
 		t.Fatalf("first frame advanced %d rows on an 8-row terminal, want 7", got)
@@ -39,7 +36,7 @@ func TestFrameTallerThanTerminalIsCutToFit(t *testing.T) {
 	}
 
 	buf.Reset()
-	fp.print(frameLines(13))
+	fp.print(frameLines(13), 80, 8)
 	second := buf.String()
 	if !strings.HasPrefix(second, "\r\x1b[7A") {
 		t.Fatalf("second frame must move up over the 8 rows actually printed, got %q", second)
@@ -53,9 +50,9 @@ func TestFrameTallerThanTerminalIsCutToFit(t *testing.T) {
 // Scrolling is impossible only if the printer never emits a newline at all.
 func TestOneRowTerminalNeverScrolls(t *testing.T) {
 	var buf strings.Builder
-	fp := testPrinter(&buf, 80, 1)
+	fp := testPrinter(&buf)
 	for range 3 {
-		fp.print(frameLines(5))
+		fp.print(frameLines(5), 80, 1)
 	}
 	out := buf.String()
 	if strings.Contains(out, "\n") {
@@ -70,17 +67,17 @@ func TestOneRowTerminalNeverScrolls(t *testing.T) {
 // the next move-up must count the new frame, not the old.
 func TestShrinkingFrameClearsItsLeftovers(t *testing.T) {
 	var buf strings.Builder
-	fp := testPrinter(&buf, 80, 24)
-	fp.print(frameLines(10))
+	fp := testPrinter(&buf)
+	fp.print(frameLines(10), 80, 24)
 
 	buf.Reset()
-	fp.print(frameLines(4))
+	fp.print(frameLines(4), 80, 24)
 	if out := buf.String(); !strings.Contains(out, "\x1b[J") {
 		t.Fatalf("shrunk frame must clear below its last line, got %q", out)
 	}
 
 	buf.Reset()
-	fp.print(frameLines(4))
+	fp.print(frameLines(4), 80, 24)
 	if out := buf.String(); !strings.HasPrefix(out, "\r\x1b[3A") {
 		t.Fatalf("move-up must count the shrunk frame, got %q", out)
 	}
@@ -101,16 +98,11 @@ func TestResizeThatFalsifiesPrevRepaintsFromClearedScreen(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf strings.Builder
-			w, h := 80, 24
-			fp := &framePrinter{
-				out:  &buf,
-				size: func() (int, int, error) { return w, h, nil },
-			}
-			fp.print(frameLines(10))
+			fp := testPrinter(&buf)
+			fp.print(frameLines(10), 80, 24)
 
 			buf.Reset()
-			w, h = tc.w, tc.h
-			fp.print(frameLines(10))
+			fp.print(frameLines(10), tc.w, tc.h)
 			out := buf.String()
 			if !strings.HasPrefix(out, "\x1b[H\x1b[J") {
 				t.Fatalf("resize must home and clear before repainting, got %q", out)
@@ -126,16 +118,11 @@ func TestResizeThatFalsifiesPrevRepaintsFromClearedScreen(t *testing.T) {
 // in-place path: no clear-screen, plain move-up.
 func TestWideningKeepsTheInPlaceRedraw(t *testing.T) {
 	var buf strings.Builder
-	w := 80
-	fp := &framePrinter{
-		out:  &buf,
-		size: func() (int, int, error) { return w, 24, nil },
-	}
-	fp.print(frameLines(10))
+	fp := testPrinter(&buf)
+	fp.print(frameLines(10), 80, 24)
 
 	buf.Reset()
-	w = 120
-	fp.print(frameLines(10))
+	fp.print(frameLines(10), 120, 24)
 	out := buf.String()
 	if strings.Contains(out, "\x1b[H") {
 		t.Fatalf("widening must not force a clear-screen repaint, got %q", out)
@@ -145,20 +132,26 @@ func TestWideningKeepsTheInPlaceRedraw(t *testing.T) {
 	}
 }
 
-// Some ptys report 0×0 (or an error) without ceasing to be terminals. An
-// unknown size must not reopen the unbounded path: the printer assumes the
-// historical 80×24 and clamps to it — cosmetic truncation, never scrollback
-// duplication.
-func TestUnknownSizeAssumesConservativeGeometry(t *testing.T) {
-	var buf strings.Builder
-	fp := testPrinter(&buf, 0, 0)
-	fp.print(frameLines(40))
-	out := buf.String()
-	if got := strings.Count(out, "\r\n") + 1; got != assumeHeight {
-		t.Fatalf("unknown size printed %d rows, want the assumed %d", got, assumeHeight)
+// The picker refuses to open on a tty that reports no size; geometry's
+// assumption exists for a size that goes unreadable mid-session, where it
+// bounds the damage instead of trusting an unknown screen.
+func TestGeometryAssumesConservativelyWhenTheSizeVanishes(t *testing.T) {
+	cases := []struct {
+		name string
+		w, h int
+		err  error
+	}{
+		{"zero size", 0, 0, nil},
+		{"error", 0, 0, fmt.Errorf("ioctl failed")},
+		{"negative", -1, 24, nil},
 	}
-	if strings.Contains(out, fmt.Sprintf("line %d", assumeHeight)) {
-		t.Fatalf("unknown size must clamp to the assumed height, got %q", out)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &framePrinter{size: func() (int, int, error) { return tc.w, tc.h, tc.err }}
+			if w, h := fp.geometry(); w != assumeWidth || h != assumeHeight {
+				t.Fatalf("geometry() = %d×%d, want the assumed %d×%d", w, h, assumeWidth, assumeHeight)
+			}
+		})
 	}
 }
 
@@ -166,13 +159,44 @@ func TestUnknownSizeAssumesConservativeGeometry(t *testing.T) {
 // its own row while the last frame stays on screen.
 func TestFinishStepsBelowTheFrameOnce(t *testing.T) {
 	var buf strings.Builder
-	fp := testPrinter(&buf, 80, 24)
-	fp.print(frameLines(3))
+	fp := testPrinter(&buf)
+	fp.print(frameLines(3), 80, 24)
 	buf.Reset()
 	fp.finish()
 	fp.finish()
 	if got := buf.String(); got != "\r\n" {
 		t.Fatalf("finish writes one row step, got %q", got)
+	}
+}
+
+// boardWindow ranks what a chooser needs: the selected block stays visible at
+// every height, the footer stands beside it whenever a body row fits, and on
+// a terminal too short for both the selection wins.
+func TestBoardWindowKeepsTheSelectionAtEveryHeight(t *testing.T) {
+	// A 10-line body whose selected block spans lines 4–7, under a 2-line
+	// footer — the shape of a multi-account board.
+	const selStart, selEnd, bodyLen, footerLen = 4, 8, 10, 2
+	for h := 1; h <= 14; h++ {
+		top, view, keepFooter := boardWindow(0, selStart, selEnd, bodyLen, footerLen, h)
+		if view < 1 || top < 0 || top+view > bodyLen {
+			t.Fatalf("h=%d: window [%d,%d) out of a %d-line body", h, top, top+view, bodyLen)
+		}
+		if selStart < top || selStart >= top+view {
+			t.Fatalf("h=%d: selected block's first line %d outside window [%d,%d)", h, selStart, top, top+view)
+		}
+		rows := view
+		if keepFooter {
+			rows += footerLen
+		}
+		if rows > h && h < bodyLen+footerLen {
+			t.Fatalf("h=%d: window emits %d rows", h, rows)
+		}
+		if h >= 3 && !keepFooter {
+			t.Fatalf("h=%d: footer dropped though a body row could stand beside it", h)
+		}
+		if h < 3 && keepFooter {
+			t.Fatalf("h=%d: footer kept at the selection's expense", h)
+		}
 	}
 }
 

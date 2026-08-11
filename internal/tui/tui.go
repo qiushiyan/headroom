@@ -256,6 +256,9 @@ type Terminal struct {
 	events  chan Key
 	sigs    chan os.Signal
 	once    sync.Once
+
+	mu       sync.Mutex
+	epilogue func()
 }
 
 // Open puts stdin into raw mode and hides the cursor, rendering to stdout —
@@ -327,8 +330,26 @@ func (t *Terminal) Size() (w, h int, err error) {
 	return term.GetSize(int(t.out.Fd()))
 }
 
+// OnClose registers one function to run first inside Close — still in raw
+// mode, before the cursor returns and cooked mode is restored. It exists for
+// the same reason alt-screen exit lives inside Close: a surface's final
+// rendering step (the board stepping below its last, newline-less line) must
+// share the once-guard and the signal path, or a SIGTERM would restore the
+// terminal yet leave the shell's next prompt glued to the frame.
+func (t *Terminal) OnClose(f func()) {
+	t.mu.Lock()
+	t.epilogue = f
+	t.mu.Unlock()
+}
+
 func (t *Terminal) Close() {
 	t.once.Do(func() {
+		t.mu.Lock()
+		epilogue := t.epilogue
+		t.mu.Unlock()
+		if epilogue != nil {
+			epilogue()
+		}
 		signal.Stop(t.sigs)
 		close(t.sigs)
 		fmt.Fprint(t.out, "\x1b[?25h")

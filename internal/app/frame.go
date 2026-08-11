@@ -44,8 +44,12 @@ type framePrinter struct {
 	size func() (w, h int, err error)
 }
 
-// geometry is the one answer both the layout and the printer work from:
-// the terminal's size, or the assumed geometry when it reports none.
+// geometry is the one reading a frame is built and printed from — the layout
+// windows to it and print receives the same snapshot, so a resize landing
+// between the two cannot hand the printer a frame fitted to a screen that no
+// longer exists. The picker refuses to open on a tty that reports no size;
+// the assumed geometry is the safety net for a size that goes unreadable
+// mid-session, bounding the damage instead of trusting an unknown screen.
 func (f *framePrinter) geometry() (w, h int) {
 	getSize := f.size
 	if getSize == nil {
@@ -58,12 +62,11 @@ func (f *framePrinter) geometry() (w, h int) {
 	return w, h
 }
 
-func (f *framePrinter) print(lines []string) {
+func (f *framePrinter) print(lines []string, width, height int) {
 	out := f.out
 	if out == nil {
 		out = os.Stdout
 	}
-	width, height := f.geometry()
 	var b strings.Builder
 	// prev counts physical rows, and only these two resizes can change how
 	// many rows the old frame occupies: narrowing rewraps them in a

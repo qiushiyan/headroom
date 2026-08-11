@@ -73,6 +73,14 @@ func runAccounts(cfg config.Config) int {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !stdoutIsTTY() {
 		return printBoard(cfg)
 	}
+	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err != nil || w <= 0 || h <= 0 {
+		// An interactive tty that won't state its size cannot host the
+		// in-place board: a multi-row redraw over guessed geometry is how
+		// frames duplicate into scrollback. The one-shot print is the honest
+		// rendering there, and the caption says why the picker didn't open.
+		fmt.Fprintln(os.Stderr, "headroom accounts: terminal reports no size — printing the board once")
+		return printBoard(cfg)
+	}
 	return runPicker(cfg)
 }
 
@@ -145,6 +153,9 @@ func runPicker(cfg config.Config) int {
 		fp:      &framePrinter{},
 		lastKey: time.Now(),
 	}
+	// Every exit — enter, cancel, the deferred Close, a signal death — steps
+	// below the newline-less frame through the same once-guarded path.
+	t.OnClose(ui.fp.finish)
 	ui.startRound(ctx, false)
 	// The first draw shows the current account selected; after that the
 	// selection follows the user, not the discovery order.
@@ -193,12 +204,10 @@ func runPicker(cfg config.Config) int {
 			case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
 				ui.refresh(ctx)
 			case isCancelKey(k):
-				ui.fp.finish()
 				t.Close()
 				return 1
 			case k.Kind == tui.KeyEnter:
 				chosen := ui.list[ui.sel]
-				ui.fp.finish()
 				t.Close()
 				if err := accounts.SetCurrent(cfg, chosen.Acct.Name); err != nil {
 					fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
@@ -415,33 +424,42 @@ func (ui *picker) draw() {
 	footer := []string{"", ui.p.Dim + ui.status(now) + ui.p.Rst}
 	// Fit the board to the terminal — framePrinter's move-up arithmetic
 	// cannot survive a frame taller than the screen, and its own clamp cuts
-	// blindly from the tail. Windowing here decides what a chooser needs
-	// most: the selected block scrolls into view whole so enter never
-	// commits an account the user cannot see, the footer (warnings, refresh
-	// state) renders whenever a body row can stand beside it, and on a
-	// terminal too short for both, the selection outranks the footer.
-	_, h := ui.fp.geometry()
-	switch view := h - len(footer); {
-	case len(body)+len(footer) <= h:
-		ui.top = 0
-	case view >= 1:
-		ui.top = fitTop(ui.top, selStart, selEnd, len(body), view)
-		body = body[ui.top : ui.top+view]
-	default:
+	// blindly from the tail. One geometry reading builds and prints the
+	// frame: a resize landing mid-draw hits the next tick, never a frame
+	// windowed to one screen and printed to another.
+	w, h := ui.fp.geometry()
+	var keepFooter bool
+	var view int
+	ui.top, view, keepFooter = boardWindow(ui.top, selStart, selEnd, len(body), len(footer), h)
+	body = body[ui.top : ui.top+view]
+	if !keepFooter {
 		footer = nil
-		view = h
-		if view > len(body) {
-			view = len(body)
-		}
-		ui.top = fitTop(ui.top, selStart, selEnd, len(body), view)
-		body = body[ui.top : ui.top+view]
 	}
-	ui.fp.print(append(body, footer...))
+	ui.fp.print(append(body, footer...), w, h)
+}
+
+// boardWindow decides what a chooser needs most on a screen of h rows: the
+// selected block scrolls into view whole so enter never commits an account
+// the user cannot see, the footer (warnings, refresh state) renders whenever
+// a body row can stand beside it, and on a terminal too short for both, the
+// selection outranks the footer. Pure so the arithmetic is table-testable.
+func boardWindow(top, selStart, selEnd, bodyLen, footerLen, h int) (newTop, view int, keepFooter bool) {
+	switch view := h - footerLen; {
+	case bodyLen+footerLen <= h:
+		return 0, bodyLen, true
+	case view >= 1:
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, true
+	default:
+		view = h
+		if view > bodyLen {
+			view = bodyLen
+		}
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, false
+	}
 }
 
 // fitTop scrolls the board's viewport to keep the selected block whole in
 // view; when the block itself outgrows the viewport, its first line wins.
-// Pure so the arithmetic is table-testable.
 func fitTop(top, selStart, selEnd, total, view int) int {
 	if selEnd > top+view {
 		top = selEnd - view
