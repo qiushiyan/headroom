@@ -38,6 +38,15 @@ Everything derives from that tree:
   config state stays the config dir's). headroom never sets it and
   `launch.Target.Env` strips any inherited value, with the usual
   said-out-loud reporting on launch stderr and in `check`.
+- **Lock debris is not an account.** Claude Code's config locking creates
+  `<path>.lock` *directories* beside what it locks, and a crash strands
+  them in the accounts root (observed 2026-08-10: `<email>.lock` beside the
+  real dir). An adopted artifact is worse than clutter — the health probe's
+  `claude auth status` initializes a skeleton `.claude.json` inside any dir
+  it is pointed at, dressing the debris up as a hollow login. An email
+  never ends in `.lock`, so discovery skips any such directory (an `.order`
+  line included), and `check` names stranded ones instead of letting them
+  vanish silently; deleting one is safe once no claude process runs.
 - **Labels, and a free usage cache.** Each dir's `.claude.json` records the
   email actually logged in (`.oauthAccount.emailAddress`); the board warns
   when that contradicts the dir's name — `/login` picked the wrong account in

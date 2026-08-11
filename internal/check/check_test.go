@@ -123,6 +123,39 @@ func TestCheckRouting(t *testing.T) {
 	}
 }
 
+// A stranded `<dir>.lock` in the accounts root is skipped by discovery; the
+// checker is where it gets named — an ok-with-detail line, never a failure.
+func TestCheckRoutingNamesLockDebris(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.Config{
+		Home:         home,
+		AccountsRoot: filepath.Join(home, ".claude-accounts"),
+		PrimaryName:  "qiushi",
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "a@x.com.lock"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	accts := accounts.Discover(cfg)
+	if len(accts) != 1 {
+		t.Fatalf("debris must not be discovered: %v", accts)
+	}
+	var noted bool
+	chk := func(ok bool, label, hint string) {
+		if ok && strings.Contains(label, "a@x.com.lock") {
+			noted = true
+		}
+	}
+	own := func(ok bool, label, hint string) {
+		if !ok {
+			t.Errorf("debris must not fail check: %s", label)
+		}
+	}
+	checkRouting(cfg, accts, []string{"HOME=" + home}, chk, own)
+	if !noted {
+		t.Error("stranded lock dir was not named by check")
+	}
+}
+
 // A non-empty relative inherited value is the stale-wrapper incident's
 // signature — unmanaged claude in that shell runs as the primary while
 // writing state beside the cwd — and fails as own-state, never as drift.

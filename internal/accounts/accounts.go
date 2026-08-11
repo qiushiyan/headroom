@@ -67,6 +67,9 @@ func Discover(cfg config.Config) []Account {
 			if line == "" {
 				continue
 			}
+			if LockArtifact(line) {
+				continue
+			}
 			d := filepath.Join(cfg.AccountsRoot, line)
 			if isDir(d) && !seen[d] {
 				dirs = append(dirs, d)
@@ -77,7 +80,7 @@ func Discover(cfg config.Config) []Account {
 
 	entries, _ := os.ReadDir(cfg.AccountsRoot)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") || LockArtifact(e.Name()) {
 			continue
 		}
 		d := filepath.Join(cfg.AccountsRoot, e.Name())
@@ -101,6 +104,17 @@ func Discover(cfg config.Config) []Account {
 	}
 	return accts
 }
+
+// LockArtifact reports whether a name in the accounts root is vendor lock
+// debris, never an account. Claude Code's config locking creates `<path>.lock`
+// *directories* beside what it locks, and a crash strands them at the root —
+// where discovery would otherwise adopt one as an account, whereupon the
+// health probe's `claude auth status` initializes a skeleton `.claude.json`
+// inside and the artifact starts rendering as a hollow login (observed
+// 2026-08-10, `<email>.lock` beside the real dir). An email never ends in
+// `.lock`; a dir named that way is debris, skipped here and named by `check`
+// so it disappears from the board without disappearing from sight.
+func LockArtifact(name string) bool { return strings.HasSuffix(name, ".lock") }
 
 // isDir follows symlinks, like the shell glob the launchers use.
 func isDir(path string) bool {

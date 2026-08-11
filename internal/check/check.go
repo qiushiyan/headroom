@@ -611,6 +611,21 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 			"primary launches refuse; the board describes a tree bare `claude` would not use")
 	}
 
+	// Vendor lock debris in the accounts root: Claude Code's config locking
+	// creates `<dir>.lock` directories, and a crash strands them where
+	// discovery would otherwise adopt one as an account (observed 2026-08-10;
+	// the health probe had seeded a skeleton .claude.json inside). Discovery
+	// skips them; this line is where a stranded one is named instead of
+	// silently vanishing from every surface.
+	if entries, err := os.ReadDir(cfg.AccountsRoot); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && accounts.LockArtifact(e.Name()) {
+				chk(true, fmt.Sprintf("root: %s is vendor lock debris, not an account (skipped by discovery)", e.Name()),
+					"")
+			}
+		}
+	}
+
 	// The shared-sessions topology is headroom's own invariant — the session
 	// picker sees every conversation only while every extra's projects/ is a
 	// symlink to the canonical store — and launch refuses on its violation,

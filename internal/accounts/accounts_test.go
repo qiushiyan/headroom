@@ -58,6 +58,29 @@ func TestDiscoverOrderAndGlob(t *testing.T) {
 	}
 }
 
+// A crash strands Claude Code's `<dir>.lock` lock directories in the
+// accounts root; adopting one as an account rendered it as a hollow login
+// (and the health probe then seeded a skeleton .claude.json inside it).
+// Discovery skips them wherever they appear — the glob and an .order line.
+func TestDiscoverSkipsLockArtifacts(t *testing.T) {
+	cfg := testConfig(t)
+	for _, e := range []string{"a@x.com", "a@x.com.lock", "stray.lock"} {
+		mkAccount(t, cfg, e)
+	}
+	// Even named outright in .order, debris is not an account.
+	if err := os.WriteFile(cfg.OrderFile(), []byte("stray.lock\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	accts := Discover(cfg)
+	if len(accts) != 2 || !accts[0].IsPrimary() || accts[1].Name != "a@x.com" {
+		got := make([]string, len(accts))
+		for i, a := range accts {
+			got[i] = a.Name
+		}
+		t.Fatalf("want [qiushi a@x.com], got %v", got)
+	}
+}
+
 func TestDiscoverNoRoot(t *testing.T) {
 	cfg := testConfig(t)
 	accts := Discover(cfg)
