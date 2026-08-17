@@ -542,9 +542,9 @@ func TestResolveReadsLiveHead(t *testing.T) {
 		{"rebase from a detached head has none", "rebase-anon", HeadRebasing, "", "aaaaaaa"},
 		{"detached is a state, not a name", "detached", HeadDetached, "", "0123456"},
 		{"submodule gitdir resolves relative", "super/sub", HeadBranch, "submodule-branch", ""},
-		{"symref outside refs/heads", "symref", HeadUnknown, "", ""},
-		{"unparseable HEAD", "junk", HeadUnknown, "", ""},
-		{"gitdir that isn't there", "dangling", HeadUnknown, "", ""},
+		{"symref outside refs/heads is a checkout we cannot name", "symref", HeadUnreadable, "", ""},
+		{"unparseable HEAD is a checkout, degraded", "junk", HeadUnreadable, "", ""},
+		{"gitdir that isn't there holds no HEAD at all", "dangling", HeadNone, "", ""},
 	}
 	for _, c := range cases {
 		got := repoCache{}.resolve(filepath.Join(root, c.dir))
@@ -571,7 +571,71 @@ func TestResolveOutsideARepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := repoCache{}.resolve(filepath.Join(root, "plain"))
-	if got.Key != "" || got.Head.Kind != HeadUnknown {
+	if got.Key != "" || got.Head.Kind != HeadNone {
 		t.Errorf("non-repo resolved to %+v", got)
+	}
+}
+
+// A directory named .git that holds no HEAD is not a checkout. Worktree
+// tooling and editors leave these husks behind — the live store has one at
+// dev/itell/apps/platform holding nothing but info/exclude — and stopping the
+// walk there hides the real repository above it: the session gets keyed on a
+// path git does not consider a checkout, and no branch can be read for it.
+func TestResolveWalksPastAGitHusk(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, body string) {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("repo/.git/HEAD", "ref: refs/heads/feat/summary-attempt-policy\n")
+	write("repo/apps/platform/.git/info/exclude", "")
+
+	got := repoCache{}.resolve(filepath.Join(root, "repo/apps/platform"))
+	if got.Key != canon(filepath.Join(root, "repo")) {
+		t.Errorf("Key = %q, want the real checkout above the husk", got.Key)
+	}
+	if got.Head.Kind != HeadBranch || got.Head.Branch != "feat/summary-attempt-policy" {
+		t.Errorf("Head = %+v, want the real checkout's branch", got.Head)
+	}
+
+	// With no real repo above it, the husk is still the best evidence there
+	// is — the walk must fall back to it, not report "no repo at all".
+	write("orphan/.git/info/exclude", "")
+	if got := (repoCache{}).resolve(filepath.Join(root, "orphan")); got.Root == "" {
+		t.Errorf("a husk with nothing above it resolved to %+v, want it kept as evidence", got)
+	}
+}
+
+// The two reasons there is no branch to read are not the same fact, and a
+// caller that cannot tell them apart cannot render either honestly: no HEAD
+// here means this is not a checkout, an unreadable HEAD means it is one and
+// something is wrong with it.
+func TestHeadDistinguishesAbsentFromUnreadable(t *testing.T) {
+	root := t.TempDir()
+	mk := func(path, body string) string {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if body != "" {
+			if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return filepath.Dir(full)
+	}
+	absent := mk("no-head/info/exclude", "x")
+	unreadable := mk("junk/HEAD", "not a sha and not a ref\n")
+
+	if got := readHead(absent); got.Kind != HeadNone {
+		t.Errorf("no HEAD file: Kind = %v, want HeadNone", got.Kind)
+	}
+	if got := readHead(unreadable); got.Kind != HeadUnreadable {
+		t.Errorf("unparseable HEAD: Kind = %v, want HeadUnreadable", got.Kind)
 	}
 }

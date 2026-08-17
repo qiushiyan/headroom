@@ -55,10 +55,11 @@ func TestSessionLinesNarrowKeepsAge(t *testing.T) {
 	}
 }
 
-// Every session here has an unreadable HEAD (the zero Head), so these are
-// the fallback shapes: a dir that is gone, a checkout whose HEAD no longer
-// parses. With nothing live to read the transcript's observation is all
-// there is, and it must still produce the row it always did.
+// Every session here has no live checkout and no surviving directory (the
+// zero Head, DirOK false), which is the one shape whose label may still lead
+// with the transcript's observation: the row already carries ✗ dir gone, so
+// there is no destination for it to be wrong about. It must produce the row
+// it always did.
 func TestPrimaryLabel(t *testing.T) {
 	branch := func(b string) sessions.Tail { return sessions.Tail{Branch: b} }
 	cases := []struct {
@@ -204,5 +205,87 @@ func TestMatchesFindsEitherBranch(t *testing.T) {
 		if !matches(s, q) {
 			t.Errorf("query %q missed the session", q)
 		}
+	}
+}
+
+// The failure mode the whole surface exists to prevent, in its last hiding
+// place: when nothing live can be read but the directory is still there, the
+// label is still a claim about where enter lands. Falling back to the branch
+// the transcript remembers would restore the original bug wholesale — the row
+// would name a branch the checkout may have left, with nothing marking it.
+func TestCheckoutLabelNeverPassesHistoryOffAsCurrent(t *testing.T) {
+	base := func(dirOK bool, kind sessions.HeadKind) sessions.Session {
+		return sessions.Session{
+			Local: true, DirOK: dirOK, RepoKey: "/dev/planlab", RepoRoot: "/dev/planlab",
+			Head: sessions.Head{Kind: kind},
+			Tail: sessions.Tail{Branch: "skill/baton-pointer-and-onboarding-order"},
+		}
+	}
+	for _, kind := range []sessions.HeadKind{sessions.HeadUnreadable, sessions.HeadNone} {
+		s := base(true, kind)
+		got := checkoutLabel(&s)
+		if got == "skill/baton-pointer-and-onboarding-order" {
+			t.Errorf("kind %v: label %q is the remembered branch, unqualified", kind, got)
+		}
+		if !strings.Contains(got, "skill/baton-pointer-and-onboarding-order") {
+			t.Errorf("kind %v: label %q dropped the one piece of evidence there was", kind, got)
+		}
+	}
+	// A row whose directory is gone cannot mislead about a destination — it
+	// already carries ✗ dir gone — so its history stands unqualified.
+	gone := base(false, sessions.HeadNone)
+	gone.RepoKey, gone.RepoRoot = "", ""
+	if got := checkoutLabel(&gone); got != "skill/baton-pointer-and-onboarding-order" {
+		t.Errorf("dir-gone label = %q, want the bare observation", got)
+	}
+}
+
+// The wire contract, asserted rather than inferred: which of the two branch
+// facts each field carries. Reverting either mapping used to leave the whole
+// suite green, which made the field a consumer depends on free to drift.
+func TestSessionsDocCarriesBothBranchFacts(t *testing.T) {
+	moved := &sessions.Session{
+		ID: "s-moved", CWD: "/dev/planlab/main", DirOK: true,
+		RepoKey: "/dev/planlab/main", RepoRoot: "/dev/planlab/main",
+		Head: sessions.Head{Kind: sessions.HeadBranch, Branch: "develop"},
+		Tail: sessions.Tail{Branch: "skill/baton-pointer-and-onboarding-order"},
+	}
+	detached := &sessions.Session{
+		ID: "s-detached", CWD: "/dev/headroom", DirOK: true,
+		Head: sessions.Head{Kind: sessions.HeadDetached, Commit: "fdc9b62"},
+		Tail: sessions.Tail{Branch: "HEAD"},
+	}
+	husk := &sessions.Session{
+		ID: "s-husk", CWD: "/dev/itell", DirOK: true,
+		Head: sessions.Head{Kind: sessions.HeadUnreadable},
+		Tail: sessions.Tail{Branch: "main"},
+	}
+	doc := sessionsDoc(sessions.Listing{Sessions: []*sessions.Session{moved, detached, husk}},
+		"a@x.com", time.Now())
+
+	if doc.Schema != 3 {
+		t.Errorf("schema = %d, want 3 — the branch fields changed meaning", doc.Schema)
+	}
+	by := map[string]jsonSession{}
+	for _, s := range doc.Sessions {
+		by[s.ID] = s
+	}
+
+	// "branch" is the checkout's now; the observation lives under its own name.
+	if got := by["s-moved"]; got.Branch != "develop" ||
+		got.BranchAtLastActivity != "skill/baton-pointer-and-onboarding-order" ||
+		got.HeadState != "branch" {
+		t.Errorf("moved checkout: %+v", got)
+	}
+	// Detached publishes the state and the commit, and never a branch — the
+	// vendor's literal "HEAD" is not one, on this surface either.
+	if got := by["s-detached"]; got.Branch != "" || got.BranchAtLastActivity != "" ||
+		got.HeadState != "detached" || got.HeadCommit != "fdc9b62" {
+		t.Errorf("detached checkout: %+v", got)
+	}
+	// "unreadable" is what stops a consumer reading the observation as current.
+	if got := by["s-husk"]; got.Branch != "" || got.HeadState != "unreadable" ||
+		got.BranchAtLastActivity != "main" {
+		t.Errorf("unreadable HEAD: %+v", got)
 	}
 }

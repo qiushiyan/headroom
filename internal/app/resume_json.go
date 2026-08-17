@@ -39,7 +39,7 @@ type jsonSession struct {
 	// Selecting on the wrong one of these is the machine version of the bug
 	// this pair exists to prevent — they diverge the moment anyone checks out.
 	Branch               string `json:"branch,omitempty"`
-	HeadState            string `json:"head_state"`            // branch|detached|rebasing|unknown
+	HeadState            string `json:"head_state"`            // branch|detached|rebasing|unreadable|none
 	HeadCommit           string `json:"head_commit,omitempty"` // abbreviated sha, when detached
 	BranchAtLastActivity string `json:"branch_at_last_activity,omitempty"`
 	Model                string `json:"model,omitempty"` // newest assistant model id, verbatim
@@ -55,9 +55,22 @@ type jsonSession struct {
 
 func runSessionsJSON(cfg config.Config) int {
 	listing, _, _, current := collectSessions(cfg, state.Open(cfg.AccountsRoot))
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(sessionsDoc(listing, current, time.Now())); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom sessions --json: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// sessionsDoc is the whole wire contract as a pure function of the listing —
+// no config, no store, no stdout — so the mapping every consumer depends on
+// can be asserted directly rather than inferred from a run.
+func sessionsDoc(listing sessions.Listing, current string, now time.Time) resumeDoc {
 	doc := resumeDoc{
 		Schema:      3, // 3: "branch" is now the live HEAD; observation moved to "branch_at_last_activity"
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Current:     current,
 		LocalKey:    listing.LocalKey,
 	}
@@ -74,7 +87,7 @@ func runSessionsJSON(cfg config.Config) int {
 			HeadState:   headState(s.Head.Kind),
 			HeadCommit:  s.Head.Commit,
 
-			BranchAtLastActivity: s.Tail.Branch,
+			BranchAtLastActivity: s.Tail.ObservedBranch(),
 
 			Model:       s.Tail.Model,
 			Local:       s.Local,
@@ -87,13 +100,7 @@ func runSessionsJSON(cfg config.Config) int {
 			Path:        s.Path,
 		})
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(doc); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom sessions --json: %v\n", err)
-		return 1
-	}
-	return 0
+	return doc
 }
 
 func titleSource(s *sessions.Session) string {
@@ -139,11 +146,14 @@ func liveString(l sessions.LiveState) string {
 	}
 }
 
-// headState is the wire spelling of a checkout's live HEAD. "unknown" covers
-// every reason there was nothing to read — no repo, a deleted worktree, a
-// HEAD that no longer parses — so a consumer can tell "not on a branch" from
-// "we could not look", the same distinction the tag vocabulary draws for
-// vendor fields.
+// headState is the wire spelling of a checkout's live HEAD, and it keeps the
+// three answers apart that a consumer has to act on differently: on a branch,
+// not on one, and no answer available. "none" means there is no checkout at
+// this path to have a branch; "unreadable" means there is one and its HEAD no
+// longer says — the same absent-versus-broken distinction the tag vocabulary
+// draws for vendor fields, and the one that decides whether
+// branch_at_last_activity may be shown as though it were current. It may not:
+// it is history under either.
 func headState(k sessions.HeadKind) string {
 	switch k {
 	case sessions.HeadBranch:
@@ -152,7 +162,9 @@ func headState(k sessions.HeadKind) string {
 		return "detached"
 	case sessions.HeadRebasing:
 		return "rebasing"
+	case sessions.HeadUnreadable:
+		return "unreadable"
 	default:
-		return "unknown"
+		return "none"
 	}
 }

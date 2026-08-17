@@ -68,6 +68,18 @@ func (t Tail) Title() string {
 	}
 }
 
+// ObservedBranch is the branch this session was last seen on, or "" when the
+// transcript names none. The vendor spells a detached HEAD as the literal
+// "HEAD", which is a state and not a branch, so it is not one this can report
+// — every surface asks here rather than reading Branch, so the picker and
+// --json cannot disagree about what counts as a branch.
+func (t Tail) ObservedBranch() string {
+	if t.Branch == "HEAD" {
+		return ""
+	}
+	return t.Branch
+}
+
 // tailRec is the union of every record field the tail pass reads. One decode
 // shape for all record types: absent fields stay zero and the type switch
 // below decides what matters.

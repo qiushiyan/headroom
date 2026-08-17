@@ -391,7 +391,7 @@ func (ui *resumeUI) refilter(query string) {
 
 func matches(s *sessions.Session, q string) bool {
 	hay := strings.ToLower(strings.Join([]string{
-		s.Tail.Title(), s.Head.Branch, s.Tail.Branch, projectLabel(s), s.Owner, s.ID, s.Tail.Model,
+		s.Tail.Title(), s.Head.Branch, s.Tail.ObservedBranch(), projectLabel(s), s.Owner, s.ID, s.Tail.Model,
 	}, " "))
 	return strings.Contains(hay, q)
 }
@@ -689,24 +689,28 @@ func (ui *resumeUI) localSectionLabel() string {
 // disagrees, because that disagreement is the only thing distinguishing ten
 // idle sessions whose checkout has since moved back to one shared branch.
 func checkoutLabel(s *sessions.Session) string {
-	now := headLabel(s)
-	if now == "" {
-		// Nothing live to read: a deleted worktree, an unreadable HEAD, a dir
-		// that was never a repo. The transcript's observation is then the only
-		// evidence there is — and where the dir is gone the row already says so.
-		return observedBranch(s)
-	}
-	// The parenthetical claims the checkout has *moved*, so it needs a live
-	// branch to have moved to. A detached or unreadable HEAD, or a worktree
-	// named only by its path, is not evidence of change — annotating those
-	// would invent a story out of the absence of one.
-	if s.Head.Kind != sessions.HeadBranch {
+	was := s.Tail.ObservedBranch()
+	if now := headLabel(s); now != "" {
+		// The parenthetical claims the checkout has *moved*, so it needs a
+		// live branch to have moved to. A detached HEAD, or a worktree named
+		// only by its path, is not evidence of change — annotating those
+		// would invent a story out of the absence of one.
+		if s.Head.Kind == sessions.HeadBranch && was != "" && was != now {
+			return now + " (was " + was + ")"
+		}
 		return now
 	}
-	if was := observedBranch(s); was != "" && was != now {
-		return now + " (was " + was + ")"
+	if was == "" || !s.DirOK {
+		// A row whose directory is gone leads with history because history is
+		// all it has, and it already says so: ✗ dir gone. There is no
+		// destination left for the label to be wrong about.
+		return was
 	}
-	return now
+	// The directory is still there, so the label reads as a destination — and
+	// nothing here could say what it is checked out on. Leading with the
+	// remembered branch is exactly the bug this surface exists to not have, so
+	// the unknown leads and the observation stays behind it as history.
+	return "? (was " + was + ")"
 }
 
 // headLabel spells the live HEAD. A branch names a checkout as precisely as
@@ -739,17 +743,6 @@ func worktreeName(s *sessions.Session) string {
 		return filepath.Base(s.RepoRoot)
 	}
 	return ""
-}
-
-// observedBranch is the transcript's newest gitBranch: an honest statement
-// about the session's last activity and nothing more. The vendor spells a
-// detached HEAD as the literal "HEAD", which names no checkout, so it is
-// dropped rather than rendered as though it were a branch.
-func observedBranch(s *sessions.Session) string {
-	if s.Tail.Branch == "HEAD" {
-		return ""
-	}
-	return s.Tail.Branch
 }
 
 func ownerTag(s *sessions.Session, current string) string {
