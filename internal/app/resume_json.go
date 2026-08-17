@@ -33,22 +33,30 @@ type jsonSession struct {
 	DirOK       bool   `json:"dir_ok"`
 	Repo        string `json:"repo,omitempty"`
 	Checkout    string `json:"checkout,omitempty"` // worktree/checkout root
-	Branch      string `json:"branch,omitempty"`
-	Model       string `json:"model,omitempty"` // newest assistant model id, verbatim
-	Local       bool   `json:"local"`
-	ModifiedAt  string `json:"modified_at"` // RFC3339 UTC
-	SizeBytes   int64  `json:"size_bytes"`
-	Owner       string `json:"owner,omitempty"`
-	OwnerSource string `json:"owner_source"`        // live|rehome|history|missing|conflict|none
-	Live        string `json:"live"`                // yes|no|unknown
-	BadLines    int    `json:"bad_lines,omitempty"` // tail lines that failed the contract — drift, surfaced
-	Path        string `json:"path"`
+	// Branch is what Checkout is on *now*, read at collect time; HeadState
+	// says whether there was a branch to read. BranchAtLastActivity is the
+	// transcript's own observation, true only of when the session last ran.
+	// Selecting on the wrong one of these is the machine version of the bug
+	// this pair exists to prevent — they diverge the moment anyone checks out.
+	Branch               string `json:"branch,omitempty"`
+	HeadState            string `json:"head_state"`            // branch|detached|rebasing|unknown
+	HeadCommit           string `json:"head_commit,omitempty"` // abbreviated sha, when detached
+	BranchAtLastActivity string `json:"branch_at_last_activity,omitempty"`
+	Model                string `json:"model,omitempty"` // newest assistant model id, verbatim
+	Local                bool   `json:"local"`
+	ModifiedAt           string `json:"modified_at"` // RFC3339 UTC
+	SizeBytes            int64  `json:"size_bytes"`
+	Owner                string `json:"owner,omitempty"`
+	OwnerSource          string `json:"owner_source"`        // live|rehome|history|missing|conflict|none
+	Live                 string `json:"live"`                // yes|no|unknown
+	BadLines             int    `json:"bad_lines,omitempty"` // tail lines that failed the contract — drift, surfaced
+	Path                 string `json:"path"`
 }
 
 func runSessionsJSON(cfg config.Config) int {
 	listing, _, _, current := collectSessions(cfg, state.Open(cfg.AccountsRoot))
 	doc := resumeDoc{
-		Schema:      2, // 2: added per-session "model"
+		Schema:      3, // 3: "branch" is now the live HEAD; observation moved to "branch_at_last_activity"
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Current:     current,
 		LocalKey:    listing.LocalKey,
@@ -62,7 +70,12 @@ func runSessionsJSON(cfg config.Config) int {
 			DirOK:       s.DirOK,
 			Repo:        s.RepoKey,
 			Checkout:    s.RepoRoot,
-			Branch:      s.Tail.Branch,
+			Branch:      s.Head.Branch,
+			HeadState:   headState(s.Head.Kind),
+			HeadCommit:  s.Head.Commit,
+
+			BranchAtLastActivity: s.Tail.Branch,
+
 			Model:       s.Tail.Model,
 			Local:       s.Local,
 			ModifiedAt:  s.MTime.UTC().Format(time.RFC3339),
@@ -123,5 +136,23 @@ func liveString(l sessions.LiveState) string {
 		return "unknown"
 	default:
 		return "no"
+	}
+}
+
+// headState is the wire spelling of a checkout's live HEAD. "unknown" covers
+// every reason there was nothing to read — no repo, a deleted worktree, a
+// HEAD that no longer parses — so a consumer can tell "not on a branch" from
+// "we could not look", the same distinction the tag vocabulary draws for
+// vendor fields.
+func headState(k sessions.HeadKind) string {
+	switch k {
+	case sessions.HeadBranch:
+		return "branch"
+	case sessions.HeadDetached:
+		return "detached"
+	case sessions.HeadRebasing:
+		return "rebasing"
+	default:
+		return "unknown"
 	}
 }

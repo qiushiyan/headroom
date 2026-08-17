@@ -40,6 +40,7 @@ type Session struct {
 	DirOK    bool   // CWD is non-empty and exists right now
 	RepoKey  string // canonical main-checkout path; "" = none
 	RepoRoot string // the checkout/worktree root containing CWD
+	Head     Head   // what RepoRoot is checked out on right now, read this collect
 	Local    bool   // same repo (or same dir) as the picker's cwd
 
 	Owner      string // account name; "" when OwnerState says there is nothing to name
@@ -128,7 +129,7 @@ func Collect(in Input) Listing {
 	out := Listing{LocalKey: localKey}
 	for _, s := range byID {
 		info := repos.lookup(s.CWD)
-		s.RepoKey, s.RepoRoot = info.Key, info.Root
+		s.RepoKey, s.RepoRoot, s.Head = info.Key, info.Root, info.Head
 		if s.CWD != "" {
 			if fi, err := os.Stat(s.CWD); err == nil && fi.IsDir() {
 				s.DirOK = true

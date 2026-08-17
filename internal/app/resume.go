@@ -391,7 +391,7 @@ func (ui *resumeUI) refilter(query string) {
 
 func matches(s *sessions.Session, q string) bool {
 	hay := strings.ToLower(strings.Join([]string{
-		s.Tail.Title(), s.Tail.Branch, projectLabel(s), s.Owner, s.ID, s.Tail.Model,
+		s.Tail.Title(), s.Head.Branch, s.Tail.Branch, projectLabel(s), s.Owner, s.ID, s.Tail.Model,
 	}, " "))
 	return strings.Contains(hay, q)
 }
@@ -680,11 +680,74 @@ func (ui *resumeUI) localSectionLabel() string {
 	return "this repo"
 }
 
-// localLabel distinguishes the checkouts of one repo: the branch in the main
-// checkout, the worktree dir name elsewhere.
-func localLabel(s *sessions.Session) string {
+// checkoutLabel names a session's checkout the way a row has to read it:
+// where enter lands you, as of this listing. Two different claims feed it —
+// the live HEAD, read from the filesystem at collect time, and the branch the
+// transcript observed at the session's last activity — and they age
+// differently. The live one leads, because the first token of a row must
+// never be a fossil; the observed one follows in parentheses when it
+// disagrees, because that disagreement is the only thing distinguishing ten
+// idle sessions whose checkout has since moved back to one shared branch.
+func checkoutLabel(s *sessions.Session) string {
+	now := headLabel(s)
+	if now == "" {
+		// Nothing live to read: a deleted worktree, an unreadable HEAD, a dir
+		// that was never a repo. The transcript's observation is then the only
+		// evidence there is — and where the dir is gone the row already says so.
+		return observedBranch(s)
+	}
+	// The parenthetical claims the checkout has *moved*, so it needs a live
+	// branch to have moved to. A detached or unreadable HEAD, or a worktree
+	// named only by its path, is not evidence of change — annotating those
+	// would invent a story out of the absence of one.
+	if s.Head.Kind != sessions.HeadBranch {
+		return now
+	}
+	if was := observedBranch(s); was != "" && was != now {
+		return now + " (was " + was + ")"
+	}
+	return now
+}
+
+// headLabel spells the live HEAD. A branch names a checkout as precisely as
+// its path does — git forbids two worktrees of one repo on the same branch —
+// so it leads, and the worktree dir name is what a HEAD pointing at no branch
+// falls back to. Detached is reported as the state it is, never as a name.
+func headLabel(s *sessions.Session) string {
+	if b := s.Head.Branch; b != "" {
+		if s.Head.Kind == sessions.HeadRebasing {
+			return b + " (rebasing)"
+		}
+		return b
+	}
+	if w := worktreeName(s); w != "" {
+		return w
+	}
+	switch s.Head.Kind {
+	case sessions.HeadRebasing:
+		return "rebasing"
+	case sessions.HeadDetached:
+		return "detached@" + s.Head.Commit
+	}
+	return ""
+}
+
+// worktreeName is a linked worktree's dir name — the one piece of checkout
+// identity that comes from the path and so cannot go stale.
+func worktreeName(s *sessions.Session) string {
 	if s.RepoRoot != "" && s.RepoRoot != s.RepoKey {
 		return filepath.Base(s.RepoRoot)
+	}
+	return ""
+}
+
+// observedBranch is the transcript's newest gitBranch: an honest statement
+// about the session's last activity and nothing more. The vendor spells a
+// detached HEAD as the literal "HEAD", which names no checkout, so it is
+// dropped rather than rendered as though it were a branch.
+func observedBranch(s *sessions.Session) string {
+	if s.Tail.Branch == "HEAD" {
+		return ""
 	}
 	return s.Tail.Branch
 }
@@ -917,20 +980,20 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	return []string{line1, line2}
 }
 
-// primaryLabel is a session's first-line identity — where it ran: the
-// checkout (branch in the main checkout, worktree dir name elsewhere), with
-// the project appended as the disambiguator in the global section. Both
-// sections resolve the checkout the same way — a worktree session must not
-// change identity by scrolling past the section break.
+// primaryLabel is a session's first-line identity — the checkout it resumes
+// into, resolved by checkoutLabel, with the project appended as the
+// disambiguator in the global section. Both sections resolve the checkout the
+// same way — a worktree session must not change identity by scrolling past
+// the section break.
 func primaryLabel(s *sessions.Session) string {
 	if s.Local {
-		if l := localLabel(s); l != "" {
+		if l := checkoutLabel(s); l != "" {
 			return l
 		}
 		return projectLabel(s)
 	}
 	proj := projectLabel(s)
-	if l := localLabel(s); l != "" && l != proj {
+	if l := checkoutLabel(s); l != "" && l != proj {
 		return l + " · " + proj
 	}
 	return proj

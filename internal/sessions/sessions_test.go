@@ -474,3 +474,104 @@ func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 		t.Errorf("partial enumeration must not GC: %v", m)
 	}
 }
+
+// The live half of a row's branch label. Every case here is a shape seen in
+// the real store: a main checkout, a linked worktree, a submodule spelling
+// its gitdir relative, a rebase in flight, and the several ways HEAD gives
+// no branch at all — which must degrade to HeadUnknown so the label layer
+// can fall back rather than invent.
+func TestResolveReadsLiveHead(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, body string) {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir := func(path string) {
+		if err := os.MkdirAll(filepath.Join(root, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A main checkout, with a nested subdir the walk has to climb out of.
+	write("main/.git/HEAD", "ref: refs/heads/develop\n")
+	mkdir("main/internal/app")
+
+	// A linked worktree: .git is a file, HEAD lives in the main repo.
+	write("wt/.git", "gitdir: "+filepath.Join(root, "main/.git/worktrees/wt")+"\n")
+	write("main/.git/worktrees/wt/HEAD", "ref: refs/heads/feat/live-branch\n")
+
+	// A worktree mid-rebase: HEAD is detached, the state dir names the branch.
+	write("rebasing/.git", "gitdir: "+filepath.Join(root, "main/.git/worktrees/rebasing")+"\n")
+	write("main/.git/worktrees/rebasing/HEAD", "fdc9b6240d1e4c8a9b3f5e7d2c1a0b8f6e4d3c2b\n")
+	write("main/.git/worktrees/rebasing/rebase-merge/head-name", "refs/heads/topic\n")
+
+	// A rebase replaying a detached HEAD: in flight, but no branch to name.
+	write("rebase-anon/.git/HEAD", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+	write("rebase-anon/.git/rebase-apply/head-name", "detached HEAD\n")
+
+	// A plain detached checkout.
+	write("detached/.git/HEAD", "0123456789abcdef0123456789abcdef01234567\n")
+
+	// A submodule: gitdir relative, and no /.git/worktrees/ in the path, so
+	// it is its own key — but its HEAD is still readable.
+	write("super/sub/.git", "gitdir: ../.git/modules/sub\n")
+	write("super/.git/modules/sub/HEAD", "ref: refs/heads/submodule-branch\n")
+
+	// HEAD shapes that name nothing: a symref outside refs/heads, junk, and
+	// a .git file pointing at a gitdir that does not exist.
+	write("symref/.git/HEAD", "ref: refs/remotes/origin/main\n")
+	write("junk/.git/HEAD", "not a sha and not a ref\n")
+	write("dangling/.git", "gitdir: "+filepath.Join(root, "nowhere")+"\n")
+
+	cases := []struct {
+		name   string
+		dir    string
+		kind   HeadKind
+		branch string
+		commit string
+	}{
+		{"main checkout", "main", HeadBranch, "develop", ""},
+		{"subdir climbs to the checkout", "main/internal/app", HeadBranch, "develop", ""},
+		{"worktree reads the linked gitdir", "wt", HeadBranch, "feat/live-branch", ""},
+		{"rebase in flight names the branch", "rebasing", HeadRebasing, "topic", "fdc9b62"},
+		{"rebase from a detached head has none", "rebase-anon", HeadRebasing, "", "aaaaaaa"},
+		{"detached is a state, not a name", "detached", HeadDetached, "", "0123456"},
+		{"submodule gitdir resolves relative", "super/sub", HeadBranch, "submodule-branch", ""},
+		{"symref outside refs/heads", "symref", HeadUnknown, "", ""},
+		{"unparseable HEAD", "junk", HeadUnknown, "", ""},
+		{"gitdir that isn't there", "dangling", HeadUnknown, "", ""},
+	}
+	for _, c := range cases {
+		got := repoCache{}.resolve(filepath.Join(root, c.dir))
+		if got.Head.Kind != c.kind || got.Head.Branch != c.branch || got.Head.Commit != c.commit {
+			t.Errorf("%s: Head = %+v, want {%v %q %q}", c.name, got.Head, c.kind, c.branch, c.commit)
+		}
+	}
+
+	// Identity must survive the addition: a worktree still keys on its main
+	// checkout, a submodule still keys on itself.
+	if got := (repoCache{}).resolve(filepath.Join(root, "wt")); got.Key != canon(filepath.Join(root, "main")) {
+		t.Errorf("worktree key = %q, want the main checkout", got.Key)
+	}
+	if got := (repoCache{}).resolve(filepath.Join(root, "super/sub")); got.Key != canon(filepath.Join(root, "super/sub")) {
+		t.Errorf("submodule key = %q, want itself", got.Key)
+	}
+}
+
+// A dir with no repo above it has no HEAD to read and must not acquire one
+// from an ancestor that happens to be a checkout of something else.
+func TestResolveOutsideARepo(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "plain"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := repoCache{}.resolve(filepath.Join(root, "plain"))
+	if got.Key != "" || got.Head.Kind != HeadUnknown {
+		t.Errorf("non-repo resolved to %+v", got)
+	}
+}
