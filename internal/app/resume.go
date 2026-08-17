@@ -690,6 +690,16 @@ func (ui *resumeUI) localSectionLabel() string {
 // idle sessions whose checkout has since moved back to one shared branch.
 func checkoutLabel(s *sessions.Session) string {
 	was := s.Tail.ObservedBranch()
+	if s.Head.Kind == sessions.HeadUnreadable {
+		// The checkout is right there and would not say what it is on. Nothing
+		// may take the branch slot then — not the remembered branch, and not a
+		// worktree's dir name, which reads exactly like one. The unknown leads
+		// and the observation stays behind it as history.
+		if was != "" {
+			return "? (was " + was + ")"
+		}
+		return "?"
+	}
 	if now := headLabel(s); now != "" {
 		// The parenthetical claims the checkout has *moved*, so it needs a
 		// live branch to have moved to. A detached HEAD, or a worktree named
@@ -706,10 +716,9 @@ func checkoutLabel(s *sessions.Session) string {
 		// destination left for the label to be wrong about.
 		return was
 	}
-	// The directory is still there, so the label reads as a destination — and
-	// nothing here could say what it is checked out on. Leading with the
-	// remembered branch is exactly the bug this surface exists to not have, so
-	// the unknown leads and the observation stays behind it as history.
+	// A directory that is still there but sits in no repository at all: the
+	// remembered branch is a fossil of a checkout that no longer exists, and
+	// the row is still a destination, so it is marked the same way.
 	return "? (was " + was + ")"
 }
 

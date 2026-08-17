@@ -174,9 +174,7 @@ func TestCheckoutLabelPrefersLiveHead(t *testing.T) {
 	}
 }
 
-// A row must never lead with a branch the checkout has left — the whole
-// point — and the annotation must never be minted without a live branch to
-// justify it.
+// A row must never lead with a branch the checkout has left — the whole point.
 func TestCheckoutLabelNeverLeadsWithAStaleBranch(t *testing.T) {
 	stale := sessions.Session{
 		Local: true, RepoKey: "/dev/planlab", RepoRoot: "/dev/planlab",
@@ -185,11 +183,6 @@ func TestCheckoutLabelNeverLeadsWithAStaleBranch(t *testing.T) {
 	}
 	if got := checkoutLabel(&stale); !strings.HasPrefix(got, "develop") {
 		t.Errorf("label %q leads with something other than the live branch", got)
-	}
-	unreadable := stale
-	unreadable.Head = sessions.Head{}
-	if got := checkoutLabel(&unreadable); strings.Contains(got, "was") {
-		t.Errorf("label %q invented a move with no live branch to move to", got)
 	}
 }
 
@@ -230,6 +223,23 @@ func TestCheckoutLabelNeverPassesHistoryOffAsCurrent(t *testing.T) {
 		if !strings.Contains(got, "skill/baton-pointer-and-onboarding-order") {
 			t.Errorf("kind %v: label %q dropped the one piece of evidence there was", kind, got)
 		}
+	}
+
+	// A worktree dir name reads exactly like a branch, so it may not occupy
+	// the branch slot when the checkout would not say what it is on — that is
+	// the same claim-by-appearance the whole surface exists to stop.
+	wt := base(true, sessions.HeadUnreadable)
+	wt.RepoRoot = "/dev/.worktrees/main/feat/better-skill-subagents"
+	if got := checkoutLabel(&wt); !strings.HasPrefix(got, "?") {
+		t.Errorf("unreadable worktree label = %q, want the unknown to lead", got)
+	}
+
+	// Nothing remembered either: the row must still say it could not look,
+	// rather than quietly becoming an ordinary project row.
+	bare := base(true, sessions.HeadUnreadable)
+	bare.Tail.Branch = ""
+	if got := checkoutLabel(&bare); got != "?" {
+		t.Errorf("unreadable checkout with no history = %q, want %q", got, "?")
 	}
 	// A row whose directory is gone cannot mislead about a destination — it
 	// already carries ✗ dir gone — so its history stands unqualified.

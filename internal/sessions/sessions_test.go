@@ -477,9 +477,10 @@ func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 
 // The live half of a row's branch label. Every case here is a shape seen in
 // the real store: a main checkout, a linked worktree, a submodule spelling
-// its gitdir relative, a rebase in flight, and the several ways HEAD gives
-// no branch at all — which must degrade to HeadUnknown so the label layer
-// can fall back rather than invent.
+// its gitdir relative, a rebase in flight, and the several ways HEAD gives no
+// branch at all — which split by whether there is a checkout here to have one
+// (HeadNone) or one whose HEAD no longer says (HeadUnreadable), because the
+// label layer marks those differently.
 func TestResolveReadsLiveHead(t *testing.T) {
 	root := t.TempDir()
 	write := func(path, body string) {
