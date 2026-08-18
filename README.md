@@ -28,23 +28,19 @@ reads the `.credentials.json` Claude Code writes instead.
 
 ## Getting started
 
-Your existing `~/.claude` login is the **primary**. Every further subscription
+Your existing `~/.claude` login is the **primary**; each further subscription
 becomes one directory under `~/.claude-accounts/`, named by its email:
 
 ```sh
-headroom accounts add alice@example.com --share-config   # seed the dir; share settings/skills/hooks from ~/.claude
-headroom launch --account alice@example.com              # opens claude on that account — run /login there, once
-headroom                                                 # the board: every account's limits, live
+headroom accounts add alice@example.com --share-config   # seed the dir (config shared from ~/.claude)
+headroom launch --account alice@example.com              # claude opens on that account — /login there, once
+headroom                                                 # the board
 ```
 
-`--share-config` is optional (a whitelist of config entries; login state and
-history stay per account); `--share-config=<dir>` links every entry of a
-config package instead. Repeat `add` per subscription — that is the whole
-setup. To retire one: `headroom accounts remove <email>`.
-
-**Skills for your agent.** The repo ships two agent skills — `headroom`
-(reading the board, switching, resuming, diagnosing) and `headroom-setup`
-(the steps above, plus migration and shell launchers) — under `skills/`:
+Repeat `add` per subscription; that is the setup. The `skills/` directory
+ships two agent skills — `headroom` (reading the board, switching, resuming,
+diagnosing) and `headroom-setup` (the steps above, plus folding in older
+session dirs and shell launchers) — for any agent that runs the skills CLI:
 
 ```sh
 npx skills add qiushiyan/headroom
@@ -96,20 +92,14 @@ reverse-engineered vendor facts everything rests on, are spelled out in
 
 ## Shell integration
 
-Short names are the shell's business; routing stays headroom's. A minimal
-integration:
-
-```sh
-x()  { headroom launch -- "$@"; }                       # default account
-xa() { headroom launch --account "$1" -- "${@:2}"; }    # one session on <account>
-xs() { headroom sessions; }
-export HEADROOM_LAUNCHER_FORMAT="xa %s"                 # the board advertises this spelling
-```
-
-Wrappers pass flags and names only. `CLAUDE_CONFIG_DIR`, the current-account
-file and every validation stay in `headroom launch`, which is re-resolved
-from PATH at every keystroke, while a shell function is frozen at shell
-init — nothing that can misroute belongs in the function.
+Short names are the shell's business; routing stays headroom's. A wrapper
+passes names and flags and nothing else — `CLAUDE_CONFIG_DIR`, the
+current-account file and every validation stay in `headroom launch`, which
+is re-resolved from PATH at every keystroke while a shell function is frozen
+at shell init. `HEADROOM_LAUNCHER_FORMAT` tells the board how your shell
+spells a launch. A copy-paste starter lives in
+[`skills/headroom-setup/SKILL.md`](skills/headroom-setup/SKILL.md) § Shell
+launchers.
 
 ## Configuration
 

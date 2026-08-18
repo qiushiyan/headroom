@@ -1,80 +1,77 @@
 ---
 name: headroom-setup
-description: Set up the headroom CLI for several Claude Code subscriptions on one machine — install it, add each subscription as an account and log in once, share config between accounts, keep session history machine-global, add or retire an account later, and optionally wire short shell launchers. Use when the user is installing headroom, has a second Claude subscription to add, wants to remove one, or is migrating existing per-account session directories.
+description: Set up headroom for several Claude Code subscriptions — install, add each subscription and log in once, share config, keep sessions machine-global, retire an account, shell launchers. Use when the user is installing headroom, adding a second Claude subscription, removing one, or has older per-account session directories to fold in.
 ---
 
 The filesystem is the registry: `~/.claude` (Claude Code's default dir) is
-the **primary**; every directory under `~/.claude-accounts/`, named by its
-login email, is one **extra** account. Claude Code keys its credentials per
-config dir, so each dir is an independent login and all coexist. headroom
-makes the dirs; Claude Code does the logging in.
+the **primary**; each directory under `~/.claude-accounts/`, named by its
+login email, is one **extra**. Claude Code keys credentials per config dir,
+so the logins coexist. headroom makes the dirs and routes launches; Claude
+Code does the logging in.
 
 ## Install
 
 ```sh
-go install github.com/qiushiyan/headroom/cmd/headroom@latest   # or: git clone … && make install
+go install github.com/qiushiyan/headroom/cmd/headroom@latest   # or from a clone: make install
 headroom check
 ```
 
-Done when `headroom check` prints PASS or INCONCLUSIVE — FAIL means a
-Claude Code update changed something headroom relies on; stop and report
-the FAIL line.
+Done when `check` prints PASS or INCONCLUSIVE. FAIL means a Claude Code
+update changed something headroom relies on — report the FAIL line and stop.
 
 ## Add a subscription
 
-1. `headroom accounts add <email>` — the email the subscription will log
-   in as. Adds `--share-config` when the user wants their settings, skills,
-   commands, hooks and plugins from `~/.claude` in this account too (a
-   whitelist; login state and history stay per account), or
-   `--share-config=<dir>` to link every entry of a config package (a
-   dotfiles dir).
-2. Hand the user: `headroom launch --account <email>` then `/login` in
-   that session, choosing **that** email.
-3. `headroom` — the new row shows plan and bars. A red `(dir says …!)`
-   means the wrong account was chosen at `/login`; `/login` again there.
+1. `headroom accounts add <email>` — the email it will log in as. Add
+   `--share-config` when the user wants their `~/.claude` settings, skills,
+   commands, hooks and plugins in this account too (a whitelist; login state
+   and history stay per account); `--share-config=<dir>` links every entry
+   of a config package instead.
+2. Hand the user: `headroom launch --account <email>`, then `/login` in that
+   session choosing **that** email.
+3. `headroom`.
 
-Repeat per subscription. The primary needs nothing: its name on the board is
-its login's local part (`alice` for `alice@example.com`); to pin a
-different name, `export HEADROOM_PRIMARY_NAME=<name>` in the shell rc.
-Board order after the primary is `~/.claude-accounts/.order` (one email
-per line); unlisted accounts follow alphabetically.
+Done when the new row shows a plan and bars with no red `(dir says …!)` —
+that warning means the wrong account was chosen at `/login`; `/login` there
+again. Repeat per subscription. The primary needs nothing; its board name is
+its login's local part (`alice`), or `export HEADROOM_PRIMARY_NAME=<name>`.
+Board order after the primary: `~/.claude-accounts/.order`, one email per
+line.
 
 ## Sessions are machine-global
 
 `accounts add` links each account's `projects/` to `~/.claude/projects`, so
 `headroom sessions` from any account lists every conversation and resumes
-each on the account that last drove it. Nothing to do for accounts seeded
-this way.
+each on the account that last drove it. Accounts seeded this way are done.
 
-An account dir that already existed with a *real* `projects/` directory
-holds sessions only it can see; `headroom launch` refuses it on topology.
-To fold them in (no `claude` running): move each `<dir>/projects/<project>/`
-into `~/.claude/projects/<project>/` — same project names merge; on a
-filename collision keep the newer file, the older is a stale copy — then
-`rmdir <dir>/projects && ln -s ~/.claude/projects <dir>/projects`.
-`headroom check` confirms the topology.
+An account dir that predates headroom with a *real* `projects/` directory
+holds sessions only it can see, and `headroom launch` refuses it. Fold them
+in with no `claude` running: move each `<dir>/projects/<project>/` into
+`~/.claude/projects/<project>/` (same names merge; on a filename collision
+keep the newer file), then `rmdir <dir>/projects && ln -s ~/.claude/projects
+<dir>/projects`. Done when `headroom check` passes topology and
+`headroom launch --account <email>` starts.
 
 ## Retire a subscription
 
-`headroom accounts remove <email>` — refuses while that account has a live
-session or an unmigrated `projects/`, asks for the dir name back (`--yes`
-in scripts), deletes the account's own Keychain item and dir, scrubs
-`.order`. Transcripts survive; if the default pointed here, `headroom
-accounts` repicks. Also removes stranded `<name>.lock` debris.
+`headroom accounts remove <email>` — it refuses while that account has a
+live session or an unmigrated `projects/`, asks for the dir name back
+(`--yes` in scripts), deletes the account's own Keychain item and dir, and
+scrubs `.order`. Transcripts survive. Done when `headroom` no longer lists
+the account; if the default pointed there, `headroom accounts` repicks.
+The same command clears stranded `<name>.lock` debris.
 
 ## Shell launchers (optional)
 
-Short names over `headroom launch` — the shell's convenience, headroom's
-routing:
+Short names over the engine — the shell owns the spelling, headroom owns
+the routing:
 
 ```sh
 x()  { headroom launch -- "$@"; }                       # default account
 xa() { headroom launch --account "$1" -- "${@:2}"; }    # one session on <account>
 xs() { headroom sessions; }
-export HEADROOM_LAUNCHER_FORMAT="xa %s"                 # board advertises this spelling
+export HEADROOM_LAUNCHER_FORMAT="xa %s"                 # the board advertises this spelling
 ```
 
-Wrappers pass flags and names only; `CLAUDE_CONFIG_DIR`, the current-account
-file and every validation stay in `headroom launch`, which is re-resolved
-from PATH at every keystroke while a shell function is frozen at shell
-init.
+A wrapper passes names and flags and nothing else: `CLAUDE_CONFIG_DIR`,
+`.current` and every check stay in `headroom launch`, re-resolved from
+PATH at each keystroke, while a shell function is frozen at shell init.
