@@ -66,13 +66,13 @@ Go and `golang.org/x/term` only — no cgo, no frameworks.
 
 ## Configuration
 
-Defaults fit the author's machine; environment variables re-point them:
+Nothing needs configuring on a standard install; environment variables re-point the defaults:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HEADROOM_HOME` | `~` | Re-points everything home-derived: the primary `~/.claude`, the session store, the accounts root (test isolation) |
 | `HEADROOM_ACCOUNTS_ROOT` | `~/.claude-accounts` | Where the extra account dirs live |
-| `HEADROOM_PRIMARY_NAME` | `qiushi` | Launcher name advertised for the primary `~/.claude` |
+| `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `.current`, `--account`, and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login). Set it to pin a name that must outlive a primary logout |
 
 ## Status
 

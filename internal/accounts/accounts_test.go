@@ -109,7 +109,7 @@ func TestLauncher(t *testing.T) {
 		{"noatsign", "x-noatsign"}, // no @ → the name is the email
 	}
 	for _, c := range cases {
-		if got := Launcher(mk(c.name), cfg.PrimaryName); got != c.want {
+		if got := Launcher(mk(c.name)); got != c.want {
 			t.Errorf("Launcher(%q) = %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -379,5 +379,46 @@ func TestReadMetaTagsRejectedCacheDistinctlyFromAbsent(t *testing.T) {
 	    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`)
 	if good.CacheState != tag.OK || good.CachedUsage == nil {
 		t.Errorf("valid cache: state=%v", good.CacheState)
+	}
+}
+
+// The primary's name: an explicit HEADROOM_PRIMARY_NAME wins; otherwise the
+// local part of the primary's logged-in email; a never-logged-in primary is
+// "primary". A fresh install therefore needs no configuration to name the
+// primary consistently with the extras.
+func TestPrimaryNameDerivation(t *testing.T) {
+	cases := []struct {
+		pinned string
+		email  string
+		want   string
+	}{
+		{"qiushi", "someone@planlab.ai", "qiushi"}, // pinned wins over the login
+		{"", "alice@example.com", "alice"},         // derived from the login
+		{"", "", "primary"},                        // never logged in
+		{"", "@example.com", "primary"},            // degenerate email → fallback, never ""
+		{"", "noatsign", "primary"},                // not an email → fallback
+	}
+	for _, c := range cases {
+		cfg := config.Config{PrimaryName: c.pinned}
+		if got := PrimaryName(cfg, Meta{Email: c.email}); got != c.want {
+			t.Errorf("PrimaryName(pinned=%q, email=%q) = %q, want %q", c.pinned, c.email, got, c.want)
+		}
+	}
+}
+
+func TestDiscoverDerivesPrimaryNameFromLogin(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.PrimaryName = ""
+	if err := os.WriteFile(cfg.PrimaryMeta(), []byte(`{"oauthAccount":{"emailAddress":"alice@example.com"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mkAccount(t, cfg, "bob@example.com")
+	accts := Discover(cfg)
+	if accts[0].Name != "alice" || Launcher(accts[0]) != "x-alice" {
+		t.Errorf("primary named %q (launcher %q), want alice / x-alice", accts[0].Name, Launcher(accts[0]))
+	}
+	// And the derived name resolves through the strict selector like any other.
+	if a, err := Select(cfg, accts, "alice"); err != nil || !a.IsPrimary() {
+		t.Errorf("Select(alice) = %v, %v; want the primary", a, err)
 	}
 }

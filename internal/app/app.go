@@ -266,7 +266,7 @@ func scaffold(cfg config.Config, a accounts.Account, current string, snap state.
 	if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
 		v.DirMismatch = a.Name
 	}
-	v.Launcher = accounts.Launcher(a, cfg.PrimaryName)
+	v.Launcher = accounts.Launcher(a)
 	v.Current = current == a.Name
 	v.Obs = newestObservation(snap, d.Key, a.Meta, now)
 	return d

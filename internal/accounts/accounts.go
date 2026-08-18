@@ -20,7 +20,7 @@ import (
 
 type Account struct {
 	ConfigDir string // "" = the primary ~/.claude (Claude Code's default dir)
-	Name      string // dir basename (the email), or PrimaryName for the primary
+	Name      string // dir basename (the email), or PrimaryName(cfg, meta) for the primary
 	Email     string // what .claude.json reports as actually logged in ("" = none)
 
 	// Meta is the rest of that same .claude.json read, carried so callers
@@ -93,13 +93,13 @@ func Discover(cfg config.Config) []Account {
 	accts := make([]Account, 0, len(dirs))
 	for _, d := range dirs {
 		a := Account{ConfigDir: d}
+		a.Meta, _ = ReadMeta(a.MetaPath(cfg))
+		a.Email = a.Meta.Email
 		if d == "" {
-			a.Name = cfg.PrimaryName
+			a.Name = PrimaryName(cfg, a.Meta)
 		} else {
 			a.Name = filepath.Base(d)
 		}
-		a.Meta, _ = ReadMeta(a.MetaPath(cfg))
-		a.Email = a.Meta.Email
 		accts = append(accts, a)
 	}
 	return accts
@@ -225,18 +225,34 @@ func MetaEmail(metaPath string) (string, bool) {
 	return m.Email, m.EmailOK
 }
 
-// Launcher is the command advertised for an account: the guaranteed identity
-// only — x-<email>, or the primary's configured name. Short local-part
-// aliases (x-yan) are a shell convenience headroom neither knows nor
-// advertises: the old shared naming policy ("keep the two in sync") was a
-// cross-repo contract that could drift, and the board promising a command
-// that resolves is worth more than promising the shortest one.
-func Launcher(a Account, primaryName string) string {
-	if a.IsPrimary() {
-		return "x-" + primaryName
+// PrimaryName is the name the primary ~/.claude answers to. An explicit
+// HEADROOM_PRIMARY_NAME wins; otherwise the local part of the email the
+// primary's .claude.json says is logged in — the same identity the extras
+// carry as their dir basename, minus the domain, so it can never collide
+// with an extra (dir names contain "@"; local parts do not). A primary that
+// has never logged in has no email to be named by and is called "primary".
+//
+// The derived name is only as stable as the login behind it: `.current`
+// records the *name*, so a primary logout after `.current` was pinned to it
+// makes Select refuse (fail-closed, as for any unmatched name) until the
+// board repicks — or the name is pinned by the variable.
+func PrimaryName(cfg config.Config, meta Meta) string {
+	if cfg.PrimaryName != "" {
+		return cfg.PrimaryName
 	}
-	return "x-" + a.Name
+	if local, _, ok := strings.Cut(meta.Email, "@"); ok && local != "" {
+		return local
+	}
+	return "primary"
 }
+
+// Launcher is the command advertised for an account: the guaranteed identity
+// only — x-<email>, or x-<primary name>. Short local-part aliases (x-yan)
+// are a shell convenience headroom neither knows nor advertises: the old
+// shared naming policy ("keep the two in sync") was a cross-repo contract
+// that could drift, and the board promising a command that resolves is worth
+// more than promising the shortest one.
+func Launcher(a Account) string { return "x-" + a.Name }
 
 // KnownExtraDir reports whether dir is exactly some discovered non-primary
 // account's config dir — the value a managed launch on that account exports,

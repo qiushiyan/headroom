@@ -12,7 +12,14 @@ import (
 type Config struct {
 	Home         string
 	AccountsRoot string // one dir per extra subscription, keyed by email
-	PrimaryName  string // launcher name advertised for the primary ~/.claude
+	// PrimaryName is the name the primary ~/.claude answers to — what
+	// `.current` records, `--account` selects and the board's launcher column
+	// shows. Set explicitly by HEADROOM_PRIMARY_NAME; "" means *derive it at
+	// discovery* from the primary's logged-in email (accounts.PrimaryName), so
+	// a fresh install needs no configuration and the primary is named the way
+	// the extras are — by who is logged in. Pin it when the derived name must
+	// survive a primary logout (`.current` stores the name, not the dir).
+	PrimaryName string
 	UsageURL     string
 
 	// PrimaryRelocated records that HEADROOM_HOME points somewhere other than
@@ -53,7 +60,6 @@ func Load() (Config, error) {
 	c := Config{
 		Home:             home,
 		AccountsRoot:     filepath.Join(home, ".claude-accounts"),
-		PrimaryName:      "qiushi",
 		UsageURL:         "https://api.anthropic.com/api/oauth/usage",
 		PrimaryRelocated: filepath.Clean(home) != filepath.Clean(realHome),
 	}

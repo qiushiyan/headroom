@@ -154,7 +154,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		blob, ok := creds.Parse(creds.ReadKeychain(a.ConfigDir))
 		chk(ok, fmt.Sprintf("blob[%s]: parses via shared contract (accessToken present)", name), "")
 
-		launcher := accounts.Launcher(a, cfg.PrimaryName)
+		launcher := accounts.Launcher(a)
 		switch {
 		case !ok:
 			c.reason = "credential blob did not parse"
