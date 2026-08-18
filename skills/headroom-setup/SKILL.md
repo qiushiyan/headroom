@@ -1,6 +1,7 @@
 ---
 name: headroom-setup
-description: Set up headroom for several Claude Code subscriptions — install, add each subscription and log in once, share config, keep sessions machine-global, retire an account, shell launchers. Use when the user is installing headroom, adding a second Claude subscription, removing one, or has older per-account session directories to fold in.
+description: Set up headroom for several Claude Code subscriptions — install, add and log in each account, share config, keep sessions machine-global, retire an account, shell launchers.
+disable-model-invocation: true
 ---
 
 The filesystem is the registry: `~/.claude` (Claude Code's default dir) is

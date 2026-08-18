@@ -1,6 +1,7 @@
 ---
 name: headroom
-description: Claude Code accounts on this machine — quota left per account, one session on another account, changing the default, resuming across accounts, the board after a Claude Code update. Use when the user asks about Claude usage limits, hits a rate limit, wants a session on a different account, or headroom prints something unexpected.
+description: Day-to-day use of the headroom CLI — quota per Claude Code account, launching on another account, changing the default, resuming across accounts, checking the board after a Claude Code update.
+disable-model-invocation: true
 ---
 
 Several Claude Code logins coexist here, one per config dir: `~/.claude` is
