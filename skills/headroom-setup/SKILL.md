@@ -50,7 +50,9 @@ in with no `claude` running: move each `<dir>/projects/<project>/` into
 `~/.claude/projects/<project>/` (same names merge; on a filename collision
 keep the newer file), then `rmdir <dir>/projects && ln -s ~/.claude/projects
 <dir>/projects`. Done when `headroom check` passes topology and
-`headroom launch --account <email>` starts.
+`headroom launch --account <email>` starts. Folded-in sessions carry no
+ownership evidence, so the picker resumes them on the current account until
+one is re-homed there (`x` on its row).
 
 ## Retire a subscription
 

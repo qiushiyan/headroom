@@ -40,7 +40,8 @@ shell's `x-<name>`) — quote that spelling.
 - **After a Claude Code update, or a board that looks wrong**: `headroom
   check` — PASS / FAIL / INCONCLUSIVE. FAIL names the assumption that
   broke; INCONCLUSIVE (rate limited, stale token) is not drift.
-- **Add or retire a subscription**: the `headroom-setup` skill.
+- **Add or retire a subscription**: read `../headroom-setup/SKILL.md`
+  (this file's sibling) and follow it.
 
 Routing lives in `headroom launch` — it owns `CLAUDE_CONFIG_DIR` and
 `.current`; the board's enter is what moves the default. The unmanaged
