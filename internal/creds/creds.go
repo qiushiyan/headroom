@@ -125,6 +125,25 @@ func HasKeychainItem(configDir string) bool {
 	return err == nil
 }
 
+// DeleteKeychainItem removes the account's credential item, if any. This is
+// headroom's one Keychain write, and it exists for exactly one caller —
+// `headroom accounts remove`, an explicit user command against an account
+// the user named — because leaving a usable token behind for a config dir
+// that no longer exists is worse than the write. deleted=false with err=nil
+// means there was no item: a never-bound seed or lock debris has none, and
+// that is not an error. Never called from any observation path.
+func DeleteKeychainItem(configDir string) (deleted bool, err error) {
+	if !HasKeychainItem(configDir) {
+		return false, nil
+	}
+	out, err := exec.Command("security", "delete-generic-password",
+		"-s", ServiceName(configDir), "-a", username()).CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("security delete-generic-password: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
 // ReadRaw is the rendering path's blob source: Keychain first, then the
 // .credentials.json file Claude Code writes where no keychain exists.
 func ReadRaw(configDir string) string {

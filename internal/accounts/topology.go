@@ -6,10 +6,10 @@ package accounts
 // canonical store. A violation forks session history silently: transcripts
 // land in the account's private dir and vanish from the picker. Verification
 // therefore lives here, shared by the launch gate and by check, so the gate
-// and the report can never disagree. Creation deliberately does not: seeding
-// is a distinct human act (the wrapper's account-add), and a launch that
-// quietly repaired topology would hide exactly the state this refusal exists
-// to surface.
+// and the report can never disagree. Creation is a distinct human act —
+// `headroom accounts add` (lifecycle.go), built to satisfy this same check —
+// and launch never seeds: a launch that quietly repaired topology would hide
+// exactly the state this refusal exists to surface.
 
 import (
 	"fmt"
@@ -38,7 +38,7 @@ func VerifyTopology(cfg config.Config, a Account) error {
 	cfi, err := os.Lstat(canon)
 	switch {
 	case os.IsNotExist(err):
-		return fmt.Errorf("canonical session store %s does not exist — %s must be a symlink to it; create the store (mkdir) or seed via claude-account-add", canon, link)
+		return fmt.Errorf("canonical session store %s does not exist — %s must be a symlink to it; create the store (mkdir); `headroom accounts add` seeds new accounts", canon, link)
 	case err != nil:
 		return fmt.Errorf("canonical session store %s unreadable (%v)", canon, err)
 	case cfi.Mode()&os.ModeSymlink != 0:
@@ -50,7 +50,7 @@ func VerifyTopology(cfg config.Config, a Account) error {
 	lfi, err := os.Lstat(link)
 	switch {
 	case os.IsNotExist(err):
-		return fmt.Errorf("%s is missing — it must be a symlink to %s (claude-account-add seeds it)", link, canon)
+		return fmt.Errorf("%s is missing — it must be a symlink to %s (`headroom accounts add` seeds new accounts with it)", link, canon)
 	case err != nil:
 		return fmt.Errorf("%s unreadable (%v)", link, err)
 	case lfi.Mode()&os.ModeSymlink != 0:
@@ -61,7 +61,7 @@ func VerifyTopology(cfg config.Config, a Account) error {
 		}
 		return fmt.Errorf("%s is a symlink but does not resolve to %s — fix it by hand", link, canon)
 	case lfi.IsDir():
-		return fmt.Errorf("%s is a real directory (unmigrated sessions?) — run claude-sessions-migrate; it must be a symlink to %s", link, canon)
+		return fmt.Errorf("%s is a real directory (unmigrated sessions?) — move its contents into %s and replace it with a symlink there (with no claude running); it must be a symlink to %s", link, canon, canon)
 	default:
 		return fmt.Errorf("%s is not a symlink to %s — fix it by hand", link, canon)
 	}

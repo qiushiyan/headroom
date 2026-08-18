@@ -75,12 +75,57 @@ Read-only means read-only *against Claude Code*: headroom never writes the
 Keychain, never refreshes a token, and never touches vendor login or quota
 state — Claude Code owns all of it. What it writes is its own: `.current`,
 and one `state.json` holding non-secret request timestamps, the usage
-responses it fetched itself, and explicit session re-homes. The session
-surface carries the two documented exceptions to the rule, both explicit user
-commands against the shared transcript store: `r` appends one vendor-format
-`custom-title` record (exactly what the native Ctrl+R rename writes), and `dd`
-deletes a transcript. Both are refused while any process holds the session
-open.
+responses it fetched itself, and explicit session re-homes. Three documented
+exceptions, every one an explicit user command naming its object and refused
+while a session is live or liveness is unverifiable: the session picker's `r`
+appends one vendor-format `custom-title` record (exactly what the native
+Ctrl+R rename writes) and `dd` deletes a transcript, both against the shared
+store; and `accounts remove` deletes the removed account's Keychain item
+(`creds.DeleteKeychainItem`, the one Keychain write in the codebase, reached
+from no observation path). That last one is deliberate: removing an account
+is not a read, the user's expectation of "remove" includes the login, and a
+usable token left behind for a config dir that no longer exists is the worse
+outcome. Nothing in it touches any *other* account's item — the service name
+is derived from the removed dir's spelling alone.
+
+### The account lifecycle
+
+The set changes by two human acts, both engine commands so the topology
+verifier's error messages name something that exists on every install:
+
+- **`accounts add <email>`** (`accounts.Seed`) makes the dir, links its
+  `projects/` to the canonical store (creating the store if the machine has
+  none yet — an absent store on a fresh install forks no one's history; a
+  store that is a symlink or a file refuses), optionally symlinks shared
+  config, and finishes by running `VerifyTopology` on what it built — the
+  same check launch applies, so seed and gate cannot disagree. Names are
+  emails: one path element, `@` present, never `.lock`. Sharing is a
+  caller choice, never a default: bare `--share-config` links a *whitelist*
+  from the primary's `~/.claude` (`accounts.SharedConfigEntries` —
+  settings, skills, commands, agents, hooks, plugins, …), and
+  `--share-config=<dir>` links every entry of that dir (a config package,
+  which holds config and nothing else). Whitelist and not blacklist because
+  a config dir also holds what must stay per account: `history.jsonl` is
+  session-ownership evidence, `sessions/` the live registry,
+  `.credentials.json` a login on machines without a Keychain. The list is
+  vendor-perishable, but nothing load-bearing rides on it, which is why
+  `check` does not verify it. Seeding never writes `.current` or `.order`.
+  A dir that fails half-way is left in place and named: it is inert
+  (discovery lists it, launch refuses it on topology) and deleting a
+  directory to tidy up is not seeding's call.
+- **`accounts remove <email | name.lock>`** runs its refusals before
+  anything irreversible: not the primary (Claude Code's own default dir has
+  no entry in the accounts root); the liveness gate (`sessions.Liveness`
+  over the dir's own registry — verified live refuses, and so does
+  "could not verify", the same rule as `dd`); then confirmation — the dir
+  name typed back on a terminal, `--yes` off one, and refusal without
+  either. Then the Keychain item, then the dir (`os.RemoveAll` does not
+  follow symlinks, so the `projects/` link goes and the store behind it
+  stays — pinned by test), then the `.order` line. `.current` is never
+  rewritten: a removed current account makes launch refuse until the board
+  repicks, so corrupt-vs-chosen stays distinguishable. Transcripts survive
+  (they are the machine's); the picker shows the dead owner as degraded
+  until each is re-homed.
 
 `claude auth status` is used for its answer only. It may or may not refresh a
 token as a side effect; headroom neither relies on that nor invokes it hoping

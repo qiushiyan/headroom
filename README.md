@@ -23,6 +23,8 @@ bob@example.com (max 5x · x-bob)  ← x
 | `headroom limits` | What is already known, as the same JSON document, read from disk alone (`--account <name>` scopes it): no health probe, no network, never spends a request — ~10ms against the board's ~300ms |
 | `headroom sessions` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
 | `headroom launch` | Exec `claude` on the chosen account (`--account <name>`, or the recorded choice), with the child environment built from that decision — an inherited `CLAUDE_CONFIG_DIR` is stripped, never obeyed. `--remember` also records the choice; `headroom resolve` prints the account's name/dir/kind for shell preflight |
+| `headroom accounts add <email> [--share-config[=<dir>]]` | Seed the dir for a new subscription: `projects/` linked to the machine-global session store; `--share-config` symlinks the primary's config (settings, skills, commands, hooks, …) or every entry of `<dir>`. Then `headroom launch --account <email>` and `/login` once |
+| `headroom accounts remove <email> [--yes]` | Refuses while the account has a live session; deletes its Keychain item and its dir, scrubs `.order`, never touches `.current`. Also removes stranded `<name>.lock` debris |
 | `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
 
 ## How it works
@@ -42,11 +44,12 @@ Session transcripts on this setup are machine-global (every account's
 regardless of account and routes each back to the account that last drove
 it — quota switching steers new sessions, never old ones.
 
-headroom is **read-only** toward that system: it never writes the Keychain
-and never refreshes a token — Claude Code owns both. It keeps two files of its
-own (`state.json` and `.current`), and the session picker's explicit
-`rename`/`delete` commands are the only two vendor-state mutations, both
-refused while a session is open. Launch routing is headroom's too: `launch`
+headroom is **read-only** toward that system: it never refreshes a token and
+no observation path writes anything of Claude Code's — Claude Code owns login
+state. It keeps two files of its own (`state.json` and `.current`); the only
+vendor-state mutations are explicit user commands naming their object — the
+session picker's `rename`/`delete`, and `accounts remove` deleting the
+removed account's own Keychain item — all refused while a session is open. Launch routing is headroom's too: `launch`
 validates the account and constructs the child environment from that decision
 alone, so a shell whose environment already carries a `CLAUDE_CONFIG_DIR`
 (a tmux server started inside a Claude Code session, say) can never re-route

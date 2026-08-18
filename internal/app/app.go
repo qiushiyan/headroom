@@ -67,6 +67,16 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 	// "select" is what this surface was called before it became the whole
 	// board; accepted so a shell integration mid-update keeps working.
 	case "", "accounts", "select":
+		// The board's noun also carries the two commands that change the
+		// account set; the board itself still takes nothing.
+		if cmd == "accounts" && len(rest) > 0 {
+			switch rest[0] {
+			case "add":
+				return runAccountsAdd(cfg, rest[1:])
+			case "remove":
+				return runAccountsRemove(cfg, rest[1:])
+			}
+		}
 		if !noArgs() {
 			return 2
 		}
@@ -108,6 +118,14 @@ func printUsage(w io.Writer) {
   (none)     the account board: live usage for every account, refreshing
   accounts   while it is open; enter picks the account bare x targets.
              Off a terminal, prints the board once and exits.
+  accounts add <email> [--share-config[=<dir>]]
+             seed the dir for a new subscription: projects/ linked to the
+             machine-global store; --share-config links the primary's
+             config (settings, skills, commands, hooks, …), or every entry
+             of <dir>. Then: launch --account <email> and /login once
+  accounts remove <email | name.lock> [--yes]
+             refuse while a session is live; delete the account's Keychain
+             item and its dir; scrub .order; never touch .current
   --json     the board as JSON (schema versioned)
   limits     [--account <name>] what is already known about limits, as the
              same JSON document, read from disk alone: no health probe, no
