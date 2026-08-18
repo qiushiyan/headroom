@@ -67,3 +67,26 @@ func TestLoadPrimaryNameIsDerivedUnlessPinned(t *testing.T) {
 		t.Errorf("pinned: PrimaryName = %q", c.PrimaryName)
 	}
 }
+
+// The advertised launcher spelling defaults to a command every install has
+// and is re-spelled by HEADROOM_LAUNCHER_FORMAT, which must carry exactly
+// one %s — a malformed format would render every hint wrong.
+func TestLoadLauncherFormat(t *testing.T) {
+	t.Setenv("HEADROOM_HOME", "")
+	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
+	t.Setenv("HEADROOM_LAUNCHER_FORMAT", "")
+	c, err := Load()
+	if err != nil || c.LauncherFormat != "headroom launch --account %s" {
+		t.Errorf("default LauncherFormat = %q, %v", c.LauncherFormat, err)
+	}
+	t.Setenv("HEADROOM_LAUNCHER_FORMAT", "x-%s")
+	if c, err = Load(); err != nil || c.LauncherFormat != "x-%s" {
+		t.Errorf("pinned LauncherFormat = %q, %v", c.LauncherFormat, err)
+	}
+	for _, bad := range []string{"x-", "%s %s", "%d-%s", "100%% %s"} {
+		t.Setenv("HEADROOM_LAUNCHER_FORMAT", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("HEADROOM_LAUNCHER_FORMAT=%q accepted", bad)
+		}
+	}
+}

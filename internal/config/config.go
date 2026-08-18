@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -20,7 +21,15 @@ type Config struct {
 	// the extras are — by who is logged in. Pin it when the derived name must
 	// survive a primary logout (`.current` stores the name, not the dir).
 	PrimaryName string
-	UsageURL    string
+
+	// LauncherFormat spells the command the board advertises for an account
+	// (`%s` = the account's name): every "run <this> and /login" hint and
+	// the header's launcher column. The default is a command that exists on
+	// every install; a shell that wraps `headroom launch` in shorter names
+	// sets HEADROOM_LAUNCHER_FORMAT so the board promises the spelling that
+	// actually resolves there ("x-%s"). Display only — nothing routes by it.
+	LauncherFormat string
+	UsageURL       string
 
 	// PrimaryRelocated records that HEADROOM_HOME points somewhere other than
 	// the process's real home. Observation surfaces keep working against the
@@ -61,6 +70,7 @@ func Load() (Config, error) {
 		Home:             home,
 		AccountsRoot:     filepath.Join(home, ".claude-accounts"),
 		UsageURL:         "https://api.anthropic.com/api/oauth/usage",
+		LauncherFormat:   "headroom launch --account %s",
 		PrimaryRelocated: filepath.Clean(home) != filepath.Clean(realHome),
 	}
 	if v := os.Getenv("HEADROOM_ACCOUNTS_ROOT"); v != "" {
@@ -71,6 +81,12 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("HEADROOM_PRIMARY_NAME"); v != "" {
 		c.PrimaryName = v
+	}
+	if v := os.Getenv("HEADROOM_LAUNCHER_FORMAT"); v != "" {
+		if strings.Count(v, "%s") != 1 || strings.Count(v, "%") != 1 {
+			return Config{}, fmt.Errorf("HEADROOM_LAUNCHER_FORMAT=%q must contain exactly one %%s (the account name) and no other %% — e.g. \"x-%%s\"", v)
+		}
+		c.LauncherFormat = v
 	}
 	if v := os.Getenv("HEADROOM_USAGE_URL"); v != "" {
 		c.UsageURL = v

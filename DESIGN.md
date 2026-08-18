@@ -501,7 +501,7 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
 - **Selection fails closed.** An absent `.current` is the documented
   fresh-start default (the primary); an empty, unreadable one, or one
   naming a deleted account, refuses with an actionable message — on the
-  launch, in `check` (an own-state FAIL), and as an unset `← x` marker on
+  launch, in `check` (an own-state FAIL), and as an unset `← current` marker on
   the board. The old shell fallback turned all of those into "launch the
   primary with permissions bypassed", which made corruption
   indistinguishable from a choice; no surface may mint a primary decision
@@ -523,12 +523,16 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   every present value either way — full detail is what a diagnostic
   command is for.
 
-headroom *advertises* only guaranteed launcher identities:
-`x-<email>` per account dir, the configured name for the primary
-(`accounts.Launcher`). Short local-part aliases are shell convenience,
-invisible to headroom — the old shared naming policy ("keep the two rule
-copies in sync") was a cross-repo contract that could drift. Wrappers own
-what is personal: seeding, flags, aliases — and they never touch
+headroom *advertises* only guaranteed launcher identities: the account's
+full name — its email per account dir, the primary's login local part (or
+`HEADROOM_PRIMARY_NAME`) — spelled through `HEADROOM_LAUNCHER_FORMAT`
+(`accounts.Launcher`), which defaults to `headroom launch --account <name>`
+because that command exists on every install; a shell integration sets the
+format to its own names (`x-%s`) so the board promises the spelling that
+resolves there. Short local-part aliases are shell convenience, invisible
+to headroom — the old shared naming policy ("keep the two rule copies in
+sync") was a cross-repo contract that could drift. Wrappers own what is
+personal: the share source at seeding, flags, aliases — and they never touch
 `CLAUDE_CONFIG_DIR`, never parse `.current`, and hold no verification a
 launch depends on (topology verification moved into the binary for exactly
 that reason). When headroom is missing or refuses, the wrapper stops loudly

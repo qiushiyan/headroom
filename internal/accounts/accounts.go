@@ -246,13 +246,20 @@ func PrimaryName(cfg config.Config, meta Meta) string {
 	return "primary"
 }
 
-// Launcher is the command advertised for an account: the guaranteed identity
-// only — x-<email>, or x-<primary name>. Short local-part aliases (x-yan)
-// are a shell convenience headroom neither knows nor advertises: the old
-// shared naming policy ("keep the two in sync") was a cross-repo contract
-// that could drift, and the board promising a command that resolves is worth
-// more than promising the shortest one.
-func Launcher(a Account) string { return "x-" + a.Name }
+// Launcher is the command advertised for an account: cfg.LauncherFormat
+// applied to the guaranteed identity — the account's full name, never a
+// short local-part alias. Short aliases (x-yan) are a shell convenience
+// headroom neither knows nor advertises: the old shared naming policy
+// ("keep the two in sync") was a cross-repo contract that could drift, and
+// the board promising a command that resolves is worth more than promising
+// the shortest one. By default that command is `headroom launch --account
+// <name>`, which exists on every install; a shell integration re-spells it.
+func Launcher(cfg config.Config, a Account) string {
+	if cfg.LauncherFormat == "" {
+		return "headroom launch --account " + a.Name
+	}
+	return fmt.Sprintf(cfg.LauncherFormat, a.Name)
+}
 
 // KnownExtraDir reports whether dir is exactly some discovered non-primary
 // account's config dir — the value a managed launch on that account exports,

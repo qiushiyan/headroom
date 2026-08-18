@@ -116,7 +116,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: headroom [command]
 
   (none)     the account board: live usage for every account, refreshing
-  accounts   while it is open; enter picks the account bare x targets.
+  accounts   while it is open; enter picks the account a bare launch targets.
              Off a terminal, prints the board once and exits.
   accounts add <email> [--share-config[=<dir>]]
              seed the dir for a new subscription: projects/ linked to the
@@ -211,7 +211,7 @@ func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
 // prepareWith is prepare with its inputs injected.
 func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapshot, src sources) ([]*accountData, string) {
 	// Strict, exactly as launch resolves it: a corrupt or dangling .current
-	// marks nothing as current — the `← x` marker is a claim about where
+	// marks nothing as current — the `← current` marker is a claim about where
 	// bare `x` lands, and bare `x` refuses on that state. check FAILs on it;
 	// enter on this board is what repairs it.
 	current := ""
@@ -284,7 +284,7 @@ func scaffold(cfg config.Config, a accounts.Account, current string, snap state.
 	if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
 		v.DirMismatch = a.Name
 	}
-	v.Launcher = accounts.Launcher(a)
+	v.Launcher = accounts.Launcher(cfg, a)
 	v.Current = current == a.Name
 	v.Obs = newestObservation(snap, d.Key, a.Meta, now)
 	return d

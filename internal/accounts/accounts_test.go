@@ -104,14 +104,20 @@ func TestLauncher(t *testing.T) {
 		name string
 		want string
 	}{
-		{"", "x-qiushi"}, // primary → its configured name
-		{"yan@planlab.ai", "x-yan@planlab.ai"},
-		{"noatsign", "x-noatsign"}, // no @ → the name is the email
+		{"", "headroom launch --account qiushi"}, // primary → its configured name
+		{"yan@planlab.ai", "headroom launch --account yan@planlab.ai"},
+		{"noatsign", "headroom launch --account noatsign"}, // no @ → the name is the email
 	}
 	for _, c := range cases {
-		if got := Launcher(mk(c.name)); got != c.want {
+		if got := Launcher(cfg, mk(c.name)); got != c.want {
 			t.Errorf("Launcher(%q) = %q, want %q", c.name, got, c.want)
 		}
+	}
+	// A shell integration re-spells the advertised command; the identity
+	// inside it stays the full name.
+	cfg.LauncherFormat = "x-%s"
+	if got := Launcher(cfg, mk("yan@planlab.ai")); got != "x-yan@planlab.ai" {
+		t.Errorf("formatted launcher = %q", got)
 	}
 }
 
@@ -414,8 +420,8 @@ func TestDiscoverDerivesPrimaryNameFromLogin(t *testing.T) {
 	}
 	mkAccount(t, cfg, "bob@example.com")
 	accts := Discover(cfg)
-	if accts[0].Name != "alice" || Launcher(accts[0]) != "x-alice" {
-		t.Errorf("primary named %q (launcher %q), want alice / x-alice", accts[0].Name, Launcher(accts[0]))
+	if accts[0].Name != "alice" || Launcher(cfg, accts[0]) != "headroom launch --account alice" {
+		t.Errorf("primary named %q (launcher %q)", accts[0].Name, Launcher(cfg, accts[0]))
 	}
 	// And the derived name resolves through the strict selector like any other.
 	if a, err := Select(cfg, accts, "alice"); err != nil || !a.IsPrimary() {

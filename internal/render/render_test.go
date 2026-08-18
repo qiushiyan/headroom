@@ -142,7 +142,7 @@ func TestClip(t *testing.T) {
 func TestHeaderLine(t *testing.T) {
 	p := NewPalette(false)
 	v := AccountView{Label: "a@b.c", Plan: "max 20x", Launcher: "x-a", Current: true}
-	if got := p.HeaderLine(v); got != "a@b.c (max 20x · x-a)  ← x" {
+	if got := p.HeaderLine(v); got != "a@b.c (max 20x · x-a)  ← current" {
 		t.Errorf("header = %q", got)
 	}
 	v = AccountView{Label: "a@b.c", Launcher: "x-a"}

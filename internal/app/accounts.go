@@ -213,7 +213,7 @@ func runPicker(cfg config.Config) int {
 					fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
 					return 1
 				}
-				fmt.Printf("→ %s — bare x now targets it\n", chosen.View.Label)
+				fmt.Printf("→ %s — bare launches (no --account) now target it\n", chosen.View.Label)
 				return 0
 			}
 			ui.draw()
@@ -508,7 +508,7 @@ func (ui *picker) status(now time.Time) string {
 		if !d.View.Current {
 			continue
 		}
-		// An inherited value that disagrees with `← x` would re-route a bare
+		// An inherited value that disagrees with `← current` would re-route a bare
 		// `claude`; managed launches neutralize it, and the board must not
 		// silently rely on that. The classifier is launch's, so this note
 		// and the environment actually built cannot disagree. A value that

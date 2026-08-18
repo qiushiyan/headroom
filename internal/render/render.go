@@ -142,7 +142,7 @@ type AccountView struct {
 	DirMismatch string // dir name when the logged-in email doesn't match it
 	Plan        string
 	Launcher    string
-	Current     bool // bare `x` targets this account
+	Current     bool // a bare launch (no --account) targets this account
 	Health      Health
 	Obs         *Observation // nil = nothing known
 	Attempt     Attempt
@@ -187,7 +187,7 @@ func (p Palette) HeaderLine(v AccountView) string {
 	}
 	mark := ""
 	if v.Current {
-		mark = "  " + p.Bold + "← x" + p.Rst
+		mark = "  " + p.Bold + "← current" + p.Rst
 	}
 	if v.Plan != "" {
 		return fmt.Sprintf("%s%s%s %s(%s · %s)%s%s", p.Bold, label, p.Rst, p.Dim, v.Plan, v.Launcher, p.Rst, mark)
