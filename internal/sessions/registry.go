@@ -68,6 +68,46 @@ func ReadRegistry(accountName, dir string) []RegistryEntry {
 	return out
 }
 
+// ReadRegistryStrict is ReadRegistry for a caller about to destroy the
+// account dir itself, where "could not read" must not read as "nothing
+// live". Every registry file that fails to parse into a claim is returned
+// as an unverifiable one (OK=false, SessionID naming the file), and a
+// sessions/ dir that exists but cannot be listed is an error. The listing
+// path keeps the tolerant reader: a malformed record there cannot guard a
+// session it does not name, and dropping it keeps one bad file from
+// poisoning every row.
+func ReadRegistryStrict(accountName, dir string) ([]RegistryEntry, error) {
+	sdir := filepath.Join(dir, "sessions")
+	entries, err := os.ReadDir(sdir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []RegistryEntry
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		re := RegistryEntry{Account: accountName}
+		data, err := os.ReadFile(filepath.Join(sdir, e.Name()))
+		var rec struct {
+			SessionID   string `json:"sessionId"`
+			PID         int    `json:"pid"`
+			StartedAtMS int64  `json:"startedAt"`
+		}
+		if err == nil && json.Unmarshal(data, &rec) == nil && rec.SessionID != "" && rec.PID > 0 {
+			re.SessionID, re.PID, re.StartedAtMS = rec.SessionID, rec.PID, rec.StartedAtMS
+			re.OK = re.StartedAtMS > 0
+		} else {
+			re.SessionID, re.OK = "registry file "+e.Name(), false
+		}
+		out = append(out, re)
+	}
+	return out, nil
+}
+
 // PIDProbe reports a process's start instant as epoch seconds. Injected by
 // the caller — process inspection is an exec edge and stays out of this
 // package.

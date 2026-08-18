@@ -155,3 +155,27 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 		}
 	}
 }
+
+// A removed account's projects/ is normally the store link. When it is a
+// real directory it holds sessions nobody migrated, and RemoveAll would
+// delete them silently — the one irreversible loss removal could cause.
+func TestRemoveDirRefusesUnmigratedProjects(t *testing.T) {
+	cfg := testConfig(t)
+	dir := filepath.Join(cfg.AccountsRoot, "a@x.com")
+	os.MkdirAll(filepath.Join(dir, "projects", "p"), 0o755)
+	os.WriteFile(filepath.Join(dir, "projects", "p", "t.jsonl"), []byte("x"), 0o644)
+	if err := CheckRemovable(cfg, "a@x.com"); err == nil {
+		t.Error("CheckRemovable accepted a dir with a real projects/ directory")
+	}
+	if err := RemoveDir(cfg, "a@x.com"); err == nil {
+		t.Fatal("RemoveDir deleted a dir with a real projects/ directory")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "projects", "p", "t.jsonl")); err != nil {
+		t.Fatal("unmigrated session was deleted")
+	}
+	// A missing projects/ (partial seed) and a link elsewhere are still removable.
+	os.RemoveAll(filepath.Join(dir, "projects"))
+	if err := RemoveDir(cfg, "a@x.com"); err != nil {
+		t.Errorf("partial seed: %v", err)
+	}
+}

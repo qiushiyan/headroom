@@ -168,21 +168,17 @@ func ensureCanonicalStore(cfg config.Config) error {
 	return nil
 }
 
-// RemoveDir deletes an extra account's dir (or a stranded `<name>.lock`)
-// and scrubs its `.order` line. It is the filesystem half of removal only:
-// the liveness gate and the Keychain deletion happen before it, in the app
-// layer, because both are edges (process inspection, `security`) and both
-// must precede the point of no return.
+// CheckRemovable is every refusal RemoveDir will make, available ahead of
+// time so the app layer can run it before the confirmation prompt and the
+// Keychain deletion — nothing irreversible may precede these answers.
 //
-// os.RemoveAll does not follow symlinks, so the account's projects/ link
-// goes and the canonical store it points at is untouched — the property the
-// tests pin, since it is the difference between removing an account and
-// deleting every session on the machine.
-//
-// `.current` is deliberately not rewritten: it is headroom's routing fact
-// with a fail-closed reader, and a removed current account makes launch
-// refuse until the board repicks — corrupt-vs-chosen stays distinguishable.
-func RemoveDir(cfg config.Config, name string) error {
+// The one refusal that guards data rather than form: a projects/ that is a
+// *real directory*. Normally it is the store link, and RemoveAll on a link
+// removes the link; a real directory holds sessions nobody migrated into
+// the store, and removing the account would silently delete them. That is
+// the same state VerifyTopology names as "unmigrated sessions?", and the
+// remedy is the same — move them into the store first.
+func CheckRemovable(cfg config.Config, name string) error {
 	if name == "" || strings.ContainsAny(name, `/\`) || name != filepath.Base(name) {
 		return fmt.Errorf("%q is a path, not an account name", name)
 	}
@@ -201,7 +197,36 @@ func RemoveDir(cfg config.Config, name string) error {
 		// knows what is behind it, and this command should not guess.
 		return fmt.Errorf("%s is a symlink — remove it by hand", dir)
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if pfi, err := os.Lstat(filepath.Join(dir, "projects")); err == nil && pfi.Mode()&os.ModeSymlink == 0 && pfi.IsDir() {
+		return fmt.Errorf("%s/projects is a real directory — it holds sessions never migrated into %s; move them there (with no claude running) before removing the account", dir, cfg.ProjectsDir())
+	}
+	return nil
+}
+
+// RemoveDir deletes an extra account's dir (or a stranded `<name>.lock`)
+// and scrubs its `.order` line. It is the filesystem half of removal only:
+// the liveness gate and the Keychain deletion happen before it, in the app
+// layer, because both are edges (process inspection, `security`) and both
+// must precede the point of no return. It re-runs CheckRemovable itself, so
+// a caller that skipped the preflight still cannot delete unmigrated
+// sessions.
+//
+// os.RemoveAll does not follow symlinks, so the account's projects/ link
+// goes and the canonical store it points at is untouched — the property the
+// tests pin, since it is the difference between removing an account and
+// deleting every session on the machine.
+//
+// `.current` is deliberately not rewritten: it is headroom's routing fact
+// with a fail-closed reader, and a removed current account makes launch
+// refuse until the board repicks — corrupt-vs-chosen stays distinguishable.
+func RemoveDir(cfg config.Config, name string) error {
+	if err := CheckRemovable(cfg, name); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(cfg.AccountsRoot, name)); err != nil {
 		return err
 	}
 	return scrubOrder(cfg, name)

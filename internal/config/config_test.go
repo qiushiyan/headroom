@@ -47,3 +47,23 @@ func TestLoadMarksRelocatedPrimary(t *testing.T) {
 		t.Errorf("AccountsRoot = %q, want under the fixture home", cfg.AccountsRoot)
 	}
 }
+
+// The primary's name is not compiled in: unset, Load leaves it "" so
+// discovery derives it from the primary's login; the variable pins it.
+func TestLoadPrimaryNameIsDerivedUnlessPinned(t *testing.T) {
+	t.Setenv("HEADROOM_HOME", "")
+	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
+	t.Setenv("HEADROOM_PRIMARY_NAME", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PrimaryName != "" {
+		t.Errorf("unset HEADROOM_PRIMARY_NAME: PrimaryName = %q, want \"\" (derive at discovery)", c.PrimaryName)
+	}
+	t.Setenv("HEADROOM_PRIMARY_NAME", "pinned")
+	c, _ = Load()
+	if c.PrimaryName != "pinned" {
+		t.Errorf("pinned: PrimaryName = %q", c.PrimaryName)
+	}
+}

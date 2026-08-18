@@ -136,24 +136,39 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 		return 1
 	}
 	dir := filepath.Join(cfg.AccountsRoot, name)
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
-		fmt.Fprintf(errw, "headroom accounts remove: %s is not an account dir\n", dir)
+	// Every filesystem refusal RemoveDir will make, before anything else —
+	// including the one that guards data: a real projects/ directory holds
+	// sessions never migrated into the store.
+	if err := accounts.CheckRemovable(cfg, name); err != nil {
+		fmt.Fprintf(errw, "headroom accounts remove: %v\n", err)
 		return 1
 	}
 
 	// Gate: a session this dir is driving right now. Same rule as the
 	// picker's dd — verified live refuses, and so does "could not verify":
 	// deleting a config dir under a running claude orphans its login state.
-	entries := sessions.ReadRegistry(name, dir)
-	for id, st := range sessions.Liveness(entries, deps.probe) {
-		switch st {
-		case sessions.Live:
-			fmt.Fprintf(errw, "headroom accounts remove: %s has a live session (%s) — quit it first\n", name, id)
-			return 1
-		case sessions.LiveUnknown:
-			fmt.Fprintf(errw, "headroom accounts remove: %s has a registered session (%s) whose liveness could not be verified — quit any claude on this account and retry\n", name, id)
-			return 1
+	// Strict read: a registry file that does not parse, or a sessions/ dir
+	// that cannot be listed, is "could not verify", not "nothing there".
+	gate := func() bool {
+		entries, err := sessions.ReadRegistryStrict(name, dir)
+		if err != nil {
+			fmt.Fprintf(errw, "headroom accounts remove: %s: live-session registry unreadable (%v) — refusing while liveness cannot be verified\n", name, err)
+			return false
 		}
+		for id, st := range sessions.Liveness(entries, deps.probe) {
+			switch st {
+			case sessions.Live:
+				fmt.Fprintf(errw, "headroom accounts remove: %s has a live session (%s) — quit it first\n", name, id)
+				return false
+			case sessions.LiveUnknown:
+				fmt.Fprintf(errw, "headroom accounts remove: %s has a registered session (%s) whose liveness could not be verified — quit any claude on this account and retry\n", name, id)
+				return false
+			}
+		}
+		return true
+	}
+	if !gate() {
+		return 1
 	}
 
 	login := ""
@@ -176,6 +191,13 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 			fmt.Fprintln(errw, "aborted")
 			return 1
 		}
+	}
+
+	// The prompt may have stayed open for minutes; a session started
+	// meanwhile must refuse the same way. The gate runs again immediately
+	// before the first irreversible step.
+	if !yes && !gate() {
+		return 1
 	}
 
 	// Keychain before dir: the service name is derived from the dir's
