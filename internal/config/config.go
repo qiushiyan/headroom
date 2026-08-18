@@ -20,7 +20,7 @@ type Config struct {
 	// the extras are — by who is logged in. Pin it when the derived name must
 	// survive a primary logout (`.current` stores the name, not the dir).
 	PrimaryName string
-	UsageURL     string
+	UsageURL    string
 
 	// PrimaryRelocated records that HEADROOM_HOME points somewhere other than
 	// the process's real home. Observation surfaces keep working against the
