@@ -72,6 +72,7 @@ the routing. A wrapper passes names and flags and nothing else:
 re-resolved from PATH at each keystroke, while a shell function is frozen
 at shell init. The starter set (`x`, `xa`, `xacc`, `xs` with the cd that
 outlives the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the
-board advertise those names, are in the README § Shell integration
-(github.com/qiushiyan/headroom#shell-integration); copy them into the
+board advertise those names, are in the repo's docs/REFERENCE.md § Shell integration
+(github.com/qiushiyan/headroom/blob/main/docs/REFERENCE.md#shell-integration);
+copy them into the
 user's shell rc and adapt the names.
