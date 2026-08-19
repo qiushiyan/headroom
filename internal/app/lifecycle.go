@@ -102,7 +102,10 @@ func runAccountsRemove(cfg config.Config, args []string) int {
 		probe:          psProbe,
 		deleteKeychain: creds.DeleteKeychainItem,
 		stdin:          os.Stdin,
-		interactive:    term.IsTerminal(int(os.Stdin.Fd())),
+		// Both ends, as the board requires: the picker draws on stdout and
+		// the y/N prompt is printed there, so a redirected stdout with a
+		// tty stdin would wait on a question nobody can see.
+		interactive: term.IsTerminal(int(os.Stdin.Fd())) && stdoutIsTTY(),
 	})
 }
 
@@ -117,8 +120,11 @@ type removeCandidate struct {
 
 // removeCandidates lists what the command can remove, in board order
 // (discovery's extras, then lock debris by name). Discovery skips `.lock`
-// dirs by design, so they are gathered here from the root directly.
-func removeCandidates(cfg config.Config) []removeCandidate {
+// dirs by design, so they are gathered here from the root directly. An
+// accounts root that does not exist is an empty list; one that cannot be
+// read is returned as the error, so "nothing to remove" is never said over
+// a root that was merely unreadable.
+func removeCandidates(cfg config.Config) ([]removeCandidate, error) {
 	var cands []removeCandidate
 	for _, a := range accounts.Discover(cfg) {
 		if a.IsPrimary() {
@@ -126,13 +132,16 @@ func removeCandidates(cfg config.Config) []removeCandidate {
 		}
 		cands = append(cands, removeCandidate{Name: a.Name, Email: a.Email})
 	}
-	entries, _ := os.ReadDir(cfg.AccountsRoot)
+	entries, err := os.ReadDir(cfg.AccountsRoot)
+	if err != nil && !os.IsNotExist(err) {
+		return cands, fmt.Errorf("listing %s: %w", cfg.AccountsRoot, err)
+	}
 	for _, e := range entries {
 		if accounts.LockArtifact(e.Name()) && e.IsDir() {
 			cands = append(cands, removeCandidate{Name: e.Name(), Lock: true})
 		}
 	}
-	return cands
+	return cands, nil
 }
 
 func (c removeCandidate) describe() string {
@@ -227,7 +236,11 @@ func pickRemovable(cands []removeCandidate) (string, bool) {
 	return "", false
 }
 
-func listRemovable(w io.Writer, cands []removeCandidate) {
+func listRemovable(w io.Writer, cands []removeCandidate, err error) {
+	if err != nil {
+		fmt.Fprintf(w, "headroom accounts remove: %v\n", err)
+		return
+	}
 	if len(cands) == 0 {
 		fmt.Fprintln(w, "nothing to remove: no extra accounts under the accounts root")
 		return
@@ -259,10 +272,10 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 		// Bare invocation on a terminal: choose from what is removable.
 		// Off a terminal there is nobody to choose, so it is a usage error
 		// that at least names the choices.
-		cands := removeCandidates(cfg)
-		if !deps.interactive || len(cands) == 0 {
+		cands, err := removeCandidates(cfg)
+		if !deps.interactive || len(cands) == 0 || err != nil {
 			fmt.Fprintln(errw, "usage: headroom accounts remove [<email | name.lock>] [--yes]")
-			listRemovable(errw, cands)
+			listRemovable(errw, cands, err)
 			return 2
 		}
 		pick := deps.pick
@@ -298,7 +311,8 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 	// the list of what would have worked, not just a missing-path error.
 	if _, err := os.Lstat(dir); err != nil && os.IsNotExist(err) {
 		fmt.Fprintf(errw, "headroom accounts remove: no account named %q\n", name)
-		listRemovable(errw, removeCandidates(cfg))
+		cands, err := removeCandidates(cfg)
+		listRemovable(errw, cands, err)
 		return 1
 	}
 	// Every filesystem refusal RemoveDir will make, before anything else —

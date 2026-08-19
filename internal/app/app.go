@@ -123,9 +123,10 @@ func printUsage(w io.Writer) {
              machine-global store; --share-config links the primary's
              config (settings, skills, commands, hooks, …), or every entry
              of <dir>. Then: launch --account <email> and /login once
-  accounts remove <email | name.lock> [--yes]
-             refuse while a session is live; delete the account's Keychain
-             item and its dir; scrub .order; never touch .current
+  accounts remove [<email | name.lock>] [--yes]
+             bare on a terminal, pick from the removable accounts; refuse
+             while a session is live; delete the account's Keychain item
+             and its dir; scrub .order; never touch .current
   --json     the board as JSON (schema versioned)
   limits     [--account <name>] what is already known about limits, as the
              same JSON document, read from disk alone: no health probe, no

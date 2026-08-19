@@ -120,8 +120,8 @@ verifier's error messages name something that exists on every install:
   raw session*, because a cooked-mode reply after the tui closed would be
   swallowed by its still-blocked stdin reader — there Enter or `y`
   confirms (the row was already chosen with Enter; a second Enter is
-  re-affirmation, not a trap) and esc/`n`/`q` cancel, other keys are
-  ignored; a name nothing answers to
+  re-affirmation, not a trap), `n` or any of the board's cancel keys
+  (esc, `q`, ctrl-c, ctrl-d) cancels, other keys are ignored; a name nothing answers to
   prints the candidate list. Then it runs its refusals before anything
   irreversible: not the primary (Claude Code's own default dir has
   no entry in the accounts root); `accounts.CheckRemovable` — form, and the
