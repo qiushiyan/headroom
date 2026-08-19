@@ -29,7 +29,7 @@ update changed something headroom relies on — report the FAIL line and stop.
    of a config package instead.
 2. Hand the user: `headroom launch --account <email>`, then `/login` in that
    session choosing **that** email.
-3. `headroom`.
+3. `headroom` — the board.
 
 Done when the new row shows a plan and bars with no red `(dir says …!)` —
 that warning means the wrong account was chosen at `/login`; `/login` there
@@ -57,11 +57,12 @@ one is re-homed there (`x` on its row).
 ## Retire a subscription
 
 `headroom accounts remove <email>` (bare, it offers a picker of the
-removable accounts) — it refuses while that account has a live session or
-an unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the account's own Keychain item and dir, and
-scrubs `.order`. Transcripts survive. Done when `headroom` no longer lists
-the account; if the default pointed there, `headroom accounts` repicks.
-The same command clears stranded `<name>.lock` debris.
+removable accounts) — refuses while that account has a live session or an
+unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the
+account's own Keychain item and dir, scrubs `.order`. Transcripts survive.
+Done when `headroom` no longer lists the account; if the default pointed
+there, `headroom accounts` repicks. The same command clears stranded
+`<name>.lock` debris.
 
 ## Shell launchers (optional)
 

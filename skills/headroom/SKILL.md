@@ -34,16 +34,21 @@ shell's `x-<name>`) — quote that spelling.
   [-- <claude args>]`. The default stays where it was.
 - **Change the default**: `headroom accounts`, enter on a row (records and
   exits); or `headroom launch --remember --account <name>`.
-- **Out of quota mid-session — continue on another account**: quit the
-  session; `headroom accounts`, enter on an account with headroom left
-  (skip if the default has some); `headroom sessions`, find the row, press
-  **`x`** — it continues on the current account and is re-homed there.
-  Enter would return it to the exhausted account. Without the picker:
-  `headroom launch --account <name> -- --resume <id>` (`headroom sessions
-  --json` lists ids), or `-- --continue` for the newest session in the cwd.
+- **Out of quota mid-session — continue it on another account**. Changing
+  the default steers new sessions only; the old one moves by re-home:
+  1. Quit the session.
+  2. `headroom accounts`, enter on an account with headroom left (skip if
+     the default has some).
+  3. `headroom sessions`, find the row, press **`x`** — continues on the
+     current account, re-homed there. (Enter would return it to the
+     exhausted account.)
+  Without the picker: `headroom launch --account <name> -- --resume <id>`
+  (`headroom sessions --json` lists ids), or `-- --continue` for the newest
+  session in the cwd. Done when the session is running and its row shows
+  the new owner.
 - **Resume, same account**: `headroom sessions`, enter — every session on
   the machine, each continued in its own project dir on the account that
-  last drove it. Changing the default steers new sessions only.
+  last drove it.
 - **After a Claude Code update, or a board that looks wrong**: `headroom
   check` — PASS / FAIL / INCONCLUSIVE. FAIL names the assumption that
   broke; INCONCLUSIVE (rate limited, stale token) is not drift.

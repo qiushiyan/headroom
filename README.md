@@ -131,18 +131,17 @@ xs() {
 export HEADROOM_LAUNCHER_FORMAT="xa %s"              # the board advertises this spelling
 ```
 
-So the out-of-quota flow above is `xacc` → `x` (or `xs` and `x` on the
-row). Flags that every session should carry — `--dangerously-skip-permissions`,
-say — go after the `--` inside the wrapper. Per-account names (`x-alice`)
-are a loop over `~/.claude-accounts/*` at shell init; the author's version
-also generates short local-part aliases when unambiguous.
+The out-of-quota flow above becomes `xacc`, then `xs` and `x` on the row.
+Flags every session should carry — `--dangerously-skip-permissions`, say —
+go after the `--` inside the wrapper. Per-account names (`x-alice`) are a
+loop over `~/.claude-accounts/*` at shell init; the author's version also
+generates short local-part aliases when unambiguous.
 
 A wrapper passes names and flags and nothing else. `CLAUDE_CONFIG_DIR`, the
 current-account file and every validation stay in `headroom launch`, which
 is re-resolved from PATH at every keystroke while a shell function is frozen
-at shell init — nothing that can misroute belongs in the function. When
-`headroom` is missing or refuses, a wrapper stops rather than falling back
-to bare `claude`.
+at shell init. When `headroom` is missing or refuses, a wrapper stops rather
+than falling back to bare `claude`.
 
 ## Configuration
 
