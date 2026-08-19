@@ -46,6 +46,24 @@ session dirs and shell launchers) — for any agent that runs the skills CLI:
 npx skills add qiushiyan/headroom
 ```
 
+## When an account runs out mid-session
+
+The case multiple accounts exist for. A session on account A hits its limit
+with work unfinished; the transcript is machine-global, so any account can
+pick it up:
+
+1. Quit the session.
+2. `headroom accounts` — enter on an account with headroom left (skip if the
+   default already has some).
+3. `headroom sessions` — find the row, press **`x`**: the session continues
+   on the current account, in its own project dir, and is re-homed there.
+   (Enter would send it back to the account that last drove it — A.)
+
+Without the picker: `headroom launch --account <name> -- --resume <id>`
+(`headroom sessions --json` lists ids), or `-- --continue` for the newest
+session in the current directory. Ownership follows automatically — the
+account that drives a session last is its owner.
+
 ## Commands
 
 | Command | What it does |
@@ -53,7 +71,7 @@ npx skills add qiushiyan/headroom
 | `headroom` / `headroom accounts` | The board: live limit bars for every account, refreshing itself while it is open; enter picks the account a bare `headroom launch` targets. Off a terminal, prints one frame and exits |
 | `headroom --json` | The board as a versioned JSON document — probes and (budget permitting) fetches, for scripts that want a refresh |
 | `headroom limits` | What is already known, as the same JSON document, read from disk alone (`--account <name>` scopes it): no health probe, no network, never spends a request — ~10ms against the board's ~300ms |
-| `headroom sessions` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
+| `headroom sessions` | Interactive session picker: every session on the machine; enter resumes in its own project dir on the account that last drove it, `x` resumes on the current account and re-homes it there (`--json` lists instead; `--cd-file <path>` writes the entered dir for the shell) |
 | `headroom launch` | Exec `claude` on the chosen account (`--account <name>`, or the recorded choice), with the child environment built from that decision — an inherited `CLAUDE_CONFIG_DIR` is stripped, never obeyed. `--remember` also records the choice; `headroom resolve` prints the account's name/dir/kind for shell preflight |
 | `headroom accounts add <email> [--share-config[=<dir>]]` | Seed the dir for a new subscription: `projects/` linked to the machine-global session store; `--share-config` symlinks the primary's config (settings, skills, commands, hooks, …) or every entry of `<dir>`. Then `headroom launch --account <email>` and `/login` once |
 | `headroom accounts remove [<email>] [--yes]` | Bare, on a terminal, it offers a picker of the removable accounts; a name nobody answers to gets that list too. Confirms with `y/N`. Refuses while the account has a live session; deletes its Keychain item and its dir, scrubs `.order`, never touches `.current`. Also removes stranded `<name>.lock` debris |
@@ -74,7 +92,7 @@ send replays its own newest answer instead of showing you something older.
 Session transcripts on this setup are machine-global (every account's
 `projects/` links to one store), so `sessions` lists every conversation
 regardless of account and routes each back to the account that last drove
-it — quota switching steers new sessions, never old ones.
+it — changing the default steers new sessions; an old one moves to another account by `x` in the picker (or `launch --account … -- --resume <id>`).
 
 headroom is **read-only** toward that system: it never refreshes a token and
 no observation path writes anything of Claude Code's — Claude Code owns login
@@ -92,14 +110,39 @@ reverse-engineered vendor facts everything rests on, are spelled out in
 
 ## Shell integration
 
-Short names are the shell's business; routing stays headroom's. A wrapper
-passes names and flags and nothing else — `CLAUDE_CONFIG_DIR`, the
+Short names are the shell's business; routing stays headroom's. The
+patterns below are what the author runs, reduced to the engine calls:
+
+```sh
+# the two daily verbs
+x()   { headroom launch -- "$@"; }                   # a session on the default account
+xa()  { headroom launch --account "$1" -- "${@:2}"; } # one session on <account>; the default stays
+xacc(){ headroom accounts; }                         # the board; enter moves the default, then type x
+
+# the session picker, with the cd that outlives the session
+xs() {
+  local tmp; tmp=$(mktemp -d) || return
+  headroom sessions --cd-file "$tmp/cwd" -- "$@"     # enter: same account · x: current account + re-home
+  local rc=$? dir; dir=$(cat "$tmp/cwd" 2>/dev/null); rm -rf "$tmp"
+  [[ "$dir" == /* ]] && cd -- "$dir"
+  return $rc
+}
+
+export HEADROOM_LAUNCHER_FORMAT="xa %s"              # the board advertises this spelling
+```
+
+So the out-of-quota flow above is `xacc` → `x` (or `xs` and `x` on the
+row). Flags that every session should carry — `--dangerously-skip-permissions`,
+say — go after the `--` inside the wrapper. Per-account names (`x-alice`)
+are a loop over `~/.claude-accounts/*` at shell init; the author's version
+also generates short local-part aliases when unambiguous.
+
+A wrapper passes names and flags and nothing else. `CLAUDE_CONFIG_DIR`, the
 current-account file and every validation stay in `headroom launch`, which
 is re-resolved from PATH at every keystroke while a shell function is frozen
-at shell init. `HEADROOM_LAUNCHER_FORMAT` tells the board how your shell
-spells a launch. A copy-paste starter lives in
-[`skills/headroom-setup/SKILL.md`](skills/headroom-setup/SKILL.md) § Shell
-launchers.
+at shell init — nothing that can misroute belongs in the function. When
+`headroom` is missing or refuses, a wrapper stops rather than falling back
+to bare `claude`.
 
 ## Configuration
 

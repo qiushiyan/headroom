@@ -66,15 +66,11 @@ The same command clears stranded `<name>.lock` debris.
 ## Shell launchers (optional)
 
 Short names over the engine — the shell owns the spelling, headroom owns
-the routing:
-
-```sh
-x()  { headroom launch -- "$@"; }                       # default account
-xa() { headroom launch --account "$1" -- "${@:2}"; }    # one session on <account>
-xs() { headroom sessions; }
-export HEADROOM_LAUNCHER_FORMAT="xa %s"                 # the board advertises this spelling
-```
-
-A wrapper passes names and flags and nothing else: `CLAUDE_CONFIG_DIR`,
-`.current` and every check stay in `headroom launch`, re-resolved from
-PATH at each keystroke, while a shell function is frozen at shell init.
+the routing. A wrapper passes names and flags and nothing else:
+`CLAUDE_CONFIG_DIR`, `.current` and every check stay in `headroom launch`,
+re-resolved from PATH at each keystroke, while a shell function is frozen
+at shell init. The starter set (`x`, `xa`, `xacc`, `xs` with the cd that
+outlives the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the
+board advertise those names, are in the README § Shell integration
+(github.com/qiushiyan/headroom#shell-integration); copy them into the
+user's shell rc and adapt the names.
