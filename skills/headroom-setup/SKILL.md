@@ -56,9 +56,9 @@ one is re-homed there (`x` on its row).
 
 ## Retire a subscription
 
-`headroom accounts remove <email>` — it refuses while that account has a
-live session or an unmigrated `projects/`, asks for the dir name back
-(`--yes` in scripts), deletes the account's own Keychain item and dir, and
+`headroom accounts remove <email>` (bare, it offers a picker of the
+removable accounts) — it refuses while that account has a live session or
+an unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the account's own Keychain item and dir, and
 scrubs `.order`. Transcripts survive. Done when `headroom` no longer lists
 the account; if the default pointed there, `headroom accounts` repicks.
 The same command clears stranded `<name>.lock` debris.

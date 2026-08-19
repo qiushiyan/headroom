@@ -113,8 +113,17 @@ verifier's error messages name something that exists on every install:
   A dir that fails half-way is left in place and named: it is inert
   (discovery lists it, launch refuses it on topology) and deleting a
   directory to tidy up is not seeding's call.
-- **`accounts remove <email | name.lock>`** runs its refusals before
-  anything irreversible: not the primary (Claude Code's own default dir has
+- **`accounts remove [<email | name.lock>]`** names its object up front —
+  the argument, or, bare on a terminal, a picker over the removable
+  candidates (every extra plus any `.lock` debris; the primary is never
+  offered) whose enter asks "remove X?" as one more key *inside the same
+  raw session*, because a cooked-mode reply after the tui closed would be
+  swallowed by its still-blocked stdin reader — there Enter or `y`
+  confirms (the row was already chosen with Enter; a second Enter is
+  re-affirmation, not a trap) and esc/`n`/`q` cancel, other keys are
+  ignored; a name nothing answers to
+  prints the candidate list. Then it runs its refusals before anything
+  irreversible: not the primary (Claude Code's own default dir has
   no entry in the accounts root); `accounts.CheckRemovable` — form, and the
   one refusal that guards data: a `projects/` that is a *real directory*
   holds sessions never migrated into the store, and `RemoveAll` would take
@@ -122,10 +131,11 @@ verifier's error messages name something that exists on every install:
   *strict* registry read — verified live refuses, and so does "could not
   verify", the same rule as `dd`, with a registry file that does not parse
   or a `sessions/` dir that cannot be listed counting as could-not-verify
-  rather than as nothing-there); then confirmation — the dir name typed
-  back on a terminal, `--yes` off one, and refusal without either — and the
-  gate once more after the reply, since the prompt may have stayed open
-  while a session started. Then the Keychain item, then the dir (`os.RemoveAll` does not
+  rather than as nothing-there); then confirmation — `y/N` on a terminal,
+  `--yes` off one, and refusal without either; a picker choice arrives
+  already confirmed and takes `--yes`'s path — and the gate once more
+  after the reply, since the prompt may have stayed open while a session
+  started. Then the Keychain item, then the dir (`os.RemoveAll` does not
   follow symlinks, so the `projects/` link goes and the store behind it
   stays — pinned by test), then the `.order` line. `.current` is never
   rewritten: a removed current account makes launch refuse until the board

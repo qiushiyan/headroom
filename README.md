@@ -56,7 +56,7 @@ npx skills add qiushiyan/headroom
 | `headroom sessions` | Interactive session picker: every session on the machine, resumed in its own project dir on the account that last drove it (`--json` lists instead) |
 | `headroom launch` | Exec `claude` on the chosen account (`--account <name>`, or the recorded choice), with the child environment built from that decision — an inherited `CLAUDE_CONFIG_DIR` is stripped, never obeyed. `--remember` also records the choice; `headroom resolve` prints the account's name/dir/kind for shell preflight |
 | `headroom accounts add <email> [--share-config[=<dir>]]` | Seed the dir for a new subscription: `projects/` linked to the machine-global session store; `--share-config` symlinks the primary's config (settings, skills, commands, hooks, …) or every entry of `<dir>`. Then `headroom launch --account <email>` and `/login` once |
-| `headroom accounts remove <email> [--yes]` | Refuses while the account has a live session; deletes its Keychain item and its dir, scrubs `.order`, never touches `.current`. Also removes stranded `<name>.lock` debris |
+| `headroom accounts remove [<email>] [--yes]` | Bare, on a terminal, it offers a picker of the removable accounts; a name nobody answers to gets that list too. Confirms with `y/N`. Refuses while the account has a live session; deletes its Keychain item and its dir, scrubs `.order`, never touches `.current`. Also removes stranded `<name>.lock` debris |
 | `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
 
 ## How it works

@@ -163,8 +163,12 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if code := run(deps, "nope@x.com", "--yes"); code != 1 {
 		t.Errorf("missing: exit %d", code)
 	}
-	if code := run(deps); code != 2 {
-		t.Errorf("no name: exit %d", code)
+	if code := run(deps); code != 2 || !strings.Contains(errw.String(), "removable:") || !strings.Contains(errw.String(), "a@x.com  (logged in)") {
+		t.Errorf("no name off a terminal: exit %d %s", code, errw.String())
+	}
+	// A typo names what would have worked.
+	if code := run(deps, "a@x.con", "--yes"); code != 1 || !strings.Contains(errw.String(), `no account named "a@x.con"`) || !strings.Contains(errw.String(), "a@x.com") {
+		t.Errorf("typo: exit %d %s", code, errw.String())
 	}
 	if code := run(deps, "a@x.com", "--bogus"); code != 2 {
 		t.Errorf("bogus flag: exit %d", code)
@@ -173,15 +177,27 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if code := run(deps, "a@x.com"); code != 2 || len(keychainCalls) != 0 {
 		t.Errorf("non-interactive without --yes: exit %d, keychain calls %v", code, keychainCalls)
 	}
-	// Interactive: the wrong reply aborts, the right one proceeds.
+	// Interactive: anything but y/yes aborts — including the name itself,
+	// which the old prompt asked for.
 	inter := deps
 	inter.interactive = true
-	inter.stdin = strings.NewReader("wrong\n")
-	if code := run(inter, "a@x.com"); code != 1 || len(keychainCalls) != 0 {
-		t.Errorf("wrong confirmation: exit %d, keychain calls %v", code, keychainCalls)
+	for _, reply := range []string{"n\n", "a@x.com\n", "\n", ""} {
+		inter.stdin = strings.NewReader(reply)
+		if code := run(inter, "a@x.com"); code != 1 || len(keychainCalls) != 0 || !strings.Contains(out.String(), "[y/N]") {
+			t.Errorf("reply %q: exit %d, keychain calls %v, out %q", reply, code, keychainCalls, out.String())
+		}
 	}
 	if _, err := os.Lstat(dir); err != nil {
 		t.Fatal("dir removed despite aborted confirmation")
+	}
+	// Bare invocation on a terminal: the picker chooses and confirms;
+	// cancelling aborts, and a confirmed choice still meets the gate
+	// (exercised below with a@x.com's live session) before anything runs.
+	var picked []removeCandidate
+	bare := inter
+	bare.pick = func(c []removeCandidate) (string, bool) { picked = c; return "", false }
+	if code := run(bare); code != 1 || len(picked) != 1 || picked[0].Name != "a@x.com" || picked[0].Email != "a@x.com" {
+		t.Errorf("picker cancel: exit %d, candidates %+v", code, picked)
 	}
 
 	// A live (or unverifiable) registered session refuses before anything.
@@ -191,6 +207,12 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	live.probe = func(int) (int64, bool) { return 1000, true } // matches startedAt/1000
 	if code := run(live, "a@x.com", "--yes"); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
 		t.Errorf("live: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
+	}
+	pickedLive := live
+	pickedLive.interactive = true
+	pickedLive.pick = func([]removeCandidate) (string, bool) { return "a@x.com", true }
+	if code := run(pickedLive); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
+		t.Errorf("picked live: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
 	}
 	unknown := deps
 	unknown.probe = nil
@@ -269,7 +291,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	calls := 0
 	racing := deps
 	racing.interactive = true
-	racing.stdin = strings.NewReader("e@x.com\n")
+	racing.stdin = strings.NewReader("y\n")
 	racing.probe = func(int) (int64, bool) {
 		calls++
 		if calls == 1 {
@@ -281,9 +303,17 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if code := run(racing, "e@x.com"); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
 		t.Errorf("session started during prompt: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
 	}
-	// Lock debris goes through the same door.
+	// Lock debris goes through the same door, is offered by the picker,
+	// and "yes" confirms.
 	os.Mkdir(filepath.Join(cfg.AccountsRoot, "b@x.com.lock"), 0o755)
-	if code := run(deps, "b@x.com.lock", "--yes"); code != 0 {
+	cands := removeCandidates(cfg)
+	if len(cands) == 0 || !cands[len(cands)-1].Lock || cands[len(cands)-1].Name != "b@x.com.lock" {
+		t.Errorf("candidates %+v", cands)
+	}
+	yes := deps
+	yes.interactive = true
+	yes.stdin = strings.NewReader("YES\n")
+	if code := run(yes, "b@x.com.lock"); code != 0 {
 		t.Errorf("lock debris: exit %d %s", code, errw.String())
 	}
 }

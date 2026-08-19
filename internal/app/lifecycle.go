@@ -18,7 +18,9 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
+	"github.com/qiushiyan/headroom/internal/tui"
 	"golang.org/x/term"
 )
 
@@ -89,6 +91,10 @@ type removeDeps struct {
 	deleteKeychain func(configDir string) (bool, error)
 	stdin          io.Reader
 	interactive    bool
+	// pick chooses among the removable candidates when the command was
+	// given no name, and confirms the choice; ok=false is a cancel. nil
+	// means the terminal picker.
+	pick func(cands []removeCandidate) (name string, ok bool)
 }
 
 func runAccountsRemove(cfg config.Config, args []string) int {
@@ -98,6 +104,138 @@ func runAccountsRemove(cfg config.Config, args []string) int {
 		stdin:          os.Stdin,
 		interactive:    term.IsTerminal(int(os.Stdin.Fd())),
 	})
+}
+
+// removeCandidate is one thing `accounts remove` will accept by name: an
+// extra account dir (named by its login) or stranded `<name>.lock` debris.
+// The primary is never a candidate.
+type removeCandidate struct {
+	Name  string
+	Email string // what the dir's .claude.json reports ("" = never logged in)
+	Lock  bool   // vendor lock debris, not an account
+}
+
+// removeCandidates lists what the command can remove, in board order
+// (discovery's extras, then lock debris by name). Discovery skips `.lock`
+// dirs by design, so they are gathered here from the root directly.
+func removeCandidates(cfg config.Config) []removeCandidate {
+	var cands []removeCandidate
+	for _, a := range accounts.Discover(cfg) {
+		if a.IsPrimary() {
+			continue
+		}
+		cands = append(cands, removeCandidate{Name: a.Name, Email: a.Email})
+	}
+	entries, _ := os.ReadDir(cfg.AccountsRoot)
+	for _, e := range entries {
+		if accounts.LockArtifact(e.Name()) && e.IsDir() {
+			cands = append(cands, removeCandidate{Name: e.Name(), Lock: true})
+		}
+	}
+	return cands
+}
+
+func (c removeCandidate) describe() string {
+	switch {
+	case c.Lock:
+		return "lock debris"
+	case c.Email == "":
+		return "never logged in"
+	case c.Email == c.Name:
+		return "logged in"
+	default:
+		return "logged in as " + c.Email
+	}
+}
+
+// pickRemovable is the terminal picker behind a bare `headroom accounts
+// remove`: the candidates as a list, up/down/enter, any cancel key aborts.
+// Enter asks "remove X?" as one more keypress *inside the same raw session*
+// — the cooked-mode line prompt cannot follow a closed tui session, because
+// the terminal's reader goroutine stays blocked on stdin and would swallow
+// the reply. In that second step Enter (or y) confirms and esc/n/q cancel:
+// the row was already chosen with Enter, so the second Enter is an explicit
+// re-affirmation, not the trap "any other key cancels" made of it; cancel
+// stays one key away and an unrelated key is ignored rather than read as
+// either answer. ok=true means the user has confirmed. The frame draws in
+// place on stdout like the board and stays on screen.
+func pickRemovable(cands []removeCandidate) (string, bool) {
+	t, err := tui.Open()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "headroom accounts remove: %v\n", err)
+		return "", false
+	}
+	defer t.Close()
+	p := render.NewPalette(true)
+	fp := &framePrinter{}
+	t.OnClose(fp.finish)
+	sel := 0
+	width := 0
+	for _, c := range cands {
+		if n := len(c.Name); n > width {
+			width = n
+		}
+	}
+	confirming := false
+	draw := func() {
+		var lines []string
+		if confirming {
+			lines = append(lines, p.Bold+"remove "+cands[sel].Name+"?"+p.Rst+p.Dim+"  enter/y confirm · esc/n cancel"+p.Rst)
+		} else {
+			lines = append(lines, p.Bold+"remove which account?"+p.Rst+p.Dim+"  ↑/↓ move · enter choose · esc cancel"+p.Rst)
+		}
+		for i, c := range cands {
+			prefix := "  "
+			if i == sel {
+				prefix = p.Bold + "▶ " + p.Rst
+			}
+			lines = append(lines, fmt.Sprintf("%s%-*s  %s%s%s", prefix, width, c.Name, p.Dim, c.describe(), p.Rst))
+		}
+		if confirming {
+			lines = append(lines, p.Dim+"deletes its dir and Keychain item; transcripts survive"+p.Rst)
+		}
+		w, h := fp.geometry()
+		fp.print(lines, w, h)
+	}
+	draw()
+	for k := range t.Events() {
+		if confirming {
+			switch {
+			case k.Kind == tui.KeyEnter, k == tui.Key{Kind: tui.KeyRune, Rune: 'y'}, k == tui.Key{Kind: tui.KeyRune, Rune: 'Y'}:
+				return cands[sel].Name, true
+			case isCancelKey(k), k == tui.Key{Kind: tui.KeyRune, Rune: 'n'}, k == tui.Key{Kind: tui.KeyRune, Rune: 'N'}:
+				return "", false
+			}
+			continue
+		}
+		switch {
+		case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
+			if sel > 0 {
+				sel--
+			}
+		case k.Kind == tui.KeyDown || k == tui.Key{Kind: tui.KeyRune, Rune: 'j'}:
+			if sel < len(cands)-1 {
+				sel++
+			}
+		case isCancelKey(k):
+			return "", false
+		case k.Kind == tui.KeyEnter:
+			confirming = true
+		}
+		draw()
+	}
+	return "", false
+}
+
+func listRemovable(w io.Writer, cands []removeCandidate) {
+	if len(cands) == 0 {
+		fmt.Fprintln(w, "nothing to remove: no extra accounts under the accounts root")
+		return
+	}
+	fmt.Fprintln(w, "removable:")
+	for _, c := range cands {
+		fmt.Fprintf(w, "  %s  (%s)\n", c.Name, c.describe())
+	}
 }
 
 func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, deps removeDeps) int {
@@ -118,8 +256,28 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 		}
 	}
 	if name == "" {
-		fmt.Fprintln(errw, "usage: headroom accounts remove <email | name.lock> [--yes]")
-		return 2
+		// Bare invocation on a terminal: choose from what is removable.
+		// Off a terminal there is nobody to choose, so it is a usage error
+		// that at least names the choices.
+		cands := removeCandidates(cfg)
+		if !deps.interactive || len(cands) == 0 {
+			fmt.Fprintln(errw, "usage: headroom accounts remove [<email | name.lock>] [--yes]")
+			listRemovable(errw, cands)
+			return 2
+		}
+		pick := deps.pick
+		if pick == nil {
+			pick = pickRemovable
+		}
+		chosen, ok := pick(cands)
+		if !ok {
+			fmt.Fprintln(errw, "aborted")
+			return 1
+		}
+		name = chosen
+		// The picker confirmed; from here the path is --yes's: every
+		// refusal, then the gate once, immediately before the Keychain step.
+		yes = true
 	}
 	// The primary is not removable: it is Claude Code's default dir, not an
 	// entry in the accounts root, and its name is not a dir name at all.
@@ -136,6 +294,13 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 		return 1
 	}
 	dir := filepath.Join(cfg.AccountsRoot, name)
+	// A name nothing answers to — a typo, or an account already gone — gets
+	// the list of what would have worked, not just a missing-path error.
+	if _, err := os.Lstat(dir); err != nil && os.IsNotExist(err) {
+		fmt.Fprintf(errw, "headroom accounts remove: no account named %q\n", name)
+		listRemovable(errw, removeCandidates(cfg))
+		return 1
+	}
 	// Every filesystem refusal RemoveDir will make, before anything else —
 	// including the one that guards data: a real projects/ directory holds
 	// sessions never migrated into the store.
@@ -181,13 +346,16 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 			return 2
 		}
 		if login != "" {
-			fmt.Fprintf(out, "removing %s (logged in as %s)\n", dir, login)
+			fmt.Fprintf(out, "remove %s (logged in as %s)?\n", name, login)
 		} else {
-			fmt.Fprintf(out, "removing %s\n", dir)
+			fmt.Fprintf(out, "remove %s?\n", name)
 		}
-		fmt.Fprintf(out, "type the dir name to confirm: ")
+		fmt.Fprintf(out, "  deletes %s and its Keychain item; transcripts survive\n", dir)
+		fmt.Fprintf(out, "[y/N] ")
 		reply, _ := bufio.NewReader(deps.stdin).ReadString('\n')
-		if strings.TrimSpace(reply) != name {
+		switch strings.ToLower(strings.TrimSpace(reply)) {
+		case "y", "yes":
+		default:
 			fmt.Fprintln(errw, "aborted")
 			return 1
 		}
