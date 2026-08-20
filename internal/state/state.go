@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
@@ -393,9 +394,7 @@ func (s Snapshot) Owner(id string) (OwnerRec, bool) {
 // keep: mutations go through ReHome.
 func (s Snapshot) Owners() map[string]OwnerRec {
 	out := make(map[string]OwnerRec, len(s.d.sessions))
-	for k, v := range s.d.sessions {
-		out[k] = v
-	}
+	maps.Copy(out, s.d.sessions)
 	return out
 }
 
@@ -497,9 +496,7 @@ func (d *doc) marshal() ([]byte, error) {
 	// Start from the raw sections so anything this binary did not decode —
 	// a newer schema's addition, a quarantined section — survives untouched.
 	out := make(map[string]json.RawMessage, len(d.raw)+3)
-	for k, v := range d.raw {
-		out[k] = v
-	}
+	maps.Copy(out, d.raw)
 	v, err := json.Marshal(Version)
 	if err != nil {
 		return nil, err

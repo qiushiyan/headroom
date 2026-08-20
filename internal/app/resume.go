@@ -644,10 +644,7 @@ func (ui *resumeUI) pageSize() int {
 	if err != nil || h < 8 {
 		h = 24
 	}
-	n := (h - 5) / 2 // header, section labels amortized, footer
-	if n < 1 {
-		n = 1
-	}
+	n := max((h-5)/2, 1) // header, section labels amortized, footer
 	return n
 }
 
@@ -791,10 +788,7 @@ func (ui *resumeUI) draw() {
 		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), shortAccount(ui.current), title)+p.Rst)
 
 	rowLines, selLine, selSpan := ui.rowLines(w, now)
-	body := h - 3 // header + footer + input/message line
-	if body < 3 {
-		body = 3
-	}
+	body := max(h-3, 3) // header + footer + input/message line
 	// Scroll to keep the selected entry's whole span — both lines plus the
 	// expanded preview — in view; when the span outgrows the viewport, the
 	// entry's first line wins.
@@ -812,10 +806,7 @@ func (ui *resumeUI) draw() {
 	if ui.top < 0 {
 		ui.top = 0
 	}
-	end := ui.top + body
-	if end > len(rowLines) {
-		end = len(rowLines)
-	}
+	end := min(ui.top+body, len(rowLines))
 	lines = append(lines, rowLines[ui.top:end]...)
 	for i := end - ui.top; i < body; i++ {
 		lines = append(lines, "")
@@ -930,10 +921,7 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 		meta = append(meta, m)
 	}
 	meta = append(meta, ownerTag(s, ui.current), render.Age(now-s.MTime.Unix()))
-	metaAvail := w - 2 - 4 - 2 - marksCells // prefix, minimum label, gap
-	if metaAvail < 2 {
-		metaAvail = 2
-	}
+	metaAvail := max(w-2-4-2-marksCells, 2) // prefix, minimum label, gap
 	for len(meta) > 1 && render.Cells(strings.Join(meta, " · ")) > metaAvail {
 		meta = meta[1:]
 	}
@@ -950,10 +938,7 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	// vendor text is the first place a CJK string meets framePrinter-style
 	// layouts.
 	label := render.Sanitize(primaryLabel(s))
-	labelWidth := w - 2 - render.Cells(right) - 2 - marksCells
-	if labelWidth < 4 {
-		labelWidth = 4
-	}
+	labelWidth := max(w-2-render.Cells(right)-2-marksCells, 4)
 	if render.Cells(label) > labelWidth {
 		label = render.TrimCells(label, labelWidth-1) + "…"
 	}
@@ -961,20 +946,14 @@ func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now 
 	if marksStr != "" {
 		left += "  " + marksStr
 	}
-	pad := w - render.Cells(stripSGR(left)) - render.Cells(right)
-	if pad < 2 {
-		pad = 2
-	}
+	pad := max(w-render.Cells(stripSGR(left))-render.Cells(right), 2)
 	line1 := left + strings.Repeat(" ", pad) + p.Dim + right + p.Rst
 
 	title := render.Sanitize(s.Tail.Title())
 	if title == "" {
 		title = "⟨untitled⟩"
 	}
-	titleWidth := w - 4
-	if titleWidth < 8 {
-		titleWidth = 8
-	}
+	titleWidth := max(w-4, 8)
 	if render.Cells(title) > titleWidth {
 		title = render.TrimCells(title, titleWidth-1) + "…"
 	}
@@ -1072,10 +1051,7 @@ func (ui *resumeUI) previewLines(s *sessions.Session, w int) []string {
 			return
 		}
 		text = render.Sanitize(text)
-		width := w - 8
-		if width < 10 {
-			width = 10
-		}
+		width := max(w-8, 10)
 		for i, line := 0, ""; text != "" && i < previewCap; i++ {
 			line = render.TrimCells(text, width)
 			text = text[len(line):]

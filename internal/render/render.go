@@ -457,13 +457,7 @@ func Clip(s string, width int) string {
 }
 
 func Bar(pct int) string {
-	filled := (pct*BarWidth + 50) / 100
-	if filled > BarWidth {
-		filled = BarWidth
-	}
-	if filled < 0 {
-		filled = 0
-	}
+	filled := max(min((pct*BarWidth+50)/100, BarWidth), 0)
 	return strings.Repeat("█", filled) + strings.Repeat("░", BarWidth-filled)
 }
 

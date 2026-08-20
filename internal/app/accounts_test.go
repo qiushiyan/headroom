@@ -134,7 +134,7 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 
 	// A held key delivers dozens of presses; all coalesce into the one armed
 	// bit, and none spawns anything.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		ui.refresh(context.Background())
 	}
 	if !ui.armed {

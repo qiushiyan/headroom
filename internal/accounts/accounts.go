@@ -56,7 +56,7 @@ func Discover(cfg config.Config) []Account {
 	seen := map[string]bool{"": true}
 
 	if data, err := os.ReadFile(cfg.OrderFile()); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			line, _, _ = strings.Cut(line, "#")
 			line = strings.Map(func(r rune) rune {
 				if unicode.IsSpace(r) {

@@ -45,7 +45,7 @@ func TestSearchReader(t *testing.T) {
 
 	// Exhaustive: split "NEEDLE" at every boundary a 4-byte buffer produces
 	// for every prefix length.
-	for pad := 0; pad < 12; pad++ {
+	for pad := range 12 {
 		content := strings.Repeat("x", pad) + "NEEDLE" + strings.Repeat("y", 3)
 		got := searchReader(strings.NewReader(content), []string{"NEEDLE"}, 4)
 		if !got["NEEDLE"] {

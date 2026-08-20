@@ -450,10 +450,7 @@ func boardWindow(top, selStart, selEnd, bodyLen, footerLen, h int) (newTop, view
 	case view >= 1:
 		return fitTop(top, selStart, selEnd, bodyLen, view), view, true
 	default:
-		view = h
-		if view > bodyLen {
-			view = bodyLen
-		}
+		view = min(h, bodyLen)
 		return fitTop(top, selStart, selEnd, bodyLen, view), view, false
 	}
 }
@@ -534,9 +531,6 @@ func (ui *picker) status(now time.Time) string {
 }
 
 func until(t, now time.Time) string {
-	d := t.Sub(now)
-	if d < 0 {
-		d = 0
-	}
+	d := max(t.Sub(now), 0)
 	return d.Round(time.Second).String()
 }

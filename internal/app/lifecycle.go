@@ -31,7 +31,7 @@ func runAccountsAdd(cfg config.Config, args []string) int {
 func runAccountsAddTo(out, errw io.Writer, cfg config.Config, args []string) int {
 	var name string
 	opt := accounts.SeedOptions{}
-	for i := 0; i < len(args); i++ {
+	for i := range args {
 		a := args[i]
 		switch {
 		case a == "--share-config":

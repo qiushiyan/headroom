@@ -168,10 +168,7 @@ func readSession(storeDir, storeDirName, name string) *Session {
 	size := fi.Size()
 	var tail Tail
 	for window := int64(TailBudget); ; window *= 2 {
-		off := size - window
-		if off < 0 {
-			off = 0
-		}
+		off := max(size-window, 0)
 		buf := make([]byte, size-off)
 		n, _ := f.ReadAt(buf, off)
 		tail = ParseTail(buf[:n], storeDirName, off == 0)
