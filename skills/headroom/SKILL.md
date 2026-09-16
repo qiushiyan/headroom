@@ -34,8 +34,8 @@ shell's `x-<name>`) — quote that spelling.
   [-- <claude args>]`. The default stays where it was.
 - **Change the default**: `headroom accounts`, enter on a row (records and
   exits); or `headroom launch --remember --account <name>`. `headroom
-  accounts --compact` is the same board one row per account — percent and
-  time-to-reset per window, every warning at the row's end; same keys.
+  accounts --compact` is the same board, one row per account: percent and
+  time-to-reset per window, every warning at the row's end, same keys.
 - **Out of quota mid-session — continue it on another account**. Changing
   the default steers new sessions only; the old one moves by re-home:
   1. Quit the session.
