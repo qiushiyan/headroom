@@ -132,6 +132,19 @@ if ! "$HEADROOM_BIN" --json >/dev/null 2>&1; then
 else
     echo "ok   json"
 fi
+# The compact layout reaches the non-interactive print too: off a terminal,
+# `accounts --compact` writes the column header and one row per account —
+# the interactive case alone would stay green with the one-shot path
+# quietly printing blocks.
+compact_out=$("$HEADROOM_BIN" accounts --compact 2>/dev/null)
+if ! printf '%s\n' "$compact_out" | head -1 | grep -q '^account' ||
+    [ "$(printf '%s\n' "$compact_out" | grep -c '@x.com')" -ne 2 ]; then
+    echo "FAIL compact-print: off a terminal, accounts --compact must print the header and one row per account"
+    printf '%s\n' "$compact_out" | sed 's/^/     /'
+    fail=1
+else
+    echo "ok   compact-print"
+fi
 
 # Arrows + enter select the second account and write state.
 run accounts_write
