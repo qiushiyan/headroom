@@ -53,11 +53,12 @@ func TestBoardBlocksIsAccountBlock(t *testing.T) {
 	}
 }
 
-// Columns are the union of decoded identities across accounts, in the
-// conventional order however the rows arrived, keyed by identity and never
-// by heading: two rows spelling the same label under different identities
-// are two columns, an unknown kind is carried after the known ones, and a
-// row whose identity failed the contract forms no column at all.
+// Columns are the union of decoded identities across accounts, ordered by
+// how much they decide the choice — model-scoped weekly windows, then the
+// 5h session, then all models — however the rows arrived, keyed by identity
+// and never by heading: two rows spelling the same label under different
+// identities are two columns, an unknown kind is carried after the known
+// ones, and a row whose identity failed the contract forms no column at all.
 func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 	now := time.Now().Unix()
 	views := []AccountView{
@@ -78,7 +79,7 @@ func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 	for _, c := range cols {
 		got = append(got, c.kind+"/"+c.model)
 	}
-	want := []string{"session/", "weekly_all/", "weekly_scoped/Fable", "weekly_scoped/Fable ", "weekly_scoped/Opus", "mystery/"}
+	want := []string{"weekly_scoped/Fable", "weekly_scoped/Fable ", "weekly_scoped/Opus", "session/", "weekly_all/", "mystery/"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("columns = %v, want %v", got, want)
 	}
@@ -90,9 +91,11 @@ func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 	}
 }
 
-// Each cell state has its own token and its own colour, and the precedence
-// is the bar's: a stale figure loses its severity colour, a percent that
-// failed to parse is red even when stale, a rolled-over window is dim.
+// Each cell state has its own token, and the two layers keep their own
+// colour: the percent takes the bar's severity with the bar's precedence (a
+// stale figure loses its colour, a percent that failed to parse is red even
+// when stale, a rolled-over window is dim); the reset is dim beside it
+// unless it is the reset itself that drifted.
 func TestCompactCellStates(t *testing.T) {
 	p := NewPalette(true)
 	now := int64(1_800_000_000)
@@ -100,27 +103,50 @@ func TestCompactCellStates(t *testing.T) {
 		name  string
 		row   usage.Row
 		stale bool
-		text  string
-		color string
+		want  cell
 	}{
-		{"valid, low", session(12, now+2*3600+4*60), false, " 12% 2h04m", p.Grn},
-		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), false, " 97% 4d20h", p.Red},
-		{"valid, middling, minutes", session(55, now+35*60), false, " 55% 35m", p.Yel},
-		{"stale loses colour", weeklyAll(97, now+86400), true, " 97% 1d0h", p.Dim},
-		{"reset legitimately absent", session(0, 0), false, "  0% —", p.Grn},
-		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: usage.StateBad}, false, " 12% reset?", p.Red},
-		{"rolled over is dim and not a number", session(12, now-60), false, "  ?% rolled", p.Dim},
-		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, false, "  ?% 1h00m", p.Red},
-		{"bad percent stays red when stale", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, true, "  ?% 1h00m", p.Red},
-		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, false, "  3% 1h00m", p.Red},
+		{"valid, low", session(12, now+2*3600+4*60), false, cell{"12%", "2h04m", p.Grn, p.Dim}},
+		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), false, cell{"97%", "4d20h", p.Red, p.Dim}},
+		{"valid, middling, minutes", session(55, now+35*60), false, cell{"55%", "35m", p.Yel, p.Dim}},
+		{"stale loses colour", weeklyAll(97, now+86400), true, cell{"97%", "1d0h", p.Dim, p.Dim}},
+		{"reset legitimately absent", session(0, 0), false, cell{"0%", "—", p.Grn, p.Dim}},
+		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: usage.StateBad}, false, cell{"12%", "reset?", p.Grn, p.Red}},
+		{"rolled over is dim and not a number", session(12, now-60), false, cell{"?%", "rolled", p.Dim, p.Dim}},
+		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, false, cell{"?%", "1h00m", p.Red, p.Dim}},
+		{"bad percent stays red when stale", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, true, cell{"?%", "1h00m", p.Red, p.Dim}},
+		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, false, cell{"3%", "1h00m", p.Red, p.Dim}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := p.cellFor(tc.row, now, tc.stale)
-			if c.text != tc.text || c.color != tc.color {
-				t.Fatalf("cell = %q/%q, want %q/%q", c.text, c.color, tc.text, tc.color)
+			if c := p.cellFor(tc.row, now, tc.stale); c != tc.want {
+				t.Fatalf("cell = %+v, want %+v", c, tc.want)
 			}
 		})
+	}
+}
+
+// The two layers align in their own slots: every percent ends in the same
+// column and every reset starts in the same column, whatever their lengths.
+func TestCompactCellLayersAlign(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	views := []AccountView{
+		{Label: "a@x.com", Obs: fresh(now, session(100, now+18*3600+40*60)), Attempt: Attempt{State: AttemptOK}},
+		{Label: "b@x.com", Obs: fresh(now, session(0, 0)), Attempt: Attempt{State: AttemptOK}},
+		{Label: "c@x.com", Obs: fresh(now, session(5, now+4*86400)), Attempt: Attempt{State: AttemptOK}},
+	}
+	b := p.Board(views, now, LayoutCompact, 0)
+	pctEnd, resetStart := -1, -1
+	for i, g := range b.Groups {
+		line := bare(g[0])
+		e := strings.Index(line, "%") + 1
+		s := e + 1
+		if i == 0 {
+			pctEnd, resetStart = e, s
+		}
+		if e != pctEnd || s != resetStart || line[s] == ' ' {
+			t.Errorf("row %d misaligned (percent ends %d, reset starts %d): %q", i, e, s, line)
+		}
 	}
 }
 
@@ -263,7 +289,8 @@ func TestCompactNameColumnGivesWayToTheCaption(t *testing.T) {
 	}
 	nameCells := func(width int) int {
 		h := bare(p.Board(views, now, LayoutCompact, width).Header[0])
-		return strings.Index(h, "5h session") - 1 - marksWidth - len(colGap)
+		// The first heading is the model-scoped window's.
+		return strings.Index(h, "Fable (7d)") - 1 - marksWidth - len(colGap)
 	}
 	if got := nameCells(0); got != nameCap {
 		t.Errorf("unconstrained name column = %d cells, want the cap %d", got, nameCap)
@@ -299,9 +326,10 @@ func TestCompactRowsAreOnePhysicalRowEach(t *testing.T) {
 			t.Errorf("line carries a control byte: %q", line)
 		}
 	}
-	// The wide label pads by cells, so the cells start in the same column.
+	// The wide label pads by cells, so the session cell — the last figure
+	// on both rows — starts in the same column.
 	a, c := bare(b.Groups[0][0]), bare(b.Groups[1][0])
-	if Cells(a[:strings.Index(a, "  1% ")]) != Cells(c[:strings.Index(c, "  1% ")]) {
+	if Cells(a[:strings.LastIndex(a, "1% 1h00m")]) != Cells(c[:strings.LastIndex(c, "1% 1h00m")]) {
 		t.Errorf("cells misaligned across a wide label:\n%q\n%q", a, c)
 	}
 }

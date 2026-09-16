@@ -76,14 +76,17 @@ const (
 
 // A column is one limit window across every account, identified by the
 // vendor's decoded vocabulary — kind, group and the scoped model — and never
-// by the heading derived from it. Known kinds sort in their conventional
-// order and unknown vocabulary follows deterministically; a row whose
-// identity failed the contract forms no column, because a limit that cannot
-// say which limit it is has no place to be compared in.
+// by the heading derived from it. Known kinds sort by how much they decide
+// the choice: the model-scoped weekly windows first (the one that runs out),
+// then the 5h session, then all models; unknown vocabulary follows
+// deterministically. A row whose identity failed the contract forms no
+// column, because a limit that cannot say which limit it is has no place to
+// be compared in.
 type column struct {
 	kind, group, model string
 	label              string
 	width              int
+	resetWidth         int // widest reset token in the column
 }
 
 func (c column) matches(r usage.Row) bool {
@@ -92,11 +95,11 @@ func (c column) matches(r usage.Row) bool {
 
 func columnRank(kind string) int {
 	switch kind {
-	case "session":
-		return 0
-	case "weekly_all":
-		return 1
 	case "weekly_scoped":
+		return 0
+	case "session":
+		return 1
+	case "weekly_all":
 		return 2
 	default:
 		return 3
@@ -130,36 +133,49 @@ func columns(views []AccountView) []column {
 	return cols
 }
 
-// A cell is one limit's figure in one row: text to align and the colour it
-// takes. The text is plain so widths can be measured; colour wraps it last.
+// A cell is one limit's figure in one row, in two layers: the percent,
+// which carries the severity colour and is what the eye is meant to land
+// on, and the reset beside it, dim, secondary. Each part aligns in its own
+// slot — the percent right-aligned to four cells, the reset left-aligned to
+// the column's widest token — so a row of cells reads as a column of
+// numbers with clocks after them, not as a ragged pair. Text is plain so
+// widths can be measured; colour wraps it last.
 type cell struct {
-	text  string
-	color string
+	pct, reset           string
+	pctColor, resetColor string
 }
+
+// pctWidth is the percent slot: "100%" and "  ?%" both fit.
+const pctWidth = 4
+
+func (c cell) width() int { return pctWidth + 1 + Cells(c.reset) }
 
 // cellFor is the compact counterpart of LimitRow, and keeps its states apart
 // with distinct tokens rather than a legend: a valid future reset, a reset
 // legitimately absent (a 5h window nobody has opened), a reset that failed
 // to parse, a window that has since ended, and a percent that is not a
-// number. Colour precedence is severity's, shared with the bar.
+// number. The percent's colour precedence is severity's, shared with the
+// bar; the reset is dim except when it is the thing that drifted.
 func (p Palette) cellFor(r usage.Row, now int64, stale bool) cell {
-	color := p.severity(r, now, stale)
-	pct := fmt.Sprintf("%3d%%", r.Percent)
-	reset := compactReset(r.ResetAt, now)
+	c := cell{
+		pct:        fmt.Sprintf("%d%%", r.Percent),
+		pctColor:   p.severity(r, now, stale),
+		reset:      compactReset(r.ResetAt, now),
+		resetColor: p.Dim,
+	}
 	switch {
 	case r.ResetState == usage.StateBad:
-		reset = "reset?"
-		color = p.Red
+		c.reset, c.resetColor = "reset?", p.Red
 	case r.ResetAt == 0:
-		reset = "—"
+		c.reset = "—"
 	}
 	switch {
 	case r.PercentState == usage.StateBad:
-		pct = "  ?%"
+		c.pct = "?%"
 	case r.RolledOver(now):
-		pct, reset = "  ?%", "rolled"
+		c.pct, c.reset = "?%", "rolled"
 	}
-	return cell{text: pct + " " + reset, color: color}
+	return c
 }
 
 // compactReset is ResetPhrase's duration alone, in one token: 4d20h, 2h04m,
@@ -233,14 +249,14 @@ func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
 			}
 			switch len(matched) {
 			case 0:
-				row.cells[j] = cell{text: "—", color: p.Dim}
+				row.cells[j] = cell{pct: "—", pctColor: p.Dim, resetColor: p.Dim}
 			case 1:
 				row.cells[j] = p.cellFor(matched[0], now, stale)
 			default:
 				// Two rows claiming one identity: the vendor has said
 				// something this vocabulary cannot carry. Choosing either
 				// percent would present a guess as a figure.
-				row.cells[j] = cell{text: "  ?%", color: p.Red}
+				row.cells[j] = cell{pct: "?%", pctColor: p.Red, resetColor: p.Dim}
 				row.drift = true
 			}
 		}
@@ -252,14 +268,16 @@ func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
 		rows[i] = row
 	}
 
-	// Column widths: the heading or the widest cell, whichever is wider.
+	// Column widths: the heading or the widest cell, whichever is wider;
+	// the reset slot is the column's widest token so every clock starts in
+	// the same place under the same heading.
 	for j := range cols {
-		cols[j].width = Cells(cols[j].label)
 		for _, row := range rows {
 			if row.cells != nil {
-				cols[j].width = max(cols[j].width, Cells(row.cells[j].text))
+				cols[j].resetWidth = max(cols[j].resetWidth, Cells(row.cells[j].reset))
 			}
 		}
+		cols[j].width = max(Cells(cols[j].label), pctWidth+1+cols[j].resetWidth)
 	}
 	nameW := nameWidth(views, cols, width)
 
@@ -334,14 +352,28 @@ func (p Palette) compactLine(v AccountView, row compactRow, cols []column, nameW
 		return b.String()
 	}
 	for j, c := range row.cells {
-		text := c.text
-		if capt != "" || j < len(row.cells)-1 {
-			text = PadCell(text, cols[j].width)
+		last := capt == "" && j == len(row.cells)-1
+		b.WriteString(colGap + c.pctColor + padLeft(c.pct, pctWidth) + p.Rst)
+		if c.reset == "" && last {
+			continue
 		}
-		b.WriteString(colGap + c.color + text + p.Rst)
+		reset := c.reset
+		if !last {
+			// The reset slot, then whatever the heading is wider by.
+			reset = PadCell(reset, cols[j].width-pctWidth-1)
+		}
+		b.WriteString(" " + c.resetColor + reset + p.Rst)
 	}
 	if capt != "" {
 		b.WriteString(colGap + capt)
 	}
 	return b.String()
+}
+
+// padLeft right-aligns plain text in a slot of the given cell width.
+func padLeft(s string, width int) string {
+	if n := Cells(s); n < width {
+		return strings.Repeat(" ", width-n) + s
+	}
+	return s
 }

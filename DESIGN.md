@@ -222,10 +222,14 @@ to a bare error.
 The board has two layouts of these same three axes, and the axes are what
 decide the second one's shape. The classic block spends a line per fact:
 health in red, one bar per window, a provenance caption. `--compact` puts an
-account on one row — the label, one cell per limit window (percent and a
-compact time-to-reset, in the bar's severity colour), and a trailing caption
-— and the rule that shaped it is that a row may not collapse what the block
-kept apart. The caption is *every* applicable clause joined, never one
+account on one row — the label, one cell per limit window, and a trailing
+caption — and the rule that shaped it is that a row may not collapse what
+the block kept apart. A cell has two layers: the percent, in the bar's
+severity colour, is what the eye lands on; the time-to-reset sits beside it
+dim, in its own aligned slot, because the clock is secondary to the number
+and belongs next to it rather than in a column of its own. Columns run in
+the order that decides the choice — the model-scoped weekly windows first
+(the one that runs out), then the 5h session, then all models. The caption is *every* applicable clause joined, never one
 winner: a logged-out account holding a fresh cache says "/login" *and* "via
 Claude Code's cache". The columns are keyed by the decoded identity
 (`kind`/`group`/`model`), never by heading prose, the same way machine
