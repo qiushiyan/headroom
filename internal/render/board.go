@@ -160,7 +160,7 @@ func (p Palette) cellFor(r usage.Row, now int64, stale bool) cell {
 	c := cell{
 		pct:        fmt.Sprintf("%d%%", r.Percent),
 		pctColor:   p.severity(r, now, stale),
-		reset:      compactReset(r.ResetAt, now),
+		reset:      Remaining(r.ResetAt - now),
 		resetColor: p.Dim,
 	}
 	switch {
@@ -176,22 +176,6 @@ func (p Palette) cellFor(r usage.Row, now int64, stale bool) cell {
 		c.pct, c.reset = "?%", "rolled"
 	}
 	return c
-}
-
-// compactReset is ResetPhrase's duration alone, in one token: 4d20h, 2h04m,
-// 35m. Only called with a future instant — a past one is a rolled-over
-// window, and an absent one has no duration.
-func compactReset(resetAt, now int64) string {
-	rem := resetAt - now
-	d, h, m := rem/86400, rem%86400/3600, rem%3600/60
-	switch {
-	case d > 0:
-		return fmt.Sprintf("%dd%dh", d, h)
-	case h > 0:
-		return fmt.Sprintf("%dh%02dm", h, m)
-	default:
-		return fmt.Sprintf("%dm", m)
-	}
 }
 
 // caption is every clause the block would have said about this account,

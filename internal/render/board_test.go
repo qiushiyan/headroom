@@ -105,16 +105,16 @@ func TestCompactCellStates(t *testing.T) {
 		stale bool
 		want  cell
 	}{
-		{"valid, low", session(12, now+2*3600+4*60), false, cell{"12%", "2h04m", p.Grn, p.Dim}},
-		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), false, cell{"97%", "4d20h", p.Red, p.Dim}},
-		{"valid, middling, minutes", session(55, now+35*60), false, cell{"55%", "35m", p.Yel, p.Dim}},
-		{"stale loses colour", weeklyAll(97, now+86400), true, cell{"97%", "1d0h", p.Dim, p.Dim}},
+		{"valid, low", session(12, now+2*3600+6*60), false, cell{"12%", "2.1h", p.Grn, p.Dim}},
+		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), false, cell{"97%", "4.8d", p.Red, p.Dim}},
+		{"valid, middling, minutes", session(55, now+35*60), false, cell{"55%", "0.6h", p.Yel, p.Dim}},
+		{"stale loses colour", weeklyAll(97, now+86400), true, cell{"97%", "1.0d", p.Dim, p.Dim}},
 		{"reset legitimately absent", session(0, 0), false, cell{"0%", "—", p.Grn, p.Dim}},
 		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: usage.StateBad}, false, cell{"12%", "reset?", p.Grn, p.Red}},
 		{"rolled over is dim and not a number", session(12, now-60), false, cell{"?%", "rolled", p.Dim, p.Dim}},
-		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, false, cell{"?%", "1h00m", p.Red, p.Dim}},
-		{"bad percent stays red when stale", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, true, cell{"?%", "1h00m", p.Red, p.Dim}},
-		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, false, cell{"3%", "1h00m", p.Red, p.Dim}},
+		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, false, cell{"?%", "1.0h", p.Red, p.Dim}},
+		{"bad percent stays red when stale", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, true, cell{"?%", "1.0h", p.Red, p.Dim}},
+		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, false, cell{"3%", "1.0h", p.Red, p.Dim}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -330,22 +330,26 @@ func TestCompactRowsAreOnePhysicalRowEach(t *testing.T) {
 	// The wide label pads by cells, so the session cell — the last figure
 	// on both rows — starts in the same column.
 	a, c := bare(b.Groups[0][0]), bare(b.Groups[1][0])
-	if Cells(a[:strings.LastIndex(a, "1% 1h00m")]) != Cells(c[:strings.LastIndex(c, "1% 1h00m")]) {
+	if Cells(a[:strings.LastIndex(a, "1% 1.0h")]) != Cells(c[:strings.LastIndex(c, "1% 1.0h")]) {
 		t.Errorf("cells misaligned across a wide label:\n%q\n%q", a, c)
 	}
 }
 
-func TestCompactReset(t *testing.T) {
-	now := int64(1_800_000_000)
+// One spelling of time-to-reset for both layouts: tenths of an hour under a
+// day, tenths of a day from a day up, the unit turning on the rounded value.
+func TestRemaining(t *testing.T) {
 	cases := map[int64]string{
-		4*86400 + 20*3600 + 5*60: "4d20h",
-		2*3600 + 4*60:            "2h04m",
-		35*60 + 59:               "35m",
-		30:                       "0m",
+		4*86400 + 20*3600 + 5*60: "4.8d",
+		2*3600 + 6*60:            "2.1h",
+		35*60 + 59:               "0.6h",
+		30:                       "0.0h",
+		23*3600 + 58*60:          "1.0d", // rounds to 24.0h, so it is a day
+		23*3600 + 56*60:          "23.9h",
+		86400:                    "1.0d",
 	}
 	for rem, want := range cases {
-		if got := compactReset(now+rem, now); got != want {
-			t.Errorf("compactReset(+%ds) = %q, want %q", rem, got, want)
+		if got := Remaining(rem); got != want {
+			t.Errorf("Remaining(%ds) = %q, want %q", rem, got, want)
 		}
 	}
 }

@@ -4,6 +4,7 @@ package render
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -423,7 +424,7 @@ func (p Palette) AccountBlock(v AccountView, now int64, labelWidth int) []string
 	return lines
 }
 
-// LimitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4d 20h)`
+// LimitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4.8d)`
 // A stale row keeps its numbers but loses its severity colour, so an old 12%
 // can't be mistaken at a glance for headroom available right now.
 func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int, stale bool) string {
@@ -523,19 +524,22 @@ func ResetPhrase(resetAt, now int64) string {
 	if rem <= 0 {
 		return "resetting…"
 	}
-	d, h, m := rem/86400, rem%86400/3600, rem%3600/60
-	var in string
-	switch {
-	case d > 0:
-		in = fmt.Sprintf("%dd %dh", d, h)
-	case h > 0:
-		in = fmt.Sprintf("%dh %dm", h, m)
-	default:
-		in = fmt.Sprintf("%dm", m)
-	}
 	t := time.Unix(resetAt, 0)
 	if rem < 86400 {
-		return fmt.Sprintf("resets %s (in %s)", t.Format("15:04"), in)
+		return fmt.Sprintf("resets %s (in %s)", t.Format("15:04"), Remaining(rem))
 	}
-	return fmt.Sprintf("resets %s (in %s)", t.Format("Mon 15:04"), in)
+	return fmt.Sprintf("resets %s (in %s)", t.Format("Mon 15:04"), Remaining(rem))
+}
+
+// Remaining is the one spelling of "time until a window resets", in both
+// layouts: tenths of an hour under a day (2.1h), tenths of a day from a day
+// up (4.8d). One number with one decimal reads faster than a pair of units,
+// and the tenth is the precision a choice between accounts actually uses.
+// The unit turns over on the rounded value, so 23h58m reads 1.0d rather
+// than 24.0h. Only called with a positive remainder.
+func Remaining(rem int64) string {
+	if h := float64(rem) / 3600; math.Round(h*10)/10 < 24 {
+		return fmt.Sprintf("%.1fh", h)
+	}
+	return fmt.Sprintf("%.1fd", float64(rem)/86400)
 }

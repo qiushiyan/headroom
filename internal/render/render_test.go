@@ -44,9 +44,10 @@ func TestResetPhrase(t *testing.T) {
 		re  *regexp.Regexp
 		in  string
 	}{
-		{90, sameDay, "1m"},
-		{3*3600 + 120, sameDay, "3h 2m"},
-		{2*86400 + 3*3600, withDay, "2d 3h"},
+		{90, sameDay, "0.0h"},
+		{3*3600 + 120, sameDay, "3.0h"},
+		{3*3600 + 6*60, sameDay, "3.1h"},
+		{2*86400 + 3*3600, withDay, "2.1d"},
 	}
 	for _, c := range cases {
 		got := ResetPhrase(now+c.rem, now)
