@@ -295,48 +295,64 @@ func retryPhrase(nextAt, now int64) string {
 // went wrong refreshing them. It returns "" for the ordinary case — fresh
 // numbers straight from the endpoint need no caption.
 func (p Palette) ProvenanceLine(v AccountView, now int64) string {
-	parts, stale := p.provenance(v, now)
-	if len(parts) == 0 {
+	pr := p.provenance(v, now)
+	if pr.empty() {
 		return ""
 	}
+	parts := []string{pr.age}
+	if pr.source != "" {
+		parts = append(parts, pr.source)
+	}
+	if pr.attempt != "" {
+		parts = append(parts, pr.attempt)
+	}
 	line := "  " + p.Dim + strings.Join(parts, " · ") + p.Rst
-	if stale {
+	if pr.stale {
 		// Old numbers are context, not an answer — say so where the eye lands.
 		line = "  " + p.Yel + "stale" + p.Rst + p.Dim + " · " + strings.Join(parts, " · ") + p.Rst
 	}
 	return line
 }
 
-// provenance is the caption's clauses before layout: nil for the ordinary
-// case, otherwise the age, the source when it is Claude Code's cache, and the
-// newest attempt when it went wrong — plus whether the figures are stale,
-// which the layouts mark in their own way.
+// provenanceParts is the caption's clauses before layout: the age of the
+// figures, their source when it is Claude Code's cache, the newest attempt
+// when it went wrong, and whether the figures are stale. Each layout orders
+// and styles them its own way; the words are shared so the two cannot drift.
 //
 // Three independent clauses, never one verdict: how old the figures are,
 // where they came from, and how the newest refresh went. All three can be
 // true at once — twenty seconds old, from Claude Code's cache, refresh
 // refused — and collapsing them is how a failed refresh used to vanish
 // behind figures that looked current.
-func (p Palette) provenance(v AccountView, now int64) (parts []string, stale bool) {
+type provenanceParts struct {
+	age, source, attempt string
+	stale                bool
+}
+
+func (pr provenanceParts) empty() bool { return pr.age == "" }
+
+// provenance is empty for the ordinary case — fresh figures headroom fetched
+// itself, with nothing to report about the refresh.
+func (p Palette) provenance(v AccountView, now int64) provenanceParts {
 	if v.Obs == nil {
-		return nil, false
+		return provenanceParts{}
 	}
 	fresh := v.Fresh(now)
 	if fresh && v.Obs.Source.Ours() && expected(v.Attempt.State) {
-		return nil, false
+		return provenanceParts{}
 	}
-	parts = []string{"observed " + agePhrase(now-v.Obs.ObservedAt) + " ago"}
+	pr := provenanceParts{age: "observed " + agePhrase(now-v.Obs.ObservedAt) + " ago", stale: !fresh}
 	if v.Obs.Source == SourceCache {
-		parts = append(parts, "via Claude Code's cache")
+		pr.source = "via Claude Code's cache"
 	}
 	// AttemptNoLimits is already the body of an empty observation; repeating
 	// it as a caption would say the same thing twice.
 	sayAttempt := v.Attempt.State != AttemptOK && v.Attempt.State != AttemptNone &&
 		!(v.Attempt.State == AttemptNoLimits && len(v.Obs.Rows) == 0)
 	if sayAttempt {
-		parts = append(parts, p.attemptReason(v, now))
+		pr.attempt = p.attemptReason(v, now)
 	}
-	return parts, !fresh
+	return pr
 }
 
 // Age is agePhrase for other surfaces: the session picker stamps every row

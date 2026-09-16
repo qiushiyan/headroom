@@ -227,7 +227,11 @@ one rule — a row may not collapse what the block keeps apart:
 
 - **The caption is every applicable clause joined, never one winner.** A
   logged-out account holding a fresh cache says "/login" *and* "via Claude
-  Code's cache"; a stale observation says so beside its figures.
+  Code's cache"; a mismatched dir is named, not only marked. The caption is
+  what a narrow terminal cuts from the right, so its order is clip order:
+  the clauses that change what the user does — health, the dir, why there
+  are no figures, drift, `stale`, how the refresh went — before the ones
+  that explain (how old, from where).
 - **Columns are decoded identity, never heading prose.** They key on
   `kind`/`group`/`model`, the way machine consumers select rows, and run in
   the order that decides the choice: the model-scoped weekly windows (the
@@ -242,11 +246,18 @@ one rule — a row may not collapse what the block keeps apart:
   column of its own. The bar's states stay distinct tokens: a valid reset, a
   legitimately absent one, one that failed to parse, a rolled-over window, a
   percent that is not a number.
+- **Under width pressure the row gives way in cost order.** Heading
+  surplus first (a heading wider than its cells ellipsizes), then the name
+  toward its floor, and only then the caption's reserve — a fourth window on
+  one account must not spend another account's warning on padding. The
+  unhealthy account's name is red so even a caption clipped to nothing
+  cannot leave green figures beside an account that cannot be used.
 - **A layout is only a layout.** Both run the same rounds, honour the same
   claim and commit the same choice, and one renderer function produces the
   whole board — header and one line group per account — for both, so the
   picker and the one-shot print can neither compute a column nor disagree
-  about one.
+  about one. Off a terminal, or on one that is not interactive, the print
+  wraps rather than clips: there is no redraw to protect.
 
 ## The one file headroom writes
 

@@ -89,9 +89,10 @@ func runAccounts(cfg config.Config, layout render.Layout) int {
 }
 
 // printBoard is the non-interactive rendering: fetch once, draw once, exit.
-// On a terminal the lines are clipped to its width, as the picker's are — a
-// compact row is wide, and a wrapped one is a table nobody can read; a pipe
-// gets every cell.
+// Nothing is clipped: there is no redraw arithmetic to protect, and a line
+// the terminal wraps still says everything. The terminal's width, when
+// there is one, only sizes the compact layout's columns so its rows fit
+// when they can.
 func printBoard(cfg config.Config, layout render.Layout) int {
 	st := state.Open(cfg.AccountsRoot)
 	list, _, _ := prepare(cfg, st)
@@ -110,14 +111,14 @@ func printBoard(cfg config.Config, layout render.Layout) int {
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	for _, line := range b.Header {
-		fmt.Fprintln(out, render.Clip(line, width))
+		fmt.Fprintln(out, line)
 	}
 	for i, g := range b.Groups {
 		if i > 0 && layout == render.LayoutBlocks {
 			fmt.Fprintln(out)
 		}
 		for _, line := range g {
-			fmt.Fprintln(out, render.Clip(line, width))
+			fmt.Fprintln(out, line)
 		}
 	}
 	return 0

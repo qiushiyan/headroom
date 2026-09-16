@@ -195,14 +195,25 @@ func compactReset(resetAt, now int64) string {
 }
 
 // caption is every clause the block would have said about this account,
-// joined on one line: the health warning, the reason there are no figures,
-// staleness and provenance, and drift. Never one winner — a logged-out
-// account holding a fresh cache is both of those things, and a row that
-// picked one would be the axis collapse this model exists to prevent.
+// joined on one line. Never one winner — a logged-out account holding a
+// fresh cache is both of those things, and a row that picked one would be
+// the axis collapse this model exists to prevent.
+//
+// The order is clip order. The caption is what a narrow terminal cuts from
+// the right, so the clauses that change what the user does come first —
+// health, the mismatched dir, why there are no figures, drift, staleness,
+// how the refresh went — and the explanatory ones last: how old the figures
+// are and where they came from. The block orders the same words by
+// narrative; the row orders them by what must survive.
 func (p Palette) caption(v AccountView, now int64, drift bool) string {
 	var parts []string
 	if t := healthText(v); t != "" {
 		parts = append(parts, p.Red+t+p.Rst)
+	}
+	if v.DirMismatch != "" {
+		// The mark says something is wrong; the caption says which dir,
+		// which is what the user needs to go and fix it.
+		parts = append(parts, p.Red+"dir says "+Sanitize(v.DirMismatch)+p.Rst)
 	}
 	switch {
 	case v.Obs == nil && v.Health == HealthOK:
@@ -210,15 +221,21 @@ func (p Palette) caption(v AccountView, now int64, drift bool) string {
 	case v.Obs != nil && len(v.Obs.Rows) == 0:
 		parts = append(parts, p.Dim+"no limits reported"+p.Rst)
 	}
-	prov, stale := p.provenance(v, now)
-	if stale {
-		parts = append(parts, p.Yel+"stale"+p.Rst)
-	}
-	for _, s := range prov {
-		parts = append(parts, p.Dim+s+p.Rst)
-	}
 	if drift {
 		parts = append(parts, p.Red+"⚠ drift — run headroom check"+p.Rst)
+	}
+	pr := p.provenance(v, now)
+	if pr.stale {
+		parts = append(parts, p.Yel+"stale"+p.Rst)
+	}
+	if pr.attempt != "" {
+		parts = append(parts, p.Dim+pr.attempt+p.Rst)
+	}
+	if pr.age != "" {
+		parts = append(parts, p.Dim+pr.age+p.Rst)
+	}
+	if pr.source != "" {
+		parts = append(parts, p.Dim+pr.source+p.Rst)
 	}
 	return strings.Join(parts, p.Dim+" · "+p.Rst)
 }
@@ -268,18 +285,17 @@ func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
 		rows[i] = row
 	}
 
-	// Column widths: the heading or the widest cell, whichever is wider;
-	// the reset slot is the column's widest token so every clock starts in
-	// the same place under the same heading.
+	// The reset slot is the column's widest token so every clock starts in
+	// the same place under the same heading; column and name widths are
+	// then budgeted against the terminal together.
 	for j := range cols {
 		for _, row := range rows {
 			if row.cells != nil {
 				cols[j].resetWidth = max(cols[j].resetWidth, Cells(row.cells[j].reset))
 			}
 		}
-		cols[j].width = max(Cells(cols[j].label), pctWidth+1+cols[j].resetWidth)
 	}
-	nameW := nameWidth(views, cols, width)
+	nameW := budget(views, cols, width)
 
 	// Header: the name column's heading, blank marks, then every column's
 	// label. Dim throughout — it is chrome, not data.
@@ -297,27 +313,40 @@ func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
 	return b
 }
 
-// nameWidth sizes the name column: the longest label, capped, and squeezed
-// toward the floor when the terminal cannot otherwise leave the caption its
-// reserve. The caption is the clip casualty on a narrow screen; giving the
-// name column surplus width first would spend the caption's room on padding.
-func nameWidth(views []AccountView, cols []column, width int) int {
+// budget sizes the columns and the name against the terminal and returns
+// the name width. Unconstrained, every heading stands at full width and the
+// name column is the longest label up to its cap. Under pressure the row
+// gives way in the order of what it costs to lose: heading surplus first
+// (a heading wider than its cells is padding; it ellipsizes to the cells),
+// then the name down to its floor — and only then does the caption, the
+// clip casualty, lose its reserve. Spending the caption's room on padding
+// is how a fourth window on one account hid another account's warning.
+func budget(views []AccountView, cols []column, width int) int {
 	longest := 0
 	for _, v := range views {
 		longest = max(longest, Cells(Sanitize(v.Label)))
 	}
-	w := min(longest, nameCap)
-	if width <= 0 {
-		return max(w, 1)
+	nameW := max(min(longest, nameCap), 1)
+	fixed := func() int {
+		n := selectionPrefix + 1 + marksWidth
+		for _, c := range cols {
+			n += len(colGap) + c.width
+		}
+		return n
 	}
-	fixed := selectionPrefix + 1 + marksWidth
-	for _, c := range cols {
-		fixed += len(colGap) + c.width
+	for j := range cols {
+		cols[j].width = max(Cells(cols[j].label), pctWidth+1+cols[j].resetWidth)
 	}
-	if avail := width - fixed - captionReserve; avail < w {
-		w = max(avail, nameFloor)
+	if width <= 0 || width-fixed()-captionReserve >= nameW {
+		return nameW
 	}
-	return max(w, 1)
+	for j := range cols {
+		cols[j].width = pctWidth + 1 + cols[j].resetWidth
+	}
+	if avail := width - fixed() - captionReserve; avail < nameW {
+		nameW = max(avail, nameFloor)
+	}
+	return nameW
 }
 
 // compactLine draws one row: name, marks, cells or caption. The name goes

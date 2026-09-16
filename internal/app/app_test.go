@@ -491,3 +491,21 @@ func TestResumeSpellingIsTombstoned(t *testing.T) {
 		t.Errorf("resume --json: exit %d, want 2", code)
 	}
 }
+
+// The board's presentation flag is opt-in: absent, the layout is the blocks
+// whatever else is typed, and what follows the flag is left for the
+// no-arguments check to refuse rather than swallowed.
+func TestBoardLayoutFlagIsOptIn(t *testing.T) {
+	if l, rest := boardLayout(nil); l != render.LayoutBlocks || len(rest) != 0 {
+		t.Fatalf("bare board = %v %v, want blocks with nothing left", l, rest)
+	}
+	if l, rest := boardLayout([]string{"--compact"}); l != render.LayoutCompact || len(rest) != 0 {
+		t.Fatalf("--compact = %v %v, want compact with nothing left", l, rest)
+	}
+	if l, rest := boardLayout([]string{"--compact", "extra"}); l != render.LayoutCompact || len(rest) != 1 {
+		t.Fatalf("--compact extra = %v %v, want compact with the stray argument left to refuse", l, rest)
+	}
+	if l, rest := boardLayout([]string{"stray"}); l != render.LayoutBlocks || len(rest) != 1 {
+		t.Fatalf("stray = %v %v, want blocks with the argument left to refuse", l, rest)
+	}
+}

@@ -77,9 +77,8 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 				return runAccountsAdd(cfg, rest[1:])
 			case "remove":
 				return runAccountsRemove(cfg, rest[1:])
-			case "--compact":
-				layout, rest = render.LayoutCompact, rest[1:]
 			}
+			layout, rest = boardLayout(rest)
 		}
 		if !noArgs() {
 			return 2
@@ -114,6 +113,17 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		printUsage(os.Stderr)
 		return 2
 	}
+}
+
+// boardLayout reads the board's one presentation flag off the front of its
+// arguments. Absent, the layout is the blocks — the default is the default
+// whatever else is typed — and whatever follows the flag is left for the
+// no-arguments check to refuse.
+func boardLayout(args []string) (render.Layout, []string) {
+	if len(args) > 0 && args[0] == "--compact" {
+		return render.LayoutCompact, args[1:]
+	}
+	return render.LayoutBlocks, args
 }
 
 func printUsage(w io.Writer) {

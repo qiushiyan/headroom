@@ -288,9 +288,10 @@ func TestCompactNameColumnGivesWayToTheCaption(t *testing.T) {
 		{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
 	}
 	nameCells := func(width int) int {
-		h := bare(p.Board(views, now, LayoutCompact, width).Header[0])
-		// The first heading is the model-scoped window's.
-		return strings.Index(h, "Fable (7d)") - 1 - marksWidth - len(colGap)
+		// The long label fills its column exactly (ellipsized when capped)
+		// and carries no spaces, so its first field is the column.
+		row := bare(p.Board(views, now, LayoutCompact, width).Groups[0][0])
+		return Cells(strings.Fields(row)[0])
 	}
 	if got := nameCells(0); got != nameCap {
 		t.Errorf("unconstrained name column = %d cells, want the cap %d", got, nameCap)
@@ -346,5 +347,76 @@ func TestCompactReset(t *testing.T) {
 		if got := compactReset(now+rem, now); got != want {
 			t.Errorf("compactReset(+%ds) = %q, want %q", rem, got, want)
 		}
+	}
+}
+
+// The caption is clipped from the right on a narrow terminal, so its order
+// is what survives: the clauses that change what the user does (stale, how
+// the refresh went) come before the ones that explain (how old, from where).
+// The trap this pins: a refused refresh on a stale cached observation sat
+// behind "observed 2h ago · via Claude Code's cache" and was the first thing
+// a 110-column terminal cut.
+func TestCompactCaptionOrdersSignalsBeforeExplanations(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	refused := AccountView{Label: "qiushi.yann@gmail.com", Launcher: "x-q",
+		Obs:     &Observation{Rows: []usage.Row{scoped("Fable", 83, now+90000), session(12, now+3600), weeklyAll(42, now+90000)}, ObservedAt: now - 7200, Source: SourceCache},
+		Attempt: Attempt{State: AttemptRefused, NextEligibleAt: now + 40}}
+	// A second account with a window of its own adds a fourth column.
+	other := AccountView{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: Attempt{State: AttemptOK}}
+	row := bare(p.Board([]AccountView{refused, other}, now, LayoutCompact, 0).Groups[0][0])
+	order := []string{"stale", "rate limited", "observed 2h ago", "via Claude Code's cache"}
+	last := -1
+	for _, w := range order {
+		i := strings.Index(row, w)
+		if i < 0 || i < last {
+			t.Fatalf("caption clauses out of order (want %v): %q", order, row)
+		}
+		last = i
+	}
+	clipped := bare(Clip(p.Board([]AccountView{refused, other}, now, LayoutCompact, 110).Groups[0][0], 110))
+	if !strings.Contains(clipped, "rate limited") {
+		t.Errorf("110 columns lost the refusal: %q", clipped)
+	}
+}
+
+// Under width pressure the row gives way in cost order: heading surplus
+// (padding) first, then the name toward its floor, and only then the
+// caption's reserve. With a fourth window on another account an 80-column
+// terminal must still show this account's "stale".
+func TestCompactHeadingsGiveWayBeforeNames(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	views := []AccountView{
+		{Label: "someone.with.a.long.address@example.com",
+			Obs:     &Observation{Rows: []usage.Row{scoped("Fable", 83, now+90000), session(12, now+3600), weeklyAll(42, now+90000)}, ObservedAt: now - 7200, Source: SourceStore},
+			Attempt: Attempt{State: AttemptNone}},
+		{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
+	}
+	wide := bare(p.Board(views, now, LayoutCompact, 200).Header[0])
+	if !strings.Contains(wide, "All models (7d)") {
+		t.Fatalf("headings shortened with room to spare: %q", wide)
+	}
+	b := p.Board(views, now, LayoutCompact, 80)
+	if h := bare(b.Header[0]); !strings.Contains(h, "…") || strings.Contains(h, "All models (7d)") {
+		t.Errorf("headings kept their surplus under pressure: %q", h)
+	}
+	row := bare(b.Groups[0][0])
+	if n := Cells(strings.Fields(row)[0]); n < nameFloor {
+		t.Errorf("name squeezed below the floor to %d: %q", n, row)
+	}
+	if clipped := bare(Clip(b.Groups[0][0], 80)); !strings.Contains(clipped, "stale") {
+		t.Errorf("80 columns lost the staleness signal: %q", clipped)
+	}
+}
+
+// The mismatch mark alone would send the user to the block layout to learn
+// which dir to fix; the caption names it, as the block's header does.
+func TestCompactDirMismatchNamesTheDir(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	views := []AccountView{{Label: "b@x.com", DirMismatch: "c@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}}}
+	if row := bare(p.Board(views, now, LayoutCompact, 0).Groups[0][0]); !strings.Contains(row, "dir says c@x.com") {
+		t.Fatalf("mismatched dir unnamed: %q", row)
 	}
 }
