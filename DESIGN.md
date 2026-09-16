@@ -243,7 +243,10 @@ one rule — a row may not collapse what the block keeps apart:
   (stale dims; a percent that failed to parse is red even when stale); the
   time-to-reset sits after it dim, in its own aligned slot, because the
   clock is secondary to the number and belongs next to it rather than in a
-  column of its own. The bar's states stay distinct tokens: a valid reset, a
+  column of its own. That clock is one number with one decimal in both
+  layouts — tenths of an hour under a day (2.1h), tenths of a day from a
+  day up (4.7d): a weekly reset is waited for in days, and a pair of units
+  reads slower than one figure. The bar's states stay distinct tokens: a valid reset, a
   legitimately absent one, one that failed to parse, a rolled-over window, a
   percent that is not a number.
 - **Under width pressure the row gives way in cost order.** Heading
