@@ -37,6 +37,7 @@ room and leave the others to recover:
 
 - `headroom accounts` — pick where new sessions go. Enter records it and
   exits; from then on a bare `headroom launch` starts `claude` there.
+  `--compact` shows one row per account instead of bars.
 - `headroom launch --account <email>` — one session on another account, the
   default untouched. Anything after `--` goes to `claude`.
 

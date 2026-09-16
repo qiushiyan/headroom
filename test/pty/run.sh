@@ -150,6 +150,14 @@ fi
 # The board redraws its countdown, survives a burst of refresh keys, and quits.
 run accounts_refresh
 
+# The compact layout draws its column header and one row per account, moves
+# the selection and quits clean — the same loop under a second presentation.
+run accounts_compact
+if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+    echo "FAIL accounts_compact: quit must write nothing"
+    fail=1
+fi
+
 # SIGTERM mid-session must leave the terminal in canonical echoing mode.
 run accounts_sigterm
 if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||

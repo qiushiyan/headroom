@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+# `accounts --compact` is the board under a second presentation, not a second
+# board: the same loop draws a column header and one row per account, the
+# selection moves along rows, and the footer is the same footer.
+#
+# What this covers that `go test` cannot: the header is chrome the picker
+# keeps above the scrolled body, printed through the same in-place redraw as
+# the rows — a header that scrolled with the body or broke the move-up
+# arithmetic would only show in a real pty.
+set timeout 10
+spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts --compact"
+# The header is the frame's first line: cleared, indented under the
+# selection column, dim. "account" alone would also match the echoed
+# command line's "accounts".
+expect {
+    -ex "\x1b\[2K  \x1b\[2maccount" {}
+    timeout { puts "compact board never drew its column header"; exit 2 }
+}
+expect {
+    "next refresh in" {}
+    timeout { puts "compact board never drew its refresh countdown"; exit 2 }
+}
+# The fixture accounts have no credentials: no figures, so each row is its
+# caption, and the footer still counts nothing as too old to pick on.
+expect {
+    "usage unknown" {}
+    timeout { puts "compact rows did not caption their missing figures"; exit 2 }
+}
+send -- "j"
+sleep 0.5
+expect {
+    -re {▶ .*b@x.com} {}
+    timeout { puts "selection did not move to the second row"; exit 2 }
+}
+send -- "q"
+expect eof
+catch wait result
+if {[lindex $result 3] != 1} {
+    puts "quit exited [lindex $result 3], want 1 (nothing was picked)"
+    exit 2
+}

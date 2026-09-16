@@ -14,7 +14,7 @@ send -- "\033\[B"
 sleep 0.3
 send -- "\r"
 expect {
-    "bare x now targets it" {}
+    "now target it" {}
     timeout { puts "no confirmation line after enter"; exit 2 }
 }
 expect eof

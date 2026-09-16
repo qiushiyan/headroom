@@ -68,19 +68,23 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 	// board; accepted so a shell integration mid-update keeps working.
 	case "", "accounts", "select":
 		// The board's noun also carries the two commands that change the
-		// account set; the board itself still takes nothing.
+		// account set, and the board's one presentation flag; the bare
+		// invocation and the compatibility spelling still take nothing.
+		layout := render.LayoutBlocks
 		if cmd == "accounts" && len(rest) > 0 {
 			switch rest[0] {
 			case "add":
 				return runAccountsAdd(cfg, rest[1:])
 			case "remove":
 				return runAccountsRemove(cfg, rest[1:])
+			case "--compact":
+				layout, rest = render.LayoutCompact, rest[1:]
 			}
 		}
 		if !noArgs() {
 			return 2
 		}
-		return runAccounts(cfg)
+		return runAccounts(cfg, layout)
 	case "--json":
 		if !noArgs() {
 			return 2
@@ -118,6 +122,9 @@ func printUsage(w io.Writer) {
   (none)     the account board: live usage for every account, refreshing
   accounts   while it is open; enter picks the account a bare launch targets.
              Off a terminal, prints the board once and exits.
+  accounts --compact
+             the same board, one row per account: percent and time-to-reset
+             per limit window, every warning at the end of the row
   accounts add <email> [--share-config[=<dir>]]
              seed the dir for a new subscription: projects/ linked to the
              machine-global store; --share-config links the primary's

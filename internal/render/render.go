@@ -200,15 +200,25 @@ func (p Palette) HeaderLine(v AccountView) string {
 // can still hold a recent cache, and showing those bars without the warning
 // would invite the user to pick an account they cannot use.
 func (p Palette) HealthLine(v AccountView) string {
+	if t := healthText(v); t != "" {
+		return "  " + p.Red + t + p.Rst
+	}
+	return ""
+}
+
+// healthText is the health clause's words, unstyled and unindented: the
+// block wraps them in a red line of their own, the compact row folds them
+// into its caption. One spelling, so the two presentations cannot drift.
+func healthText(v AccountView) string {
 	switch v.Health {
 	case HealthNoLogin:
-		return fmt.Sprintf("  %snot logged in — run %s and /login%s", p.Red, v.Launcher, p.Rst)
+		return fmt.Sprintf("not logged in — run %s and /login", v.Launcher)
 	case HealthReloginRequired:
-		return fmt.Sprintf("  %slogin expired — run %s and /login%s", p.Red, v.Launcher, p.Rst)
+		return fmt.Sprintf("login expired — run %s and /login", v.Launcher)
 	case HealthBadBlob:
-		return "  " + p.Red + "credential unreadable — format changed? run headroom check" + p.Rst
+		return "credential unreadable — format changed? run headroom check"
 	case HealthUnknown:
-		return "  " + p.Red + "login state unknown — run headroom check" + p.Rst
+		return "login state unknown — run headroom check"
 	default:
 		return ""
 	}
@@ -285,19 +295,37 @@ func retryPhrase(nextAt, now int64) string {
 // went wrong refreshing them. It returns "" for the ordinary case — fresh
 // numbers straight from the endpoint need no caption.
 func (p Palette) ProvenanceLine(v AccountView, now int64) string {
-	if v.Obs == nil {
+	parts, stale := p.provenance(v, now)
+	if len(parts) == 0 {
 		return ""
 	}
-	// Three independent clauses, never one verdict: how old the figures are,
-	// where they came from, and how the newest refresh went. All three can be
-	// true at once — twenty seconds old, from Claude Code's cache, refresh
-	// refused — and collapsing them is how a failed refresh used to vanish
-	// behind figures that looked current.
+	line := "  " + p.Dim + strings.Join(parts, " · ") + p.Rst
+	if stale {
+		// Old numbers are context, not an answer — say so where the eye lands.
+		line = "  " + p.Yel + "stale" + p.Rst + p.Dim + " · " + strings.Join(parts, " · ") + p.Rst
+	}
+	return line
+}
+
+// provenance is the caption's clauses before layout: nil for the ordinary
+// case, otherwise the age, the source when it is Claude Code's cache, and the
+// newest attempt when it went wrong — plus whether the figures are stale,
+// which the layouts mark in their own way.
+//
+// Three independent clauses, never one verdict: how old the figures are,
+// where they came from, and how the newest refresh went. All three can be
+// true at once — twenty seconds old, from Claude Code's cache, refresh
+// refused — and collapsing them is how a failed refresh used to vanish
+// behind figures that looked current.
+func (p Palette) provenance(v AccountView, now int64) (parts []string, stale bool) {
+	if v.Obs == nil {
+		return nil, false
+	}
 	fresh := v.Fresh(now)
 	if fresh && v.Obs.Source.Ours() && expected(v.Attempt.State) {
-		return ""
+		return nil, false
 	}
-	parts := []string{"observed " + agePhrase(now-v.Obs.ObservedAt) + " ago"}
+	parts = []string{"observed " + agePhrase(now-v.Obs.ObservedAt) + " ago"}
 	if v.Obs.Source == SourceCache {
 		parts = append(parts, "via Claude Code's cache")
 	}
@@ -308,12 +336,7 @@ func (p Palette) ProvenanceLine(v AccountView, now int64) string {
 	if sayAttempt {
 		parts = append(parts, p.attemptReason(v, now))
 	}
-	line := "  " + p.Dim + strings.Join(parts, " · ") + p.Rst
-	if !fresh {
-		// Old numbers are context, not an answer — say so where the eye lands.
-		line = "  " + p.Yel + "stale" + p.Rst + p.Dim + " · " + strings.Join(parts, " · ") + p.Rst
-	}
-	return line
+	return parts, !fresh
 }
 
 // Age is agePhrase for other surfaces: the session picker stamps every row
@@ -388,30 +411,19 @@ func (p Palette) AccountBlock(v AccountView, now int64, labelWidth int) []string
 // A stale row keeps its numbers but loses its severity colour, so an old 12%
 // can't be mistaken at a glance for headroom available right now.
 func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int, stale bool) string {
-	color := p.Grn
-	if r.Percent >= 50 {
-		color = p.Yel
-	}
-	if r.Percent >= 80 || r.Severity != "normal" {
-		color = p.Red
-	}
-	if stale {
-		color = p.Dim
-	}
+	color := p.severity(r, now, stale)
 	bar := Bar(r.Percent)
 	pct := fmt.Sprintf("%3d%%", r.Percent)
 	phrase := ResetPhrase(r.ResetAt, now)
 	switch {
 	case r.PercentState == usage.StateBad:
 		// A percent that no longer parses must not read as real headroom.
-		color = p.Red
 		bar = strings.Repeat("?", BarWidth)
 		pct = "  ?%"
 	case r.RolledOver(now):
 		// The window ended; whatever is being spent against the new one is
 		// unknown. Showing the old number here is the same lie as showing a
 		// drifted one — smaller, and in the direction that invites a choice.
-		color = p.Dim
 		bar = strings.Repeat("·", BarWidth)
 		pct = "  ?%"
 		phrase = "window rolled over"
@@ -422,6 +434,32 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int, stale bool) st
 		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
 	}
 	return line
+}
+
+// severity is the one colour rule for a limit's figure, shared by the bar
+// and the compact cell so the two presentations cannot grade the same number
+// differently. Precedence matters and is pinned here once: a stale figure
+// loses its severity colour, but a percent that failed to parse is red even
+// when stale — dimming it would weaken the one signal that says the number
+// is not a number — and a rolled-over window is dim whatever it once read.
+func (p Palette) severity(r usage.Row, now int64, stale bool) string {
+	color := p.Grn
+	if r.Percent >= 50 {
+		color = p.Yel
+	}
+	if r.Percent >= 80 || r.Severity != "normal" {
+		color = p.Red
+	}
+	if stale {
+		color = p.Dim
+	}
+	switch {
+	case r.PercentState == usage.StateBad:
+		color = p.Red
+	case r.RolledOver(now):
+		color = p.Dim
+	}
+	return color
 }
 
 // Clip truncates s to at most width display cells, passing ANSI escape

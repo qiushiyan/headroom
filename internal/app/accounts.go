@@ -69,9 +69,13 @@ func notActionable(list []*accountData, now int64) int {
 // runAccounts is the board. Off a terminal it prints one frame and exits, so
 // `headroom` in a pipe, a script or a non-interactive ssh still answers the
 // question it exists to answer.
-func runAccounts(cfg config.Config) int {
+//
+// layout is the presentation — the classic blocks or one row per account —
+// and nothing but presentation: both layouts run the same rounds, honour
+// the same claim and commit the same choice.
+func runAccounts(cfg config.Config, layout render.Layout) int {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !stdoutIsTTY() {
-		return printBoard(cfg)
+		return printBoard(cfg, layout)
 	}
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err != nil || w <= 0 || h <= 0 {
 		// An interactive tty that won't state its size cannot host the
@@ -79,29 +83,41 @@ func runAccounts(cfg config.Config) int {
 		// frames duplicate into scrollback. The one-shot print is the honest
 		// rendering there, and the caption says why the picker didn't open.
 		fmt.Fprintln(os.Stderr, "headroom accounts: terminal reports no size — printing the board once")
-		return printBoard(cfg)
+		return printBoard(cfg, layout)
 	}
-	return runPicker(cfg)
+	return runPicker(cfg, layout)
 }
 
 // printBoard is the non-interactive rendering: fetch once, draw once, exit.
-func printBoard(cfg config.Config) int {
+// On a terminal the lines are clipped to its width, as the picker's are — a
+// compact row is wide, and a wrapped one is a table nobody can read; a pipe
+// gets every cell.
+func printBoard(cfg config.Config, layout render.Layout) int {
 	st := state.Open(cfg.AccountsRoot)
 	list, _, _ := prepare(cfg, st)
 	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
 		resolve(list[u.idx], u, time.Now())
 	}
-	p := render.NewPalette(stdoutIsTTY())
-	now := time.Now().Unix()
-	labelWidth := render.LabelWidth(views(list))
+	tty := stdoutIsTTY()
+	p := render.NewPalette(tty)
+	width := 0
+	if tty {
+		if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+			width = w
+		}
+	}
+	b := p.Board(views(list), time.Now().Unix(), layout, width)
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
-	for i, d := range list {
-		if i > 0 {
+	for _, line := range b.Header {
+		fmt.Fprintln(out, render.Clip(line, width))
+	}
+	for i, g := range b.Groups {
+		if i > 0 && layout == render.LayoutBlocks {
 			fmt.Fprintln(out)
 		}
-		for _, line := range p.AccountBlock(d.View, now, labelWidth) {
-			fmt.Fprintln(out, line)
+		for _, line := range g {
+			fmt.Fprintln(out, render.Clip(line, width))
 		}
 	}
 	return 0
@@ -109,10 +125,11 @@ func printBoard(cfg config.Config) int {
 
 // picker is the interactive board's mutable state.
 type picker struct {
-	cfg config.Config
-	st  *state.Store
-	p   render.Palette
-	fp  *framePrinter
+	cfg    config.Config
+	st     *state.Store
+	p      render.Palette
+	fp     *framePrinter
+	layout render.Layout
 
 	list    []*accountData
 	updates <-chan fetchUpdate // non-nil while a round is in flight
@@ -133,7 +150,7 @@ type picker struct {
 
 const ackTTL = 4 * time.Second
 
-func runPicker(cfg config.Config) int {
+func runPicker(cfg config.Config, layout render.Layout) int {
 	t, err := tui.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
@@ -151,6 +168,7 @@ func runPicker(cfg config.Config) int {
 		st:      state.Open(cfg.AccountsRoot),
 		p:       render.NewPalette(true),
 		fp:      &framePrinter{},
+		layout:  layout,
 		lastKey: time.Now(),
 	}
 	// Every exit — enter, cancel, the deferred Close, a signal death — steps
@@ -400,14 +418,22 @@ func (ui *picker) restoreSelection() {
 
 func (ui *picker) draw() {
 	now := time.Now()
-	labelWidth := render.LabelWidth(views(ui.list))
+	// One geometry reading builds and prints the frame: a resize landing
+	// mid-draw hits the next tick, never a frame windowed to one screen and
+	// printed to another.
+	w, h := ui.fp.geometry()
+	b := ui.p.Board(views(ui.list), now.Unix(), ui.layout, w)
+	header := make([]string, len(b.Header))
+	for i, line := range b.Header {
+		header[i] = "  " + line
+	}
 	var body []string
 	selStart, selEnd := 0, 0
-	for i, d := range ui.list {
+	for i, g := range b.Groups {
 		if i == ui.sel {
 			selStart = len(body)
 		}
-		for j, line := range ui.p.AccountBlock(d.View, now.Unix(), labelWidth) {
+		for j, line := range g {
 			prefix := "  "
 			if i == ui.sel && j == 0 {
 				prefix = ui.p.Bold + "▶ " + ui.p.Rst
@@ -417,41 +443,50 @@ func (ui *picker) draw() {
 		if i == ui.sel {
 			selEnd = len(body)
 		}
-		if i < len(ui.list)-1 {
+		if i < len(b.Groups)-1 && ui.layout == render.LayoutBlocks {
 			body = append(body, "")
 		}
 	}
 	footer := []string{"", ui.p.Dim + ui.status(now) + ui.p.Rst}
 	// Fit the board to the terminal — framePrinter's move-up arithmetic
 	// cannot survive a frame taller than the screen, and its own clamp cuts
-	// blindly from the tail. One geometry reading builds and prints the
-	// frame: a resize landing mid-draw hits the next tick, never a frame
-	// windowed to one screen and printed to another.
-	w, h := ui.fp.geometry()
-	var keepFooter bool
+	// blindly from the tail.
+	var keepHeader, keepFooter bool
 	var view int
-	ui.top, view, keepFooter = boardWindow(ui.top, selStart, selEnd, len(body), len(footer), h)
+	ui.top, view, keepHeader, keepFooter = boardWindow(ui.top, selStart, selEnd, len(body), len(header), len(footer), h)
 	body = body[ui.top : ui.top+view]
+	if !keepHeader {
+		header = nil
+	}
 	if !keepFooter {
 		footer = nil
 	}
-	ui.fp.print(append(body, footer...), w, h)
+	frame := append(header, body...)
+	ui.fp.print(append(frame, footer...), w, h)
 }
 
 // boardWindow decides what a chooser needs most on a screen of h rows: the
 // selected block scrolls into view whole so enter never commits an account
-// the user cannot see, the footer (warnings, refresh state) renders whenever
-// a body row can stand beside it, and on a terminal too short for both, the
-// selection outranks the footer. Pure so the arithmetic is table-testable.
-func boardWindow(top, selStart, selEnd, bodyLen, footerLen, h int) (newTop, view int, keepFooter bool) {
-	switch view := h - footerLen; {
-	case bodyLen+footerLen <= h:
-		return 0, bodyLen, true
-	case view >= 1:
-		return fitTop(top, selStart, selEnd, bodyLen, view), view, true
+// the user cannot see; the header (the compact layout's column headings —
+// none in the block layout) and the footer (warnings, refresh state) render
+// whenever a body row can stand beside them; and on a terminal too short for
+// all of it the selection outranks the header, which outranks the footer —
+// a row of figures is unreadable without its headings, and the refresh
+// countdown is the one thing a chooser can do without. Pure so the
+// arithmetic is table-testable.
+func boardWindow(top, selStart, selEnd, bodyLen, headerLen, footerLen, h int) (newTop, view int, keepHeader, keepFooter bool) {
+	switch {
+	case bodyLen+headerLen+footerLen <= h:
+		return 0, bodyLen, true, true
+	case h-headerLen-footerLen >= 1:
+		view := h - headerLen - footerLen
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, true, true
+	case h-headerLen >= 1:
+		view := h - headerLen
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, true, false
 	default:
-		view = min(h, bodyLen)
-		return fitTop(top, selStart, selEnd, bodyLen, view), view, false
+		view := min(h, bodyLen)
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, false, false
 	}
 }
 

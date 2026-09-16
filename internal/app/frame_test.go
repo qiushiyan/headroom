@@ -206,7 +206,10 @@ func TestBoardWindowKeepsTheSelectionAtEveryHeight(t *testing.T) {
 	// footer — the shape of a multi-account board.
 	const selStart, selEnd, bodyLen, footerLen = 4, 8, 10, 2
 	for h := 1; h <= 14; h++ {
-		top, view, keepFooter := boardWindow(0, selStart, selEnd, bodyLen, footerLen, h)
+		top, view, keepHeader, keepFooter := boardWindow(0, selStart, selEnd, bodyLen, 0, footerLen, h)
+		if keepHeader != (h >= 1) {
+			t.Fatalf("h=%d: a zero-length header is trivially kept", h)
+		}
 		if view < 1 || top < 0 || top+view > bodyLen {
 			t.Fatalf("h=%d: window [%d,%d) out of a %d-line body", h, top, top+view, bodyLen)
 		}
@@ -225,6 +228,48 @@ func TestBoardWindowKeepsTheSelectionAtEveryHeight(t *testing.T) {
 		}
 		if h < 3 && keepFooter {
 			t.Fatalf("h=%d: footer kept at the selection's expense", h)
+		}
+	}
+}
+
+// The compact layout adds a header above the body. It is chrome, not body:
+// it never scrolls, it outlasts the footer, and only the selected row
+// outranks it — a row of figures without its headings is unreadable, while
+// the refresh countdown is the one thing a chooser can do without. The block
+// layout (header length 0) is unchanged by the extra argument.
+func TestBoardWindowRanksHeaderBetweenSelectionAndFooter(t *testing.T) {
+	const selStart, selEnd, bodyLen, headerLen, footerLen = 4, 5, 10, 1, 2
+	for h := 1; h <= 14; h++ {
+		top, view, keepHeader, keepFooter := boardWindow(0, selStart, selEnd, bodyLen, headerLen, footerLen, h)
+		if view < 1 || top < 0 || top+view > bodyLen {
+			t.Fatalf("h=%d: window [%d,%d) out of a %d-line body", h, top, top+view, bodyLen)
+		}
+		if selStart < top || selStart >= top+view {
+			t.Fatalf("h=%d: selected row %d outside window [%d,%d)", h, selStart, top, top+view)
+		}
+		rows := view
+		if keepHeader {
+			rows += headerLen
+		}
+		if keepFooter {
+			rows += footerLen
+		}
+		if rows > h {
+			t.Fatalf("h=%d: frame emits %d rows", h, rows)
+		}
+		switch {
+		case h == 1:
+			if keepHeader || keepFooter {
+				t.Fatalf("h=1: chrome kept at the selection's expense")
+			}
+		case h < 4:
+			if !keepHeader || keepFooter {
+				t.Fatalf("h=%d: want header without footer, got header=%v footer=%v", h, keepHeader, keepFooter)
+			}
+		default:
+			if !keepHeader || !keepFooter {
+				t.Fatalf("h=%d: header and footer both fit; got header=%v footer=%v", h, keepHeader, keepFooter)
+			}
 		}
 	}
 }

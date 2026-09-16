@@ -70,8 +70,8 @@ Short names over the engine — the shell owns the spelling, headroom owns
 the routing. A wrapper passes names and flags and nothing else:
 `CLAUDE_CONFIG_DIR`, `.current` and every check stay in `headroom launch`,
 re-resolved from PATH at each keystroke, while a shell function is frozen
-at shell init. The starter set (`x`, `xa`, `xacc`, `xs` with the cd that
-outlives the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the
+at shell init. The starter set (`x`, `xa`, `xacc` — the board, passed `--compact` for one
+row per account — and `xs` with the cd that outlives the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the
 board advertise those names, are in the repo's docs/REFERENCE.md § Shell integration
 (github.com/qiushiyan/headroom/blob/main/docs/REFERENCE.md#shell-integration);
 copy them into the

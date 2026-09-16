@@ -4,7 +4,8 @@ headroom is a read-only observer of a system it doesn't own: several Claude
 Code logins on one machine, each keyed to its own config dir. It answers
 "which account has headroom left?" and lets the user act on the answer (the
 account board, `accounts`: live and self-refreshing on a terminal, one frame
-off it, a versioned document under `--json`), answers "which session do I get
+off it, one row per account under `--compact`, a versioned document under
+`--json`), answers "which session do I get
 back into, and on which account?" (`sessions` — see The session surface below),
 turns the chosen account into a running session (`launch`/`resolve` — see
 The launch surface), and proves its own assumptions still hold (`check`).
@@ -217,6 +218,27 @@ account is fine — only `refreshTokenExpiresAt` passing means a human must act.
 And a failed refresh annotates an observation rather than replacing it, so the
 board degrades to "58%, observed 22h ago, refresh rate-limited" instead of
 to a bare error.
+
+The board has two layouts of these same three axes, and the axes are what
+decide the second one's shape. The classic block spends a line per fact:
+health in red, one bar per window, a provenance caption. `--compact` puts an
+account on one row — the label, one cell per limit window (percent and a
+compact time-to-reset, in the bar's severity colour), and a trailing caption
+— and the rule that shaped it is that a row may not collapse what the block
+kept apart. The caption is *every* applicable clause joined, never one
+winner: a logged-out account holding a fresh cache says "/login" *and* "via
+Claude Code's cache". The columns are keyed by the decoded identity
+(`kind`/`group`/`model`), never by heading prose, the same way machine
+consumers select rows; a row whose identity failed the contract forms no
+column and captions its account with drift. A cell keeps the bar's states
+apart with distinct tokens — a valid reset, a legitimately absent one, one
+that failed to parse, a rolled-over window, a percent that is not a number
+— and inherits the bar's colour precedence (stale dims, a bad percent is red
+even when stale). And the layout is only a layout: both run the same
+rounds, honour the same claim and commit the same choice. One function in
+the renderer produces the whole board — header and one line group per
+account — for both, so the picker and the one-shot print can neither
+compute a column nor disagree about one.
 
 ## The one file headroom writes
 
@@ -597,7 +619,8 @@ interaction — lives in the committed expect(1) harness (`make test-pty`,
 and write state; ESC must cancel writing nothing; the board must redraw its
 own countdown from its own ticker and stay responsive under a held-down
 refresh key (that the key cannot *become* traffic is the claim's property, and
-is pinned in `go test`); the session picker must refuse a primary commit
+is pinned in `go test`); the compact board must draw its column header and
+one row per account, move the selection and quit clean; the session picker must refuse a primary commit
 under the harness's re-pointed home *into* a still-live picker with the
 advisory cd file left empty (the exec success path is the dotfiles sandbox
 harness's, which stubs a recording claude), leave the cd file empty on

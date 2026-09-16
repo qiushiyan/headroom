@@ -11,6 +11,7 @@ the rest. The mental model and the reverse-engineered vendor contracts are in
 | Command | What it does |
 | --- | --- |
 | `headroom` / `headroom accounts` | The board: live limit bars for every account, refreshing itself while it is open; enter picks the account a bare `headroom launch` targets. Off a terminal, prints one frame and exits |
+| `headroom accounts --compact` | The same board, one row per account: the email, then one cell per limit window (`52% 4d20h` — percent in the bar's colour, time to reset), then every warning the block would have shown (health, `stale`, provenance, drift) at the end of the row. `●` marks the current account, a red `!` a dir/login mismatch, a red name an account that needs `/login`. Same keys, same refresh, same enter |
 | `headroom --json` | The board as a versioned JSON document — probes and (budget permitting) fetches, for scripts that want a refresh |
 | `headroom limits` | What is already known, as the same JSON document, read from disk alone (`--account <name>` scopes it): no health probe, no network, never spends a request — ~10ms against the board's ~300ms |
 | `headroom sessions` | Interactive session picker: every session on the machine; enter resumes in its own project dir on the account that last drove it, `x` resumes on the current account and re-homes it there (`--json` lists instead; `--cd-file <path>` writes the entered dir for the shell) |
@@ -59,7 +60,7 @@ patterns below are what the author runs, reduced to the engine calls:
 # the two daily verbs
 x()   { headroom launch -- "$@"; }                   # a session on the default account
 xa()  { headroom launch --account "$1" -- "${@:2}"; } # one session on <account>; the default stays
-xacc(){ headroom accounts; }                         # the board; enter moves the default, then type x
+xacc(){ headroom accounts --compact; }               # the board, one row per account; enter moves the default, then type x
 
 # the session picker, with the cd that outlives the session
 xs() {
