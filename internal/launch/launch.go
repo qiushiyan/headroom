@@ -20,7 +20,6 @@ package launch
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -140,18 +139,6 @@ func (t Target) Conflicts(base []string) (value string, conflicting bool) {
 		return v, true
 	}
 	return v, v != t.configDir
-}
-
-// Exec replaces this process with claude. Replacing rather than spawning is
-// what preserves stdio, the controlling terminal, signal delivery and the
-// exit status without this tool proxying any of them. It returns only on
-// failure.
-func Exec(claudeArgs []string, env []string) error {
-	path, err := exec.LookPath("claude")
-	if err != nil {
-		return err
-	}
-	return ExecPath(path, claudeArgs, env)
 }
 
 // ExecPath is Exec with the executable already resolved. A caller that

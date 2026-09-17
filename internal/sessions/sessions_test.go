@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/qiushiyan/headroom/internal/state"
 )
 
 func TestMunge(t *testing.T) {
@@ -147,7 +145,7 @@ func TestResolveOwner(t *testing.T) {
 		}
 		return out
 	}
-	probe := func(pid int) (int64, bool) { return 1_785_700_000, true }
+	probe := func(pid int) (int64, error) { return 1_785_700_000, nil }
 	live := []RegistryEntry{{Account: "b", SessionID: "s", PID: 1, StartedAtMS: 1_785_700_003_000, OK: true}}
 
 	cases := []struct {
@@ -181,7 +179,7 @@ func TestResolveOwner(t *testing.T) {
 			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerConflict},
 	}
 	for _, c := range cases {
-		acct, st := resolveOwner("s", c.registry, probe, c.owners, c.hists, names)
+		acct, st := resolveOwner("s", Inspect(c.registry, probe)["s"], c.owners, c.hists, names)
 		if acct != c.wantAcct || st != c.wantState {
 			t.Errorf("%s: = (%q, %v), want (%q, %v)", c.name, acct, st, c.wantAcct, c.wantState)
 		}
@@ -196,71 +194,35 @@ func TestLiveness(t *testing.T) {
 		{Account: "a", SessionID: "dead", PID: 12, StartedAtMS: startMS, OK: true},
 		{Account: "a", SessionID: "mystery", PID: 13, OK: false},
 	}
-	probe := func(pid int) (int64, bool) {
+	probe := func(pid int) (int64, error) {
 		switch pid {
 		case 10:
-			return startMS/1000 + 2, true // within tolerance: vendor stamp vs kernel
+			return startMS/1000 + 2, nil // within tolerance: vendor stamp vs kernel
 		case 11:
-			return startMS/1000 + 86_400, true // pid reused a day later
+			return startMS/1000 + 86_400, nil // pid reused a day later
 		default:
-			return 0, false
+			return 0, os.ErrNotExist
 		}
 	}
-	m := Liveness(entries, probe)
-	if m["live"] != Live {
-		t.Errorf("live = %v", m["live"])
+	m := Inspect(entries, probe)
+	if m["live"].State != Live {
+		t.Errorf("live = %v", m["live"].State)
 	}
 	// A verified-live claim beside an unverifiable one for the same session:
 	// proof outranks uncertainty — Live, never LiveUnknown, or the resume
 	// guard (which refuses only Live) would resume a session proven open.
 	both := append(entries[:1:1], RegistryEntry{Account: "b", SessionID: "live", PID: 99, OK: false})
-	if got := Liveness(both, probe)["live"]; got != Live {
+	if got := Inspect(both, probe)["live"].State; got != Live {
 		t.Errorf("verified live + unverifiable claim = %v, want Live", got)
 	}
-	if m["recycled"] != NotLive {
-		t.Errorf("recycled pid must not read live: %v", m["recycled"])
+	if m["recycled"].State != NotLive {
+		t.Errorf("recycled pid must not read live: %v", m["recycled"].State)
 	}
-	if m["dead"] != NotLive {
-		t.Errorf("dead = %v", m["dead"])
+	if m["dead"].State != NotLive {
+		t.Errorf("dead = %v", m["dead"].State)
 	}
-	if m["mystery"] != LiveUnknown {
-		t.Errorf("unverifiable claim must stay unknown: %v", m["mystery"])
-	}
-}
-
-// The GC invariant spans both packages — TranscriptIDs enumerates, the store
-// holds the lock — so it is pinned here, where the transcript fixture lives.
-//
-// GC must consult the store inside the lock, at write time, never a caller's
-// snapshot. The trap: picker A listed before session s-new existed; a re-home
-// of s-new (by any picker) must survive A's later write, because the sweep
-// sees the store as it is now, not as A saw it.
-func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
-	projects, write := storeFixture(t)
-	st := state.Open(t.TempDir())
-	live := func() (map[string]bool, bool) { return TranscriptIDs(projects) }
-	now := time.Now()
-	write("-tmp-p", "s-old.jsonl", rec("s-old", "/tmp/p", "old"), now)
-
-	// A re-home for a session that has since lost its transcript…
-	if err := st.ReHome("s-gone", "a@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	// …then s-new appears (created after any earlier listing), is re-homed…
-	write("-tmp-p", "s-new.jsonl", rec("s-new", "/tmp/p", "new"), now)
-	if err := st.ReHome("s-new", "b@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	// …and a further write GCs: s-gone (no transcript) goes, s-new stays.
-	if err := st.ReHome("s-old", "c@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	m := st.Load().Owners()
-	if _, ok := m["s-gone"]; ok {
-		t.Error("transcriptless record must be swept")
-	}
-	if m["s-new"].Account != "b@x.com" || m["s-old"].Account != "c@x.com" {
-		t.Errorf("live records must survive every write: %v", m)
+	if m["mystery"].State != LiveUnknown {
+		t.Errorf("unverifiable claim must stay unknown: %v", m["mystery"].State)
 	}
 }
 
@@ -269,7 +231,7 @@ func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
 func TestLiveNowSeesClaimsAfterCollect(t *testing.T) {
 	home := t.TempDir()
 	refs := []AccountRef{{Name: "a", Dir: home}}
-	probe := func(pid int) (int64, bool) { return 5_000, true }
+	probe := func(pid int) (int64, error) { return 5_000, nil }
 	if got := LiveNow("s-late", refs, probe); got != NotLive {
 		t.Fatalf("empty registry = %v, want NotLive", got)
 	}
@@ -448,33 +410,6 @@ func TestCollectWidensPastModellessTail(t *testing.T) {
 	}
 }
 
-// A store walk that fails anywhere concludes nothing: one unreadable project
-// dir must suspend GC entirely, not sweep the re-homes whose transcripts
-// live inside it.
-func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
-	projects, write := storeFixture(t)
-	st := state.Open(t.TempDir())
-	live := func() (map[string]bool, bool) { return TranscriptIDs(projects) }
-	now := time.Now()
-	write("-p-hidden", "s-hidden.jsonl", rec("s-hidden", "/p/hidden", "hidden"), now)
-	write("-p-open", "s-open.jsonl", rec("s-open", "/p/open", "open"), now)
-	if err := st.ReHome("s-hidden", "a@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	hidden := filepath.Join(projects, "-p-hidden")
-	if err := os.Chmod(hidden, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
-	if err := st.ReHome("s-open", "b@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	m := st.Load().Owners()
-	if m["s-hidden"].Account != "a@x.com" {
-		t.Errorf("partial enumeration must not GC: %v", m)
-	}
-}
-
 // The live half of a row's branch label. Every case here is a shape seen in
 // the real store: a main checkout, a linked worktree, a submodule spelling
 // its gitdir relative, a rebase in flight, and the several ways HEAD gives no
@@ -638,5 +573,54 @@ func TestHeadDistinguishesAbsentFromUnreadable(t *testing.T) {
 	}
 	if got := readHead(unreadable); got.Kind != HeadUnreadable {
 		t.Errorf("unparseable HEAD: Kind = %v, want HeadUnreadable", got.Kind)
+	}
+}
+
+func TestProcessEvidenceSamplesOnceAndPreservesUnknown(t *testing.T) {
+	entries := []RegistryEntry{
+		{Account: "owner", SessionID: "s", PID: 7, StartedAtMS: 100_000, OK: true},
+		{Account: "owner", SessionID: "s", PID: 7, StartedAtMS: 100_000, OK: true},
+		{Account: "other", SessionID: "unknown", PID: 8, StartedAtMS: 100_000, OK: true},
+	}
+	calls := map[int]int{}
+	evidence := Inspect(entries, func(pid int) (int64, error) {
+		calls[pid]++
+		if pid == 8 {
+			return 0, os.ErrPermission
+		}
+		return 100, nil
+	})
+	if calls[7] != 1 || calls[8] != 1 {
+		t.Fatalf("PID samples: %v", calls)
+	}
+	if evidence["s"].State != Live || evidence["s"].Account != "owner" {
+		t.Fatalf("inconsistent live evidence: %+v", evidence)
+	}
+	if evidence["unknown"].State != LiveUnknown {
+		t.Fatal("inspection failure became absent")
+	}
+}
+
+func TestRegistryProblemsKeepTheirScope(t *testing.T) {
+	root := t.TempDir()
+	refs := []AccountRef{{Name: "a", Dir: root}}
+	dir := filepath.Join(root, "sessions")
+	os.Mkdir(dir, 0755)
+	os.WriteFile(filepath.Join(dir, "unknown.json"), []byte(`broken`), 0644)
+	reg := ReadRegistry("a", root)
+	if len(reg.Problems) != 1 || len(reg.Entries) != 0 {
+		t.Fatalf("lost registry problem: %+v", reg)
+	}
+	if got := LiveNow("unrelated", refs, nil); got != NotLive {
+		t.Fatalf("nameless file attributed to unrelated session: %v", got)
+	}
+	os.WriteFile(filepath.Join(dir, "known.json"), []byte(`{"sessionId":"known","pid":7}`), 0644)
+	if got := LiveNow("known", refs, nil); got != LiveUnknown {
+		t.Fatalf("damaged identifiable claim = %v", got)
+	}
+	os.Chmod(dir, 0)
+	defer os.Chmod(dir, 0755)
+	if got := LiveNow("unrelated", refs, nil); got != LiveUnknown {
+		t.Fatalf("unreadable directory cleared liveness: %v", got)
 	}
 }

@@ -5,8 +5,7 @@
 # this pins that go test cannot: the real TTY teardown → chdir → exec chain,
 # and that the child's stdout is this same terminal.
 set timeout 10
-set env(PATH) "$env(STUB_DIR):$env(PATH)"
-spawn $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT) -- --dangerously-skip-permissions
+spawn sh -c "stty -g > $env(STTY_OUT); exec $env(HEADROOM_BIN) sessions --cd-file $env(RESUME_OUT) -- --dangerously-skip-permissions"
 expect {
     "q quit" {}
     timeout { puts "picker never drew its footer"; exit 2 }
@@ -20,6 +19,19 @@ send -- "\r"
 expect {
     -re {STUB-CLAUDE cfg=[^ ]*a@x\.com args=--dangerously-skip-permissions --resume 99999999-8888-7777-6666-555555555555} {}
     timeout { puts "stub claude never ran with the expected routing"; exit 2 }
+}
+expect {
+    -re {STUB-TTY ([^\r\n]+)} {
+        set childMode $expect_out(1,string)
+        set f [open $env(STTY_OUT) r]
+        set originalMode [string trim [read $f]]
+        close $f
+        if {$childMode ne $originalMode} {
+            puts "exec inherited raw terminal mode: $childMode, want $originalMode"
+            exit 2
+        }
+    }
+    timeout { puts "stub did not report its terminal mode"; exit 2 }
 }
 expect eof
 catch wait result

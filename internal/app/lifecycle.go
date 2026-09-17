@@ -15,13 +15,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/tui"
-	"golang.org/x/term"
 )
 
 func runAccountsAdd(cfg config.Config, args []string) int {
@@ -329,13 +330,13 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 	// Strict read: a registry file that does not parse, or a sessions/ dir
 	// that cannot be listed, is "could not verify", not "nothing there".
 	gate := func() bool {
-		entries, err := sessions.ReadRegistryStrict(name, dir)
-		if err != nil {
-			fmt.Fprintf(errw, "headroom accounts remove: %s: live-session registry unreadable (%v) — refusing while liveness cannot be verified\n", name, err)
+		reg := sessions.ReadRegistry(name, dir)
+		if len(reg.Problems) > 0 {
+			fmt.Fprintf(errw, "headroom accounts remove: %s: live-session registry unreadable (%v) — refusing while liveness cannot be verified\n", name, reg.Problems)
 			return false
 		}
-		for id, st := range sessions.Liveness(entries, deps.probe) {
-			switch st {
+		for id, evidence := range sessions.Inspect(reg.Entries, deps.probe) {
+			switch evidence.State {
 			case sessions.Live:
 				fmt.Fprintf(errw, "headroom accounts remove: %s has a live session (%s) — quit it first\n", name, id)
 				return false

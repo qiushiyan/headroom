@@ -59,38 +59,16 @@ func TestParseLimitsModern(t *testing.T) {
 	}
 }
 
-func TestParseLimitsLegacy(t *testing.T) {
-	r := parseOne(t, `{"five_hour":{"utilization":56,"resets_at":"2026-08-02T15:00:00Z"}}`)
-	if r.Label != "5h session" || r.Percent != 56 || r.PercentState != StateOK {
-		t.Errorf("legacy row = %+v", r)
-	}
-
-	// Empty limits array also falls back to legacy.
-	r = parseOne(t, `{"limits":[],"five_hour":{"utilization":1}}`)
-	if r.Percent != 1 {
-		t.Errorf("empty limits should fall back: %+v", r)
-	}
-
-	// Missing utilization defaults to 0, well-formed.
-	r = parseOne(t, `{"five_hour":{}}`)
-	if r.Percent != 0 || r.PercentState != StateOK {
-		t.Errorf("legacy default = %+v", r)
-	}
-}
-
-func TestParseLimitsEmpty(t *testing.T) {
-	for _, body := range []string{`{}`, `{"limits":[]}`, `{"five_hour":null}`} {
+func TestLimitsEnvelope(t *testing.T) {
+	for _, body := range []string{`{"limits":[]}`, `{"limits":[],"five_hour":{"utilization":56}}`} {
 		rows, err := ParseLimits([]byte(body))
 		if err != nil || len(rows) != 0 {
-			t.Errorf("ParseLimits(%s) = %v, %v; want no rows, nil", body, rows, err)
+			t.Errorf("%s: %v, %v", body, rows, err)
 		}
 	}
-}
-
-func TestParseLimitsUnparseable(t *testing.T) {
-	for _, body := range []string{`not json`, `[1,2]`, `{"limits":[42]}`, `{"limits":["x"]}`, `{"five_hour":"soon"}`} {
+	for _, body := range []string{`not json`, `[1,2]`, `{}`, `null`, `{"limits":null}`, `{"limits":{}}`, `{"limits":[42]}`, `{"limits":"bad","five_hour":{"utilization":56}}`, `{"five_hour":{"utilization":56}}`} {
 		if _, err := ParseLimits([]byte(body)); !errors.Is(err, ErrUnparseable) {
-			t.Errorf("ParseLimits(%s): want ErrUnparseable, got %v", body, err)
+			t.Errorf("%s: %v", body, err)
 		}
 	}
 }
@@ -156,12 +134,6 @@ func TestIdentityFields(t *testing.T) {
 		t.Errorf("scoped row = %+v", r)
 	}
 
-	// The legacy five_hour fallback synthesizes an identifiable session row.
-	r = parseOne(t, `{"five_hour":{"utilization":56}}`)
-	if r.Kind != "session" || r.IdentityState != StateOK {
-		t.Errorf("legacy identity = %+v", r)
-	}
-
 	// Identity drift is tagged, never coerced to prose or blanked silently:
 	// present-but-untyped fields, a scope that lost its shape, a scoped row
 	// with no model name, and a row with no identity at all.
@@ -184,8 +156,7 @@ func TestIdentityFields(t *testing.T) {
 		`{"limits":[{"kind":"weekly_all","group":"weekly","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
 		// A known kind under the wrong group: a consumer enumerating by
 		// group equality silently misses the row, so the pair is drift even
-		// though each field alone looks healthy. (An absent group stays
-		// tolerated — the legacy synthesis never carries one.)
+		// though each field alone looks healthy.
 		`{"limits":[{"kind":"session","group":"weekly","percent":1}]}`,
 		`{"limits":[{"kind":"weekly_scoped","group":"session","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
 	} {

@@ -3,9 +3,10 @@ package state
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
 const (
@@ -117,15 +118,8 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			id := k.ID()
 			r := d.accounts[id]
 			next := r.Request.NextEligibleMS
-			// A legacy .throttle record is a floor, not a fallback: an upgrade
-			// mid-cooldown must not look like a clean slate.
-			if l, ok := d.legacy[k.Name]; ok {
-				if l.NextEligibleMS > next {
-					next = l.NextEligibleMS
-				}
-				if l.Strikes > r.Request.Strikes {
-					r.Request.Strikes = l.Strikes
-				}
+			if d.imported != nil && d.imported.QuietUntilMS > next {
+				next = d.imported.QuietUntilMS
 			}
 			if maxNext := now.Add(CooldownMax).UnixMilli(); next > maxNext {
 				// Further out than this code can produce: a clock step, not a
@@ -270,7 +264,7 @@ func (s *Store) ReHome(id, account string, at time.Time, live Enumerator) error 
 				}
 			}
 		}
-		d.sessions[id] = OwnerRec{Account: account, AtMS: at.UnixMilli()}
+		d.sessions[id] = sessions.OwnerRec{Account: account, AtMS: at.UnixMilli()}
 		d.dirty = true
 		return nil
 	})
@@ -315,6 +309,9 @@ func (s *Store) update(wait time.Duration, fn func(*doc) error) error {
 		// Something is in that file and nobody could read it. Writing a fresh
 		// document here is how re-homes get destroyed by an I/O blip.
 		return ErrUnreadable
+	}
+	if d.migrationErr != nil {
+		return d.migrationErr
 	}
 	if err := fn(d); err != nil {
 		return err
@@ -386,35 +383,6 @@ func (s *Store) commit(d *doc) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return err
 	}
-	s.retireLegacy(d)
+	s.archiveLegacy(d)
 	return nil
-}
-
-// retireLegacy removes a migrated file once it can no longer say anything the
-// document does not.
-//
-// .owners goes as soon as its records are in the document; because the merge
-// is newest-wins, an older binary still running that writes the file again
-// simply gets absorbed by the next load.
-//
-// .throttle goes only once every deadline it carries has passed. Its entries
-// are keyed by dir name while the ledger is keyed by account identity, so
-// unlinking it early would drop the cooldowns of accounts this run never
-// claimed — which is the upgrade-into-a-live-rate-limit this floor exists to
-// prevent.
-func (s *Store) retireLegacy(d *doc) {
-	if len(d.sessions) > 0 || d.sessionsMigrated {
-		_ = os.Remove(filepath.Join(s.root, ".owners"))
-		_ = os.Remove(filepath.Join(s.root, ".owners.lock"))
-	}
-	if d.legacy == nil {
-		return
-	}
-	now := time.Now().UnixMilli()
-	for _, l := range d.legacy {
-		if l.NextEligibleMS > now {
-			return
-		}
-	}
-	_ = os.Remove(filepath.Join(s.root, ".throttle"))
 }

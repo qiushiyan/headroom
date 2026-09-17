@@ -8,12 +8,16 @@ set timeout 10
 # The trailing echo lands after headroom's close path: run.sh asserts its
 # marker begins a line, proving a signal death stepped below the frame's
 # newline-less last line rather than leaving the shell glued to it.
-set cmd "stty rows 24 columns 200; $env(HEADROOM_BIN) accounts; stty -a > $env(STTY_OUT) 2>&1; echo NEWLINE-OK"
+set cmd "stty rows 24 columns 200; sh -c 'echo \$\$ > \"$env(HEADROOM_PID_FILE)\"; exec \"$env(HEADROOM_BIN)\" accounts'; stty -a > $env(STTY_OUT) 2>&1; echo NEWLINE-OK"
 spawn sh -c $cmd
 expect {
     "esc cancel" {}
     timeout { puts "picker never drew its footer"; exit 2 }
 }
 sleep 0.2
-exec pkill -nx headroom
+set pidfile [open $env(HEADROOM_PID_FILE) r]
+set child [string trim [read $pidfile]]
+close $pidfile
+if {![string is integer -strict $child] || $child <= 0} { puts "invalid fixture PID"; exit 2 }
+exec kill -TERM $child
 expect eof

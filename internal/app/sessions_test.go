@@ -5,9 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/sessions"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 // capturedSessionsExec swaps the sessions exec edge for a recorder and pins
@@ -38,12 +40,12 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ui := &resumeUI{
+	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
 		cfg:        cfg,
 		accts:      accounts.Discover(cfg),
 		current:    "yan@planlab.ai",
 		claudeArgs: []string{"--dangerously-skip-permissions"},
-	}
+	}}
 	s := &sessions.Session{
 		ID: "11111111-2222-3333-4444-555555555555", CWD: proj, DirOK: true,
 		Owner: "yan@planlab.ai", OwnerState: sessions.OwnerHistory,
@@ -163,6 +165,22 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 	}
 }
 
+func TestSessionPreparationPreservesPriorRehome(t *testing.T) {
+	ui, s := sessionsFixture(t)
+	ui.st = state.Open(ui.cfg.AccountsRoot)
+	if err := ui.st.ReHome(s.ID, "qiushi", time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	done, err := ui.resume(s, true)
+	if done || err == nil {
+		t.Fatalf("missing executable accepted: %v %v", done, err)
+	}
+	if owner := ui.st.Load().Owners()[s.ID]; owner.Account != "qiushi" {
+		t.Fatalf("preparation failure changed owner: %+v", owner)
+	}
+}
+
 // The surface's own contract refusals, before any terminal is touched.
 func TestSessionsArgContract(t *testing.T) {
 	cfg := launchConfig(t)
@@ -176,5 +194,69 @@ func TestSessionsArgContract(t *testing.T) {
 	// a picker that would exec claude onto a pipe.
 	if code := runSessions(cfg, nil); code != 1 {
 		t.Errorf("no terminal: exit %d, want 1", code)
+	}
+}
+
+func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
+	ui, s := sessionsFixture(t)
+	_, _, _, called := capturedSessionsExec(t)
+	s.CWD = filepath.Join(ui.cfg.Home, "project\nname")
+	if err := os.Mkdir(s.CWD, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
+		t.Fatalf("commit: %v %d %s", done, code, ui.message)
+	}
+}
+
+func TestSessionExecFailureKeepsRehome(t *testing.T) {
+	ui, s := sessionsFixture(t)
+	capturedSessionsExec(t) // also restores cwd
+	ui.st = state.Open(ui.cfg.AccountsRoot)
+	execSessions = func(string, []string, []string) error { return os.ErrPermission }
+	output := captureStderr(t, func() {
+		if done, code := ui.commitResume(true); !done || code != 1 {
+			t.Fatalf("commit: %v %d %s", done, code, ui.message)
+		}
+	})
+	if !strings.Contains(output, "re-home remains recorded for "+ui.current) {
+		t.Fatalf("missing persistence explanation: %s", output)
+	}
+
+	if owner := ui.st.Load().Owners()[s.ID]; owner.Account != ui.current {
+		t.Fatalf("re-home after failed exec: %+v", owner)
+	}
+}
+
+func TestUncertainProcessInspectionPreservesTranscript(t *testing.T) {
+	ui, s := sessionsFixture(t)
+	registry := filepath.Join(ui.cfg.AccountsRoot, "a", "sessions")
+	if err := os.MkdirAll(registry, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(registry, "7.json"), []byte(`{"sessionId":"`+s.ID+`","pid":7,"startedAt":1000}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ui.refs = []sessions.AccountRef{{Name: "a", Dir: filepath.Dir(registry)}}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte("#!/bin/sh\necho unreadable-start-time\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	s.StoreDir = t.TempDir()
+	s.Path = filepath.Join(s.StoreDir, s.ID+".jsonl")
+	original := []byte("{}\n")
+	if err := os.WriteFile(s.Path, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ui.rename(s, "changed"); err == nil {
+		t.Fatal("uncertain process allowed rename")
+	}
+	if removed, err := ui.delete(s); removed || err == nil {
+		t.Fatal("uncertain process allowed delete")
+	}
+	data, err := os.ReadFile(s.Path)
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("transcript changed: %q %v", data, err)
 	}
 }

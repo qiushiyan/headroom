@@ -1,19 +1,10 @@
-// Package usage fetches and parses the (undocumented) endpoint Claude
-// Code's own /usage screen calls. The response shape has drifted once
-// already (legacy five_hour/seven_day giving way to limits[]), so parsing
-// is tolerant on purpose — a malformed field degrades to 0 / unknown
-// instead of dropping the account — and every degraded field is tagged, so
-// `headroom check` can fail on drift the renderer papers over.
+// Package usage reads the vendor limits response and tags malformed fields.
 package usage
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"math"
-	"net/http"
 	"strconv"
 	"time"
 
@@ -93,60 +84,26 @@ func (r Row) RolledOver(now int64) bool {
 
 var ErrUnparseable = errors.New("response not parseable")
 
-// ParseLimits turns a response body into rows. The limits[] array is
-// authoritative; the near-dead legacy five_hour field is the fallback. A
-// zero-row nil result with nil error means the account reports no limits.
+// ParseLimits decodes the current limits envelope. An empty array is an
+// observation of no limits; a missing or malformed array is an unknown response.
 func ParseLimits(body []byte) ([]Row, error) {
 	var top map[string]any
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, ErrUnparseable
 	}
-	entries, err := limitEntries(top)
-	if err != nil {
-		return nil, err
+	entries, ok := top["limits"].([]any)
+	if !ok {
+		return nil, ErrUnparseable
 	}
 	rows := make([]Row, 0, len(entries))
-	for _, e := range entries {
+	for _, entry := range entries {
+		e, ok := entry.(map[string]any)
+		if !ok {
+			return nil, ErrUnparseable
+		}
 		rows = append(rows, parseEntry(e))
 	}
 	return rows, nil
-}
-
-func limitEntries(top map[string]any) ([]map[string]any, error) {
-	if arr, ok := top["limits"].([]any); ok && len(arr) > 0 {
-		out := make([]map[string]any, 0, len(arr))
-		for _, v := range arr {
-			m, ok := v.(map[string]any)
-			if !ok {
-				return nil, ErrUnparseable
-			}
-			out = append(out, m)
-		}
-		return out, nil
-	}
-	// Legacy shape: a single five_hour object.
-	switch fh := top["five_hour"].(type) {
-	case nil:
-		return nil, nil
-	case bool:
-		if !fh {
-			return nil, nil
-		}
-		return nil, ErrUnparseable
-	case map[string]any:
-		pct := fh["utilization"]
-		if pct == nil {
-			pct = float64(0)
-		}
-		return []map[string]any{{
-			"kind":      "session",
-			"percent":   pct,
-			"resets_at": fh["resets_at"],
-			"severity":  "normal",
-		}}, nil
-	default:
-		return nil, ErrUnparseable
-	}
 }
 
 func parseEntry(e map[string]any) Row {
@@ -155,7 +112,7 @@ func parseEntry(e map[string]any) Row {
 
 	sev := "normal"
 	if v, present := e["severity"]; present && v != nil {
-		sev = jqString(v)
+		sev, _ = v.(string)
 	}
 
 	kind, kindOK := identField(e, "kind")
@@ -167,9 +124,7 @@ func parseEntry(e map[string]any) Row {
 	case !kindOK || !groupOK || !modelOK:
 		identState = StateBad
 	case kind == "":
-		// kind is the selector consumers hold (the legacy five_hour path
-		// synthesizes one, so every well-formed row has it). A row without
-		// it is one they silently stop matching, whatever else it carries.
+		// kind is the selector consumers use to identify a limit.
 		identState = StateBad
 	case kind == "weekly_scoped" && model == "":
 		// A scoped row that no longer names its scope. Left untagged it
@@ -260,9 +215,8 @@ func parseReset(v any) (int64, FieldState) {
 
 // contradictsGroup reports a known kind under the wrong group — drift a
 // consumer enumerating by group equality would otherwise miss silently, both
-// fields looking healthy alone. An absent group is tolerated (the legacy
-// five_hour synthesis never carries one), and unknown kinds constrain
-// nothing: new vendor vocabulary is data, not an alarm.
+// fields looking healthy alone. Group is optional; unknown kinds constrain
+// nothing: new vendor vocabulary is carried through.
 func contradictsGroup(kind, group string) bool {
 	if group == "" {
 		return false
@@ -316,47 +270,4 @@ func scopedModel(e map[string]any) (string, bool) {
 	}
 	s, ok := dv.(string)
 	return s, ok
-}
-
-// jqString mirrors jq's tostring for the value kinds the API could send.
-func jqString(v any) string {
-	switch s := v.(type) {
-	case string:
-		return s
-	case float64:
-		return strconv.FormatFloat(s, 'f', -1, 64)
-	case bool:
-		return strconv.FormatBool(s)
-	default:
-		data, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprint(v)
-		}
-		return string(data)
-	}
-}
-
-// Result is one account's fetch outcome; Err covers transport failures.
-type Result struct {
-	StatusCode int
-	Body       []byte
-	Err        error
-}
-
-func Fetch(ctx context.Context, client *http.Client, url, token string) Result {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return Result{Err: err}
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		return Result{Err: err}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return Result{Err: err}
-	}
-	return Result{StatusCode: resp.StatusCode, Body: body}
 }

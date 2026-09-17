@@ -17,8 +17,9 @@ go install github.com/qiushiyan/headroom/cmd/headroom@latest   # or from a clone
 headroom check
 ```
 
-Done when `check` prints PASS or INCONCLUSIVE. FAIL means a Claude Code
-update changed something headroom relies on — report the FAIL line and stop.
+Done when `check` prints PASS or INCONCLUSIVE. FAIL identifies either a
+vendor-contract change or a problem in headroom’s own files; report the
+named failure.
 
 ## Add a subscription
 

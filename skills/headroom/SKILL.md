@@ -19,14 +19,16 @@ shell's `x-<name>`) — quote that spelling.
 - **Quota**: `headroom` — one frame off a terminal; every account's 5-hour
   and weekly bars, its launcher, `← current` on the default. `headroom
   limits` reads from disk and spends no request — the pick for a quick
-  answer or a script (`--json` on either for a document).
+  answer or a script; it always emits JSON. `headroom --json` refreshes
+  and emits the board document.
 - **Health lines, relayed as written**: *not logged in* / *login expired*
   → the printed launcher, then `/login`. *access token stale* → any session
   on that account refreshes it; only *login expired* calls for `/login`.
   Red `(dir says …!)` → `/login` in that dir chose the wrong account;
   `/login` there again.
-- **`?` bars and drift markers** → the vendor response changed shape;
-  `headroom check` names what.
+- **Stale figures** keep their severity colours; their caption states the age.
+- **Drift markers** → the vendor response changed shape; `headroom check`
+  names what. A rolled-over window reads unknown until refreshed.
 
 ## Act
 

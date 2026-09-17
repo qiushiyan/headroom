@@ -145,7 +145,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	var out, errw bytes.Buffer
 	var keychainCalls []string
 	deps := removeDeps{
-		probe:          func(int) (int64, bool) { return 0, false }, // every pid is dead
+		probe:          func(int) (int64, error) { return 0, os.ErrNotExist }, // every pid is dead
 		deleteKeychain: func(d string) (bool, error) { keychainCalls = append(keychainCalls, d); return true, nil },
 		stdin:          strings.NewReader(""),
 		interactive:    false,
@@ -204,7 +204,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "sessions"), 0o755)
 	os.WriteFile(filepath.Join(dir, "sessions", "1.json"), []byte(`{"sessionId":"s1","pid":4242,"startedAt":1000000}`), 0o644)
 	live := deps
-	live.probe = func(int) (int64, bool) { return 1000, true } // matches startedAt/1000
+	live.probe = func(int) (int64, error) { return 1000, nil } // matches startedAt/1000
 	if code := run(live, "a@x.com", "--yes"); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
 		t.Errorf("live: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
 	}
@@ -263,7 +263,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	dir3 := seed("d@x.com")
 	os.MkdirAll(filepath.Join(dir3, "sessions"), 0o755)
 	os.WriteFile(filepath.Join(dir3, "sessions", "junk.json"), []byte("{not json"), 0o644)
-	if code := run(deps, "d@x.com", "--yes"); code != 1 || !strings.Contains(errw.String(), "could not be verified") {
+	if code := run(deps, "d@x.com", "--yes"); code != 1 || !strings.Contains(errw.String(), "registry unreadable") {
 		t.Errorf("malformed registry: exit %d %s", code, errw.String())
 	}
 	if _, err := os.Lstat(dir3); err != nil {
@@ -292,12 +292,12 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	racing := deps
 	racing.interactive = true
 	racing.stdin = strings.NewReader("y\n")
-	racing.probe = func(int) (int64, bool) {
+	racing.probe = func(int) (int64, error) {
 		calls++
 		if calls == 1 {
-			return 0, false // dead at the first gate
+			return 0, os.ErrNotExist // dead at the first gate
 		}
-		return 1000, true // alive by the time the reply arrives
+		return 1000, nil // alive by the time the reply arrives
 	}
 	keychainCalls = nil
 	if code := run(racing, "e@x.com"); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {

@@ -14,6 +14,11 @@ import (
 func launchConfig(t *testing.T) config.Config {
 	t.Helper()
 	home := t.TempDir()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	cfg := config.Config{
 		Home:         home,
 		AccountsRoot: filepath.Join(home, ".claude-accounts"),
@@ -39,7 +44,7 @@ func capturedExec(t *testing.T) (args *[]string, env *[]string, called *bool) {
 	var a, e []string
 	var c bool
 	prev := execClaude
-	execClaude = func(claudeArgs, environ []string) error {
+	execClaude = func(path string, claudeArgs, environ []string) error {
 		a, e, c = claudeArgs, environ, true
 		args, env = &a, &e
 		return nil
@@ -222,5 +227,41 @@ func TestLaunchRefusesRelocatedPrimary(t *testing.T) {
 	}
 	if !*called {
 		t.Error("extra launch should be unaffected by a relocated home")
+	}
+}
+
+func TestLaunchResolvesExecutableBeforeRemembering(t *testing.T) {
+	cfg := launchConfig(t)
+	if err := accounts.SetCurrent(cfg, "qiushi"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	_, _, called := capturedExec(t)
+	if code := runLaunch(cfg, []string{"--remember", "--account", "yan@planlab.ai"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	a, err := accounts.Select(cfg, accounts.Discover(cfg), "")
+	if err != nil || a.Name != "qiushi" || *called {
+		t.Fatalf("missing executable changed choice: %+v %v", a, err)
+	}
+}
+
+func TestExecFailureKeepsRememberedChoice(t *testing.T) {
+	cfg := launchConfig(t)
+	prev := execClaude
+	execClaude = func(string, []string, []string) error { return os.ErrPermission }
+	t.Cleanup(func() { execClaude = prev })
+	output := captureStderr(t, func() {
+		if code := runLaunch(cfg, []string{"--remember", "--account", "yan@planlab.ai"}); code != 1 {
+			t.Fatalf("exit %d", code)
+		}
+	})
+	if !strings.Contains(output, ".current remains yan@planlab.ai") {
+		t.Fatalf("missing persistence explanation: %s", output)
+	}
+
+	a, err := accounts.Select(cfg, accounts.Discover(cfg), "")
+	if err != nil || a.Name != "yan@planlab.ai" {
+		t.Fatalf("choice after failed exec: %+v %v", a, err)
 	}
 }

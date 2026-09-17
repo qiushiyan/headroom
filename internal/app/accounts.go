@@ -23,7 +23,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
@@ -96,8 +99,8 @@ func runAccounts(cfg config.Config, layout render.Layout) int {
 func printBoard(cfg config.Config, layout render.Layout) int {
 	st := state.Open(cfg.AccountsRoot)
 	list, _, _ := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
-		resolve(list[u.idx], u, time.Now())
+	for u := range launchFetches(context.Background(), cfg, list, st) {
+		resolve(list[u.Index], u)
 	}
 	tty := stdoutIsTTY()
 	p := render.NewPalette(tty)
@@ -133,8 +136,7 @@ type picker struct {
 	layout render.Layout
 
 	list    []*accountData
-	updates <-chan fetchUpdate // non-nil while a round is in flight
-	round   int64              // stamps fetch updates; a stale round's update is dropped
+	updates <-chan refresh.Result // non-nil while a round is in flight
 	sel     int
 	selName string // survives a round that reorders or re-discovers accounts
 
@@ -204,7 +206,7 @@ func runPicker(cfg config.Config, layout render.Layout) int {
 					ui.manual = false
 				}
 			} else {
-				ui.apply(u, time.Now())
+				resolve(ui.list[u.Index], u)
 			}
 			ui.draw()
 		case <-tick.C:
@@ -258,28 +260,14 @@ func (ui *picker) startRound(ctx context.Context, manual bool) {
 	ui.lastLocal = time.Now()
 	ui.armed = false
 	ui.manual = manual
-	ui.round++
-	// Counted before the claim, which clears the flag on every account it
-	// denies: what schedule needs to know is whether anything was worth asking
-	// about at all, not how that asking went.
+	// Scheduling distinguishes an idle account set from a deferred refresh.
 	ui.wanted = 0
 	for _, d := range list {
-		if d.WantsFetch {
+		if d.Request != nil {
 			ui.wanted++
 		}
 	}
-	ui.updates = launchFetches(ctx, ui.cfg, list, ui.st, ui.round)
-}
-
-// apply lands one fetch update on its view. The round stamp is what makes
-// the positional idx safe by construction rather than by discipline: idx
-// addresses the list its own round was built over, and an update surviving
-// from a superseded round must never index into a rebuilt one.
-func (ui *picker) apply(u fetchUpdate, now time.Time) {
-	if u.round != ui.round {
-		return
-	}
-	resolve(ui.list[u.idx], u, now)
+	ui.updates = launchFetches(ctx, ui.cfg, list, ui.st)
 }
 
 // ackString is the one-line answer to a manual refresh, composed after the
@@ -289,6 +277,9 @@ func (ui *picker) apply(u fetchUpdate, now time.Time) {
 func (ui *picker) ackString(now time.Time) string {
 	var next time.Time
 	for _, d := range ui.list {
+		if d.View.Attempt.State == accountstate.AttemptOK || d.View.Attempt.State == accountstate.AttemptNoLimits {
+			continue
+		}
 		if at := d.View.Attempt.NextEligibleAt; at > now.Unix() {
 			t := time.Unix(at, 0)
 			if next.IsZero() || t.Before(next) {
@@ -549,7 +540,7 @@ func (ui *picker) status(now time.Time) string {
 		// "this shell lives inside a managed session", which is this
 		// machine's ordinary environment — check reports it, the board does
 		// not caption the normal case.
-		if tgt, err := target(d.Acct); err == nil {
+		if tgt, err := launch.For(d.Acct.ConfigDir); err == nil {
 			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !knownExtraDir(ui.list, v) {
 				parts = append(parts, "ambient CLAUDE_CONFIG_DIR neutralized")
 			}

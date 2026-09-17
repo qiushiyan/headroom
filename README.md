@@ -8,12 +8,12 @@ stops nothing.
 
 ```
 alice@example.com (max 20x · headroom launch --account alice@example.com)
-  5h session       [███░░░░░░░░░░░░░░░░░]  17%  resets 03:19 (in 2h 7m)
-  All models (7d)  [████████████░░░░░░░░]  61%  resets Thu 17:59 (in 4d 16h)
+  5h session       [███░░░░░░░░░░░░░░░░░]  17%  resets 03:19 (in 2.1h)
+  All models (7d)  [████████████░░░░░░░░]  61%  resets Thu 17:59 (in 4.7d)
 
 bob@example.com (max 5x · headroom launch --account bob@example.com)  ← current
-  5h session       [█████████░░░░░░░░░░░]  45%  resets 01:50 (in 37m)
-  All models (7d)  [█░░░░░░░░░░░░░░░░░░░]   6%  resets Mon 17:00 (in 1d 15h)
+  5h session       [█████████░░░░░░░░░░░]  45%  resets 01:50 (in 0.6h)
+  All models (7d)  [█░░░░░░░░░░░░░░░░░░░]   6%  resets Mon 17:00 (in 1.6d)
 ```
 
 ## Use cases
@@ -23,12 +23,14 @@ bob@example.com (max 5x · headroom launch --account bob@example.com)  ← curre
 `headroom` is the board: every account's 5-hour and weekly limits as live
 bars, refreshing while it stays open, with the command that launches each
 account and `← current` on the one a bare launch targets. It reads the same
-endpoint Claude Code's own `/usage` screen reads — once a minute per account
-at most — and replays its last answer when a refresh would be too soon, so
-the number you see is never older than what it could have fetched.
+endpoint Claude Code's own `/usage` screen reads, subject to a shared
+per-account request budget. A deferred or failed refresh keeps the newest
+usable observation, with its age and request status alongside the figures.
+Severity colours remain visible when data is stale.
 
-`headroom limits` answers from disk with no network at all, for scripts and
-status lines; `--json` on either gives the board as a document.
+`headroom limits` always emits JSON from disk, for scripts and status lines.
+`headroom --json` probes and refreshes within the same request budget as
+the board.
 
 ### 2. Spread sessions across accounts
 

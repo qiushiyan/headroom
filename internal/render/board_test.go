@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -14,8 +15,8 @@ var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // bare strips styling so a test can reason about cells and columns.
 func bare(s string) string { return sgr.ReplaceAllString(s, "") }
 
-func fresh(now int64, rows ...usage.Row) *Observation {
-	return &Observation{Rows: rows, ObservedAt: now - 5, Source: SourceLive}
+func fresh(now int64, rows ...usage.Row) *accountstate.Observation {
+	return &accountstate.Observation{Rows: rows, ObservedAt: now - 5, Source: accountstate.SourceLive}
 }
 
 func session(pct int, resetAt int64) usage.Row {
@@ -36,9 +37,9 @@ func scoped(model string, pct int, resetAt int64) usage.Row {
 func TestBoardBlocksIsAccountBlock(t *testing.T) {
 	p := NewPalette(true)
 	now := time.Now().Unix()
-	views := []AccountView{
-		{Label: "a@x.com", Launcher: "x-a", Current: true, Obs: fresh(now, session(12, now+3600), weeklyAll(52, now+90000)), Attempt: Attempt{State: AttemptOK}},
-		{Label: "b@x.com", Launcher: "x-b", Health: HealthNoLogin},
+	views := []accountstate.Facts{
+		{Label: "a@x.com", Launcher: "x-a", Current: true, Obs: fresh(now, session(12, now+3600), weeklyAll(52, now+90000)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "b@x.com", Launcher: "x-b", Health: accountstate.HealthNoLogin},
 	}
 	b := p.Board(views, now, LayoutBlocks, 80)
 	if b.Header != nil {
@@ -61,7 +62,7 @@ func TestBoardBlocksIsAccountBlock(t *testing.T) {
 // ones, and a row whose identity failed the contract forms no column at all.
 func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 	now := time.Now().Unix()
-	views := []AccountView{
+	views := []accountstate.Facts{
 		{Label: "a@x.com", Obs: fresh(now, scoped("Fable", 71, now+90000), session(12, now+3600))},
 		{Label: "b@x.com", Obs: fresh(now,
 			usage.Row{Label: "mystery", Kind: "mystery", Group: "weekly", Percent: 5},
@@ -93,32 +94,29 @@ func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 
 // Each cell state has its own token, and the two layers keep their own
 // colour: the percent takes the bar's severity with the bar's precedence (a
-// stale figure loses its colour, a percent that failed to parse is red even
-// when stale, a rolled-over window is dim); the reset is dim beside it
+// percent that failed to parse is red, a rolled-over window is dim); the
+// reset is dim beside it
 // unless it is the reset itself that drifted.
 func TestCompactCellStates(t *testing.T) {
 	p := NewPalette(true)
 	now := int64(1_800_000_000)
 	cases := []struct {
-		name  string
-		row   usage.Row
-		stale bool
-		want  cell
+		name string
+		row  usage.Row
+		want cell
 	}{
-		{"valid, low", session(12, now+2*3600+6*60), false, cell{"12%", "2.1h", p.Grn, p.Dim}},
-		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), false, cell{"97%", "4.8d", p.Red, p.Dim}},
-		{"valid, middling, minutes", session(55, now+35*60), false, cell{"55%", "0.6h", p.Yel, p.Dim}},
-		{"stale loses colour", weeklyAll(97, now+86400), true, cell{"97%", "1.0d", p.Dim, p.Dim}},
-		{"reset legitimately absent", session(0, 0), false, cell{"0%", "—", p.Grn, p.Dim}},
-		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: usage.StateBad}, false, cell{"12%", "reset?", p.Grn, p.Red}},
-		{"rolled over is dim and not a number", session(12, now-60), false, cell{"?%", "rolled", p.Dim, p.Dim}},
-		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, false, cell{"?%", "1.0h", p.Red, p.Dim}},
-		{"bad percent stays red when stale", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, true, cell{"?%", "1.0h", p.Red, p.Dim}},
-		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, false, cell{"3%", "1.0h", p.Red, p.Dim}},
+		{"valid, low", session(12, now+2*3600+6*60), cell{"12%", "2.1h", p.Grn, p.Dim}},
+		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), cell{"97%", "4.8d", p.Red, p.Dim}},
+		{"valid, middling, minutes", session(55, now+35*60), cell{"55%", "0.6h", p.Yel, p.Dim}},
+		{"reset legitimately absent", session(0, 0), cell{"0%", "—", p.Grn, p.Dim}},
+		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: usage.StateBad}, cell{"12%", "reset?", p.Grn, p.Red}},
+		{"rolled over is dim and not a number", session(12, now-60), cell{"?%", "rolled", p.Dim, p.Dim}},
+		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, cell{"?%", "1.0h", p.Red, p.Dim}},
+		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, cell{"3%", "1.0h", p.Red, p.Dim}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if c := p.cellFor(tc.row, now, tc.stale); c != tc.want {
+			if c := p.cellFor(tc.row, now); c != tc.want {
 				t.Fatalf("cell = %+v, want %+v", c, tc.want)
 			}
 		})
@@ -130,10 +128,10 @@ func TestCompactCellStates(t *testing.T) {
 func TestCompactCellLayersAlign(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	views := []AccountView{
-		{Label: "a@x.com", Obs: fresh(now, session(100, now+18*3600+40*60)), Attempt: Attempt{State: AttemptOK}},
-		{Label: "b@x.com", Obs: fresh(now, session(0, 0)), Attempt: Attempt{State: AttemptOK}},
-		{Label: "c@x.com", Obs: fresh(now, session(5, now+4*86400)), Attempt: Attempt{State: AttemptOK}},
+	views := []accountstate.Facts{
+		{Label: "a@x.com", Obs: fresh(now, session(100, now+18*3600+40*60)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "b@x.com", Obs: fresh(now, session(0, 0)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "c@x.com", Obs: fresh(now, session(5, now+4*86400)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	b := p.Board(views, now, LayoutCompact, 0)
 	pctEnd, resetStart := -1, -1
@@ -154,7 +152,7 @@ func TestCompactCellLayersAlign(t *testing.T) {
 // choosing either percent would present a guess as a figure.
 func TestCompactDuplicateIdentityIsNotAFigure(t *testing.T) {
 	now := time.Now().Unix()
-	views := []AccountView{{Label: "a@x.com", Obs: fresh(now, session(12, now+3600), session(80, now+3600))}}
+	views := []accountstate.Facts{{Label: "a@x.com", Obs: fresh(now, session(12, now+3600), session(80, now+3600))}}
 	line := bare(NewPalette(true).Board(views, now, LayoutCompact, 0).Groups[0][0])
 	if !strings.Contains(line, "?%") || strings.Contains(line, "12%") || strings.Contains(line, "80%") {
 		t.Fatalf("duplicate identity rendered a figure: %q", line)
@@ -173,42 +171,42 @@ func TestCompactCaptionKeepsEveryClause(t *testing.T) {
 	now := time.Now().Unix()
 	cases := []struct {
 		name    string
-		view    AccountView
+		view    accountstate.Facts
 		want    []string
 		notWant []string
 	}{
 		{
 			name: "health problem beside a fresh cache",
-			view: AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthNoLogin,
-				Obs: &Observation{Rows: []usage.Row{session(12, now+3600)}, ObservedAt: now - 5, Source: SourceCache}},
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthNoLogin,
+				Obs: &accountstate.Observation{Rows: []usage.Row{session(12, now+3600)}, ObservedAt: now - 5, Source: accountstate.SourceCache}},
 			want: []string{"12%", "/login", "via Claude Code's cache"},
 		},
 		{
 			name: "stale and refused",
-			view: AccountView{Label: "a@x.com", Obs: &Observation{Rows: []usage.Row{session(12, now+3600)}, ObservedAt: now - 7200, Source: SourceStore},
-				Attempt: Attempt{State: AttemptRefused, NextEligibleAt: now + 40}},
+			view: accountstate.Facts{Label: "a@x.com", Obs: &accountstate.Observation{Rows: []usage.Row{session(12, now+3600)}, ObservedAt: now - 7200, Source: accountstate.SourceStore},
+				Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, NextEligibleAt: now + 40}},
 			want: []string{"stale", "observed 2h ago", "rate limited; next attempt in 40s"},
 		},
 		{
 			name:    "fresh and ours says nothing",
-			view:    AccountView{Label: "a@x.com", Obs: fresh(now, session(12, now+3600)), Attempt: Attempt{State: AttemptOK}},
+			view:    accountstate.Facts{Label: "a@x.com", Obs: fresh(now, session(12, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 			want:    []string{"12% "},
 			notWant: []string{"observed", "·"},
 		},
 		{
 			name:    "nothing known, healthy",
-			view:    AccountView{Label: "a@x.com", Health: HealthOK, Attempt: Attempt{State: AttemptTransport}},
+			view:    accountstate.Facts{Label: "a@x.com", Health: accountstate.HealthOK, Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}},
 			want:    []string{"usage unknown — fetch failed (network?)"},
 			notWant: []string{"—  "}, // no dash cells: the caption is the row
 		},
 		{
 			name: "an empty observation is a contractual answer",
-			view: AccountView{Label: "a@x.com", Obs: &Observation{Rows: nil, ObservedAt: now - 5, Source: SourceLive}, Attempt: Attempt{State: AttemptNoLimits}},
+			view: accountstate.Facts{Label: "a@x.com", Obs: &accountstate.Observation{Rows: nil, ObservedAt: now - 5, Source: accountstate.SourceLive}, Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}},
 			want: []string{"no limits reported"},
 		},
 		{
 			name:    "nothing known, logged out",
-			view:    AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthReloginRequired},
+			view:    accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthReloginRequired},
 			want:    []string{"login expired — run x-a and /login"},
 			notWant: []string{"usage unknown"},
 		},
@@ -217,8 +215,8 @@ func TestCompactCaptionKeepsEveryClause(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A second, ordinary account supplies the columns so the case
 			// under test can be the one lacking them.
-			other := AccountView{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}}
-			line := bare(p.Board([]AccountView{tc.view, other}, now, LayoutCompact, 0).Groups[0][0])
+			other := accountstate.Facts{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}}
+			line := bare(p.Board([]accountstate.Facts{tc.view, other}, now, LayoutCompact, 0).Groups[0][0])
 			for _, w := range tc.want {
 				if !strings.Contains(line, w) {
 					t.Errorf("caption lacks %q in %q", w, line)
@@ -238,9 +236,9 @@ func TestCompactCaptionKeepsEveryClause(t *testing.T) {
 func TestCompactCaptionStartsAtTheFirstColumnWhenThereAreNoRows(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	views := []AccountView{
-		{Label: "a@x.com", Launcher: "x-a", Health: HealthNoLogin},
-		{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
+	views := []accountstate.Facts{
+		{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthNoLogin},
+		{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	b := p.Board(views, now, LayoutCompact, 0)
 	warn, cellRow := bare(b.Groups[0][0]), bare(b.Groups[1][0])
@@ -256,10 +254,10 @@ func TestCompactCaptionStartsAtTheFirstColumnWhenThereAreNoRows(t *testing.T) {
 func TestCompactRowMarksAndHealthColour(t *testing.T) {
 	p := NewPalette(true)
 	now := time.Now().Unix()
-	views := []AccountView{
-		{Label: "a@x.com", Current: true, Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
-		{Label: "b@x.com", DirMismatch: "c@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
-		{Label: "d@x.com", Launcher: "x-d", Health: HealthBadBlob, Obs: fresh(now, session(1, now+3600))},
+	views := []accountstate.Facts{
+		{Label: "a@x.com", Current: true, Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "b@x.com", DirMismatch: "c@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "d@x.com", Launcher: "x-d", Health: accountstate.HealthBadBlob, Obs: fresh(now, session(1, now+3600))},
 	}
 	g := p.Board(views, now, LayoutCompact, 0).Groups
 	if !strings.Contains(g[0][0], p.Bold+"●"+p.Rst) {
@@ -283,9 +281,9 @@ func TestCompactNameColumnGivesWayToTheCaption(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
 	long := "someone.with.a.long.address@example.com" // 39 cells
-	views := []AccountView{
-		{Label: long, Obs: fresh(now, session(1, now+3600), weeklyAll(50, now+90000), scoped("Fable", 70, now+90000)), Attempt: Attempt{State: AttemptOK}},
-		{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
+	views := []accountstate.Facts{
+		{Label: long, Obs: fresh(now, session(1, now+3600), weeklyAll(50, now+90000), scoped("Fable", 70, now+90000)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "b@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	nameCells := func(width int) int {
 		// The long label fills its column exactly (ellipsized when capped)
@@ -317,9 +315,9 @@ func TestCompactNameColumnGivesWayToTheCaption(t *testing.T) {
 func TestCompactRowsAreOnePhysicalRowEach(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	views := []AccountView{
-		{Label: "evil\nname@x.com", Obs: fresh(now, session(1, now+3600), usage.Row{Label: "Fa\x1bble (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fa\x1bble", Percent: 1, ResetAt: now + 3600}), Attempt: Attempt{State: AttemptOK}},
-		{Label: "日本語@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
+	views := []accountstate.Facts{
+		{Label: "evil\nname@x.com", Obs: fresh(now, session(1, now+3600), usage.Row{Label: "Fa\x1bble (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fa\x1bble", Percent: 1, ResetAt: now + 3600}), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "日本語@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	b := p.Board(views, now, LayoutCompact, 0)
 	for _, line := range append(b.Header, b.Groups[0][0], b.Groups[1][0]) {
@@ -363,12 +361,12 @@ func TestRemaining(t *testing.T) {
 func TestCompactCaptionOrdersSignalsBeforeExplanations(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	refused := AccountView{Label: "qiushi.yann@gmail.com", Launcher: "x-q",
-		Obs:     &Observation{Rows: []usage.Row{scoped("Fable", 83, now+90000), session(12, now+3600), weeklyAll(42, now+90000)}, ObservedAt: now - 7200, Source: SourceCache},
-		Attempt: Attempt{State: AttemptRefused, NextEligibleAt: now + 40}}
+	refused := accountstate.Facts{Label: "qiushi.yann@gmail.com", Launcher: "x-q",
+		Obs:     &accountstate.Observation{Rows: []usage.Row{scoped("Fable", 83, now+90000), session(12, now+3600), weeklyAll(42, now+90000)}, ObservedAt: now - 7200, Source: accountstate.SourceCache},
+		Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, NextEligibleAt: now + 40}}
 	// A second account with a window of its own adds a fourth column.
-	other := AccountView{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: Attempt{State: AttemptOK}}
-	row := bare(p.Board([]AccountView{refused, other}, now, LayoutCompact, 0).Groups[0][0])
+	other := accountstate.Facts{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}}
+	row := bare(p.Board([]accountstate.Facts{refused, other}, now, LayoutCompact, 0).Groups[0][0])
 	order := []string{"stale", "rate limited", "observed 2h ago", "via Claude Code's cache"}
 	last := -1
 	for _, w := range order {
@@ -378,7 +376,7 @@ func TestCompactCaptionOrdersSignalsBeforeExplanations(t *testing.T) {
 		}
 		last = i
 	}
-	clipped := bare(Clip(p.Board([]AccountView{refused, other}, now, LayoutCompact, 110).Groups[0][0], 110))
+	clipped := bare(Clip(p.Board([]accountstate.Facts{refused, other}, now, LayoutCompact, 110).Groups[0][0], 110))
 	if !strings.Contains(clipped, "rate limited") {
 		t.Errorf("110 columns lost the refusal: %q", clipped)
 	}
@@ -391,11 +389,11 @@ func TestCompactCaptionOrdersSignalsBeforeExplanations(t *testing.T) {
 func TestCompactHeadingsGiveWayBeforeNames(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	views := []AccountView{
+	views := []accountstate.Facts{
 		{Label: "someone.with.a.long.address@example.com",
-			Obs:     &Observation{Rows: []usage.Row{scoped("Fable", 83, now+90000), session(12, now+3600), weeklyAll(42, now+90000)}, ObservedAt: now - 7200, Source: SourceStore},
-			Attempt: Attempt{State: AttemptNone}},
-		{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: Attempt{State: AttemptOK}},
+			Obs:     &accountstate.Observation{Rows: []usage.Row{scoped("Fable", 83, now+90000), session(12, now+3600), weeklyAll(42, now+90000)}, ObservedAt: now - 7200, Source: accountstate.SourceStore},
+			Attempt: accountstate.Attempt{State: accountstate.AttemptNone}},
+		{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	wide := bare(p.Board(views, now, LayoutCompact, 200).Header[0])
 	if !strings.Contains(wide, "All models (7d)") {
@@ -419,7 +417,7 @@ func TestCompactHeadingsGiveWayBeforeNames(t *testing.T) {
 func TestCompactDirMismatchNamesTheDir(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	views := []AccountView{{Label: "b@x.com", DirMismatch: "c@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: Attempt{State: AttemptOK}}}
+	views := []accountstate.Facts{{Label: "b@x.com", DirMismatch: "c@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}}}
 	if row := bare(p.Board(views, now, LayoutCompact, 0).Groups[0][0]); !strings.Contains(row, "dir says c@x.com") {
 		t.Fatalf("mismatched dir unnamed: %q", row)
 	}

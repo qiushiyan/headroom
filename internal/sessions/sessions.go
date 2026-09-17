@@ -79,15 +79,18 @@ func Collect(in Input) Listing {
 	names := map[string]bool{}
 	hists := map[string]History{}
 	var registry []RegistryEntry
+	unreadableRegistry := false
 	for _, a := range in.Accounts {
 		names[a.Name] = true
 		if f, err := os.Open(filepath.Join(a.Dir, "history.jsonl")); err == nil {
 			hists[a.Name] = ParseHistory(f)
 			f.Close()
 		}
-		registry = append(registry, ReadRegistry(a.Name, a.Dir)...)
+		reg := ReadRegistry(a.Name, a.Dir)
+		registry = append(registry, reg.Entries...)
+		unreadableRegistry = unreadableRegistry || reg.Unreadable
 	}
-	liveness := Liveness(registry, in.Probe)
+	processes := Inspect(registry, in.Probe)
 
 	repos := repoCache{}
 	byID := map[string]*Session{}
@@ -137,8 +140,11 @@ func Collect(in Input) Listing {
 		}
 		s.Local = (s.RepoKey != "" && s.RepoKey == localKey) ||
 			(s.RepoKey == "" && s.DirOK && canon(s.CWD) == localKey)
-		s.Live = liveness[s.ID]
-		s.Owner, s.OwnerState = resolveOwner(s.ID, registry, in.Probe, owners, hists, names)
+		s.Live = processes[s.ID].State
+		if unreadableRegistry && s.Live != Live {
+			s.Live = LiveUnknown
+		}
+		s.Owner, s.OwnerState = resolveOwner(s.ID, processes[s.ID], owners, hists, names)
 		out.Sessions = append(out.Sessions, s)
 	}
 	sort.Slice(out.Sessions, func(i, j int) bool {
@@ -203,10 +209,10 @@ func readSession(storeDir, storeDirName, name string) *Session {
 // re-home record and each account's newest prompt compete on one honest
 // axis, event time on this machine's clock. Nothing is ever re-stamped, so
 // stale evidence can't be promoted.
-func resolveOwner(id string, registry []RegistryEntry, probe PIDProbe,
+func resolveOwner(id string, process ProcessEvidence,
 	owners map[string]OwnerRec, hists map[string]History, names map[string]bool) (string, OwnerState) {
-	if acct, ok := LiveAccount(registry, probe, id); ok {
-		return acct, OwnerLive
+	if process.State == Live {
+		return process.Account, OwnerLive
 	}
 
 	bestAcct, bestTS, bestState := "", int64(0), OwnerNone

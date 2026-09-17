@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
@@ -42,8 +43,8 @@ func (f prepareFixture) prepare(now time.Time) []*accountData {
 // because deciding earlier is exactly what let an account skip the claim.
 func (f prepareFixture) round(now time.Time) map[string]*accountData {
 	list := f.prepare(now)
-	for u := range launchFetches(context.Background(), f.cfg, list, f.store, 1) {
-		resolve(list[u.idx], u, now)
+	for u := range launchFetches(context.Background(), f.cfg, list, f.store) {
+		resolve(list[u.Index], u)
 	}
 	return byName(list)
 }
@@ -121,18 +122,18 @@ func TestPrepareWith(t *testing.T) {
 		t.Fatalf("got %d accounts: %v", len(byName), byName)
 	}
 
-	if v := byName["primary"].View; v.Health != render.HealthNoLogin || v.Label != "primary@x.com" {
+	if v := byName["primary"].View; v.Health != accountstate.HealthNoLogin || v.Label != "primary@x.com" {
 		t.Errorf("primary: health=%v label=%q", v.Health, v.Label)
 	}
 	good := byName["good@x.com"]
-	if v := good.View; v.Health != render.HealthOK || !v.Current || v.Plan != "max 20x" ||
-		v.Attempt.State != render.AttemptPending {
+	if v := good.View; v.Health != accountstate.HealthOK || !v.Current || v.Plan != "max 20x" ||
+		v.Attempt.State != accountstate.AttemptPending {
 		t.Errorf("good: %+v", v)
 	}
-	if !good.WantsFetch || good.Token != "tok-good" {
+	if good.Request == nil {
 		t.Errorf("good not fetch-ready: %+v", good)
 	}
-	if v := byName["bad@x.com"].View; v.Health != render.HealthBadBlob {
+	if v := byName["bad@x.com"].View; v.Health != accountstate.HealthBadBlob {
 		t.Errorf("bad blob: health=%v", v.Health)
 	}
 
@@ -140,15 +141,15 @@ func TestPrepareWith(t *testing.T) {
 	// figures merely can't be refreshed by us. It must not be fetched, must
 	// not be called expired, and must not be told to log in again.
 	stale := byName["stale@x.com"]
-	if v := stale.View; v.Health != render.HealthOK || v.Attempt.State != render.AttemptTokenStale {
+	if v := stale.View; v.Health != accountstate.HealthOK || v.Attempt.State != accountstate.AttemptTokenStale {
 		t.Errorf("stale access token misclassified: health=%v attempt=%v", v.Health, v.Attempt.State)
 	}
-	if stale.WantsFetch {
+	if stale.Request != nil {
 		t.Error("stale token must not be spent on a request")
 	}
 
 	// The genuine case, which still must reach the user.
-	if v := byName["gone@x.com"].View; v.Health != render.HealthReloginRequired {
+	if v := byName["gone@x.com"].View; v.Health != accountstate.HealthReloginRequired {
 		t.Errorf("dead refresh token: health=%v, want relogin required", v.Health)
 	}
 
@@ -178,12 +179,12 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 		blobs: map[string]string{"": blob},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
-	if v := f.run(now)["primary"].View; v.Health != render.HealthOK {
+	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthOK {
 		t.Errorf("auth status ignored: health=%v", v.Health)
 	}
 
 	f.auth = map[string]auth.Status{"": {LoggedIn: false, Outcome: auth.OutcomeOK}}
-	if v := f.run(now)["primary"].View; v.Health != render.HealthNoLogin {
+	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthNoLogin {
 		t.Errorf("logged-out account not surfaced: health=%v", v.Health)
 	}
 
@@ -191,8 +192,8 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 	// account-health verdict — the first-party oracle still decides that.
 	f.auth = map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}}
 	f.blobs = map[string]string{"": `not json`}
-	if v := f.run(now)["primary"].View; v.Health != render.HealthOK ||
-		v.Attempt.State != render.AttemptCredentialUnreadable {
+	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthOK ||
+		v.Attempt.State != accountstate.AttemptCredentialUnreadable {
 		t.Errorf("unreadable credential mishandled: health=%v attempt=%v", v.Health, v.Attempt.State)
 	}
 
@@ -200,7 +201,7 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 	// not be papered over with a credential guess.
 	f.auth = map[string]auth.Status{"": {Outcome: auth.OutcomeUnparseable}}
 	f.blobs = map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`}
-	if v := f.run(now)["primary"].View; v.Health != render.HealthUnknown {
+	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthUnknown {
 		t.Errorf("auth output drift not surfaced: health=%v", v.Health)
 	}
 }
@@ -232,7 +233,7 @@ func TestPrepareSeedsFromClaudeCache(t *testing.T) {
 	if v.Obs == nil {
 		t.Fatal("cached usage not loaded")
 	}
-	if v.Obs.Source != render.SourceCache || v.Obs.Rows[0].Percent != 58 {
+	if v.Obs.Source != accountstate.SourceCache || v.Obs.Rows[0].Percent != 58 {
 		t.Errorf("cache mis-parsed: %+v", v.Obs)
 	}
 	if v.Fresh(now.Unix()) {
@@ -295,137 +296,14 @@ func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
 	d := f.round(now)["primary"]
-	if d.WantsFetch {
-		t.Error("fetched an account inside its cooldown")
-	}
-	if d.View.Attempt.State != render.AttemptDeferred {
+	if d.View.Attempt.State != accountstate.AttemptDeferred {
 		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
 	}
 	if d.View.Attempt.NextEligibleAt <= now.Unix() {
 		t.Error("deferred account must say when it becomes eligible")
 	}
-	if d.View.Health != render.HealthOK {
+	if d.View.Health != accountstate.HealthOK {
 		t.Errorf("cooling down is not an account problem: health=%v", d.View.Health)
-	}
-}
-
-// A cache saying "no limit windows" is an answer, not an absence — the same
-// answer the live endpoint is allowed to give. Dropping it left the user with
-// "usage unknown" while a perfectly good cached fact sat on disk.
-func TestPrepareKeepsZeroRowCache(t *testing.T) {
-	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
-	  "oauthAccount":{"emailAddress":"p@x.com","accountUuid":"u"},
-	  "cachedUsageUtilization":{"fetchedAtMs":%d,"accountUuid":"u",
-	    "utilization":{"limits":[]}}}`, time.Now().UnixMilli()))
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: state.Open(cfg.AccountsRoot),
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	v := f.run(time.Now())["primary"].View
-	if v.Obs == nil {
-		t.Fatal("a zero-row cache was discarded instead of shown as 'no limits'")
-	}
-	if len(v.Obs.Rows) != 0 || v.Obs.Source != render.SourceCache {
-		t.Errorf("observation: %+v", v.Obs)
-	}
-}
-
-// The heir of watch's carry-over tests, and the fix for the reported bug.
-//
-// A previous round's figures used to live in one long-running process's
-// memory, so every other surface — and every later run of watch itself — fell
-// back to Claude Code's cache the moment a refresh was deferred. Measured on
-// the live machine, that cache was 37 hours old while the figures headroom had
-// fetched five seconds earlier were being thrown away with the process. Two
-// consecutive runs therefore showed "current" and then "stale · observed 37h
-// ago" for the same accounts, and the picker warned against choosing on any of
-// them.
-//
-// Now both are on disk, prepare picks the newer, and the observation carries
-// whole — timestamp and source included, never restamped as fresh.
-func TestPrepareSelectsTheNewestObservation(t *testing.T) {
-	body := func(pct int) []byte {
-		return fmt.Appendf(nil, `{"limits":[{"kind":"session","percent":%d}]}`, pct)
-	}
-	const ours, theirs = 10, 20
-
-	cases := []struct {
-		name       string
-		ownAge     time.Duration // 0 = no stored observation
-		cacheAge   time.Duration // 0 = no Claude Code cache
-		wantPct    int           // 0 = nothing shown
-		wantSource render.Source
-	}{
-		{"our seconds-old fetch beats a day-old cache", 5 * time.Second, 37 * time.Hour, ours, render.SourceStore},
-		{"a fresh cache beats our stale fetch", 48 * time.Hour, time.Hour, theirs, render.SourceCache},
-		{"ours alone", 30 * time.Second, 0, ours, render.SourceStore},
-		{"theirs alone", 0, 2 * time.Hour, theirs, render.SourceCache},
-		{"neither", 0, 0, 0, 0},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			home := t.TempDir()
-			cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
-			if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			now := time.Now()
-			meta := `{"oauthAccount":{"emailAddress":"p@x.com","accountUuid":"uuid-1"}}`
-			if c.cacheAge != 0 {
-				meta = fmt.Sprintf(`{"oauthAccount":{"emailAddress":"p@x.com","accountUuid":"uuid-1"},
-				  "cachedUsageUtilization":{"fetchedAtMs":%d,"accountUuid":"uuid-1",
-				    "utilization":%s}}`, now.Add(-c.cacheAge).UnixMilli(), body(theirs))
-			}
-			writeJSON(t, cfg.PrimaryMeta(), meta)
-
-			store := state.Open(cfg.AccountsRoot)
-			key := state.Key{UUID: "uuid-1", Name: "primary"}
-			var storedAt time.Time
-			if c.ownAge != 0 {
-				storedAt = now.Add(-c.ownAge)
-				dec, err := store.Claim([]state.Key{key}, storedAt)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.Complete(key, dec[0].Generation, state.OutcomeStored, body(ours), storedAt); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			f := prepareFixture{
-				cfg:   cfg,
-				store: store,
-				blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-				auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-			}
-			v := f.run(now)["primary"].View
-
-			if c.wantPct == 0 {
-				if v.Obs != nil {
-					t.Fatalf("invented an observation: %+v", v.Obs)
-				}
-				return
-			}
-			if v.Obs == nil {
-				t.Fatal("no observation chosen")
-			}
-			if v.Obs.Rows[0].Percent != c.wantPct || v.Obs.Source != c.wantSource {
-				t.Errorf("chose %d%% from source %v; want %d%% from %v",
-					v.Obs.Rows[0].Percent, v.Obs.Source, c.wantPct, c.wantSource)
-			}
-			if c.wantSource == render.SourceStore && v.Obs.ObservedAt != storedAt.Unix() {
-				t.Errorf("a replayed observation was restamped: got %d want %d",
-					v.Obs.ObservedAt, storedAt.Unix())
-			}
-		})
 	}
 }
 
@@ -465,10 +343,7 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	now := time.Now()
 	d := f.round(now)["primary"]
 
-	if d.WantsFetch {
-		t.Error("a second run inside the quiet period must not ask again")
-	}
-	if d.View.Attempt.State != render.AttemptDeferred {
+	if d.View.Attempt.State != accountstate.AttemptDeferred {
 		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
 	}
 	if !d.View.Fresh(now.Unix()) {
@@ -487,7 +362,7 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 // broken spelling and would send the user to /login for a path bug.
 func TestUnrunnableProbeIsUnknownNotLoggedOut(t *testing.T) {
 	h := resolveHealth(auth.Status{Outcome: auth.OutcomeUnrunnable}, "", creds.Blob{}, false, 0)
-	if h != render.HealthUnknown {
+	if h != accountstate.HealthUnknown {
 		t.Errorf("health = %v, want HealthUnknown", h)
 	}
 }

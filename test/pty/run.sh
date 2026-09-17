@@ -5,8 +5,8 @@
 # macOS); `make test-pty` runs it.
 #
 # Two patterns here are load-bearing:
-#   - kill with `pkill -nx headroom`, never -f — -f would match the sh
-#     wrapper too and tear the harness down;
+#   - the foreground fixture launcher records its PID before exec; signal
+#     only that child, keeping other headroom sessions untouched;
 #   - terminal state after a signal death is inspected by an sh wrapper
 #     that runs `stty -a` in the same pty once headroom is gone.
 set -eu
@@ -16,7 +16,6 @@ repo=$(cd "$here/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# The binary must be named exactly "headroom" for pkill -x to find it.
 HEADROOM_BIN="$work/headroom"
 (cd "$repo" && go build -o "$HEADROOM_BIN" ./cmd/headroom)
 
@@ -36,6 +35,7 @@ printf '{"oauthAccount":{"emailAddress":"b@x.com"}}' \
     >"$HEADROOM_ACCOUNTS_ROOT/b@x.com/.claude.json"
 export HEADROOM_BIN
 export STTY_OUT="$work/stty.out"
+export HEADROOM_PID_FILE="$work/headroom.pid"
 
 # A session-store fixture for the resume surface. HEADROOM_HOME re-points
 # the primary config dir and the projects store into the sandbox — without
@@ -79,15 +79,26 @@ export RESUME_OUT="$work/resume.out"
 
 # The exec-success fixture: an extra account with valid topology owning one
 # session, and a stub claude that records the config dir and argv it
-# received. PATH gains the stub only inside sessions_exec.exp — every other
-# test keeps the real claude (auth probes must stay honest).
+# received. Every case uses fixture auth and credential commands; a real
+# terminal never requires real account credentials.
 mkdir -p "$work/stub"
 cat >"$work/stub/claude" <<'EOS'
 #!/bin/sh
-echo "STUB-CLAUDE cfg=${CLAUDE_CONFIG_DIR-unset} args=$*"
+if [ "${1-}" = auth ]; then
+    echo '{"loggedIn":false}'
+else
+    echo "STUB-CLAUDE cfg=${CLAUDE_CONFIG_DIR-unset} args=$*"
+    printf 'STUB-TTY %s\n' "$(stty -g)"
+fi
 exit 0
 EOS
-chmod +x "$work/stub/claude"
+cat >"$work/stub/security" <<'EOS'
+#!/bin/sh
+# The fixture has no Keychain items.
+exit 44
+EOS
+chmod +x "$work/stub/claude" "$work/stub/security"
+export PATH="$work/stub:$PATH"
 export STUB_DIR="$work/stub"
 sid2="99999999-8888-7777-6666-555555555555"
 cat >"$store2/$sid2.jsonl" <<EOF3
@@ -103,7 +114,7 @@ printf '{"display":"exec me","sessionId":"%s","timestamp":2000}\n' "$sid2" \
 
 fail=0
 run() {
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$RESUME_OUT"
+    rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$RESUME_OUT" "$HEADROOM_PID_FILE"
     # Each case starts from an unclaimed budget, or the board would open
     # inside a quiet period the previous case paid for.
     rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
@@ -208,7 +219,7 @@ if command -v tmux >/dev/null 2>&1; then
         [ "$(tmx display-message -t board -p '#{pane_current_command}' 2>/dev/null || true)" = headroom ]
     }
     tmx kill-server 2>/dev/null || true
-    tmx new-session -d -x 100 -y 8 -s board "exec $HEADROOM_BIN"
+    tmx new-session -d -x 100 -y 8 -s board "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN'"
     sleep 6
     tmx send-keys -t board j j k 2>/dev/null || true
     sleep 2

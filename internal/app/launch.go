@@ -23,19 +23,7 @@ import (
 
 // execClaude is the one impure edge of the launch surface, injected so tests
 // can capture the argv and environment a launch would have used.
-var execClaude = launch.Exec
-
-// target maps a validated account to the launch package's vocabulary through
-// the validating constructors: the launch surface never hands the seam a raw
-// dir string. The error is impossible for a discovered account — a
-// non-primary always carries its real dir — and refusing on it anyway is
-// what "impossible" is worth at a routing boundary.
-func target(a accounts.Account) (launch.Target, error) {
-	if a.IsPrimary() {
-		return launch.Primary(), nil
-	}
-	return launch.Extra(a.ConfigDir)
-}
+var execClaude = launch.ExecPath
 
 // runResolve prints one line: canonical-name<TAB>config-dir<TAB>kind, kind
 // being "primary" or "extra". It exists for shell preflight — topology
@@ -123,19 +111,9 @@ parse:
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}
-	// Both refusals sit before the .current write: a recorded choice that
-	// then refuses to launch would move where bare `x` goes as a side effect
-	// of a launch that never happened.
-	if a.IsPrimary() && cfg.PrimaryRelocated {
-		// The primary is selected by CLAUDE_CONFIG_DIR being *absent*, which
-		// claude resolves against the real home — HEADROOM_HOME re-points
-		// what headroom observes but cannot re-point that. Launching would
-		// start a session on a tree the board never described.
-		fmt.Fprintln(os.Stderr, "headroom launch: HEADROOM_HOME is set, so the primary headroom describes is not the primary claude would launch — refusing (extras are unaffected)")
-		return 1
-	}
-	if err := accounts.VerifyTopology(cfg, a); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: not launching — %v\n", err)
+	prepared, err := launch.Prepare(cfg, a, accts, os.Environ())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}
 	if remember {
@@ -149,29 +127,16 @@ parse:
 		}
 	}
 
-	tgt, err := target(a)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+	for _, notice := range prepared.Notices {
+		fmt.Fprintln(os.Stderr, "headroom launch: "+notice)
+	}
+	if err := execClaude(prepared.Path, rest, prepared.Env); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: exec claude: %v\n", err)
+		if remember {
+			fmt.Fprintf(os.Stderr, "headroom launch: .current remains %s\n", a.Name)
+		}
 		return 1
 	}
-	base := os.Environ()
-	if v, conflicting := tgt.Conflicts(base); conflicting && !accounts.KnownExtraDir(accts, v) {
-		// Neutralized either way; said out loud only when the value cannot
-		// be explained as "this shell lives inside a managed session" — that
-		// inheritance is the ordinary environment on this machine, and a
-		// notice that fires on the ordinary case is noise (check still
-		// reports every present value). One line, stderr, business as usual.
-		fmt.Fprintf(os.Stderr, "headroom launch: ignoring inherited CLAUDE_CONFIG_DIR=%s; launching %s (%s)\n",
-			v, a.Name, a.Dir(cfg))
-	}
-	if v, present := launch.AmbientSecureStorage(base); present {
-		// Same treatment: obeying it would take credentials from a dir the
-		// decision never named — one account's tokens under another's state.
-		fmt.Fprintf(os.Stderr, "headroom launch: ignoring inherited CLAUDE_SECURESTORAGE_CONFIG_DIR=%s\n", v)
-	}
-	if err := execClaude(rest, tgt.Env(base)); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
-		return 1
-	}
+
 	return 0
 }

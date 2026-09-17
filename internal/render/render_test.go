@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -65,7 +66,7 @@ func TestResetPhrase(t *testing.T) {
 func TestLimitRowPlain(t *testing.T) {
 	p := NewPalette(false)
 	row := usage.Row{Label: "5h session", Percent: 56, Severity: "normal"}
-	got := p.LimitRow(row, 0, 16, false)
+	got := p.LimitRow(row, 0, 16)
 	if !strings.HasPrefix(got, "  5h session       [") {
 		t.Errorf("label padding off: %q", got)
 	}
@@ -73,7 +74,7 @@ func TestLimitRowPlain(t *testing.T) {
 		t.Errorf("row = %q", got)
 	}
 	// A wider column pads further.
-	got = p.LimitRow(row, 0, 20, false)
+	got = p.LimitRow(row, 0, 20)
 	if !strings.HasPrefix(got, "  5h session           [") {
 		t.Errorf("wide label padding off: %q", got)
 	}
@@ -83,8 +84,8 @@ func TestLimitRowPlain(t *testing.T) {
 // bad percent rendering as a plain 0% would read as free headroom.
 func TestLimitRowDrift(t *testing.T) {
 	p := NewPalette(false)
-	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: usage.StateBad}, 0, 16, false)
-	real0 := p.LimitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16, false)
+	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: usage.StateBad}, 0, 16)
+	real0 := p.LimitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16)
 	if bad == real0 {
 		t.Fatalf("bad percent indistinguishable from real 0%%: %q", bad)
 	}
@@ -100,19 +101,19 @@ func TestLimitRowDrift(t *testing.T) {
 
 	// A bad timestamp alone also carries the marker.
 	badReset := p.LimitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal",
-		ResetState: usage.StateBad}, 0, 16, false)
+		ResetState: usage.StateBad}, 0, 16)
 	if !strings.Contains(badReset, "drift") {
 		t.Errorf("bad reset should carry the drift marker: %q", badReset)
 	}
 }
 
 func TestLabelWidth(t *testing.T) {
-	short := AccountView{Obs: &Observation{Rows: []usage.Row{{Label: "5h session"}}}}
-	long := AccountView{Obs: &Observation{Rows: []usage.Row{{Label: "Claude Opus 4.5 (7d)"}}}}
-	if got := LabelWidth([]AccountView{short}); got != 16 {
+	short := accountstate.Facts{Obs: &accountstate.Observation{Rows: []usage.Row{{Label: "5h session"}}}}
+	long := accountstate.Facts{Obs: &accountstate.Observation{Rows: []usage.Row{{Label: "Claude Opus 4.5 (7d)"}}}}
+	if got := LabelWidth([]accountstate.Facts{short}); got != 16 {
 		t.Errorf("short labels should keep the classic column: %d", got)
 	}
-	if got := LabelWidth([]AccountView{short, long}); got != len("Claude Opus 4.5 (7d)") {
+	if got := LabelWidth([]accountstate.Facts{short, long}); got != len("Claude Opus 4.5 (7d)") {
 		t.Errorf("width should follow the longest label: %d", got)
 	}
 }
@@ -142,15 +143,15 @@ func TestClip(t *testing.T) {
 
 func TestHeaderLine(t *testing.T) {
 	p := NewPalette(false)
-	v := AccountView{Label: "a@b.c", Plan: "max 20x", Launcher: "x-a", Current: true}
+	v := accountstate.Facts{Label: "a@b.c", Plan: "max 20x", Launcher: "x-a", Current: true}
 	if got := p.HeaderLine(v); got != "a@b.c (max 20x · x-a)  ← current" {
 		t.Errorf("header = %q", got)
 	}
-	v = AccountView{Label: "a@b.c", Launcher: "x-a"}
+	v = accountstate.Facts{Label: "a@b.c", Launcher: "x-a"}
 	if got := p.HeaderLine(v); got != "a@b.c  x-a" {
 		t.Errorf("planless header = %q", got)
 	}
-	v = AccountView{Label: "real@b.c", DirMismatch: "dir@b.c", Launcher: "x-a"}
+	v = accountstate.Facts{Label: "real@b.c", DirMismatch: "dir@b.c", Launcher: "x-a"}
 	if got := p.HeaderLine(v); !strings.Contains(got, "real@b.c (dir says dir@b.c!)") {
 		t.Errorf("mismatch header = %q", got)
 	}
@@ -162,13 +163,13 @@ func TestHeaderLine(t *testing.T) {
 func TestAccountBlockKeepsRowsThroughAFailedRefresh(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	v := AccountView{
-		Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
-		Obs: &Observation{
+	v := accountstate.Facts{
+		Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthOK,
+		Obs: &accountstate.Observation{
 			Rows:       []usage.Row{{Label: "5h session", Percent: 42, Severity: "normal"}},
-			ObservedAt: now - 30, Source: SourceLive,
+			ObservedAt: now - 30, Source: accountstate.SourceLive,
 		},
-		Attempt: Attempt{State: AttemptRefused, HTTPCode: 429, NextEligibleAt: now + 180},
+		Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429, NextEligibleAt: now + 180},
 	}
 	lines := p.AccountBlock(v, now, 16)
 	joined := strings.Join(lines, "\n")
@@ -188,8 +189,8 @@ func TestAccountBlockKeepsRowsThroughAFailedRefresh(t *testing.T) {
 // to distrust.
 func TestStaleTokenReadsAsHousekeeping(t *testing.T) {
 	p := NewPalette(false)
-	v := AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
-		Attempt: Attempt{State: AttemptTokenStale}}
+	v := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthOK,
+		Attempt: accountstate.Attempt{State: accountstate.AttemptTokenStale}}
 	line := p.StatusLine(v, time.Now().Unix())
 	if strings.Contains(line, "expired") || strings.Contains(line, "/login") {
 		t.Errorf("stale access token phrased as an account problem: %q", line)
@@ -199,33 +200,41 @@ func TestStaleTokenReadsAsHousekeeping(t *testing.T) {
 	}
 
 	// The genuine case still says what it must.
-	dead := p.StatusLine(AccountView{Launcher: "x-a", Health: HealthReloginRequired}, 0)
+	dead := p.StatusLine(accountstate.Facts{Launcher: "x-a", Health: accountstate.HealthReloginRequired}, 0)
 	if !strings.Contains(dead, "/login") {
 		t.Errorf("a dead refresh token must tell the user to log in: %q", dead)
 	}
 }
 
-// Old figures render, but must be visibly marked so they cannot be read as
-// current headroom at a glance.
+// Old figures keep their severity colours in every column and layout, with
+// staleness marked separately in the caption.
 func TestStaleObservationIsMarked(t *testing.T) {
-	p := NewPalette(false)
+	p := NewPalette(true)
 	now := time.Now().Unix()
-	v := AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
-		Obs: &Observation{
-			Rows:       []usage.Row{{Label: "5h session", Percent: 58, Severity: "normal"}},
-			ObservedAt: now - int64((22 * time.Hour).Seconds()), Source: SourceCache,
+	v := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthOK,
+		Obs: &accountstate.Observation{
+			Rows:       []usage.Row{session(12, now+3600), weeklyAll(58, now+86400), scoped("Fable", 97, now+86400)},
+			ObservedAt: now - int64((22 * time.Hour).Seconds()), Source: accountstate.SourceCache,
 		},
-		Attempt: Attempt{State: AttemptDeferred, NextEligibleAt: now + 40},
+		Attempt: accountstate.Attempt{State: accountstate.AttemptDeferred, NextEligibleAt: now + 40},
 	}
-	joined := strings.Join(p.AccountBlock(v, now, 16), "\n")
-	if !strings.Contains(joined, "58%") {
-		t.Errorf("stale figures should still be shown as context:\n%s", joined)
-	}
-	if !strings.Contains(joined, "stale") || !strings.Contains(joined, "22h ago") {
-		t.Errorf("staleness not surfaced:\n%s", joined)
-	}
-	if !strings.Contains(joined, "Claude Code's cache") {
-		t.Errorf("source not surfaced:\n%s", joined)
+	for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
+		joined := strings.Join(p.Board([]accountstate.Facts{v}, now, layout, 0).Groups[0], "\n")
+		for _, want := range []struct{ color, pct string }{
+			{p.Grn, "12%"}, {p.Yel, "58%"}, {p.Red, "97%"},
+		} {
+			// No reset or other escape may mask the severity before the percent.
+			pattern := regexp.QuoteMeta(want.color) + `[^\x1b]*` + regexp.QuoteMeta(want.pct+p.Rst)
+			if !regexp.MustCompile(pattern).MatchString(joined) {
+				t.Errorf("layout %v: %s lost its severity colour: %q", layout, want.pct, joined)
+			}
+		}
+		if !strings.Contains(joined, p.Yel+"stale"+p.Rst) || !strings.Contains(joined, "22h ago") {
+			t.Errorf("layout %v: staleness not surfaced: %q", layout, joined)
+		}
+		if !strings.Contains(joined, "Claude Code's cache") {
+			t.Errorf("layout %v: source not surfaced: %q", layout, joined)
+		}
 	}
 	if v.Fresh(now) {
 		t.Error("22h-old observation reported as fresh")
@@ -236,10 +245,10 @@ func TestStaleObservationIsMarked(t *testing.T) {
 func TestFreshLiveObservationHasNoProvenanceNoise(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	v := AccountView{Label: "a@x.com", Launcher: "x-a", Health: HealthOK,
-		Obs: &Observation{Rows: []usage.Row{{Label: "5h session", Percent: 3, Severity: "normal"}},
-			ObservedAt: now - 2, Source: SourceLive},
-		Attempt: Attempt{State: AttemptOK},
+	v := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthOK,
+		Obs: &accountstate.Observation{Rows: []usage.Row{{Label: "5h session", Percent: 3, Severity: "normal"}},
+			ObservedAt: now - 2, Source: accountstate.SourceLive},
+		Attempt: accountstate.Attempt{State: accountstate.AttemptOK},
 	}
 	if got := p.ProvenanceLine(v, now); got != "" {
 		t.Errorf("fresh live rows should need no caption, got %q", got)
@@ -249,29 +258,29 @@ func TestFreshLiveObservationHasNoProvenanceNoise(t *testing.T) {
 	}
 }
 
-// Health must reach the user whether or not rows exist. An account that needs
+// accountstate.Health must reach the user whether or not rows exist. An account that needs
 // /login but happens to have a recent cache would otherwise render as ordinary
 // coloured bars with no warning — and the picker would offer it as a live
 // choice, which is precisely the class of mistake this model exists to stop.
 func TestNonOKHealthSurfacesEvenWithRows(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	base := AccountView{
+	base := accountstate.Facts{
 		Label: "a@x.com", Launcher: "x-a",
-		Obs: &Observation{
+		Obs: &accountstate.Observation{
 			Rows:       []usage.Row{{Label: "5h session", Percent: 12, Severity: "normal"}},
-			ObservedAt: now - 5, Source: SourceCache,
+			ObservedAt: now - 5, Source: accountstate.SourceCache,
 		},
-		Attempt: Attempt{State: AttemptNone},
+		Attempt: accountstate.Attempt{State: accountstate.AttemptNone},
 	}
 	for _, c := range []struct {
-		health Health
+		health accountstate.Health
 		want   string
 	}{
-		{HealthNoLogin, "/login"},
-		{HealthReloginRequired, "/login"},
-		{HealthBadBlob, "headroom check"},
-		{HealthUnknown, "headroom check"},
+		{accountstate.HealthNoLogin, "/login"},
+		{accountstate.HealthReloginRequired, "/login"},
+		{accountstate.HealthBadBlob, "headroom check"},
+		{accountstate.HealthUnknown, "headroom check"},
 	} {
 		v := base
 		v.Health = c.health
@@ -282,23 +291,6 @@ func TestNonOKHealthSurfacesEvenWithRows(t *testing.T) {
 	}
 }
 
-// "Safe to pick" is health AND freshness. Age alone was letting an unusable
-// account through on a recent cache.
-func TestActionableRequiresHealthAndFreshness(t *testing.T) {
-	now := time.Now().Unix()
-	fresh := &Observation{Rows: []usage.Row{{Label: "5h session"}}, ObservedAt: now - 5}
-	if (AccountView{Health: HealthNoLogin, Obs: fresh}).Actionable(now) {
-		t.Error("a logged-out account with a fresh cache was reported as actionable")
-	}
-	if !(AccountView{Health: HealthOK, Obs: fresh}).Actionable(now) {
-		t.Error("a healthy account with fresh figures should be actionable")
-	}
-	old := &Observation{Rows: []usage.Row{{Label: "5h session"}}, ObservedAt: now - 100000}
-	if (AccountView{Health: HealthOK, Obs: old}).Actionable(now) {
-		t.Error("stale figures are not grounds for a choice")
-	}
-}
-
 // The caption is a composition of independent clauses, never one verdict.
 // The trap: a single state per account has no cell for "current figures whose
 // newest refresh was refused" or "current figures from Claude Code's cache",
@@ -306,8 +298,8 @@ func TestActionableRequiresHealthAndFreshness(t *testing.T) {
 func TestProvenanceKeepsTheAxesApart(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
-	obs := func(age time.Duration, src Source) *Observation {
-		return &Observation{
+	obs := func(age time.Duration, src accountstate.Source) *accountstate.Observation {
+		return &accountstate.Observation{
 			Rows:       []usage.Row{{Label: "5h session", Percent: 8}},
 			ObservedAt: now - int64(age.Seconds()),
 			Source:     src,
@@ -315,42 +307,42 @@ func TestProvenanceKeepsTheAxesApart(t *testing.T) {
 	}
 	cases := []struct {
 		name    string
-		view    AccountView
+		view    accountstate.Facts
 		want    []string // substrings the caption must carry
 		notWant []string
 	}{
 		{
 			name: "current and ours says nothing",
-			view: AccountView{Obs: obs(20*time.Second, SourceLive), Attempt: Attempt{State: AttemptOK}},
+			view: accountstate.Facts{Obs: obs(20*time.Second, accountstate.SourceLive), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 		},
 		{
 			name: "current, replayed from our own store, still says nothing",
-			view: AccountView{Obs: obs(20*time.Second, SourceStore), Attempt: Attempt{State: AttemptNone}},
+			view: accountstate.Facts{Obs: obs(20*time.Second, accountstate.SourceStore), Attempt: accountstate.Attempt{State: accountstate.AttemptNone}},
 		},
 		{
 			name: "a deferred refresh over current figures is a non-event",
-			view: AccountView{Obs: obs(20*time.Second, SourceStore), Attempt: Attempt{State: AttemptDeferred}},
+			view: accountstate.Facts{Obs: obs(20*time.Second, accountstate.SourceStore), Attempt: accountstate.Attempt{State: accountstate.AttemptDeferred}},
 		},
 		{
 			name:    "current figures whose refresh was refused still report it",
-			view:    AccountView{Obs: obs(20*time.Second, SourceLive), Attempt: Attempt{State: AttemptRefused}},
+			view:    accountstate.Facts{Obs: obs(20*time.Second, accountstate.SourceLive), Attempt: accountstate.Attempt{State: accountstate.AttemptRefused}},
 			want:    []string{"observed 20s ago", "rate limited"},
 			notWant: []string{"stale"},
 		},
 		{
 			name:    "current figures from the vendor cache still name their source",
-			view:    AccountView{Obs: obs(20*time.Second, SourceCache), Attempt: Attempt{State: AttemptOK}},
+			view:    accountstate.Facts{Obs: obs(20*time.Second, accountstate.SourceCache), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 			want:    []string{"via Claude Code's cache"},
 			notWant: []string{"stale"},
 		},
 		{
 			name: "old figures are nagged about, whoever fetched them",
-			view: AccountView{Obs: obs(22*time.Hour, SourceStore), Attempt: Attempt{State: AttemptDeferred}},
+			view: accountstate.Facts{Obs: obs(22*time.Hour, accountstate.SourceStore), Attempt: accountstate.Attempt{State: accountstate.AttemptDeferred}},
 			want: []string{"stale", "observed 22h ago", "live check deferred"},
 		},
 		{
 			name:    "a refresh in flight shows over the figures it will replace",
-			view:    AccountView{Obs: obs(20*time.Second, SourceStore), Attempt: Attempt{State: AttemptPending}},
+			view:    accountstate.Facts{Obs: obs(20*time.Second, accountstate.SourceStore), Attempt: accountstate.Attempt{State: accountstate.AttemptPending}},
 			want:    []string{"fetching"},
 			notWant: []string{"stale"},
 		},
@@ -385,7 +377,7 @@ func TestRolledOverRowIsNotAnAnswer(t *testing.T) {
 	rolled := usage.Row{Label: "5h session", Percent: 8, ResetAt: now - 33*3600,
 		PercentState: usage.StateOK, ResetState: usage.StateOK}
 
-	line := p.LimitRow(rolled, now, 12, false)
+	line := p.LimitRow(rolled, now, 12)
 	if strings.Contains(line, "8%") {
 		t.Errorf("a rolled-over window still shows its old percent: %q", line)
 	}
@@ -397,9 +389,9 @@ func TestRolledOverRowIsNotAnAnswer(t *testing.T) {
 	}
 
 	// And it is not grounds for a choice, however recently it was observed.
-	v := AccountView{
-		Health: HealthOK,
-		Obs:    &Observation{Rows: []usage.Row{rolled}, ObservedAt: now - 5, Source: SourceLive},
+	v := accountstate.Facts{
+		Health: accountstate.HealthOK,
+		Obs:    &accountstate.Observation{Rows: []usage.Row{rolled}, ObservedAt: now - 5, Source: accountstate.SourceLive},
 	}
 	if !v.Fresh(now) {
 		t.Fatal("the observation itself is current; only the window ended")

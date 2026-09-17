@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -15,13 +14,14 @@ import (
 	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/check"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 func Run(args []string) int {
@@ -52,9 +52,7 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
 		return 2
 	}
-	// Every command but resume takes no further arguments; a stray one is an
-	// error, not silently ignored — a misspelled flag must not fall through
-	// to a command it wasn't meant for.
+	// Commands without options reject any remaining arguments.
 	noArgs := func() bool {
 		if len(rest) == 0 {
 			return true
@@ -164,19 +162,11 @@ func printUsage(w io.Writer) {
 
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
-// accountData carries one account through the prepare → claim → fetch →
-// render pipeline.
 type accountData struct {
-	Acct accounts.Account
-	Key  state.Key
-	View render.AccountView
-
-	Token string
-	// WantsFetch means the credentials are spendable and nothing local
-	// objects. It is not permission: only a claim granted by the store
-	// authorizes traffic, and Permit is where that lands.
-	WantsFetch bool
-	Permit     int64 // claim generation; 0 = no permit, no request
+	Acct    accounts.Account
+	Key     state.Key
+	View    accountstate.Facts
+	Request *refresh.Candidate
 }
 
 // sources are the three inputs prepare reads about each account, injected so
@@ -228,123 +218,21 @@ func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
 
 // prepareWith is prepare with its inputs injected.
 func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapshot, src sources) ([]*accountData, string) {
-	// Strict, exactly as launch resolves it: a corrupt or dangling .current
-	// marks nothing as current — the `← current` marker is a claim about where
-	// bare `x` lands, and bare `x` refuses on that state. check FAILs on it;
-	// enter on this board is what repairs it.
-	current := ""
-	if sel, err := accounts.Select(cfg, accts, ""); err == nil {
-		current = sel.Name
-	}
-	now := src.now
-	nowMS := now.UnixMilli()
-
-	list := make([]*accountData, 0, len(accts))
-	for _, a := range accts {
-		d := scaffold(cfg, a, current, snap, now)
-		list = append(list, d)
-		v := &d.View
-
-		raw := src.readRaw(a.ConfigDir)
-		blob, blobOK := creds.Parse(raw)
-		if blobOK {
-			v.Plan = blob.PlanLabel()
+	facts, current := accountstate.Assemble(cfg, accts, snap, src.now)
+	list := accountList(facts)
+	for _, d := range list {
+		raw := src.readRaw(d.Acct.ConfigDir)
+		blob, ok := creds.Parse(raw)
+		if ok {
+			d.View.Plan = blob.PlanLabel()
 		}
-		v.Health = resolveHealth(src.health(a.ConfigDir), raw, blob, blobOK, nowMS)
-
-		if v.Health != render.HealthOK {
-			continue
-		}
-		switch {
-		case !blobOK:
-			// Blocks our request, says nothing about the account.
-			v.Attempt.State = render.AttemptCredentialUnreadable
-		case !blob.TokenUsable(nowMS):
-			// Nothing to spend: the stored token aged out. The account is
-			// fine and a session will refresh it — that is not our business.
-			v.Attempt.State = render.AttemptTokenStale
-		case !a.Meta.Readable:
-			// Which quota bucket this dir shares is unknown, so any claim would
-			// be against a bucket that might not be this account's — and the
-			// budget is per account. Spending on a guess is the double-spend
-			// the ledger exists to prevent, so this run asks nothing and says
-			// why. Ordinarily transient: Claude Code rewrites the file
-			// constantly, and the next run reads it whole.
-			v.Attempt.State = render.AttemptIdentityUnknown
-		default:
-			// Spendable credentials and nothing local objecting. Whether a
-			// request actually goes out is the claim's decision in
-			// launchFetches, and *only* the claim's: reading eligibility here
-			// as well, and acting on it, is how an account could be dropped
-			// before the claim ever saw it — which silently emptied the key
-			// list in exactly the states the store answers conservatively
-			// about, so the pass that is supposed to quiet every account
-			// quieted none of them.
-			d.Token = blob.Token
-			d.WantsFetch = true
-			v.Attempt.State = render.AttemptPending
+		d.View.Health = resolveHealth(src.health(d.Acct.ConfigDir), raw, blob, ok, src.now.UnixMilli())
+		d.View.Attempt = accountstate.Attempt{}
+		if d.View.Health == accountstate.HealthOK {
+			d.Request, d.View.Attempt.State = refresh.Prepare(d.Acct, blob, ok, src.now)
 		}
 	}
 	return list, current
-}
-
-// scaffold assembles the network-free facts every surface knows about an
-// account — identity, labels, the current marker, and the newest observation
-// already on disk. prepare layers health and fetch eligibility on top; the
-// limits surface stops here.
-func scaffold(cfg config.Config, a accounts.Account, current string, snap state.Snapshot, now time.Time) *accountData {
-	d := &accountData{Acct: a, Key: state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}}
-	v := &d.View
-	v.Label = a.Name
-	if a.Email != "" {
-		v.Label = a.Email
-	}
-	if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
-		v.DirMismatch = a.Name
-	}
-	v.Launcher = accounts.Launcher(cfg, a)
-	v.Current = current == a.Name
-	v.Obs = newestObservation(snap, d.Key, a.Meta, now)
-	return d
-}
-
-// newestObservation picks the better of the two things known about an account
-// before any request goes out: what headroom itself last saw, and what Claude
-// Code last cached.
-//
-// Both are free and neither needs permission from the rate limiter, so even a
-// refused refresh leaves the user with numbers and their age. Newest wins
-// outright — headroom's own fetch is usually seconds old and Claude Code's
-// cache hours, but an account driven in a live session while headroom sat idle
-// inverts that, and the timestamp is the only honest way to choose.
-//
-// A body that no longer parses is skipped rather than rendered: a stored
-// response that has stopped meaning anything must not present itself as "no
-// limits reported". `check` is where that loss becomes a report.
-func newestObservation(snap state.Snapshot, k state.Key, meta accounts.Meta, now time.Time) *render.Observation {
-	var best *render.Observation
-	consider := func(body []byte, atMS int64, source render.Source) {
-		if len(body) == 0 || atMS <= 0 {
-			return
-		}
-		// Zero rows is as much an answer here as it is from the live endpoint
-		// — "this account reported no limit windows at time X" beats showing
-		// nothing at all.
-		rows, err := usage.ParseLimits(body)
-		if err != nil {
-			return
-		}
-		at := atMS / 1000
-		if best != nil && at <= best.ObservedAt {
-			return
-		}
-		best = &render.Observation{Rows: rows, ObservedAt: at, Source: source}
-	}
-	if obs, ok := snap.Observation(k, now); ok {
-		consider(obs.Body, obs.FetchedAtMS, render.SourceStore)
-	}
-	consider(meta.CachedUsage, meta.FetchedAtMS, render.SourceCache)
-	return best
 }
 
 // resolveHealth decides one thing: can Claude Code use this account.
@@ -355,192 +243,56 @@ func newestObservation(snap state.Snapshot, k state.Key, meta accounts.Meta, now
 // recreate the false alarm this rework exists to remove. Credential evidence
 // is the fallback only when the oracle has no answer, and it never infers
 // "expired" from a missing field (see creds.ReloginRequired).
-func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, nowMS int64) render.Health {
+func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, nowMS int64) accountstate.Health {
 	switch st.Outcome {
 	case auth.OutcomeOK:
 		if st.LoggedIn {
-			return render.HealthOK
+			return accountstate.HealthOK
 		}
-		return render.HealthNoLogin
+		return accountstate.HealthNoLogin
 	case auth.OutcomeUnparseable:
 		// The oracle ran and answered in a shape we no longer understand.
 		// Guessing from credentials here would paper over vendor drift.
-		return render.HealthUnknown
+		return accountstate.HealthUnknown
 	case auth.OutcomeUnrunnable:
 		// The probe's environment could not be built (launch refused the
 		// dir). The credential fallback below reads the same broken spelling
 		// and would report "no login" — a /login errand for a path bug.
-		return render.HealthUnknown
+		return accountstate.HealthUnknown
 	}
 	switch {
 	case raw == "":
-		return render.HealthNoLogin
+		return accountstate.HealthNoLogin
 	case !blobOK:
-		return render.HealthBadBlob
+		return accountstate.HealthBadBlob
 	case blob.ReloginRequired(nowMS):
-		return render.HealthReloginRequired
+		return accountstate.HealthReloginRequired
 	default:
-		return render.HealthOK
+		return accountstate.HealthOK
 	}
 }
 
-// fetchUpdate is one finished fetch, addressed by account index: what the
-// result means, and what the ledger said when it was told. The receiver
-// applies it with resolve.
-//
-// Both the classification and the store write happen on the fetch goroutine.
-// That keeps a locked read-modify-write with an fsync off a picker's draw
-// loop, and it lets the completion afford a longer wait for the lock than the
-// claim does — a claim that fails costs nothing, while a completion that fails
-// throws away a request already spent.
-type fetchUpdate struct {
-	idx   int
-	out   fetchOutcome
-	next  time.Time // when this account may next be asked; zero if unrecorded
-	round int64     // the round idx addresses; a consumer on a later round drops it
-}
-
-// fetchOutcome is what one result means for the user, decided without touching
-// a view.
-type fetchOutcome struct {
-	attempt render.AttemptState
-	code    int
-	rows    []usage.Row
-	live    bool // rows are this run's own observation
-}
-
-// classify decides what a fetch result means for the user and for the ledger.
-// Pure, so it can run on the goroutine that fetched: the same body always
-// yields the same verdict, and nothing here writes anything.
-func classify(res usage.Result) (fetchOutcome, state.Outcome, []byte) {
-	switch {
-	case res.Err != nil:
-		return fetchOutcome{attempt: render.AttemptTransport}, state.OutcomeFailed, nil
-	case res.StatusCode == http.StatusTooManyRequests:
-		// Says nothing about the account — only that this request was too
-		// soon. Rows, if any, stay exactly as they were.
-		return fetchOutcome{attempt: render.AttemptRefused, code: res.StatusCode},
-			state.OutcomeRefused, nil
-	case res.StatusCode != http.StatusOK:
-		return fetchOutcome{attempt: render.AttemptHTTP, code: res.StatusCode},
-			state.OutcomeFailed, nil
-	}
-	rows, err := usage.ParseLimits(res.Body)
-	if err != nil {
-		// A 200 still proves the budget recovered, so it is spent, not failed
-		// — but a body that does not parse is not worth storing.
-		return fetchOutcome{attempt: render.AttemptUnparseable}, state.OutcomeSpent, nil
-	}
-	// Zero rows is a contractual answer — "this account reports no limit
-	// windows" — and it is newer truth than any cached bars, so it replaces
-	// them rather than hiding behind them.
-	att := render.AttemptOK
-	if len(rows) == 0 {
-		att = render.AttemptNoLimits
-	}
-	return fetchOutcome{attempt: att, rows: rows, live: true}, state.OutcomeStored, res.Body
-}
-
-// launchFetches claims the budget, then starts the permitted fetches in
-// parallel; the channel closes when all are done.
-//
-// The claim is a test-and-set inside the store's lock and its result is what
-// authorizes traffic — an account that wanted a fetch but lost the race is
-// turned back into a deferred row here. Fetch goroutines never touch a view;
-// the caller applies each result with resolve, so views have exactly one
-// writer and a redraw may read every view between receives. The buffer lets
-// senders finish even if the caller stops receiving early. Every update
-// carries the caller's round stamp: idx addresses positions in the list this
-// round was built over, and stamping makes "never applied to a rebuilt list"
-// a property of the data rather than of caller discipline.
-func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, st *state.Store, round int64) <-chan fetchUpdate {
-	client := &http.Client{Timeout: 10 * time.Second}
-	updates := make(chan fetchUpdate, len(list))
-	var wg sync.WaitGroup
-	now := time.Now()
-
-	idx := make([]int, 0, len(list))
-	keys := make([]state.Key, 0, len(list))
+// Each round owns its channel and list until the channel has closed and drained.
+func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, st *state.Store) <-chan refresh.Result {
+	requests := make([]*refresh.Candidate, len(list))
 	for i, d := range list {
-		if d.WantsFetch {
-			idx = append(idx, i)
-			keys = append(keys, d.Key)
-		}
+		requests[i] = d.Request
 	}
-	decisions, err := st.Claim(keys, now)
-	for j, dec := range decisions {
-		d := list[idx[j]]
-		switch {
-		case dec.Permit:
-			d.Permit = dec.Generation
-		case err != nil || dec.Degraded:
-			// The claim could not be written or could not be reasoned from, so
-			// no request may go out — and the row says whose problem that is. A
-			// claim that never reached disk is one another process cannot see.
-			d.WantsFetch = false
-			d.View.Attempt.State = render.AttemptStateUnavailable
-		default:
-			d.WantsFetch = false
-			d.View.Attempt.State = render.AttemptDeferred
-			d.View.Attempt.NextEligibleAt = dec.NextEligible.Unix()
-		}
-	}
-
-	for i, d := range list {
-		if !d.WantsFetch || d.Permit == 0 {
-			continue
-		}
-		wg.Add(1)
-		// Everything the goroutine needs is copied in: it never reads or
-		// writes an accountData, so views stay single-writer by construction
-		// rather than by discipline.
-		go func(i int, k state.Key, permit int64, token string) {
-			defer wg.Done()
-			out, outcome, body := classify(usage.Fetch(ctx, client, cfg.UsageURL, token))
-			var next time.Time
-			if ctx.Err() == nil {
-				// A cancelled fetch says nothing about the budget and its claim
-				// already stands. Completing it on the way out would only risk
-				// a half-written temp file as the process exits.
-				next, _ = st.Complete(k, permit, outcome, body, time.Now())
-			}
-			updates <- fetchUpdate{i, out, next, round}
-		}(i, d.Key, d.Permit, d.Token)
-	}
-	go func() {
-		wg.Wait()
-		close(updates)
-	}()
-	return updates
+	return refresh.Start(ctx, cfg.UsageURL, st, requests, nil)
 }
 
-// resolve applies one finished fetch to its account's view, and touches
-// nothing else. It writes the attempt axis always and the observation axis
-// only on success: a refusal or a dead network must leave whatever was already
-// known standing, with its own timestamp intact.
-//
-// The ledger was already told the same story by the fetch goroutine, through
-// the store, which owns every consequence — strike counts, cooldown arithmetic
-// and whether the body is worth keeping — and handed back when this account may
-// next be asked, so the row can say so without recomputing it.
-func resolve(d *accountData, u fetchUpdate, now time.Time) {
-	v := &d.View
-	v.Attempt.State = u.out.attempt
-	v.Attempt.HTTPCode = u.out.code
-	if u.out.live {
-		v.Obs = &render.Observation{
-			Rows:       u.out.rows,
-			ObservedAt: now.Unix(),
-			Source:     render.SourceLive,
-		}
+func resolve(d *accountData, result refresh.Result) {
+	d.View.Attempt = result.Attempt
+	if result.Observation != nil {
+		d.View.Obs = result.Observation
 	}
-	if u.next.After(now) && u.out.attempt != render.AttemptOK {
-		v.Attempt.NextEligibleAt = u.next.Unix()
+	if result.StoreErr != nil {
+		d.View.Attempt.StoreError = result.StoreErr.Error()
 	}
 }
 
-func views(list []*accountData) []render.AccountView {
-	vs := make([]render.AccountView, len(list))
+func views(list []*accountData) []accountstate.Facts {
+	vs := make([]accountstate.Facts, len(list))
 	for i, d := range list {
 		vs[i] = d.View
 	}

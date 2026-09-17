@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -56,10 +56,13 @@ func runLimitsTo(w io.Writer, cfg config.Config, args []string) int {
 		return 2
 	}
 
-	accts := accounts.Discover(cfg)
-	snap := state.Open(cfg.AccountsRoot).Load()
 	now := time.Now()
-	list, current := prepareRead(cfg, accts, snap, now)
+	disk := accountstate.Read(cfg, state.Open(cfg.AccountsRoot), now)
+	list, current, snap := accountList(disk.Accounts), disk.Current, disk.Store
+	accts := make([]accounts.Account, len(list))
+	for i, d := range list {
+		accts[i] = d.Acct
+	}
 	if accountSet {
 		a, err := accounts.Select(cfg, accts, account)
 		if err != nil {
@@ -77,30 +80,12 @@ func runLimitsTo(w io.Writer, cfg config.Config, args []string) int {
 	return 0
 }
 
-// prepareRead is prepare's network-free half on its own: every account's
-// scaffold, with the two skipped questions answered honestly. Health is
-// HealthUnprobed — a statement about this surface, never about the account —
-// and the attempt axis stays AttemptNone because nothing was attempted; the
-// advisory next-eligible instant rides along so a consumer deciding when to
-// trigger a real fetch can respect the ledger it will be claimed against.
-// (Advice, not permission: the claim alone authorizes traffic.)
-func prepareRead(cfg config.Config, accts []accounts.Account, snap state.Snapshot, now time.Time) ([]*accountData, string) {
-	// Tolerant, exactly as prepareWith: a corrupt or dangling .current marks
-	// nothing as current; repairing it is the board's job, reporting it check's.
-	current := ""
-	if sel, err := accounts.Select(cfg, accts, ""); err == nil {
-		current = sel.Name
+func accountList(facts []accountstate.Account) []*accountData {
+	list := make([]*accountData, 0, len(facts))
+	for _, a := range facts {
+		list = append(list, &accountData{Acct: a.Acct, Key: a.Key, View: a.View})
 	}
-	list := make([]*accountData, 0, len(accts))
-	for _, a := range accts {
-		d := scaffold(cfg, a, current, snap, now)
-		d.View.Health = render.HealthUnprobed
-		if next := snap.NextEligible(d.Key, now); next.After(now) {
-			d.View.Attempt.NextEligibleAt = next.Unix()
-		}
-		list = append(list, d)
-	}
-	return list, current
+	return list
 }
 
 func filterAccount(list []*accountData, name string) []*accountData {

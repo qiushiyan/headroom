@@ -128,12 +128,11 @@ verifier's error messages name something that exists on every install:
   no entry in the accounts root); `accounts.CheckRemovable` — form, and the
   one refusal that guards data: a `projects/` that is a *real directory*
   holds sessions never migrated into the store, and `RemoveAll` would take
-  them with the account; the liveness gate (`sessions.Liveness` over a
-  *strict* registry read — verified live refuses, and so does "could not
-  verify", the same rule as `dd`, with a registry file that does not parse
-  or a `sessions/` dir that cannot be listed counting as could-not-verify
-  rather than as nothing-there); then confirmation — `y/N` on a terminal,
-  `--yes` off one, and refusal without either; a picker choice arrives
+  them with the account; the liveness gate consumes `sessions.ReadRegistry`
+  problems and `sessions.Inspect` evidence — an unreadable claim or registry
+  directory refuses removal, as does any live or unverifiable session;
+  then confirmation — `y/N` on a terminal, `--yes` off one, and refusal
+  without either; a picker choice arrives
   already confirmed and takes `--yes`'s path — and the gate once more
   after the reply, since the prompt may have stayed open while a session
   started. Then the Keychain item, then the dir (`os.RemoveAll` does not
@@ -154,10 +153,11 @@ mistake as reading `expiresAt` as account health.
 The board calls the endpoint Claude Code's own `/usage` screen calls —
 `GET https://api.anthropic.com/api/oauth/usage` with a Bearer token from the
 Keychain (falling back to a `.credentials.json` file where no keychain
-exists). The endpoint is **undocumented and has already drifted once**
-(legacy `five_hour`/`seven_day` fields giving way to the authoritative
-`limits[]` array). Every fact in this file is reverse-engineered; treat all
-of it as perishable. That expectation shapes the core seam:
+exists). The endpoint is undocumented. `usage.ParseLimits` requires a
+`limits` array: an empty array means no limits, while missing, null or
+malformed arrays mean an unreadable response. Historical `five_hour` bodies
+are unsupported, including stored copies; `check` reports them as vendor
+format drift. Every vendor contract here is reverse-engineered and perishable:
 
 - **One parser per vendor document type, and no duplicate parse paths.**
   `creds.Parse` (credential blob), `usage.ParseLimits` (usage response, live
@@ -172,17 +172,16 @@ of it as perishable. That expectation shapes the core seam:
   credential field the vendor stopped sending) from *present but no longer
   parseable* (shape drift). `--json` carries the same tags outward, so machine
   consumers can't mistake drift for data either.
-- **`check` has three outcomes, not two.** PASS means every assertion was
-  tested and held. FAIL means one was tested and contradicted. INCONCLUSIVE
-  (exit 2) means it could not be tested: rate limited, network down, or an
-  access token mid-refresh. A checker that reports "Claude Code likely changed
-  a format" because it couldn't reach the endpoint actively misleads the
-  person running it *because* the board misbehaved — which is the exact moment
-  it is reached for. For the same reason it separates failures in headroom's
-  own files from vendor drift, and says so in the closing line when every
-  failure was its own. It also respects the request budget rather than
-  spending one to "diagnose" — and it stores what it bought, since it spends
-  the same budget the board does.
+- **`check` separates failed assertions from missing evidence.** PASS (exit 0)
+  means every assertion was tested and held; FAIL (exit 1) means one was
+  contradicted; INCONCLUSIVE (exit 2) means an assertion could not be tested.
+  Rate limiting, transport failure, token refresh races, lock contention and
+  a valid newer state schema leave evidence incomplete. Corrupt headroom
+  state is an own-state failure, distinguished from vendor drift in both the
+  details and closing verdict. A claim failure marks the API untested; a
+  completion failure leaves received vendor evidence available to check.
+  FAIL takes precedence when a run also has inconclusive assertions. Every
+  request uses the board's budget and storage operation.
 
 Two deliberate tolerances beyond strict inherited behavior: numeric-epoch
 `resets_at` values are accepted, and timestamps may carry offsets or
@@ -190,11 +189,9 @@ fractional seconds. Handled drift beats flagged drift.
 
 ## Three axes, because three things vary independently
 
-The defect this design replaced was a single `Status` per account. Health,
-what is known about quota, and how the last request went were one field, so
-each overwrote the others — and a refused request erased known bars and read
-as bad news about the account. All three can be true at once, and the model
-now says so:
+`internal/accountstate` owns the facts shared by the command surfaces.
+Health, observed usage and the latest request vary independently: a usable
+account can have old observations and a refused refresh at the same time.
 
 - **Health** — can Claude Code use this account? Only `/login` fixes a bad
   answer. Sourced from `claude auth status`, with credential evidence as
@@ -209,8 +206,9 @@ now says so:
   an answer at all — the window it describes has ended, so it renders as
   unknown rather than as a low percent that reads like free headroom, and it
   disqualifies the account from being called a live choice.
-- **Attempt** — what happened to the newest request. Never a statement about
-  the account.
+- **Attempt** — what happened to the newest request. Endpoint results and
+  bookkeeping failures remain independent: "rate limited" and "state file
+  unavailable" can both apply, while the account's health stays unchanged.
 
 Two consequences worth stating. An access token aging out is an *attempt*
 fact: the token lives ~8 hours, Claude Code refreshes it silently, and the
@@ -240,7 +238,7 @@ one rule — a row may not collapse what the block keeps apart:
   with drift.
 - **A cell is a percent with its clock beside it, not beside it as an
   equal.** The percent carries the bar's severity colour and precedence
-  (stale dims; a percent that failed to parse is red even when stale); the
+  (observation age does not change it; a percent that failed to parse is red); the
   time-to-reset sits after it dim, in its own aligned slot, because the
   clock is secondary to the number and belongs next to it rather than in a
   column of its own. That clock is one number with one decimal in both
@@ -311,8 +309,8 @@ ledger, the responses, and the session re-homes.
   reads, and every account starts one full cooldown quiet, so the file
   self-heals rather than bricking — and never by guessing "eligible", which is
   the guess that generates traffic. Re-homes are human decisions: an
-  unreadable sessions section refuses mutation outright rather than being
-  written over, and records are validated whole, because a section that
+  unreadable sessions section refuses re-home changes and survives other
+  writes verbatim, and records are validated whole, because a section that
   decodes *around* a hollow record reads as healthy while routing silently
   ignores it. Sections this binary cannot decode at all are carried through
   writes verbatim, and a document from a newer headroom is read but never
@@ -329,6 +327,34 @@ ledger, the responses, and the session re-homes.
   decision under the ledger's corruption policy or vice versa. `.order` is
   configuration a human edits, comments included.
 
+The upgrade path imports `.owners` and `.throttle` once. Reads preview their
+facts; a locked mutation checkpoints all imported re-homes and cooldowns
+together before attempting archival as `.imported` recovery copies. A failed
+write leaves the inputs available for retry. A crash or failed archive after
+commit leaves the originals inert: the checkpoint ends legacy reads, even
+when the initial import found no legacy files.
+
+Readable re-homes remain available independently of request-ledger damage.
+Unreadable legacy re-homes block checkpointing and mutations until repaired,
+as does a current sessions section into which legacy owners cannot safely
+be merged. This protects human decisions from retirement before preservation.
+A damaged legacy request ledger instead imports one maximum cooldown.
+
+The imported cooldown is a one-time global quiet period, capped at 16 minutes
+when checkpointed. It protects accounts outside the first claim, including
+identities now accessed through a different directory. Other accounts may
+wait too; ordinary per-account scheduling resumes after the deadline.
+Concurrent writers from retired binaries are outside this upgrade contract.
+
+`internal/refresh` owns the live-request operation for the board and checker:
+credential and identity eligibility, claims, fetches, interpretation and
+completion. Received observations retain their arrival time; a persistence
+failure annotates the endpoint verdict. Rendering presents both, while JSON
+keeps the verdict in `attempt` and bookkeeping failures in document-level
+`problems`. The checker reports each independently and samples credentials
+once after a 401 to distinguish a refresh race from unchanged or unreadable
+evidence. The board consumes the endpoint result without that diagnostic read.
+
 Two policies fall out of the budget. Figures are labelled stale only once they
 are older than the request spacing — inside that window no newer answer is
 obtainable, so nagging about age would be nagging about something nobody can
@@ -340,9 +366,10 @@ hours with nobody looking is the background daemon this design declines to
 have, wearing a TUI.
 
 `r` means *ask now*, and the claim — never the board's loop — answers. A
-round has two halves: a local half that re-reads everything free (health,
+round owns its account list and result channel until the channel has closed
+and drained. Its local half re-reads everything free (health,
 discovery, credentials, `.current`, the store's replay of what another
-surface may have bought seconds ago) and a budget half, the claim plus
+surface may have bought seconds ago); its budget half is the claim plus
 whatever fetches it permits. `r` runs both immediately; an account still
 inside its quiet period comes back annotated with when it can next be asked,
 never silently re-armed into the cadence — pre-deciding eligibility in the
@@ -352,9 +379,10 @@ refusal can itself cost more than it buys. The one veto is a 30-second floor
 between rounds — spawn hygiene for the local half's per-account auth probe
 under a held key, never budget arithmetic — inside which the press queues a
 round that fires the moment the floor passes, unattended included, because
-it was asked for. The board acknowledges a manual round in the status line
-when it lands ("refreshed · usage in 40s"), briefly: a claim that persists
-past its moment is how the old wording read as being ignored.
+it was asked for. The status line briefly acknowledges the completed round:
+"all current" for successful responses, including an empty limits array;
+"usage in …" when an answer is still deferred. Eligibility for a future
+request belongs to scheduling and does not make a successful answer deferred.
 
 ## The limits surface: reading without spending
 
@@ -365,7 +393,7 @@ instrument for them twice over: it probes health for every account
 warm), and it may spend every account's request budget to answer about one.
 `headroom limits [--account <name>]` is the read that fits: the same
 versioned document, assembled from disk alone — discovery, `.current`, and
-the newest stored observation through the same replay every surface uses
+the newest stored observation through `accountstate.Read`
 (headroom's own store and Claude Code's cache, newest wins). No health
 probe, no Keychain read, no claim, no request: it is not a second door onto
 the endpoint because it never touches the door at all, and it answers in
@@ -406,7 +434,7 @@ mislabeled as all-models would read calm at the exact moment work stops.
 ## The session surface
 
 Session transcripts are machine-global — every account's `projects/`
-symlinks to `~/.claude/projects` (the dotfiles repo owns that topology) — so
+symlinks to `~/.claude/projects` (`accounts add` creates that topology) — so
 one picker over that tree sees every conversation regardless of account.
 `headroom sessions` is that picker. Its vendor contracts, all reverse-
 engineered from the 2.1.220 store and all perishable:
@@ -459,7 +487,13 @@ engineered from the 2.1.220 store and all perishable:
   the `procStart` string: that one is UTC-rendered while `ps` speaks local
   time, so string equality fails everywhere but UTC.) Live and
   unverifiable sessions refuse `dd` and `r`; deleting an open transcript
-  loses the conversation to an unlinked inode.
+  loses the conversation to an unlinked inode. Registry decoding returns
+  claims plus read problems. Each PID is sampled once per collection, so
+  ownership and liveness agree. Proven absence or a recycled PID clears a
+  claim; failed inspection stays unknown. An unreadable registry directory
+  leaves session liveness unknown. A damaged record with a session ID guards
+  that session; a nameless damaged record blocks account removal and appears
+  in `check`, without attributing it to unrelated transcripts.
 - **headroom decides, enters, and becomes the session; the shell may cd
   after.** The TUI runs on `/dev/tty` (alternate screen, restored in the
   same signal path as raw mode); enter re-checks liveness and the dir,
@@ -476,14 +510,15 @@ engineered from the 2.1.220 store and all perishable:
   shell can do — make its own `cd` stick once the session ends — is served
   by `--cd-file <abs path>`: created (or truncated) at flag parse, written
   with the entered dir only after a successful chdir, `Sync`ed before the
-  exec. The contract is exactly two states: empty means "no launch was
+  exec. A newline-containing cwd is refused only when this file is requested.
+  The contract is exactly two states: empty means "no launch was
   committed — do not cd" (cancel and every refusal), non-empty means "this
   dir was entered" (regardless of how claude then exited). Nothing
   routing-relevant is representable in it, and deleting the flag changes
   no routing — it is advisory by construction. A write failure is one
   stderr line, never a refusal. Deliberately without `--remember`, which
   the exec makes tempting: `.current` means "where new sessions go", and
-  only the account board moves it. This surface does no network I/O and
+  this picker leaves it untouched. This surface does no network I/O and
   never spends the usage budget.
 - **`resume` is a tombstone, permanently.** The predecessor printed a
   `dir\tid\taccount` line for the wrapper to recombine, and a shell
@@ -527,12 +562,11 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   side effect let a two-minute hop to another account silently retarget
   every later bare `x`. In ordinary use only the board's enter moves
   `.current`; the flag remains the scriptable spelling of that decision.
-  Two more
-  refusals sit before the record, so a refused launch can never move where
-  bare `x` goes: a primary launch under a re-pointed `HEADROOM_HOME`
-  (headroom would be describing one tree while the vendor, selecting the
-  primary by the variable's *absence*, resolved another), and a broken
-  shared-sessions topology (below).
+  Both launch entry points call `launch.Prepare` before recording a choice:
+  routing, relocated-primary refusal, shared topology, executable path and
+  child environment are resolved together. A failure at that stage leaves
+  the choice untouched. If process replacement fails after persistence, the
+  remembered account or re-home remains recorded and the error says so.
 - **The shared-sessions topology is headroom's invariant, verified at
   launch.** The session surface's whole model — one picker over one
   machine-global store — holds only while every extra account's `projects/`
@@ -541,9 +575,9 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   before every extra-account exec and refuses with the exact end state
   required, `check` asserts it per account through the same verifier
   (`accounts.VerifyTopology` — one function, so the gate and the report
-  cannot disagree), and *creation* deliberately stays with the wrapper's
-  explicit seeding command: a launch that quietly repaired topology would
-  hide exactly the state the refusal exists to surface.
+  cannot disagree), and creation belongs to `accounts add`: a launch that
+  quietly repaired topology would hide exactly the state the refusal exists
+  to surface.
   **`headroom resolve [<name>]`** prints
   `canonical-name<TAB>config-dir<TAB>kind` (kind: `primary`|`extra`) for
   shell preflight: the dir so personal checks can run against it, the kind
@@ -614,7 +648,8 @@ contract changed must never reuse its name.)
 
 stdlib plus `golang.org/x/term` (raw-mode terminal control for the two
 pickers), nothing else: no CLI framework, no TUI framework — the interactive
-surfaces share one small in-place redraw loop. No cgo either:
+surfaces share terminal lifetime and decoding, with their own frame policies.
+No cgo either:
 the Keychain is read by exec'ing `security(1)`, which keeps builds trivial.
 Parsing is pure functions (`[]byte` in, tagged structs out) tested by table;
 exec and HTTP stay in thin edges.
@@ -627,37 +662,23 @@ keypress only after a pause.
 
 ## Verification
 
-Contract behavior is table-tested (`go test -race ./...`), drift tags
-included; the fetch pipeline's single-writer property, the claim's
-test-and-set, launch environment construction (a polluted environment must
-be stripped, never inherited) and the fail-closed selection states all have
-dedicated regression tests under the race detector. The zsh→exec seam —
-wrappers delegating to a real headroom binary — is covered by the dotfiles
-repo's sandbox harness, which builds this checkout and pins routing
-end-to-end against a recording claude stub.
-What `go test` can't reach — signal-time terminal restoration, real picker
-interaction — lives in the committed expect(1) harness (`make test-pty`,
-`test/pty/`): SIGTERM must leave the terminal sane; arrows + enter must select
-and write state; ESC must cancel writing nothing; the board must redraw its
-own countdown from its own ticker and stay responsive under a held-down
-refresh key (that the key cannot *become* traffic is the claim's property, and
-is pinned in `go test`); the compact board must draw its column header and
-one row per account, move the selection and quit clean; the session picker
-must refuse a primary commit under the harness's re-pointed home *into* a
-still-live picker with the
-advisory cd file left empty (the exec success path is the dotfiles sandbox
-harness's, which stubs a recording claude), leave the cd file empty on
-cancel, survive SIGTERM inside the alternate screen, keep scrollback empty
-while the board redraws in a pane shorter than itself (the one case that
-needs a real scrollback buffer, so it runs under tmux and skips where tmux
-is absent — expect alone remains the harness's requirement), and delete only inside
-the harness's fixture store — `HEADROOM_HOME` re-points the primary config
-dir and session store, and exists so a `dd` test can never touch the real
-machine's transcripts (and is also why enter must refuse there: relocated
-homes and primary launches don't mix). Its two hard-won patterns are documented in
-`test/pty/run.sh` — kill with `pkill -nx headroom`, never `-f`, and inspect
-post-mortem terminal state via an sh wrapper running `stty` in the same
-pty.
+`make check` runs vet and the race-enabled Go suite. Parser tables pin vendor
+contracts and visible drift. Operation tests exercise request preparation,
+local HTTP and the real store together, so sent credentials, received facts,
+refusal backoff and persistence are tested through the callers' interface.
+Checker tests use fixture processes and HTTP to verify the final exit verdict.
+Store tests own locking, generations, migration preservation and cooldowns;
+launch tests own routing, refusal-before-persistence and failure-after-write.
+
+`make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
+interaction, selection, refresh scheduling, scrollback and terminal lifetime.
+Successful session launch must hand the child the restored terminal mode;
+signals must restore it before exit. The harness uses fixture `claude` and
+`security` commands and redirects account and transcript state into a temporary
+home. Signal cases address the recorded fixture child PID. An outer shell
+checks terminal state after exit; the tmux scrollback case skips when tmux is
+absent. The dotfiles repo's separate sandbox harness tests shell wrappers
+against this checkout's binary and a recording `claude` stub.
 
 ## Status
 

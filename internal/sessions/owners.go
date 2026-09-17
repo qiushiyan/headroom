@@ -18,8 +18,8 @@ import (
 // handed the records; internal/state owns reading and writing them, because
 // losing a re-home loses a human decision and that needs a lock, not a parser.
 type OwnerRec struct {
-	Account string
-	AtMS    int64
+	Account string `json:"account"`
+	AtMS    int64  `json:"atMs"`
 }
 
 // TranscriptIDs enumerates the session ids present in the store right now, by

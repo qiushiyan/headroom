@@ -2,13 +2,6 @@
 // the usage endpoint, when, what came back, and which sessions the user
 // explicitly re-homed.
 //
-// It replaces two ad-hoc files (.throttle, .owners) whose only real difference
-// was the discipline they happened to be written with. What it does not
-// replace: .order is config a human edits, and .current is an interop pointer
-// the shell both reads and writes — neither is headroom's own state, and
-// folding them in would either destroy comments or put this tool on the
-// critical path of launching Claude Code.
-//
 // Three properties this package exists to guarantee, none of which a caller
 // can be trusted to maintain:
 //
@@ -35,6 +28,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -125,13 +119,6 @@ type Observation struct {
 	Body        json.RawMessage `json:"body"`
 }
 
-// OwnerRec is one explicit session re-home: the user pointed a session at an
-// account before any vendor evidence named one.
-type OwnerRec struct {
-	Account string `json:"account"`
-	AtMS    int64  `json:"atMs"`
-}
-
 type request struct {
 	LastAttemptMS  int64 `json:"last_attempt_ms"`
 	NextEligibleMS int64 `json:"next_eligible_ms"`
@@ -162,7 +149,7 @@ type doc struct {
 	raw      map[string]json.RawMessage
 	version  int
 	accounts map[string]accountRec
-	sessions map[string]OwnerRec
+	sessions map[string]sessions.OwnerRec
 
 	// A section that failed to decode is nil above and true here. The two
 	// failures are handled differently on purpose: the ledger is disposable,
@@ -176,9 +163,8 @@ type doc struct {
 	// contention.
 	dirty bool
 
-	// sessionsMigrated records that a legacy .owners was folded in, so the
-	// commit can retire it even when it held no records.
-	sessionsMigrated bool
+	imported     *legacyImport
+	migrationErr error
 
 	// corruptDoc means the envelope itself would not decode, so the next write
 	// moves the old bytes aside instead of overwriting them.
@@ -190,18 +176,13 @@ type doc struct {
 	unreadable bool
 
 	problems []Problem
-
-	// legacy holds .throttle's records until the first successful write
-	// absorbs them. Dropping them instead would make `make install` during a
-	// 16-minute cooldown look like a clean slate and fan out into a live rate
-	// limit — the exact failure the ledger exists to prevent.
-	legacy map[string]legacyRec
 }
 
-type legacyRec struct {
-	LastAttemptMS  int64 `json:"last_attempt_ms"`
-	NextEligibleMS int64 `json:"next_eligible_ms"`
-	Strikes        int   `json:"strikes,omitempty"`
+// legacyImport is a durable checkpoint and a bounded upgrade quiet period.
+// One global deadline preserves every old name-keyed budget including identities now
+// accessed through a different directory. Once expired it has no effect on request eligibility.
+type legacyImport struct {
+	QuietUntilMS int64 `json:"quiet_until_ms,omitempty"`
 }
 
 func (d *doc) readOnly() bool { return d.version > Version }
@@ -224,7 +205,7 @@ func read(accountsRoot string) *doc {
 		raw:      map[string]json.RawMessage{},
 		version:  Version,
 		accounts: map[string]accountRec{},
-		sessions: map[string]OwnerRec{},
+		sessions: map[string]sessions.OwnerRec{},
 	}
 	data, err := os.ReadFile(statePath(accountsRoot))
 	if err != nil {
@@ -245,7 +226,7 @@ func read(accountsRoot string) *doc {
 		}
 		// No document yet: whatever the legacy files hold is the starting
 		// point, and the first write folds them in.
-		d.absorbLegacy(accountsRoot)
+		d.importLegacy(accountsRoot)
 		return d
 	}
 	if err := json.Unmarshal(data, &d.raw); err != nil {
@@ -283,7 +264,7 @@ func read(accountsRoot string) *doc {
 		// section that decodes *around* a hollow record would have check report
 		// it readable while routing silently ignores what it holds.
 		if err := json.Unmarshal(b, &d.sessions); err != nil || !validOwners(d.sessions) {
-			d.sessions = map[string]OwnerRec{}
+			d.sessions = map[string]sessions.OwnerRec{}
 			d.badSessions = true
 			d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
 		}
@@ -295,31 +276,10 @@ func read(accountsRoot string) *doc {
 		d.accounts = map[string]accountRec{}
 	}
 	if d.sessions == nil {
-		d.sessions = map[string]OwnerRec{}
+		d.sessions = map[string]sessions.OwnerRec{}
 	}
-	d.absorbLegacy(accountsRoot)
+	d.importLegacy(accountsRoot)
 	return d
-}
-
-// absorbLegacy folds in whatever .throttle and .owners still say.
-//
-// Both are read on every load for as long as they exist, not only on the first
-// one. .throttle outlives the first write by design (see Store.retireLegacy),
-// and re-reading .owners is what makes the migration idempotent: an older
-// binary still running can write that file after the document was created, and
-// the newest-wins merge simply absorbs it.
-func (d *doc) absorbLegacy(accountsRoot string) {
-	d.legacy = readLegacyThrottle(accountsRoot)
-	if d.badSessions {
-		// The section exists and could not be decoded. Merging into an empty
-		// map here would be the first half of overwriting it.
-		return
-	}
-	if m, ok := readLegacyOwners(accountsRoot); ok {
-		mergeOwners(d.sessions, m)
-		d.sessionsMigrated = true
-		d.dirty = true
-	}
 }
 
 // Problems lists what could not be read. Empty is the ordinary case.
@@ -362,7 +322,7 @@ func (s Snapshot) Observation(k Key, now time.Time) (Observation, bool) {
 // this code and is clamped: a clock step forward while a cooldown was live
 // would otherwise silence an account for as long as the step.
 func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
-	if s.d.badAccounts || s.d.readOnly() {
+	if s.d.badAccounts || s.d.readOnly() || s.d.migrationErr != nil {
 		// Nothing here can be trusted to say an account is eligible, and
 		// guessing "eligible" is the guess that generates traffic.
 		return now.Add(CooldownMax)
@@ -372,8 +332,8 @@ func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
 	if ok {
 		next = r.Request.NextEligibleMS
 	}
-	if l, ok := s.d.legacy[k.Name]; ok && l.NextEligibleMS > next {
-		next = l.NextEligibleMS
+	if s.d.imported != nil && s.d.imported.QuietUntilMS > next {
+		next = s.d.imported.QuietUntilMS
 	}
 	if next == 0 {
 		return time.Time{}
@@ -385,15 +345,15 @@ func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
 }
 
 // Owner returns the explicit re-home recorded for a session, if any.
-func (s Snapshot) Owner(id string) (OwnerRec, bool) {
+func (s Snapshot) Owner(id string) (sessions.OwnerRec, bool) {
 	r, ok := s.d.sessions[id]
 	return r, ok
 }
 
 // Owners is every explicit re-home. The map is the caller's to read, not to
 // keep: mutations go through ReHome.
-func (s Snapshot) Owners() map[string]OwnerRec {
-	out := make(map[string]OwnerRec, len(s.d.sessions))
+func (s Snapshot) Owners() map[string]sessions.OwnerRec {
+	out := make(map[string]sessions.OwnerRec, len(s.d.sessions))
 	maps.Copy(out, s.d.sessions)
 	return out
 }
@@ -434,40 +394,11 @@ func (s Snapshot) Audit() []AuditRecord {
 	return out
 }
 
-func readLegacyThrottle(accountsRoot string) map[string]legacyRec {
-	data, err := os.ReadFile(filepath.Join(accountsRoot, ".throttle"))
-	if err != nil {
-		return nil
-	}
-	var recs map[string]legacyRec
-	if json.Unmarshal(data, &recs) != nil {
-		return nil
-	}
-	return recs
-}
-
-func readLegacyOwners(accountsRoot string) (map[string]OwnerRec, bool) {
-	data, err := os.ReadFile(filepath.Join(accountsRoot, ".owners"))
-	if err != nil {
-		return nil, false
-	}
-	var legacy struct {
-		Owners map[string]OwnerRec `json:"owners"`
-	}
-	if json.Unmarshal(data, &legacy) != nil || legacy.Owners == nil {
-		return nil, false
-	}
-	if !validOwners(legacy.Owners) {
-		return nil, false
-	}
-	return legacy.Owners, true
-}
-
 // validOwners reports that every re-home record is whole. headroom is the only
 // writer of these, so a hollow one is corruption rather than an old shape — and
 // one predicate serves both readers, because the section and the legacy file it
 // absorbs hold the same records under the same rule.
-func validOwners(m map[string]OwnerRec) bool {
+func validOwners(m map[string]sessions.OwnerRec) bool {
 	for id, rec := range m {
 		if id == "" || rec.Account == "" || rec.AtMS <= 0 {
 			return false
@@ -478,9 +409,8 @@ func validOwners(m map[string]OwnerRec) bool {
 
 // mergeOwners folds src into dst newest-wins. Timestamps are event times from
 // one machine's clock on one axis, so comparing them is meaningful — and
-// newest-wins is what makes absorbing a legacy file idempotent, including when
-// an older binary still running writes one after the migration.
-func mergeOwners(dst, src map[string]OwnerRec) {
+// newest-wins preserves decisions already in the current store during import.
+func mergeOwners(dst, src map[string]sessions.OwnerRec) {
 	for id, rec := range src {
 		if cur, ok := dst[id]; !ok || rec.AtMS > cur.AtMS {
 			dst[id] = rec
@@ -502,6 +432,9 @@ func (d *doc) marshal() ([]byte, error) {
 		return nil, err
 	}
 	out["version"] = v
+	if d.imported != nil {
+		out["legacy_import"], _ = json.Marshal(d.imported)
+	}
 	if !d.badAccounts {
 		b, err := json.Marshal(d.accounts)
 		if err != nil {

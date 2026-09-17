@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -56,7 +56,7 @@ type jsonAccount struct {
 type jsonUsage struct {
 	ObservedAt string      `json:"observed_at"` // RFC3339 UTC
 	Source     string      `json:"source"`      // "live" | "claude_cache"
-	Fresh      bool        `json:"fresh"`       // within render.FreshWindow
+	Fresh      bool        `json:"fresh"`       // within accountstate.FreshWindow
 	Limits     []jsonLimit `json:"limits"`
 }
 
@@ -84,39 +84,39 @@ type jsonLimit struct {
 	IdentityState string  `json:"identity_state"`
 }
 
-var healthNames = map[render.Health]string{
-	render.HealthOK:              "ok",
-	render.HealthNoLogin:         "no_login",
-	render.HealthReloginRequired: "relogin_required",
-	render.HealthBadBlob:         "bad_blob",
-	render.HealthUnknown:         "unknown",
-	render.HealthUnprobed:        "unprobed", // the limits surface skipped the probe
+var healthNames = map[accountstate.Health]string{
+	accountstate.HealthOK:              "ok",
+	accountstate.HealthNoLogin:         "no_login",
+	accountstate.HealthReloginRequired: "relogin_required",
+	accountstate.HealthBadBlob:         "bad_blob",
+	accountstate.HealthUnknown:         "unknown",
+	accountstate.HealthUnprobed:        "unprobed", // the limits surface skipped the probe
 }
 
-var attemptNames = map[render.AttemptState]string{
-	render.AttemptNone:                 "none",
-	render.AttemptPending:              "pending", // unreachable after a full drain
-	render.AttemptOK:                   "ok",
-	render.AttemptRefused:              "rate_limited",
-	render.AttemptDeferred:             "deferred",
-	render.AttemptTokenStale:           "access_token_stale",
-	render.AttemptCredentialUnreadable: "credential_unreadable",
-	render.AttemptTransport:            "transport_error",
-	render.AttemptHTTP:                 "http_error",
-	render.AttemptUnparseable:          "unparseable",
-	render.AttemptNoLimits:             "no_limits",
-	render.AttemptStateUnavailable:     "state_unavailable",
-	render.AttemptIdentityUnknown:      "identity_unknown",
+var attemptNames = map[accountstate.AttemptState]string{
+	accountstate.AttemptNone:                 "none",
+	accountstate.AttemptPending:              "pending", // unreachable after a full drain
+	accountstate.AttemptOK:                   "ok",
+	accountstate.AttemptRefused:              "rate_limited",
+	accountstate.AttemptDeferred:             "deferred",
+	accountstate.AttemptTokenStale:           "access_token_stale",
+	accountstate.AttemptCredentialUnreadable: "credential_unreadable",
+	accountstate.AttemptTransport:            "transport_error",
+	accountstate.AttemptHTTP:                 "http_error",
+	accountstate.AttemptUnparseable:          "unparseable",
+	accountstate.AttemptNoLimits:             "no_limits",
+	accountstate.AttemptStateUnavailable:     "state_unavailable",
+	accountstate.AttemptIdentityUnknown:      "identity_unknown",
 }
 
 // A consumer must be able to tell "this run asked the endpoint" from "a
 // previous run asked and this one replayed the answer" — both are headroom's
 // own reading, but only the first was made now. observed_at already carries
 // the age; source carries who.
-var sourceNames = map[render.Source]string{
-	render.SourceLive:  "live",
-	render.SourceStore: "headroom_cache",
-	render.SourceCache: "claude_cache",
+var sourceNames = map[accountstate.Source]string{
+	accountstate.SourceLive:  "live",
+	accountstate.SourceStore: "headroom_cache",
+	accountstate.SourceCache: "claude_cache",
 }
 
 func jsonDocument(list []*accountData, current string, problems []state.Problem, generatedAt time.Time) ([]byte, error) {
@@ -143,11 +143,16 @@ func jsonDocument(list []*accountData, current string, problems []state.Problem,
 			Health:      healthNames[v.Health],
 			DirMismatch: v.DirMismatch,
 			Attempt: jsonAttempt{
-				State:      attemptNames[v.Attempt.State],
-				HTTPStatus: v.Attempt.HTTPCode,
+				State: attemptNames[v.Attempt.State],
 			},
 		}
-		if v.Attempt.NextEligibleAt > now {
+		if v.Attempt.State == accountstate.AttemptHTTP || v.Attempt.State == accountstate.AttemptRefused {
+			a.Attempt.HTTPStatus = v.Attempt.HTTPCode
+		}
+		if v.Attempt.StoreError != "" {
+			doc.Problems = append(doc.Problems, jsonProblem{Section: "request[" + d.Acct.Name + "]", Detail: v.Attempt.StoreError})
+		}
+		if v.Attempt.State != accountstate.AttemptOK && v.Attempt.NextEligibleAt > now {
 			ts := time.Unix(v.Attempt.NextEligibleAt, 0).UTC().Format(time.RFC3339)
 			a.Attempt.NextEligibleAt = &ts
 		}
@@ -188,8 +193,8 @@ func runDashboardJSON(cfg config.Config) int {
 	// must agree even if a concurrent select rewrites .current mid-fetch.
 	st := state.Open(cfg.AccountsRoot)
 	list, current, snap := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), cfg, list, st, 1) {
-		resolve(list[u.idx], u, time.Now())
+	for u := range launchFetches(context.Background(), cfg, list, st) {
+		resolve(list[u.Index], u)
 	}
 	data, err := jsonDocument(list, current, snap.Problems(), time.Now())
 	if err != nil {

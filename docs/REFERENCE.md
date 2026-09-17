@@ -18,7 +18,7 @@ the rest. The mental model and the reverse-engineered vendor contracts are in
 | `headroom launch` | Exec `claude` on the chosen account (`--account <name>`, or the recorded choice), with the child environment built from that decision — an inherited `CLAUDE_CONFIG_DIR` is stripped, never obeyed. `--remember` also records the choice; `headroom resolve` prints the account's name/dir/kind for shell preflight |
 | `headroom accounts add <email> [--share-config[=<dir>]]` | Seed the dir for a new subscription: `projects/` linked to the machine-global session store; `--share-config` symlinks the primary's config (settings, skills, commands, hooks, …) or every entry of `<dir>`. Then `headroom launch --account <email>` and `/login` once |
 | `headroom accounts remove [<email>] [--yes]` | Bare, on a terminal, it offers a picker of the removable accounts; a name nobody answers to gets that list too. Confirms with `y/N`. Refuses while the account has a live session; deletes its Keychain item and its dir, scrubs `.order`, never touches `.current`. Also removes stranded `<name>.lock` debris |
-| `headroom check` | Verifies the reverse-engineered assumptions still hold (run after a Claude Code update) |
+| `headroom check` | Verifies vendor contracts and headroom’s own state (run after a Claude Code update or when the board looks wrong) |
 
 ## How it works
 
@@ -31,6 +31,23 @@ Claude Code's own `/usage` screen calls, and renders the result. That endpoint
 budgets roughly one request per minute *per account*, so headroom keeps a
 record of both what it asked and what came back: a refresh that is too soon to
 send replays its own newest answer instead of showing you something older.
+Bars and percentages keep their severity colours when observations become
+stale; the stale caption and dim time fields communicate age separately.
+The current response contract requires `limits[]`; historical usage envelopes
+are reported as unreadable by `check`.
+
+On upgrade, legacy re-homes and outstanding cooldowns are imported into
+`state.json` once, checkpointed before the inputs are archived as `.imported`
+recovery copies. The longest imported cooldown briefly applies to all accounts,
+bounded by 16 minutes. A damaged legacy request ledger waits that full interval;
+unreadable legacy re-homes require repair before migration can commit.
+
+`check` exits 0 for PASS, 1 for failed assertions, or 2 for INCONCLUSIVE.
+Failures identify vendor drift or headroom's own state problems. Rate limiting,
+transport failure, lock contention and a valid newer state schema are
+inconclusive. An unclaimed request is marked untested; a received response
+can still be checked when recording it fails. The board likewise keeps its
+endpoint result and figures visible alongside a persistence warning.
 
 Session transcripts on this setup are machine-global (every account's
 `projects/` links to one store), so `sessions` lists every conversation
@@ -42,14 +59,11 @@ no observation path writes anything of Claude Code's — Claude Code owns login
 state. It keeps two files of its own (`state.json` and `.current`); the only
 vendor-state mutations are explicit user commands naming their object — the
 session picker's `rename`/`delete`, and `accounts remove` deleting the
-removed account's own Keychain item — all refused while a session is open. Launch routing is headroom's too: `launch`
-validates the account and constructs the child environment from that decision
-alone, so a shell whose environment already carries a `CLAUDE_CONFIG_DIR`
-(a tmux server started inside a Claude Code session, say) can never re-route
-a launch. The `x-<name>` wrapper commands are shell integration — personal
-preflight and flags over `headroom launch`; that split, and the
-reverse-engineered vendor facts everything rests on, are spelled out in
-[DESIGN.md](../DESIGN.md).
+removed account's own Keychain item — all refused while liveness is active
+or unverifiable. Launch routing belongs to headroom too: it validates the
+account and builds the child environment, neutralizing an inherited
+`CLAUDE_CONFIG_DIR`. Shell wrappers provide personal preflight and flags;
+[DESIGN.md](../DESIGN.md) explains that ownership boundary and its vendor contracts.
 
 ## Shell integration
 

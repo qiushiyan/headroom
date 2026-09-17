@@ -1,22 +1,12 @@
 package app
 
-// sessions is the session picker: every session on the machine in one list,
-// project-local (the whole repo, worktrees included) above global, continued
-// on the account that last drove it. The picker itself enters the verified
-// project dir and execs claude through the same launch.Target seam `launch`
-// uses — no routing decision ever leaves this process. The one thing only
-// the parent shell can do, make its own cd stick after the session ends, is
-// served by an advisory --cd-file: headroom writes the entered dir there
-// before exec, and nothing about routing depends on whether anyone reads it.
-// This surface does zero network I/O and never touches the usage budget.
-//
-// Its predecessor printed a dir/id/account decision line for the wrapper to
-// recombine; a stale shell function misread the account field as a relative
-// config dir and claude ran the session as the primary (see DESIGN.md § The
-// launch surface). The verb changed with the contract — resume's tombstone
-// in Run is the only observable remnant of the line protocol.
+// The session picker owns selection, modes and terminal drawing. Collection,
+// presentation and committed actions belong to sessions, render and
+// sessionActions respectively.
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,23 +31,21 @@ import (
 // project directory can never supply the binary.
 var execSessions = launch.ExecPath
 
-// psProbe asks ps for a pid's start time — the one process inspection the
-// liveness check needs. A dead pid errors, which Liveness reads as "the
-// registry claim is stale", exactly right. lstart renders in the machine's
-// local zone, so it is parsed as such and compared as an instant — the
-// registry's own procStart string is UTC-rendered and must never be
-// string-compared against this.
-func psProbe(pid int) (int64, bool) {
+// psProbe keeps absent processes distinct from failed inspection.
+func psProbe(pid int) (int64, error) {
 	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return 0, false
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0 && len(exit.Stderr) == 0 {
+			return 0, os.ErrNotExist
+		}
+		return 0, err
 	}
-	s := strings.TrimSpace(string(out))
-	t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", s, time.Local)
+	t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.TrimSpace(string(out)), time.Local)
 	if err != nil {
-		return 0, false
+		return 0, err
 	}
-	return t.Unix(), true
+	return t.Unix(), nil
 }
 
 func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []sessions.AccountRef, []accounts.Account, string) {
@@ -71,7 +59,7 @@ func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []se
 		ProjectsDir: cfg.ProjectsDir(),
 		CWD:         cwd,
 		Accounts:    refs,
-		Owners:      ownerRecords(st.Load()),
+		Owners:      st.Load().Owners(),
 		Probe:       psProbe,
 	})
 	// Strict, exactly as launch resolves it: corrupt or dangling `.current`
@@ -85,33 +73,14 @@ func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []se
 	return listing, refs, accts, current
 }
 
-// ownerRecords adapts the store's re-home records to the collector's own type.
-// The two are deliberately separate: sessions reads vendor files and nothing
-// else, and giving it a dependency on the package that flocks and writes would
-// put I/O in the graph of the one place that is meant to be pure parsing.
-func ownerRecords(snap state.Snapshot) map[string]sessions.OwnerRec {
-	src := snap.Owners()
-	out := make(map[string]sessions.OwnerRec, len(src))
-	for id, rec := range src {
-		out[id] = sessions.OwnerRec{Account: rec.Account, AtMS: rec.AtMS}
-	}
-	return out
-}
-
 // resumeUI is the picker's whole mutable state. One mode value at a time —
 // pending-delete, confirm, rename and search each replace it wholesale, so
 // "renaming while a delete is pending" is unrepresentable.
 type resumeUI struct {
-	cfg        config.Config
-	st         *state.Store
-	t          *tui.Terminal
-	p          render.Palette
-	listing    sessions.Listing
-	refs       []sessions.AccountRef
-	accts      []accounts.Account
-	current    string   // account name bare x targets; also the affinity fallback
-	cdFile     string   // advisory: the entered dir is written here before exec ("" = none)
-	claudeArgs []string // personal flags, verbatim after --; the session flag is this surface's own
+	sessionActions
+	t       *tui.Terminal
+	p       render.Palette
+	listing sessions.Listing
 
 	rows    []*sessions.Session // visible, filtered, local-then-global
 	sel     int
@@ -210,9 +179,8 @@ parse:
 	}
 	defer t.Close()
 
-	ui := &resumeUI{cfg: cfg, st: st, t: t, p: render.NewPalette(true),
-		listing: listing, refs: refs, accts: accts, current: current,
-		cdFile: cdFile, claudeArgs: claudeArgs}
+	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
+		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, accts: accts, current: current, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment
@@ -391,187 +359,27 @@ func (ui *resumeUI) refilter(query string) {
 
 func matches(s *sessions.Session, q string) bool {
 	hay := strings.ToLower(strings.Join([]string{
-		s.Tail.Title(), s.Head.Branch, s.Tail.ObservedBranch(), projectLabel(s), s.Owner, s.ID, s.Tail.Model,
+		s.Tail.Title(), s.Head.Branch, s.Tail.ObservedBranch(), render.ProjectLabel(s), s.Owner, s.ID, s.Tail.Model,
 	}, " "))
 	return strings.Contains(hay, q)
 }
 
-// resumeAccount resolves which account a session resumes on: its owner when
-// one is known and still exists, else the current account — visibly, via
-// the row's owner tag, never silently. There is no further rung: ui.current
-// is "" when `.current` failed strict resolution, and a session neither the
-// owner evidence nor a valid current can place is refused rather than routed
-// to the primary — a fallback the launch path just stopped minting from
-// corrupt state must not reappear here as an attribution courtesy.
-func (ui *resumeUI) resumeAccount(s *sessions.Session, override bool) (accounts.Account, bool) {
-	name := s.Owner
-	if override || name == "" {
-		name = ui.current
-	}
-	if name == "" {
-		return accounts.Account{}, false
-	}
-	for _, a := range ui.accts {
-		if a.Name == name {
-			return a, true
-		}
-	}
-	// The owner names an account the filesystem no longer has: degraded
-	// attribution falls back to the *current* account — the row's owner tag
-	// already says so — never to the primary, which no evidence chose.
-	if name != ui.current && ui.current != "" {
-		for _, a := range ui.accts {
-			if a.Name == ui.current {
-				return a, true
-			}
-		}
-	}
-	return accounts.Account{}, false
-}
-
-// liveNow re-establishes the selected session's liveness at action time —
-// the listing's snapshot is display state, and a session opened since the
-// picker drew must still gate every mutation and the resume refusal. The
-// fresh answer also lands back on the row so the display tells the truth.
-func (ui *resumeUI) liveNow(s *sessions.Session) sessions.LiveState {
-	s.Live = sessions.LiveNow(s.ID, ui.refs, psProbe)
-	return s.Live
-}
-
-// commitResume ends the picker by becoming the session: every refusal is
-// checked first — returning to the picker with a message, so the user picks
-// another row instead of being dumped onto a torn-down frame — then the
-// terminal is restored, the process enters the verified project dir, the
-// advisory cd file gets the dir, and exec replaces this image with claude on
-// the resolved account's environment. Ordering is load-bearing: refusals
-// (the re-home write included, which must not record a pointing that then
-// refused to launch) precede Close; the executable is resolved before the
-// chdir; the cd file is written only after the chdir succeeds, so non-empty
-// means "this dir was entered".
-//
-// Deliberately absent: --remember. `.current` means "where new sessions go"
-// and only the account board moves it — the exec makes adding it tempting,
-// and it must stay refused (DESIGN.md § The session surface).
+// commitResume translates action outcomes into picker feedback or an exit.
 func (ui *resumeUI) commitResume(override bool) (bool, int) {
 	s := ui.selected()
 	if s == nil {
 		return false, 0
 	}
-	switch {
-	case ui.liveNow(s) == sessions.Live:
-		ui.message = "open in another terminal — switch there instead"
-		return false, 0
-	case !s.DirOK:
-		ui.message = "project directory is gone — dd deletes the session"
-		return false, 0
-	case strings.Contains(s.CWD, "\n"):
-		// The one representational limit left now that no line protocol
-		// exists: the cd file is line-shaped. Tabs and the old account-name
-		// check went with the protocol that needed them.
-		ui.message = "project path contains a newline — not representable in the cd file"
-		return false, 0
-	}
-	// Action-time re-stat: the listing's DirOK is display state, and worktree
-	// churn deletes project dirs constantly.
-	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
-		ui.message = "project directory is gone — dd deletes the session"
-		return false, 0
-	}
-	acct, ok := ui.resumeAccount(s, override)
-	if !ok {
-		ui.message = "no account to resume on — run headroom accounts"
-		return false, 0
-	}
-	tgt, err := target(acct)
+	committed, err := ui.resume(s, override)
 	if err != nil {
-		ui.message = err.Error()
-		return false, 0
-	}
-	if acct.IsPrimary() && ui.cfg.PrimaryRelocated {
-		ui.message = "HEADROOM_HOME re-points the primary — cannot continue on it here"
-		return false, 0
-	}
-	if err := accounts.VerifyTopology(ui.cfg, acct); err != nil {
-		ui.message = "not launching — " + err.Error()
-		return false, 0
-	}
-	claudePath, err := exec.LookPath("claude")
-	if err != nil {
-		ui.message = "claude not found on PATH"
-		return false, 0
-	}
-	if override {
-		// Recorded before the launch: source "the user pointed it here", to
-		// be outranked by any newer vendor evidence on the same time axis.
-		// `x`'s user-visible contract is atomic — re-home recorded, then the
-		// launch decision — so a failed write keeps the picker open instead
-		// of launching a session that would route back on the next enter.
-		// The sweep of records whose transcript is gone runs inside the store's
-		// lock, against a listing taken there — never against one gathered
-		// here, which could not see a session another picker re-homed since.
-		projects := ui.cfg.ProjectsDir()
-		err := ui.st.ReHome(s.ID, acct.Name, time.Now(), func() (map[string]bool, bool) {
-			return sessions.TranscriptIDs(projects)
-		})
-		if err != nil {
-			ui.message = "re-home not recorded (" + err.Error() + ") — enter resumes without it"
+		if !committed {
+			ui.message = err.Error()
 			return false, 0
 		}
-	}
-	if ui.t != nil { // nil only under go test; the pty harness drives the real terminal
-		ui.t.Close()
-	}
-	if err := os.Chdir(s.CWD); err != nil {
-		// Past the re-stat is a TOCTOU loss; the frame is already down, so
-		// this is a hard exit, not a picker message.
-		fmt.Fprintf(os.Stderr, "headroom sessions: cd %s: %v\n", s.CWD, err)
+		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
 		return true, 1
 	}
-	if ui.cdFile != "" {
-		if err := writeCDFile(ui.cdFile, s.CWD); err != nil {
-			// One stderr line, never a refusal: the sticky cd is convenience,
-			// and the decision the user just made is not thrown away for it.
-			fmt.Fprintf(os.Stderr, "headroom sessions: cd file: %v (continuing)\n", err)
-		}
-	}
-	argv := append(append([]string{}, ui.claudeArgs...), "--resume", s.ID)
-	if err := execSessions(claudePath, argv, envWithPWD(tgt.Env(os.Environ()), s.CWD)); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom sessions: exec claude: %v\n", err)
-		return true, 1
-	}
-	return true, 0
-}
-
-// envWithPWD replaces the inherited PWD with the entered dir: os.Chdir moves
-// the kernel cwd but not the environment, and the shell-set PWD would
-// otherwise describe the directory the picker was invoked from.
-func envWithPWD(env []string, cwd string) []string {
-	out := make([]string, 0, len(env)+1)
-	for _, kv := range env {
-		if !strings.HasPrefix(kv, "PWD=") {
-			out = append(out, kv)
-		}
-	}
-	return append(out, "PWD="+cwd)
-}
-
-// writeCDFile publishes the entered dir to the advisory file created at flag
-// parse. Truncate-then-write on the already-created path; a Sync so the line
-// survives the process being replaced moments later.
-func writeCDFile(path, cwd string) error {
-	f, err := os.OpenFile(path, os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(cwd); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return committed, 0
 }
 
 func (ui *resumeUI) startRename() {
@@ -596,16 +404,11 @@ func (ui *resumeUI) commitRename() {
 	if s == nil || title == "" || title == s.Tail.Title() {
 		return
 	}
-	// Re-checked at commit, not only at mode entry: the user can sit in the
-	// editor while another terminal opens this very session.
-	if ui.liveNow(s) != sessions.NotLive {
-		ui.message = "session is open elsewhere — rename there (Ctrl+R)"
+	if err := ui.rename(s, title); err != nil {
+		ui.message = err.Error()
 		return
 	}
-	if err := sessions.AppendCustomTitle(s.Path, s.ID, title); err != nil {
-		ui.message = "rename failed: " + err.Error()
-		return
-	}
+
 	s.Tail.CustomTitle = title
 	ui.message = "renamed"
 }
@@ -615,15 +418,12 @@ func (ui *resumeUI) commitDelete() {
 	if s == nil {
 		return
 	}
-	if ui.liveNow(s) != sessions.NotLive {
-		ui.message = "session is open elsewhere — not deleting"
+	removed, err := ui.delete(s)
+	if !removed {
+		ui.message = err.Error()
 		return
 	}
-	if err := sessions.DeleteTranscript(s); err != nil {
-		ui.message = "delete failed: " + err.Error()
-		return
-	}
-	_ = ui.st.Forget(s.ID)
+
 	kept := ui.listing.Sessions[:0]
 	for _, sess := range ui.listing.Sessions {
 		if sess.ID != s.ID {
@@ -633,6 +433,9 @@ func (ui *resumeUI) commitDelete() {
 	ui.listing.Sessions = kept
 	ui.refilter(ui.query)
 	ui.message = "deleted"
+	if err != nil {
+		ui.message += " — " + err.Error()
+	}
 }
 
 // ---- rendering ----
@@ -646,17 +449,6 @@ func (ui *resumeUI) pageSize() int {
 	}
 	n := max((h-5)/2, 1) // header, section labels amortized, footer
 	return n
-}
-
-func projectLabel(s *sessions.Session) string {
-	switch {
-	case s.RepoKey != "":
-		return filepath.Base(s.RepoKey)
-	case s.CWD != "":
-		return filepath.Base(s.CWD)
-	default:
-		return filepath.Base(s.StoreDir)
-	}
 }
 
 // localSectionLabel names the local group the way the user thinks of it: the
@@ -677,103 +469,6 @@ func (ui *resumeUI) localSectionLabel() string {
 	return "this repo"
 }
 
-// checkoutLabel names a session's checkout the way a row has to read it:
-// where enter lands you, as of this listing. Two different claims feed it —
-// the live HEAD, read from the filesystem at collect time, and the branch the
-// transcript observed at the session's last activity — and they age
-// differently. The live one leads, because the first token of a row must
-// never be a fossil; the observed one follows in parentheses when it
-// disagrees, because that disagreement is the only thing distinguishing ten
-// idle sessions whose checkout has since moved back to one shared branch.
-func checkoutLabel(s *sessions.Session) string {
-	was := s.Tail.ObservedBranch()
-	if s.Head.Kind == sessions.HeadUnreadable {
-		// The checkout is right there and would not say what it is on. Nothing
-		// may take the branch slot then — not the remembered branch, and not a
-		// worktree's dir name, which reads exactly like one. The unknown leads
-		// and the observation stays behind it as history.
-		if was != "" {
-			return "? (was " + was + ")"
-		}
-		return "?"
-	}
-	if now := headLabel(s); now != "" {
-		// The parenthetical claims the checkout has *moved*, so it needs a
-		// live branch to have moved to. A detached HEAD, or a worktree named
-		// only by its path, is not evidence of change — annotating those
-		// would invent a story out of the absence of one.
-		if s.Head.Kind == sessions.HeadBranch && was != "" && was != now {
-			return now + " (was " + was + ")"
-		}
-		return now
-	}
-	if was == "" || !s.DirOK {
-		// A row whose directory is gone leads with history because history is
-		// all it has, and it already says so: ✗ dir gone. There is no
-		// destination left for the label to be wrong about.
-		return was
-	}
-	// A directory that is still there but sits in no repository at all: the
-	// remembered branch is a fossil of a checkout that no longer exists, and
-	// the row is still a destination, so it is marked the same way.
-	return "? (was " + was + ")"
-}
-
-// headLabel spells the live HEAD. A branch names a checkout as precisely as
-// its path does — git forbids two worktrees of one repo on the same branch —
-// so it leads, and the worktree dir name is what a HEAD pointing at no branch
-// falls back to. Detached is reported as the state it is, never as a name.
-func headLabel(s *sessions.Session) string {
-	if b := s.Head.Branch; b != "" {
-		if s.Head.Kind == sessions.HeadRebasing {
-			return b + " (rebasing)"
-		}
-		return b
-	}
-	if w := worktreeName(s); w != "" {
-		return w
-	}
-	switch s.Head.Kind {
-	case sessions.HeadRebasing:
-		return "rebasing"
-	case sessions.HeadDetached:
-		return "detached@" + s.Head.Commit
-	}
-	return ""
-}
-
-// worktreeName is a linked worktree's dir name — the one piece of checkout
-// identity that comes from the path and so cannot go stale.
-func worktreeName(s *sessions.Session) string {
-	if s.RepoRoot != "" && s.RepoRoot != s.RepoKey {
-		return filepath.Base(s.RepoRoot)
-	}
-	return ""
-}
-
-func ownerTag(s *sessions.Session, current string) string {
-	switch s.OwnerState {
-	case sessions.OwnerMissing:
-		return "owner gone→" + shortAccount(current)
-	case sessions.OwnerConflict:
-		return "owner?→" + shortAccount(current)
-	case sessions.OwnerNone:
-		return "→" + shortAccount(current)
-	default:
-		return "@" + shortAccount(s.Owner)
-	}
-}
-
-func shortAccount(name string) string {
-	if name == "" {
-		// No valid current account: `.current` failed strict resolution.
-		// "?" over a name nobody chose.
-		return "?"
-	}
-	local, _, _ := strings.Cut(name, "@")
-	return local
-}
-
 func (ui *resumeUI) draw() {
 	w, h, err := ui.t.Size()
 	if err != nil || w < 20 {
@@ -785,7 +480,7 @@ func (ui *resumeUI) draw() {
 	var lines []string
 	title := ui.selectedTitleForHeader()
 	lines = append(lines, p.Bold+"resume"+p.Rst+p.Dim+
-		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), shortAccount(ui.current), title)+p.Rst)
+		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), render.ShortAccount(ui.current), title)+p.Rst)
 
 	rowLines, selLine, selSpan := ui.rowLines(w, now)
 	body := max(h-3, 3) // header + footer + input/message line
@@ -839,7 +534,7 @@ func (ui *resumeUI) selectedTitleForHeader() string {
 	if target == ui.current {
 		return ""
 	}
-	return " · this session → " + shortAccount(target)
+	return " · this session → " + render.ShortAccount(target)
 }
 
 // rowLines renders every visible row (plus section labels and the expanded
@@ -869,10 +564,10 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int, int) {
 		if i == ui.sel {
 			selLine = len(lines)
 		}
-		lines = append(lines, ui.sessionLines(s, i == ui.sel, w, now)...)
+		lines = append(lines, ui.p.SessionLines(s, ui.current, i == ui.sel, w, now)...)
 		if i == ui.sel {
 			if ui.preview {
-				lines = append(lines, ui.previewLines(s, w)...)
+				lines = append(lines, ui.p.SessionPreview(s, w)...)
 			}
 			selSpan = len(lines) - selLine
 		}
@@ -885,190 +580,6 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int, int) {
 		lines = append(lines, p.Dim+msg+p.Rst)
 	}
 	return lines, selLine, selSpan
-}
-
-// sessionLines renders one session as a two-line entry. The first line
-// carries what muscle memory recognizes a session by — where it ran (branch
-// or worktree locally, branch·project elsewhere), whether it is open right
-// now, and the meta column: model, account, age. The second line, dimmed,
-// is just the confirming title.
-func (ui *resumeUI) sessionLines(s *sessions.Session, selected bool, w int, now int64) []string {
-	p := ui.p
-
-	var marks []string
-	if s.Live == sessions.Live {
-		marks = append(marks, p.Grn+"● live"+p.Rst)
-	}
-	if s.Live == sessions.LiveUnknown {
-		marks = append(marks, p.Yel+"● live?"+p.Rst)
-	}
-	if !s.DirOK {
-		marks = append(marks, p.Red+"✗ dir gone"+p.Rst)
-	}
-	marksStr := strings.Join(marks, " ")
-
-	marksCells := 0
-	if marksStr != "" {
-		marksCells = render.Cells(stripSGR(marksStr)) + 2
-	}
-
-	// The meta column budgets itself before the label flexes, and sheds from
-	// its own left when the terminal is narrow — the model first, the account
-	// second, the age never: the final Clip cuts lines from the right, and a
-	// row without its timestamp is the one degradation this repo forbids.
-	var meta []string
-	if m := modelLabel(s.Tail.Model); m != "" {
-		meta = append(meta, m)
-	}
-	meta = append(meta, ownerTag(s, ui.current), render.Age(now-s.MTime.Unix()))
-	metaAvail := max(w-2-4-2-marksCells, 2) // prefix, minimum label, gap
-	for len(meta) > 1 && render.Cells(strings.Join(meta, " · ")) > metaAvail {
-		meta = meta[1:]
-	}
-	right := strings.Join(meta, " · ")
-	if render.Cells(right) > metaAvail {
-		right = render.TrimCells(right, metaAvail)
-	}
-
-	prefix := "  "
-	if selected {
-		prefix = p.Bold + "▶ " + p.Rst
-	}
-	// Flexing label over a fixed right column. Cell arithmetic, not runes:
-	// vendor text is the first place a CJK string meets framePrinter-style
-	// layouts.
-	label := render.Sanitize(primaryLabel(s))
-	labelWidth := max(w-2-render.Cells(right)-2-marksCells, 4)
-	if render.Cells(label) > labelWidth {
-		label = render.TrimCells(label, labelWidth-1) + "…"
-	}
-	left := prefix + label
-	if marksStr != "" {
-		left += "  " + marksStr
-	}
-	pad := max(w-render.Cells(stripSGR(left))-render.Cells(right), 2)
-	line1 := left + strings.Repeat(" ", pad) + p.Dim + right + p.Rst
-
-	title := render.Sanitize(s.Tail.Title())
-	if title == "" {
-		title = "⟨untitled⟩"
-	}
-	titleWidth := max(w-4, 8)
-	if render.Cells(title) > titleWidth {
-		title = render.TrimCells(title, titleWidth-1) + "…"
-	}
-	line2 := "    " + p.Dim + title + p.Rst
-	return []string{line1, line2}
-}
-
-// primaryLabel is a session's first-line identity — the checkout it resumes
-// into, resolved by checkoutLabel, with the project appended as the
-// disambiguator in the global section. Both sections resolve the checkout the
-// same way — a worktree session must not change identity by scrolling past
-// the section break.
-func primaryLabel(s *sessions.Session) string {
-	if s.Local {
-		if l := checkoutLabel(s); l != "" {
-			return l
-		}
-		return projectLabel(s)
-	}
-	proj := projectLabel(s)
-	if l := checkoutLabel(s); l != "" && l != proj {
-		return l + " · " + proj
-	}
-	return proj
-}
-
-// modelLabel compresses a vendor model id for the meta column:
-// "claude-opus-4-5-20251101" → "opus-4.5", "claude-fable-5" → "fable-5".
-// Unknown shapes pass through minus the claude- prefix — a new id must stay
-// identifiable, never disappear.
-func modelLabel(id string) string {
-	if id == "" {
-		return ""
-	}
-	parts := strings.Split(id, "-")
-	if parts[0] == "claude" {
-		parts = parts[1:]
-	}
-	var name, ver []string
-	for _, part := range parts {
-		switch {
-		case !allDigits(part):
-			name = append(name, part)
-		case len(part) == 8:
-			// date stamp — precision the row doesn't need
-		default:
-			ver = append(ver, part)
-		}
-	}
-	label := strings.Join(name, "-")
-	if len(ver) > 0 {
-		if label != "" {
-			label += "-"
-		}
-		label += strings.Join(ver, ".")
-	}
-	return label
-}
-
-func allDigits(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return s != ""
-}
-
-// stripSGR removes escape sequences for width computation.
-func stripSGR(s string) string {
-	var b strings.Builder
-	inEsc := false
-	for _, r := range s {
-		switch {
-		case inEsc:
-			if r >= '@' && r <= '~' && r != '[' {
-				inEsc = false
-			}
-		case r == 0x1b:
-			inEsc = true
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-const previewCap = 3 // lines per part — context, not a pager
-
-func (ui *resumeUI) previewLines(s *sessions.Session, w int) []string {
-	p := ui.p
-	var out []string
-	add := func(prefix, text string) {
-		if text == "" {
-			return
-		}
-		text = render.Sanitize(text)
-		width := max(w-8, 10)
-		for i, line := 0, ""; text != "" && i < previewCap; i++ {
-			line = render.TrimCells(text, width)
-			text = text[len(line):]
-			out = append(out, "    "+p.Dim+prefix+line+p.Rst)
-			prefix = "  "
-		}
-	}
-	prompt := s.Tail.LastPrompt
-	if prompt == "" {
-		prompt = s.Tail.LastUser
-	}
-	add("> ", prompt)
-	add("< ", s.Tail.LastReply)
-	if len(out) == 0 {
-		out = append(out, "    "+p.Dim+"(no preview)"+p.Rst)
-	}
-	return out
 }
 
 func (ui *resumeUI) inputLine() string {

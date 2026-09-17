@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -44,7 +45,7 @@ type Board struct {
 // means unconstrained (a pipe). Lines are not clipped here — the caller owns
 // the terminal and clips to it — but every line is one physical row of
 // sanitized text, which is what the in-place redraw needs.
-func (p Palette) Board(views []AccountView, now int64, layout Layout, width int) Board {
+func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, width int) Board {
 	if layout == LayoutCompact {
 		return p.compactBoard(views, now, width)
 	}
@@ -106,7 +107,7 @@ func columnRank(kind string) int {
 	}
 }
 
-func columns(views []AccountView) []column {
+func columns(views []accountstate.Facts) []column {
 	var cols []column
 	for _, v := range views {
 		if v.Obs == nil {
@@ -156,10 +157,10 @@ func (c cell) width() int { return pctWidth + 1 + Cells(c.reset) }
 // to parse, a window that has since ended, and a percent that is not a
 // number. The percent's colour precedence is severity's, shared with the
 // bar; the reset is dim except when it is the thing that drifted.
-func (p Palette) cellFor(r usage.Row, now int64, stale bool) cell {
+func (p Palette) cellFor(r usage.Row, now int64) cell {
 	c := cell{
 		pct:        fmt.Sprintf("%d%%", r.Percent),
-		pctColor:   p.severity(r, now, stale),
+		pctColor:   p.severity(r, now),
 		reset:      Remaining(r.ResetAt - now),
 		resetColor: p.Dim,
 	}
@@ -189,7 +190,7 @@ func (p Palette) cellFor(r usage.Row, now int64, stale bool) cell {
 // how the refresh went — and the explanatory ones last: how old the figures
 // are and where they came from. The block orders the same words by
 // narrative; the row orders them by what must survive.
-func (p Palette) caption(v AccountView, now int64, drift bool) string {
+func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	var parts []string
 	if t := healthText(v); t != "" {
 		parts = append(parts, p.Red+t+p.Rst)
@@ -200,7 +201,7 @@ func (p Palette) caption(v AccountView, now int64, drift bool) string {
 		parts = append(parts, p.Red+"dir says "+Sanitize(v.DirMismatch)+p.Rst)
 	}
 	switch {
-	case v.Obs == nil && v.Health == HealthOK:
+	case v.Obs == nil && v.Health == accountstate.HealthOK:
 		parts = append(parts, p.Dim+"usage unknown — "+p.attemptReason(v, now)+p.Rst)
 	case v.Obs != nil && len(v.Obs.Rows) == 0:
 		parts = append(parts, p.Dim+"no limits reported"+p.Rst)
@@ -232,14 +233,13 @@ type compactRow struct {
 	drift bool
 }
 
-func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
+func (p Palette) compactBoard(views []accountstate.Facts, now int64, width int) Board {
 	cols := columns(views)
 	rows := make([]compactRow, len(views))
 	for i, v := range views {
 		if v.Obs == nil || len(v.Obs.Rows) == 0 {
 			continue
 		}
-		stale := !v.Fresh(now)
 		row := compactRow{cells: make([]cell, len(cols))}
 		for j, c := range cols {
 			var matched []usage.Row
@@ -252,7 +252,7 @@ func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
 			case 0:
 				row.cells[j] = cell{pct: "—", pctColor: p.Dim, resetColor: p.Dim}
 			case 1:
-				row.cells[j] = p.cellFor(matched[0], now, stale)
+				row.cells[j] = p.cellFor(matched[0], now)
 			default:
 				// Two rows claiming one identity: the vendor has said
 				// something this vocabulary cannot carry. Choosing either
@@ -305,7 +305,7 @@ func (p Palette) compactBoard(views []AccountView, now int64, width int) Board {
 // then the name down to its floor — and only then does the caption, the
 // clip casualty, lose its reserve. Spending the caption's room on padding
 // is how a fourth window on one account hid another account's warning.
-func budget(views []AccountView, cols []column, width int) int {
+func budget(views []accountstate.Facts, cols []column, width int) int {
 	longest := 0
 	for _, v := range views {
 		longest = max(longest, Cells(Sanitize(v.Label)))
@@ -337,7 +337,7 @@ func budget(views []AccountView, cols []column, width int) int {
 // red on a health problem so the row's worst news survives even when the
 // caption that spells it out is clipped off a narrow terminal — green
 // figures beside an unusable account is the reading a clip must not produce.
-func (p Palette) compactLine(v AccountView, row compactRow, cols []column, nameW int, now int64) string {
+func (p Palette) compactLine(v accountstate.Facts, row compactRow, cols []column, nameW int, now int64) string {
 	nameColor := p.Bold
 	if healthText(v) != "" {
 		nameColor = p.Red

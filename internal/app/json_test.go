@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -15,12 +15,12 @@ func TestJSONDocument(t *testing.T) {
 	list := []*accountData{
 		{
 			Acct: accounts.Account{Name: "primary", Email: "p@x.com"},
-			View: render.AccountView{
+			View: accountstate.Facts{
 				Label: "p@x.com", Launcher: "x-primary", Plan: "max 20x", Current: true,
-				Health: render.HealthOK,
-				Obs: &render.Observation{
+				Health: accountstate.HealthOK,
+				Obs: &accountstate.Observation{
 					ObservedAt: generatedAt.Unix() - 10,
-					Source:     render.SourceLive,
+					Source:     accountstate.SourceLive,
 					Rows: []usage.Row{
 						{Label: "5h session", Kind: "session", Group: "session",
 							Percent: 42, ResetAt: 1754121600,
@@ -35,13 +35,13 @@ func TestJSONDocument(t *testing.T) {
 							PercentState: usage.StateOK, ResetState: usage.StateNone},
 					},
 				},
-				Attempt: render.Attempt{State: render.AttemptOK},
+				Attempt: accountstate.Attempt{State: accountstate.AttemptOK},
 			},
 		},
 		{
 			Acct: accounts.Account{ConfigDir: "/x", Name: "b@x.com"},
-			View: render.AccountView{Label: "b@x.com", Launcher: "x-b", Health: render.HealthOK,
-				Attempt: render.Attempt{State: render.AttemptHTTP, HTTPCode: 401}},
+			View: accountstate.Facts{Label: "b@x.com", Launcher: "x-b", Health: accountstate.HealthOK,
+				Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}},
 		},
 	}
 	data, err := jsonDocument(list, "primary", nil, generatedAt)
@@ -134,15 +134,15 @@ func TestJSONSeparatesStaleDataFromFailedRefresh(t *testing.T) {
 	generatedAt := time.Unix(1754121000, 0)
 	list := []*accountData{{
 		Acct: accounts.Account{Name: "a@x.com"},
-		View: render.AccountView{
-			Launcher: "x-a", Health: render.HealthOK,
-			Obs: &render.Observation{
+		View: accountstate.Facts{
+			Launcher: "x-a", Health: accountstate.HealthOK,
+			Obs: &accountstate.Observation{
 				ObservedAt: generatedAt.Add(-22 * time.Hour).Unix(),
-				Source:     render.SourceCache,
+				Source:     accountstate.SourceCache,
 				Rows:       []usage.Row{{Label: "5h session", Percent: 58, Severity: "normal"}},
 			},
-			Attempt: render.Attempt{
-				State: render.AttemptRefused, HTTPCode: 429,
+			Attempt: accountstate.Attempt{
+				State: accountstate.AttemptRefused, HTTPCode: 429,
 				NextEligibleAt: generatedAt.Add(3 * time.Minute).Unix(),
 			},
 		},
@@ -180,12 +180,12 @@ func TestJSONSeparatesStaleDataFromFailedRefresh(t *testing.T) {
 // map entry serialises as "", which is worse than a wrong value: a consumer
 // can't tell it from an absent field, and the schema is a versioned contract.
 func TestEveryAttemptStateHasAWireName(t *testing.T) {
-	for s := render.AttemptNone; s <= render.AttemptNoLimits; s++ {
+	for s := accountstate.AttemptNone; s <= accountstate.AttemptNoLimits; s++ {
 		if attemptNames[s] == "" {
 			t.Errorf("attempt state %d has no wire name", s)
 		}
 	}
-	for h := render.HealthOK; h <= render.HealthUnprobed; h++ {
+	for h := accountstate.HealthOK; h <= accountstate.HealthUnprobed; h++ {
 		if healthNames[h] == "" {
 			t.Errorf("health state %d has no wire name", h)
 		}

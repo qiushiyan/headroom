@@ -1,0 +1,141 @@
+// Package refresh owns one request lifecycle: local eligibility, durable claim,
+// fetch, interpretation and completion. It never retries a request.
+package refresh
+
+import (
+	"context"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/usage"
+)
+
+// Candidate contains spendable credentials, never permission to fetch.
+// Only Start can turn a candidate into a durable claim.
+type Candidate struct {
+	key        state.Key
+	dir, token string
+}
+
+func Prepare(a accounts.Account, blob creds.Blob, readable bool, now time.Time) (*Candidate, accountstate.AttemptState) {
+	switch {
+	case !readable:
+		return nil, accountstate.AttemptCredentialUnreadable
+	case !blob.TokenUsable(now.UnixMilli()):
+		return nil, accountstate.AttemptTokenStale
+	case !a.Meta.Readable:
+		return nil, accountstate.AttemptIdentityUnknown
+	default:
+		return &Candidate{state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}, a.ConfigDir, blob.Token}, accountstate.AttemptPending
+	}
+}
+
+type TokenEvidence int
+
+const (
+	TokenUnknown TokenEvidence = iota
+	TokenUnchanged
+	TokenChanged
+)
+
+type Result struct {
+	Index         int
+	Attempt       accountstate.Attempt
+	Observation   *accountstate.Observation
+	StoreErr      error // claim/completion failure, independent of received data
+	TokenAfter401 TokenEvidence
+}
+
+func interpret(res response, at time.Time) (Result, state.Outcome, []byte) {
+	r := Result{Attempt: accountstate.Attempt{HTTPCode: res.StatusCode}}
+	switch {
+	case res.Err != nil:
+		r.Attempt.State = accountstate.AttemptTransport
+		return r, state.OutcomeFailed, nil
+	case res.StatusCode == http.StatusTooManyRequests:
+		r.Attempt.State = accountstate.AttemptRefused
+		return r, state.OutcomeRefused, nil
+	case res.StatusCode != http.StatusOK:
+		r.Attempt.State = accountstate.AttemptHTTP
+		return r, state.OutcomeFailed, nil
+	}
+	rows, err := usage.ParseLimits(res.Body)
+	if err != nil {
+		r.Attempt.State = accountstate.AttemptUnparseable
+		return r, state.OutcomeSpent, nil
+	}
+	r.Attempt.State = accountstate.AttemptOK
+	if len(rows) == 0 {
+		r.Attempt.State = accountstate.AttemptNoLimits
+	}
+	r.Observation = &accountstate.Observation{Rows: rows, ObservedAt: at.Unix(), Source: accountstate.SourceLive}
+	return r, state.OutcomeStored, res.Body
+}
+
+// Start returns one result per non-nil candidate and closes after all workers
+// finish. Each result addresses this input slice; callers finish draining a
+// round before rediscovering accounts. Workers never mutate caller facts.
+// readCredential optionally samples a rejected token for diagnostic callers.
+func Start(ctx context.Context, url string, st *state.Store, candidates []*Candidate, readCredential func(string) string) <-chan Result {
+	updates := make(chan Result, len(candidates))
+	keys := make([]state.Key, 0, len(candidates))
+	indices := make([]int, 0, len(candidates))
+	for i, c := range candidates {
+		if c != nil {
+			keys = append(keys, c.key)
+			indices = append(indices, i)
+		}
+	}
+	decisions, err := st.Claim(keys, time.Now())
+	client := &http.Client{Timeout: 10 * time.Second}
+	var wg sync.WaitGroup
+	for j, dec := range decisions {
+		i := indices[j]
+		if !dec.Permit {
+			r := Result{Index: i, Attempt: accountstate.Attempt{State: accountstate.AttemptDeferred, NextEligibleAt: dec.NextEligible.Unix()}, StoreErr: err}
+			if err != nil || dec.Degraded {
+				r.Attempt.State = accountstate.AttemptStateUnavailable
+				if r.StoreErr == nil {
+					r.StoreErr = state.ErrCorrupt
+				}
+			}
+			updates <- r
+			continue
+		}
+		c := *candidates[i]
+		wg.Add(1)
+		go func(i int, c Candidate, generation int64) {
+			defer wg.Done()
+			res := fetch(ctx, client, url, c.token)
+			at := time.Now()
+			r, outcome, body := interpret(res, at)
+			r.Index = i
+			if res.StatusCode == http.StatusUnauthorized && readCredential != nil {
+				blob, ok := creds.Parse(readCredential(c.dir))
+				switch {
+				case !ok:
+					r.TokenAfter401 = TokenUnknown
+				case blob.Token != c.token:
+					r.TokenAfter401 = TokenChanged
+				default:
+					r.TokenAfter401 = TokenUnchanged
+				}
+			}
+			if ctx.Err() == nil {
+				next, err := st.Complete(c.key, generation, outcome, body, at)
+				r.StoreErr = err
+				if !next.IsZero() {
+					r.Attempt.NextEligibleAt = next.Unix()
+				}
+			}
+			updates <- r
+		}(i, c, dec.Generation)
+	}
+	go func() { wg.Wait(); close(updates) }()
+	return updates
+}

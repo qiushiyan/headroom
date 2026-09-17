@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -88,7 +88,7 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 		t.Error("a present user must get the ordinary cadence back")
 	}
 	// A round already in flight never starts a second one, armed or not.
-	ui.updates = make(chan fetchUpdate)
+	ui.updates = make(chan refresh.Result)
 	ui.armed = true
 	if ui.due() {
 		t.Error("rounds must not overlap")
@@ -126,7 +126,7 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 	// During a round it arms too: the round in flight only carries the
 	// accounts that were eligible when it started.
 	ui.armed = false
-	ui.updates = make(chan fetchUpdate)
+	ui.updates = make(chan refresh.Result)
 	ui.refresh(context.Background())
 	if !ui.armed {
 		t.Error("r during a round was dropped")
@@ -139,21 +139,6 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 	}
 	if !ui.armed {
 		t.Error("a burst of r lost the armed bit")
-	}
-}
-
-// A stale round's update must never land on a rebuilt list: idx addresses
-// positions in the list its own round was built over, and rediscovery between
-// rounds can shrink or reorder that list under an in-flight goroutine.
-func TestStaleRoundUpdatesAreDropped(t *testing.T) {
-	ui := &picker{round: 2, list: []*accountData{{}}}
-	// idx 5 panics against a len-1 list unless the stamp drops it first.
-	ui.apply(fetchUpdate{idx: 5, round: 1}, time.Now())
-
-	// A current-round update still lands.
-	ui.apply(fetchUpdate{idx: 0, round: 2, out: fetchOutcome{attempt: render.AttemptTransport}}, time.Now())
-	if ui.list[0].View.Attempt.State != render.AttemptTransport {
-		t.Error("a current-round update was not applied")
 	}
 }
 

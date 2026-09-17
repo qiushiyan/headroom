@@ -7,22 +7,23 @@ package check
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -107,186 +108,44 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	// account.
 	accts := accounts.Discover(cfg)
 	now := time.Now()
-	nowMS := now.UnixMilli()
 	st := state.Open(cfg.AccountsRoot)
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	const (
-		modeNeverLoggedIn = iota // nothing to verify
-		modeSkipped              // logged in but no usable token
-		modeCandidate            // spendable — the claim decides
-		modeFetched
-	)
-	type apiCase struct {
-		name   string // for output ("primary" reads better than the configured name)
-		key    state.Key
-		token  string // the token actually spent, for the 401 refresh check
-		dir    string
-		mode   int
-		permit int64
-		reason string
-		res    usage.Result
-	}
-	cases := make([]*apiCase, len(accts))
-	var wg sync.WaitGroup
+	requests := make([]*refresh.Candidate, len(accts))
 	for i, a := range accts {
-		name := "primary"
-		if !a.IsPrimary() {
-			name = a.Name
+		name := a.Name
+		if a.IsPrimary() {
+			name = "primary"
+		} else if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
+			continue
 		}
-		c := &apiCase{
-			name: name,
-			key:  state.Key{UUID: a.Meta.AccountUUID, Name: a.Name},
-			dir:  a.ConfigDir,
-			mode: modeSkipped,
-		}
-		cases[i] = c
-		if !a.IsPrimary() {
-			if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
-				c.mode = modeNeverLoggedIn
-				continue
-			}
-		}
-		chk(creds.HasKeychainItem(a.ConfigDir),
-			fmt.Sprintf("keychain[%s]: item under predicted name", name),
-			"not logged in, or naming scheme changed")
-
+		chk(creds.HasKeychainItem(a.ConfigDir), fmt.Sprintf("keychain[%s]: item under predicted name", name), "not logged in, or naming scheme changed")
 		blob, ok := creds.Parse(creds.ReadKeychain(a.ConfigDir))
 		chk(ok, fmt.Sprintf("blob[%s]: parses via shared contract (accessToken present)", name), "")
-
-		launcher := accounts.Launcher(cfg, a)
-		switch {
-		case !ok:
-			c.reason = "credential blob did not parse"
-		case !blob.TokenUsable(nowMS):
-			// Routine: the access token ages out every ~8 hours. Nothing is
-			// broken and nothing can be tested against the live endpoint.
-			c.reason = fmt.Sprintf("access token stale — any %s session refreshes it", launcher)
-		default:
-			c.mode = modeCandidate
-			c.token = blob.Token
-		}
-	}
-
-	// The claim is the authorization, here as everywhere: check goes through
-	// the same locked test-and-set the board does, or the one place that
-	// closes the double-spend would have a second place that bypasses it.
-	// Spending a request to "diagnose" inside a quiet period would deepen
-	// exactly the rate limiting the user is likely running check about.
-	var keys []state.Key
-	var candidates []*apiCase
-	for _, c := range cases {
-		if c.mode == modeCandidate {
-			keys = append(keys, c.key)
-			candidates = append(candidates, c)
-		}
-	}
-	decisions, claimErr := st.Claim(keys, now)
-	for j, dec := range decisions {
-		c := candidates[j]
-		switch {
-		case dec.Permit:
-			c.mode, c.permit = modeFetched, dec.Generation
-		case claimErr != nil:
-			c.mode = modeSkipped
-			c.reason = "headroom's own state file could not be claimed against — " + claimErr.Error()
-		default:
-			c.mode = modeSkipped
-			c.reason = fmt.Sprintf("inside this account's quiet period — %s remaining",
-				dec.NextEligible.Sub(now).Round(time.Second))
-		}
-	}
-
-	for _, c := range cases {
-		if c.mode != modeFetched {
-			continue
-		}
-		wg.Add(1)
-		go func(c *apiCase) {
-			defer wg.Done()
-			c.res = usage.Fetch(context.Background(), client, cfg.UsageURL, c.token)
-		}(c)
-	}
-	wg.Wait()
-
-	// Live contract, through the same parser rendering uses: 200, ≥1 row,
-	// and every row's percent/timestamp well-formed. A drifted field means
-	// a value is present but no longer parses — shape drift the tolerant
-	// renderer would hide behind 0% / "resets ?"; an absent timestamp on an
-	// untouched window passes.
-	for _, c := range cases {
-		switch c.mode {
-		case modeNeverLoggedIn:
-			continue
-		case modeSkipped:
-			skip(fmt.Sprintf("api[%s]: not tested", c.name), c.reason)
-			continue
-		}
-		code := c.res.StatusCode
-		label := func(extra string) string {
-			codeStr := "n/a"
-			if code != 0 {
-				codeStr = strconv.Itoa(code)
+		candidate, eligibility := refresh.Prepare(a, blob, ok, now)
+		requests[i] = candidate
+		if candidate == nil {
+			reason := "credential blob did not parse"
+			switch eligibility {
+			case accountstate.AttemptTokenStale:
+				reason = fmt.Sprintf("access token stale — any %s session refreshes it", accounts.Launcher(cfg, a))
+			case accountstate.AttemptIdentityUnknown:
+				reason = "account identity unreadable — request budget cannot be identified"
 			}
-			return fmt.Sprintf("api[%s]: HTTP %s%s", c.name, codeStr, extra)
+			skip(fmt.Sprintf("api[%s]: not tested", name), reason)
 		}
-
-		// Nothing observed → nothing to conclude.
-		switch {
-		case c.res.Err != nil:
-			skip(label(""), "transport error — no evidence either way")
-			continue
-		case code == http.StatusTooManyRequests:
-			_, _ = st.Complete(c.key, c.permit, state.OutcomeRefused, nil, now)
-			skip(label(""), "rate limited — no evidence either way")
-			continue
-		case code >= 500:
-			skip(label(""), "vendor-side error — no evidence either way")
-			continue
-		case code == http.StatusUnauthorized && recheckToken(c.dir, c.token) == tokenChanged:
-			// Claude Code refreshed the token between our Keychain read and
-			// the request, so the one we spent was already dead. That is a
-			// race, not drift.
-			skip(label(""), "token was refreshed mid-check — no evidence either way")
-			continue
-		case code == http.StatusUnauthorized && recheckToken(c.dir, c.token) == tokenUncertain:
-			skip(label(""), "credential unreadable on re-check — cannot tell a refresh race from drift")
-			continue
-		case code != http.StatusOK:
-			chk(false, label(""), "unexpected status — endpoint or auth drifted")
+	}
+	results := make([]refresh.Result, len(accts))
+	for r := range refresh.Start(context.Background(), cfg.UsageURL, st, requests, creds.ReadKeychain) {
+		results[r.Index] = r
+	}
+	for i, candidate := range requests {
+		if candidate == nil {
 			continue
 		}
-		// A 200 is evidence, and now the contract is genuinely testable.
-		rows, err := usage.ParseLimits(c.res.Body)
-		if err != nil {
-			_, _ = st.Complete(c.key, c.permit, state.OutcomeSpent, nil, now)
-			chk(false, label(", unparseable body"), "shape drifted")
-			continue
+		name := accts[i].Name
+		if accts[i].IsPrimary() {
+			name = "primary"
 		}
-		// check spends the same budget the board does, so it stores what it
-		// bought: the next board render is entitled to figures this run paid
-		// for, and a check that threw them away would leave the user staring
-		// at older numbers immediately after verifying the endpoint works.
-		// A failure to store is headroom's own, and this command is the one
-		// place that reports on headroom's own files — swallowing it here is
-		// how a run pays for a response and silently loses it.
-		_, storeErr := st.Complete(c.key, c.permit, state.OutcomeStored, c.res.Body, now)
-		own(storeErr == nil, fmt.Sprintf("state[%s]: response this run paid for was stored", c.name),
-			fmt.Sprintf("%v — the board will fall back to older figures", storeErr))
-		nbad := 0
-		for _, r := range rows {
-			if r.Drifted() {
-				nbad++
-			}
-		}
-		hint := ""
-		if nbad > 0 {
-			hint = fmt.Sprintf("%d malformed field(s) — shape drifted", nbad)
-		}
-		// Zero rows is a documented, contractual outcome — usage.ParseLimits
-		// defines a nil/nil result as "this account reports no limits" — so
-		// it must not be reported as drift.
-		chk(nbad == 0, label(fmt.Sprintf(", %d row(s), fields well-formed", len(rows))), hint)
+		reportRequest(name, results[i], now, chk, own, skip)
 	}
 
 	// .claude.json still records the logged-in email (dashboard labels).
@@ -377,7 +236,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 // prompt history attributes sessions to accounts, transcripts carry their own
 // titles and a verifiable cwd within the tail budget, the live-session
 // registry parses (it is what stops `dd` from deleting an open transcript),
-// and headroom's own .owners file is readable. Shapes, never census numbers —
+// and headroom's saved re-homes are readable. Shapes, never census numbers —
 // counts are wrong the day after they're written down.
 func checkSessionStore(cfg config.Config, accts []accounts.Account,
 	chk func(bool, string, string), skip func(string, string)) {
@@ -407,23 +266,17 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 
 	// The live-session registry: when claim files exist, they must parse,
 	// or every open session silently reads as deletable.
-	regFiles, regOK := 0, 0
+	regFiles, regProblems := 0, 0
 	for _, a := range accts {
-		files, _ := filepath.Glob(filepath.Join(a.Dir(cfg), "sessions", "*.json"))
-		regFiles += len(files)
-		for _, e := range sessions.ReadRegistry(a.Name, a.Dir(cfg)) {
-			if e.OK {
-				regOK++
-			}
-		}
+		reg := sessions.ReadRegistry(a.Name, a.Dir(cfg))
+		regFiles += len(reg.Entries)
+		regProblems += len(reg.Problems)
 	}
-	if regFiles == 0 {
+	if regFiles == 0 && regProblems == 0 {
 		skip("registry: not tested", "no live-session records right now")
 	} else {
-		// Every claim file must parse, not merely one: a single malformed
-		// record is a session the dd guard can no longer see.
-		chk(regOK == regFiles, "registry: live-session records carry sessionId + pid + startedAt",
-			fmt.Sprintf("%d of %d records unparseable — those sessions lost the dd guard", regFiles-regOK, regFiles))
+		chk(regProblems == 0, "registry: live-session records carry sessionId + pid + startedAt",
+			fmt.Sprintf("%d registry read problems — liveness is incomplete", regProblems))
 	}
 
 	// Transcripts, through the same collector the picker uses. Per-file
@@ -433,7 +286,7 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 	listing := sessions.Collect(sessions.Input{
 		ProjectsDir: cfg.ProjectsDir(),
 		CWD:         cfg.Home,
-		Owners:      ownerRecords(state.Open(cfg.AccountsRoot).Load()),
+		Owners:      state.Open(cfg.AccountsRoot).Load().Owners(),
 	})
 	if len(listing.Sessions) == 0 {
 		skip("sessions: not tested", "store is empty")
@@ -644,43 +497,6 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 	}
 }
 
-// ownerRecords adapts the store's re-home records to the collector's own type.
-// The two stay separate types on purpose: a session's owner is a session-domain
-// fact, and where it happens to be persisted is not the collector's business.
-func ownerRecords(snap state.Snapshot) map[string]sessions.OwnerRec {
-	src := snap.Owners()
-	out := make(map[string]sessions.OwnerRec, len(src))
-	for id, rec := range src {
-		out[id] = sessions.OwnerRec{Account: rec.Account, AtMS: rec.AtMS}
-	}
-	return out
-}
-
-// tokenCheck is what a re-read of the Keychain can establish about a 401.
-type tokenCheck int
-
-const (
-	tokenSame      tokenCheck = iota // the token we spent is still the stored one
-	tokenChanged                     // Claude Code refreshed it under us — a race, not drift
-	tokenUncertain                   // the re-read told us nothing
-)
-
-// recheckToken compares the stored access token against the one a request was
-// actually made with. The three outcomes stay distinct because "I could not
-// re-read the credential" is not evidence of a refresh: reporting it as one
-// would have check assert a race it never observed.
-func recheckToken(configDir, used string) tokenCheck {
-	blob, ok := creds.Parse(creds.ReadKeychain(configDir))
-	switch {
-	case !ok:
-		return tokenUncertain
-	case blob.Token != used:
-		return tokenChanged
-	default:
-		return tokenSame
-	}
-}
-
 func claudeBinary() string {
 	path, err := exec.LookPath("claude")
 	if err != nil {
@@ -735,5 +551,57 @@ func searchReader(r io.Reader, needles []string, bufSize int) map[string]bool {
 		if err != nil {
 			return found
 		}
+	}
+}
+
+// reportRequest is diagnostic policy over the same request evidence the board uses.
+func reportRequest(name string, r refresh.Result, now time.Time, chk, own func(bool, string, string), skip func(string, string)) {
+	status := "n/a"
+	if r.Attempt.HTTPCode != 0 {
+		status = fmt.Sprint(r.Attempt.HTTPCode)
+	}
+	label := fmt.Sprintf("api[%s]: HTTP %s", name, status)
+	if r.StoreErr != nil {
+		bookkeeping := fmt.Sprintf("state[%s]: request bookkeeping", name)
+		if errors.Is(r.StoreErr, state.ErrBusy) || errors.Is(r.StoreErr, state.ErrReadOnly) {
+			skip(bookkeeping, r.StoreErr.Error())
+		} else {
+			own(false, bookkeeping, r.StoreErr.Error())
+		}
+	}
+	switch r.Attempt.State {
+	case accountstate.AttemptStateUnavailable:
+		skip(fmt.Sprintf("api[%s]: not tested", name), "headroom could not authorize a request against its state file")
+	case accountstate.AttemptDeferred:
+		skip(fmt.Sprintf("api[%s]: not tested", name), fmt.Sprintf("inside this account's quiet period — %s remaining", time.Unix(r.Attempt.NextEligibleAt, 0).Sub(now).Round(time.Second)))
+	case accountstate.AttemptTransport:
+		skip(label, "transport error — no evidence either way")
+	case accountstate.AttemptRefused:
+		skip(label, "rate limited — no evidence either way")
+	case accountstate.AttemptUnparseable:
+		chk(false, label+", unparseable body", "shape drifted")
+	case accountstate.AttemptHTTP:
+		switch {
+		case r.Attempt.HTTPCode >= 500:
+			skip(label, "vendor-side error — no evidence either way")
+		case r.Attempt.HTTPCode == http.StatusUnauthorized && r.TokenAfter401 == refresh.TokenChanged:
+			skip(label, "token was refreshed mid-check — no evidence either way")
+		case r.Attempt.HTTPCode == http.StatusUnauthorized && r.TokenAfter401 == refresh.TokenUnknown:
+			skip(label, "credential unreadable on re-check — cannot tell a refresh race from drift")
+		default:
+			chk(false, label, "unexpected status — endpoint or auth drifted")
+		}
+	case accountstate.AttemptOK, accountstate.AttemptNoLimits:
+		bad := 0
+		for _, row := range r.Observation.Rows {
+			if row.Drifted() {
+				bad++
+			}
+		}
+		hint := ""
+		if bad > 0 {
+			hint = fmt.Sprintf("%d malformed field(s) — shape drifted", bad)
+		}
+		chk(bad == 0, fmt.Sprintf("%s, %d row(s), fields well-formed", label, len(r.Observation.Rows)), hint)
 	}
 }
