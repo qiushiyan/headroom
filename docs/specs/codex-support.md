@@ -280,7 +280,8 @@ behaviour and lands first (§ Delivery).
   `internal/accountstate/read.go` `newestObservation`,
   `internal/check/check.go`). After: they call one function that takes the
   vendor and the body and returns a reading: the rows, the allowance, and
-  the account id the body names when it names one.
+  what the body says about whose it is (the account id, the user id and the
+  plan, each when present), so no caller decodes a body a second time.
 - **The request ledger and stored responses.** Owner: the state package.
   Protects: `Claim` is the single authorization for traffic. Today
   `state.Open(accountsRoot)` already scopes the store to one root, and the
@@ -303,6 +304,11 @@ behaviour and lands first (§ Delivery).
 - **Facts.** Owner: accountstate. Protects: the three axes stay
   independent. After: an observation also carries the allowance, and the
   fresh window follows the scope's spacing rather than one global constant.
+  Sketch: the facts carry their fresh window, set at assembly from the
+  scope, so `Fresh` and `Actionable` keep their signatures. A Codex row's
+  plan is the one headroom's own response named when an observation exists,
+  and the auth snapshot's otherwise; a disagreement between the two is not
+  surfaced.
 - **Launch preparation and the environment.** Owner: the launch package.
   Protects: the child's environment is a total function of the validated
   decision. After: the target is built from the account, and the variables
@@ -467,7 +473,10 @@ An absent `auth_mode` beside ChatGPT tokens is a ChatGPT login: the vendor's
 own struct makes the field optional. "Relogin required" is never produced
 for Codex: the document carries no refresh-token expiry, and the project
 reads expiry only on positive evidence. A Codex account with an unknown
-identity is never given a name-keyed ledger bucket; it makes no request.
+identity has no ledger key at all. The `dir:` fallback that Claude Code
+accounts use is not available to it. It makes no claim and replays nothing,
+so it renders usage unknown even if an earlier login on that home was
+fetched.
 
 **Identity and the ledger key.** The Codex key's identity is
 `tokens.account_id` and the `chatgpt_user_id` claim, both required, joined
@@ -501,6 +510,8 @@ commands that act on one account: `launch`, `resolve`, `accounts add` and
 The surfaces that report (`accounts`, `--json` and `limits`, which emit the
 same document) show every present vendor, and the flag restricts them to
 one. `limits --account <name>` filters by name inside the selected vendors.
+`check` takes no `--vendor`: it runs every present vendor's checks, and an
+absent Codex is one informational line that does not change the exit code.
 The Claude Code scope is always present, as today: a machine without
 `~/.claude` still renders the primary as not logged in. Only Codex can be
 absent. The
@@ -596,10 +607,14 @@ The board:
   the pages, the visible index, and the terminal. The event loop receives
   from every page's channel and resolves each result into the page that
   started the round, by identity of the round and never by an index into
-  the visible list. `due()` and `startRound` run for the visible page only.
-  The one-shot print and `--json` run one round per present scope. The text
-  print shows the pages in vendor order under a heading line each; `--json`
-  stays one document.
+  the visible list. `due()`, `schedule` and `startRound` run for the visible page only, with
+  that page's spacing. A hidden page's deadline never wakes the loop; a page
+  whose deadline passed while hidden is due when it becomes visible. The tab
+  bar is part of the header for the frame's height ranking.
+  The one-shot print and `--json` run one round per present scope. When two
+  vendors are printed, the text print shows the pages in vendor order under
+  a heading line each. With one vendor there is no heading, and the frame is
+  today's. `--json` stays one document.
 
 Launch:
 
@@ -682,7 +697,7 @@ containing an encrypted reasoning item) resumed correctly under the other
 (plan `prolite`); that one rollout now records both plan types and no
 account identity. This is why rollout usage snapshots are unattributable.
 Does not establish: that Codex's interactive picker lists the shared
-sessions (resume was exercised by id and by `--last`; obligation 16 checks
+sessions (resume was exercised by id and by `--last`; obligation 17 checks
 the picker); the desktop app's tolerance of rollouts it did not index;
 `history.jsonl` under a shared store.
 
@@ -747,8 +762,8 @@ shapes, which came from the real writer.
    parses.
 6. Obligation: actionability and captions honour the allowance. Observe:
    `Actionable` over facts with each allowance state; unknown and bad never
-   block; a feature-only block leaves the account actionable and is still
-   rendered.
+   block; a feature-only block leaves the account actionable (phase 2) and
+   is still rendered as a caption (phase 3).
 7. Obligation: refresh for Codex. Observe: through preparation, `refresh.Start`
    against a local HTTP server, and the application of its results to the
    account's facts: both headers present; 200 stores the body in the Codex
@@ -790,25 +805,27 @@ shapes, which came from the real writer.
     401 (today's Claude Code rule that an unchanged-token 401 fails does not
     carry over, because Codex recovers from 401 by refreshing); a corrupt
     Codex `state.json` reports as headroom's own file. The credential-source
-    probe runs `codex login status` with the vendor's credential variables
-    stripped and a timeout, reads stderr as well as stdout, and tells "not
-    logged in" from a command failure. When it says logged in and
-    `auth.json` is absent, `check` reports an undetermined credential source
-    as INCONCLUSIVE. The isolation probe (`CODEX_HOME` set to an empty temp
+    probe runs `codex login status` once per Codex home, in parallel, each
+    with its own `CODEX_HOME`, the vendor's credential variables stripped,
+    and a timeout. It reads stderr as well as stdout and tells "not logged
+    in" from a command failure. Logged in beside an absent `auth.json` is an
+    undetermined credential source, reported INCONCLUSIVE. Not logged in
+    beside an `auth.json` the reader accepts as a ChatGPT login is drift,
+    reported FAIL. The isolation probe (`CODEX_HOME` set to an empty temp
     dir must answer not logged in) fails loudly otherwise. Limit: the stub
     proves the probes' wiring and verdict mapping; that the installed binary
-    honours `CODEX_HOME` is proved only by obligation 16.
+    honours `CODEX_HOME` is proved only by obligation 17.
 15. Obligation: the `--json` schema 5 contract and `--vendor` filtering.
     Observe: the serialized document for a two-vendor fixture from `--json`
     and from `limits`, unfiltered and filtered; `current` is an object; the
     three `*_state` fields never take a fourth value; a Codex limit's
     severity is `normal`.
-17. Obligation: Codex presentation rules. Observe: the rendered compact
+16. Obligation: Codex presentation rules. Observe: the rendered compact
     header for a Codex fixture orders columns as § Design — API states;
     labels for each group, including an additional limit with an empty
     `limit_name`; every log-in hint for a Codex account names the engine
     launch spelling and never `/login`.
-16. Obligation: the real thing works. Observe: on the owner's machine,
+17. Obligation: the real thing works. Observe: on the owner's machine,
     `headroom check` (the isolation and credential-source probes against the
     installed `codex`), the board, one launch per Codex account, and
     `-- resume --all` from the second home listing a session created in the
@@ -831,13 +848,13 @@ phase stands on the one before. Two sessions at most.
    request, and the Codex checks, whose probes use the phase 1 constructor.
    Obligations 3–8 and 14, and the Codex half of obligation 1.
 3. **Showing Codex.** Pages, the tab bar, the one-shot print, schema 5,
-   `limits --vendor`. Obligations 12, 13, 15 and 17.
+   `limits --vendor`. Obligations 12, 13, 15 and 16, and the rendering half of 6.
 4. **Acting on Codex.** `--vendor` on `launch`, `resolve`, `accounts add`,
    and the removal refusal. Obligations 10 and 11, and the launch refusals of
    obligation 9. Then
    `docs/REFERENCE.md`, `README.md`, `DESIGN.md` (a Codex "system observed"
    section from the premises above), `CLAUDE.md` and both shipped skills in
    the same PR, because command and schema wording is their contract. Then
-   obligation 16.
+   obligation 17.
 
 Open decisions: none.
