@@ -1,0 +1,34 @@
+#!/usr/bin/expect -f
+# Two vendors: the board opens on the Claude Code page with a tab bar, tab
+# switches to the Codex page, and enter there records the Codex current
+# account. run.sh asserts that only Codex's .current was written.
+set timeout 10
+spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts"
+expect {
+    "tab switch" {}
+    timeout { puts "the footer never offered tab — is Codex present in the fixture?"; exit 2 }
+}
+# The Claude Code page is the one that opens: its accounts, not Codex's.
+expect {
+    "a@x.com" {}
+    timeout { puts "the board did not open on the Claude Code page"; exit 2 }
+}
+send -- "\t"
+expect {
+    "cx@x.com" {}
+    timeout { puts "tab did not show the Codex page"; exit 2 }
+}
+# Down to the extra (the primary is first), then enter.
+send -- "\033\[B"
+sleep 0.3
+send -- "\r"
+expect {
+    "bare Codex launches" {}
+    timeout { puts "no Codex confirmation line after enter"; exit 2 }
+}
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} {
+    puts "select exited [lindex $result 3], want 0"
+    exit 2
+}

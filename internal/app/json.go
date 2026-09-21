@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
@@ -18,10 +19,14 @@ import (
 )
 
 type jsonDoc struct {
-	Schema      int           `json:"schema"`
-	GeneratedAt string        `json:"generated_at"` // RFC3339 UTC
-	Current     string        `json:"current"`      // account name bare `x` targets
-	Accounts    []jsonAccount `json:"accounts"`
+	Schema      int    `json:"schema"`
+	GeneratedAt string `json:"generated_at"` // RFC3339 UTC
+	// Current is keyed by vendor and holds only the vendors in this document:
+	// the account name a bare launch of that vendor targets ("" = none
+	// resolvable). The same email can be an account of both vendors, so one
+	// string could not say which.
+	Current  map[string]string `json:"current"`
+	Accounts []jsonAccount     `json:"accounts"` // one flat list; select by "vendor"
 
 	// Problems are defects in headroom's own state file, never statements
 	// about Claude Code. They exist so a machine consumer can tell "nothing
@@ -32,6 +37,7 @@ type jsonDoc struct {
 }
 
 type jsonProblem struct {
+	Vendor  string `json:"vendor"` // whose state file
 	Section string `json:"section"`
 	Detail  string `json:"detail"`
 }
@@ -42,7 +48,8 @@ type jsonProblem struct {
 // Limits are present whenever any are known, and `usage.observed_at` says
 // when — a consumer that ignores it is choosing to.
 type jsonAccount struct {
-	Name        string      `json:"name"` // dir basename, or the primary's name
+	Vendor      string      `json:"vendor"` // "claude" | "codex"
+	Name        string      `json:"name"`   // dir basename, or the primary's name
 	Email       string      `json:"email,omitempty"`
 	Launcher    string      `json:"launcher"`
 	Plan        string      `json:"plan,omitempty"`
@@ -54,10 +61,16 @@ type jsonAccount struct {
 }
 
 type jsonUsage struct {
-	ObservedAt string      `json:"observed_at"` // RFC3339 UTC
-	Source     string      `json:"source"`      // "live" | "claude_cache"
-	Fresh      bool        `json:"fresh"`       // within accountstate.FreshWindow
-	Limits     []jsonLimit `json:"limits"`
+	ObservedAt string `json:"observed_at"` // RFC3339 UTC
+	Source     string `json:"source"`      // "live" | "headroom_cache" | "claude_cache" (never for Codex)
+	Fresh      bool   `json:"fresh"`       // within the vendor's request spacing
+	// Allowance is the account-level answer beside the windows: "blocked" is
+	// positive evidence the vendor refuses work, whatever the percents say;
+	// "unknown" (every Claude Code response) is never to be read as allowed.
+	Allowance       string      `json:"allowance"` // "unknown" | "allowed" | "blocked" | "bad"
+	AllowanceReason string      `json:"allowance_reason,omitempty"`
+	BlockedFeatures []string    `json:"blocked_features,omitempty"` // limits blocked on their own; the account stays usable
+	Limits          []jsonLimit `json:"limits"`
 }
 
 type jsonAttempt struct {
@@ -76,12 +89,18 @@ type jsonLimit struct {
 	Kind          string  `json:"kind,omitempty"`
 	Group         string  `json:"group,omitempty"`
 	Model         string  `json:"model,omitempty"`
-	Percent       int     `json:"percent"` // 0 when percent_state is "bad"
+	Feature       string  `json:"feature,omitempty"`        // Codex: metered_feature of an additional limit
+	WindowSeconds int64   `json:"window_seconds,omitempty"` // Codex: the window's stated duration
+	Percent       int     `json:"percent"`                  // 0 when percent_state is "bad"
 	PercentState  string  `json:"percent_state"`
 	ResetsAt      *string `json:"resets_at"` // RFC3339 UTC; null when unknown
 	ResetState    string  `json:"reset_state"`
-	Severity      string  `json:"severity"`
+	Severity      string  `json:"severity"` // always "normal" for Codex
 	IdentityState string  `json:"identity_state"`
+	// Unstarted: nobody has spent against this window, so it has no reset yet
+	// (reset_state "none", resets_at null). A fact about the row — the three
+	// *_state fields keep their three values.
+	Unstarted bool `json:"unstarted,omitempty"`
 }
 
 var healthNames = map[accountstate.Health]string{
@@ -119,22 +138,44 @@ var sourceNames = map[accountstate.Source]string{
 	accountstate.SourceCache: "claude_cache",
 }
 
-func jsonDocument(list []*accountData, current string, problems []state.Problem, generatedAt time.Time) ([]byte, error) {
+// vendorBoard is one vendor's share of a reporting surface: the scope, what
+// was prepared under it, the current-target name those views were marked
+// with, and the problems of that vendor's own state file.
+type vendorBoard struct {
+	scope    config.Scope
+	st       *state.Store
+	list     []*accountData
+	current  string
+	problems []state.Problem
+}
+
+func jsonDocument(boards []vendorBoard, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
-		// 4: limits carry decoded identity (kind/group/model, identity_state);
-		// own-state problems surface at document level.
-		Schema:      4,
+		// 5: a second vendor. Every account and problem carries "vendor",
+		// `current` is an object keyed by vendor, limits gain feature /
+		// window_seconds / unstarted, and usage gains the allowance.
+		Schema:      5,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
-		Current:     current,
-		Accounts:    make([]jsonAccount, 0, len(list)),
+		Current:     map[string]string{},
+		Accounts:    []jsonAccount{},
 	}
-	for _, p := range problems {
-		doc.Problems = append(doc.Problems, jsonProblem{Section: p.Section, Detail: p.Detail})
+	for _, b := range boards {
+		doc.Current[string(b.scope.Vendor)] = b.current
+		for _, p := range b.problems {
+			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.scope.Vendor), Section: p.Section, Detail: p.Detail})
+		}
+		doc.appendAccounts(b, now)
 	}
+	return json.MarshalIndent(doc, "", "  ")
+}
+
+func (doc *jsonDoc) appendAccounts(b vendorBoard, now int64) {
+	list := b.list
 	for _, d := range list {
 		v := d.View
 		a := jsonAccount{
+			Vendor:      string(b.scope.Vendor),
 			Name:        d.Acct.Name,
 			Email:       d.Acct.Email,
 			Launcher:    v.Launcher,
@@ -150,7 +191,7 @@ func jsonDocument(list []*accountData, current string, problems []state.Problem,
 			a.Attempt.HTTPStatus = v.Attempt.HTTPCode
 		}
 		if v.Attempt.StoreError != "" {
-			doc.Problems = append(doc.Problems, jsonProblem{Section: "request[" + d.Acct.Name + "]", Detail: v.Attempt.StoreError})
+			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.scope.Vendor), Section: "request[" + d.Acct.Name + "]", Detail: v.Attempt.StoreError})
 		}
 		if v.Attempt.State != accountstate.AttemptOK && v.Attempt.NextEligibleAt > now {
 			ts := time.Unix(v.Attempt.NextEligibleAt, 0).UTC().Format(time.RFC3339)
@@ -161,7 +202,11 @@ func jsonDocument(list []*accountData, current string, problems []state.Problem,
 				ObservedAt: time.Unix(v.Obs.ObservedAt, 0).UTC().Format(time.RFC3339),
 				Source:     sourceNames[v.Obs.Source],
 				Fresh:      v.Fresh(now),
-				Limits:     make([]jsonLimit, 0, len(v.Obs.Rows)),
+
+				Allowance:       v.Obs.Allowance.State.Name(),
+				AllowanceReason: v.Obs.Allowance.Reason,
+				BlockedFeatures: v.Obs.Allowance.BlockedFeatures,
+				Limits:          make([]jsonLimit, 0, len(v.Obs.Rows)),
 			}
 			for _, r := range v.Obs.Rows {
 				l := jsonLimit{
@@ -169,6 +214,9 @@ func jsonDocument(list []*accountData, current string, problems []state.Problem,
 					Kind:          r.Kind,
 					Group:         r.Group,
 					Model:         r.Model,
+					Feature:       r.Feature,
+					WindowSeconds: r.WindowSeconds,
+					Unstarted:     r.Unstarted,
 					Percent:       r.Percent,
 					PercentState:  r.PercentState.Name(),
 					ResetState:    r.ResetState.Name(),
@@ -185,18 +233,35 @@ func jsonDocument(list []*accountData, current string, problems []state.Problem,
 		}
 		doc.Accounts = append(doc.Accounts, a)
 	}
-	return json.MarshalIndent(doc, "", "  ")
 }
 
-func runDashboardJSON(cfg config.Scope) int {
-	// current comes from prepare's snapshot: envelope and per-account flags
-	// must agree even if a concurrent select rewrites .current mid-fetch.
-	st := state.Open(cfg)
-	list, current, snap := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), list, st) {
-		resolve(list[u.Index], u)
+// fetchBoards prepares every scope and runs one refresh round per scope, the
+// rounds side by side: each owns its own list, store and channel, so the two
+// vendors' results never meet.
+func fetchBoards(scopes []config.Scope) []vendorBoard {
+	boards := make([]vendorBoard, len(scopes))
+	var wg sync.WaitGroup
+	for i, scope := range scopes {
+		wg.Add(1)
+		go func(i int, scope config.Scope) {
+			defer wg.Done()
+			st := state.Open(scope)
+			// current comes from prepare's snapshot: envelope and per-account
+			// flags must agree even if a concurrent select rewrites .current
+			// mid-fetch.
+			list, current, snap := prepare(scope, st)
+			for u := range launchFetches(context.Background(), list, st) {
+				resolve(list[u.Index], u)
+			}
+			boards[i] = vendorBoard{scope: scope, st: st, list: list, current: current, problems: snap.Problems()}
+		}(i, scope)
 	}
-	data, err := jsonDocument(list, current, snap.Problems(), time.Now())
+	wg.Wait()
+	return boards
+}
+
+func runDashboardJSON(scopes []config.Scope) int {
+	data, err := jsonDocument(fetchBoards(scopes), time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
 		return 1

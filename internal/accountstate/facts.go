@@ -109,7 +109,13 @@ type Facts struct {
 	DirMismatch string // dir name when the logged-in email doesn't match it
 	Plan        string
 	Launcher    string
-	Current     bool // a bare launch (no --account) targets this account
+	// LoginCommand is the whole command that logs this account in, when the
+	// vendor has no in-session /login to point at: Codex's, in the engine's
+	// own spelling rather than the configured launcher format, because how a
+	// wrapper passes arguments through is not headroom's to know. "" means
+	// "run Launcher and /login".
+	LoginCommand string
+	Current      bool // a bare launch (no --account) targets this account
 	Health      Health
 	// AuthMode names a login headroom does not read usage for (a Codex API
 	// key, agent identity or Bedrock login); health is then unknown and the

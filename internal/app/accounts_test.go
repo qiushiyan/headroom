@@ -22,7 +22,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys, now); err != nil {
 		t.Fatal(err)
 	}
-	ui := &picker{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
+	ui := &page{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait < config.DefaultSpacing-2*time.Second {
@@ -38,7 +38,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys[1:], now); err != nil {
 		t.Fatal(err)
 	}
-	ui = &picker{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
+	ui = &page{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait > config.DefaultSpacing/2+2*time.Second {
 		t.Errorf("next round in %v; the sooner account was ignored", wait)
@@ -46,7 +46,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 
 	// And an empty ledger — every claim failed, so nothing recorded an
 	// eligibility — must not become a busy loop.
-	ui = &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), wanted: 1, list: []*accountData{{Key: keys[0]}}}
+	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), wanted: 1, list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait < refreshFloor-2*time.Second {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
@@ -56,7 +56,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	// either — each round costs a `claude auth status` spawn per account to
 	// re-learn the same answer. How far it backs off is
 	// TestAnIdleBoardStillComesBack's business.
-	ui = &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: keys[0]}}}
+	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait <= refreshFloor {
 		t.Errorf("idle board polls every %v, at a subprocess spawn per account", wait)
@@ -68,29 +68,30 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 // open on a spare tab does not.
 func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 	now := time.Now()
-	ui := &picker{nextAt: now.Add(-time.Second), lastKey: now.Add(-presenceWindow - time.Minute)}
-	if ui.due() {
+	lastKey := now.Add(-presenceWindow - time.Minute)
+	ui := &page{nextAt: now.Add(-time.Second)}
+	if ui.due(lastKey) {
 		t.Error("an unattended board kept polling")
 	}
 	// A refresh asked for by hand fires regardless of presence: it was asked
 	// for. It waits only for the floor, never for the cadence.
 	ui.armed, ui.lastLocal = true, now.Add(-refreshFloor-time.Second)
-	if !ui.due() {
+	if !ui.due(lastKey) {
 		t.Error("an armed refresh must fire even after the board paused")
 	}
 	ui.lastLocal = now
-	if ui.due() {
+	if ui.due(lastKey) {
 		t.Error("an armed refresh inside the floor must wait it out")
 	}
 	// And a keypress resumes the ordinary cadence.
-	ui.armed, ui.lastKey = false, now
-	if !ui.due() {
+	ui.armed, lastKey = false, now
+	if !ui.due(lastKey) {
 		t.Error("a present user must get the ordinary cadence back")
 	}
 	// A round already in flight never starts a second one, armed or not.
 	ui.updates = make(chan refresh.Result)
 	ui.armed = true
-	if ui.due() {
+	if ui.due(lastKey) {
 		t.Error("rounds must not overlap")
 	}
 }
@@ -101,7 +102,7 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 // press instead of dropping it.
 func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 	now := time.Now()
-	ui := &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()})}
+	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()})}
 
 	// Past the floor `r` runs immediately — even mid-quiet-period, even with
 	// accounts waiting on the budget (wanted > 0): eligibility is the claim's
@@ -147,7 +148,7 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 // the presence window that gates it.
 func TestAnIdleBoardStillComesBack(t *testing.T) {
 	now := time.Now()
-	ui := &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: state.Key{Name: "a"}}}}
+	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: state.Key{Name: "a"}}}}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait >= presenceWindow {

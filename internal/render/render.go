@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -68,16 +69,77 @@ func (p Palette) HealthLine(v accountstate.Facts) string {
 func healthText(v accountstate.Facts) string {
 	switch v.Health {
 	case accountstate.HealthNoLogin:
-		return fmt.Sprintf("not logged in — run %s and /login", v.Launcher)
+		return "not logged in — run " + loginHint(v)
 	case accountstate.HealthReloginRequired:
-		return fmt.Sprintf("login expired — run %s and /login", v.Launcher)
+		return "login expired — run " + loginHint(v)
 	case accountstate.HealthBadBlob:
 		return "credential unreadable — format changed? run headroom check"
 	case accountstate.HealthUnknown:
+		if v.AuthMode != "" {
+			// Not a subscription login: there is no window to read, and
+			// nothing is wrong with the account.
+			return fmt.Sprintf("auth mode %s — no subscription usage to read", Sanitize(v.AuthMode))
+		}
 		return "login state unknown — run headroom check"
 	default:
 		return ""
 	}
+}
+
+// loginHint is how to log this account in. Claude Code logs in from inside a
+// session (/login); Codex has no such command, so its hint is one whole
+// command line and never says /login.
+func loginHint(v accountstate.Facts) string {
+	if v.LoginCommand != "" {
+		return v.LoginCommand
+	}
+	return v.Launcher + " and /login"
+}
+
+// allowanceText is the account-level clause: positive blocking evidence, in
+// red because it decides the choice, or "" when the vendor has said nothing
+// that blocks.
+func allowanceText(v accountstate.Facts) string {
+	if !v.Blocked() {
+		return ""
+	}
+	return "blocked — " + blockReason(v.Obs.Allowance.Reason)
+}
+
+// blockReason spells the allowance's reason for a person. The parser hands
+// over the vendor's own reason string when it sent one, and otherwise the name
+// of the field that said so; unknown vendor vocabulary is shown as it came.
+func blockReason(reason string) string {
+	switch reason {
+	case "":
+		return "the vendor refuses work on this account"
+	case "spend_control.reached":
+		return "spend limit reached"
+	case "rate_limit.limit_reached":
+		return "usage limit reached"
+	case "rate_limit.allowed is false":
+		return "the vendor refuses work on this account"
+	default:
+		return strings.ReplaceAll(Sanitize(reason), "_", " ")
+	}
+}
+
+// featureText names the limits blocked on their own. They never make the
+// account unavailable, so they are a caption and nothing more.
+func featureText(v accountstate.Facts) string {
+	if v.Obs == nil || len(v.Obs.Allowance.BlockedFeatures) == 0 {
+		return ""
+	}
+	names := make([]string, len(v.Obs.Allowance.BlockedFeatures))
+	for i, f := range v.Obs.Allowance.BlockedFeatures {
+		names[i] = Sanitize(f)
+	}
+	return strings.Join(names, ", ") + " blocked"
+}
+
+// allowanceDrifted reports a blocking field that no longer parses.
+func allowanceDrifted(v accountstate.Facts) bool {
+	return v.Obs != nil && v.Obs.Allowance.State == usage.AllowanceBad
 }
 
 // StatusLine is what an account with no figures at all shows. When health is
@@ -121,6 +183,11 @@ func (p Palette) requestReason(v accountstate.Facts, now int64) string {
 	case accountstate.AttemptTransport:
 		return "fetch failed (network?)"
 	case accountstate.AttemptHTTP:
+		if v.Vendor == config.Codex && v.Attempt.HTTPCode == 401 {
+			// Codex itself recovers from a 401 by reloading and refreshing, so
+			// a rejected token is not evidence that a person must log in.
+			return fmt.Sprintf("access token rejected — any %s session refreshes it", v.Launcher)
+		}
 		return fmt.Sprintf("HTTP %d from usage endpoint", v.Attempt.HTTPCode)
 	case accountstate.AttemptUnparseable:
 		return "response not parseable — format changed? run headroom check"
@@ -129,6 +196,9 @@ func (p Palette) requestReason(v accountstate.Facts, now int64) string {
 	case accountstate.AttemptStateUnavailable:
 		return "headroom's own state file unavailable — run headroom check"
 	case accountstate.AttemptIdentityUnknown:
+		if v.Vendor == config.Codex {
+			return "account identity unreadable — auth.json names no account and user"
+		}
 		return "account identity unreadable — .claude.json did not parse"
 	default:
 		return "not checked"
@@ -284,6 +354,15 @@ func (p Palette) AccountBlock(v accountstate.Facts, now int64, labelWidth int) [
 	for _, r := range v.Obs.Rows {
 		lines = append(lines, p.LimitRow(r, now, labelWidth))
 	}
+	if t := allowanceText(v); t != "" {
+		lines = append(lines, "  "+p.Red+t+p.Rst)
+	}
+	if t := featureText(v); t != "" {
+		lines = append(lines, "  "+p.Yel+t+p.Rst)
+	}
+	if allowanceDrifted(v) {
+		lines = append(lines, "  "+p.Red+"⚠ drift — run headroom check"+p.Rst)
+	}
 	if prov := p.ProvenanceLine(v, now); prov != "" {
 		lines = append(lines, prov)
 	}
@@ -298,6 +377,11 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
 	bar := Bar(r.Percent)
 	pct := fmt.Sprintf("%3d%%", r.Percent)
 	phrase := ResetPhrase(r.ResetAt, now)
+	if r.Unstarted {
+		// Nobody has spent against this window yet, so the vendor's reset
+		// instant slides with every request and means nothing.
+		phrase = "not started"
+	}
 	switch {
 	case r.PercentState == usage.StateBad:
 		// A percent that no longer parses must not read as real headroom.

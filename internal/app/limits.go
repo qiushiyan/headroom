@@ -23,15 +23,15 @@ import (
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-func runLimits(cfg config.Scope, args []string) int {
-	return runLimitsTo(os.Stdout, cfg, args)
+func runLimits(scopes []config.Scope, args []string) int {
+	return runLimitsTo(os.Stdout, scopes, args)
 }
 
 // runLimitsTo is runLimits with the document's destination injected, so the
 // command — flag policy included — is testable without capturing the process's
 // stdout. Diagnostics still go to stderr: the document stream carries JSON or
 // nothing.
-func runLimitsTo(w io.Writer, cfg config.Scope, args []string) int {
+func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
 	account, accountSet := "", false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -55,18 +55,38 @@ func runLimitsTo(w io.Writer, cfg config.Scope, args []string) int {
 		return 2
 	}
 
+	// Every selected vendor, read from disk alone. --account filters by name
+	// inside them: the same email can be an account of both vendors, and then
+	// both rows answer, each under its own "vendor".
 	now := time.Now()
-	disk := accountstate.Read(cfg, state.Open(cfg), now)
-	list, current, snap := accountList(disk.Accounts), disk.Current, disk.Store
-	if accountSet {
-		a, err := setOf(cfg, list).Select(account)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom limits: %v\n", err)
-			return 1
+	var boards []vendorBoard
+	var selectErr error
+	matched := 0
+	for _, scope := range scopes {
+		st := state.Open(scope)
+		disk := accountstate.Read(scope, st, now)
+		b := vendorBoard{scope: scope, st: st, list: accountList(disk.Accounts), current: disk.Current, problems: disk.Store.Problems()}
+		if accountSet {
+			a, err := setOf(scope, b.list).Select(account)
+			if err != nil {
+				if selectErr == nil {
+					selectErr = err
+				}
+				// The vendor stays in the document — its `current` is still a
+				// fact — with no account of that name under it.
+				b.list = nil
+			} else {
+				b.list = filterAccount(b.list, a.Name)
+				matched++
+			}
 		}
-		list = filterAccount(list, a.Name)
+		boards = append(boards, b)
 	}
-	data, err := jsonDocument(list, current, snap.Problems(), now)
+	if accountSet && matched == 0 {
+		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", selectErr)
+		return 1
+	}
+	data, err := jsonDocument(boards, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", err)
 		return 1

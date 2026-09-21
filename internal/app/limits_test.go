@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/qiushiyan/headroom/internal/config"
 )
 
 // The shipped command, end to end minus the process boundary: flag policy,
@@ -22,7 +24,7 @@ func TestLimitsCommand(t *testing.T) {
 	writeJSON(t, filepath.Join(extraDir, ".claude.json"), `{"oauthAccount":{"emailAddress":"b@x.com"}}`)
 
 	var buf bytes.Buffer
-	if code := runLimitsTo(&buf, cfg, []string{"--account", "b@x.com"}); code != 0 {
+	if code := runLimitsTo(&buf, []config.Scope{cfg}, []string{"--account", "b@x.com"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	var doc map[string]any
@@ -49,7 +51,7 @@ func TestLimitsCommand(t *testing.T) {
 		{[]string{"--frobnicate"}, 2},
 	} {
 		buf.Reset()
-		if code := runLimitsTo(&buf, cfg, c.args); code != c.code {
+		if code := runLimitsTo(&buf, []config.Scope{cfg}, c.args); code != c.code {
 			t.Errorf("args %v: exit %d, want %d", c.args, code, c.code)
 		}
 		if buf.Len() != 0 {
@@ -71,7 +73,7 @@ func TestLimitsSurfacesStateProblems(t *testing.T) {
 	writeJSON(t, filepath.Join(cfg.AccountsRoot, "state.json"), `not json at all`)
 
 	var buf bytes.Buffer
-	if code := runLimitsTo(&buf, cfg, nil); code != 0 {
+	if code := runLimitsTo(&buf, []config.Scope{cfg}, nil); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	var doc struct {
@@ -90,7 +92,7 @@ func TestLimitsSurfacesStateProblems(t *testing.T) {
 		t.Fatal(err)
 	}
 	buf.Reset()
-	if code := runLimitsTo(&buf, cfg, nil); code != 0 {
+	if code := runLimitsTo(&buf, []config.Scope{cfg}, nil); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	var clean map[string]any

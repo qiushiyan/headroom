@@ -182,6 +182,63 @@ if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
     fail=1
 fi
 
+# Two vendors. Codex is absent from every other case — its directories do not
+# exist under the fixture home, so those frames are what they always were —
+# and present for this block alone, through its own accounts root. The tokens
+# are unsigned fixtures and the usage URL is a closed port.
+b64() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+jwt() { printf '%s.%s.sig' "$(b64 '{"alg":"none"}')" "$(b64 "$1")"; }
+export HEADROOM_CODEX_ACCOUNTS_ROOT="$work/codex-accounts"
+export HEADROOM_CODEX_USAGE_URL="http://127.0.0.1:1/usage"
+mkdir -p "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com" "$HEADROOM_HOME/.codex/sessions"
+ln -s "$HEADROOM_HOME/.codex/sessions" "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/sessions"
+id_token=$(jwt '{"email":"cx@x.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro","chatgpt_account_id":"acct-cx","chatgpt_user_id":"user-cx"}}')
+access_token=$(jwt '{"exp":4102444800}')
+printf '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"%s","access_token":"%s","refresh_token":"rt","account_id":"acct-cx"},"last_refresh":"2026-09-13T08:00:00Z"}' \
+    "$id_token" "$access_token" >"$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/auth.json"
+
+# Off a terminal, two vendors print under a heading each, and --json is still
+# one document whose `current` is an object keyed by vendor.
+two_out=$("$HEADROOM_BIN" 2>/dev/null)
+if ! printf '%s\n' "$two_out" | grep -q '^Claude Code$' || ! printf '%s\n' "$two_out" | grep -q '^Codex$' ||
+    ! printf '%s\n' "$two_out" | grep -q 'cx@x.com'; then
+    echo "FAIL two-vendor-print: want a heading per vendor and the Codex account"
+    printf '%s\n' "$two_out" | sed 's/^/     /'
+    fail=1
+else
+    echo "ok   two-vendor-print"
+fi
+two_json=$("$HEADROOM_BIN" --json 2>/dev/null)
+if ! printf '%s' "$two_json" | grep -q '"schema": 5' || ! printf '%s' "$two_json" | grep -q '"codex": "' ||
+    ! printf '%s' "$two_json" | grep -q '"vendor": "codex"'; then
+    echo "FAIL two-vendor-json: want schema 5, a vendor per account and current keyed by vendor"
+    fail=1
+else
+    echo "ok   two-vendor-json"
+fi
+one_out=$("$HEADROOM_BIN" accounts --vendor codex 2>/dev/null)
+if printf '%s\n' "$one_out" | grep -q '^Codex$' || printf '%s\n' "$one_out" | grep -q 'a@x.com'; then
+    echo "FAIL one-vendor-print: --vendor codex must print Codex alone, with no heading"
+    fail=1
+else
+    echo "ok   one-vendor-print"
+fi
+
+# Tab switches pages; enter on the Codex page writes only Codex's .current.
+rm -f "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" "$HEADROOM_CODEX_ACCOUNTS_ROOT/state.json"
+run accounts_tab
+if [ "$(cat "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "cx@x.com" ]; then
+    echo "FAIL accounts_tab: Codex .current not written with cx@x.com"
+    fail=1
+fi
+if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+    echo "FAIL accounts_tab: enter on the Codex page wrote Claude Code's .current"
+    fail=1
+fi
+# Codex goes absent again for everything below.
+rm -rf "$HEADROOM_CODEX_ACCOUNTS_ROOT" "$HEADROOM_HOME/.codex"
+unset HEADROOM_CODEX_ACCOUNTS_ROOT HEADROOM_CODEX_USAGE_URL
+
 # SIGTERM mid-session must leave the terminal in canonical echoing mode.
 run accounts_sigterm
 if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||

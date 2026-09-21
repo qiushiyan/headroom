@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +63,38 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		printUsage(os.Stderr)
 		return false
 	}
+	// --vendor defaults to claude on the commands that act on one account
+	// (launch, resolve, accounts add, accounts remove), so every existing
+	// invocation means what it meant. The surfaces that report (the board,
+	// --json, limits) show every present vendor and the flag restricts them
+	// to one. check and sessions take no --vendor.
+	var vendor config.Vendor
+	vendorSet := false
+	switch cmd {
+	case "", "accounts", "select", "--json", "limits", "resolve", "launch":
+		vendor, vendorSet, rest, err = takeVendor(rest)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
+			return 2
+		}
+	}
+	// one is the scope a command acting on one account works in.
+	one := func() (config.Scope, bool) {
+		scope := cfg.Scope(vendor)
+		if !scope.Present {
+			fmt.Fprintf(os.Stderr, "headroom: %v\n", absentErr(scope))
+			return scope, false
+		}
+		return scope, true
+	}
+	// reported is the scopes a reporting surface covers.
+	reported := func() ([]config.Scope, bool) {
+		if !vendorSet {
+			return cfg.Present(), true
+		}
+		scope, ok := one()
+		return []config.Scope{scope}, ok
+	}
 	switch cmd {
 	// "select" is what this surface was called before it became the whole
 	// board; accepted so a shell integration mid-update keeps working.
@@ -73,34 +106,60 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		if cmd == "accounts" && len(rest) > 0 {
 			switch rest[0] {
 			case "add":
-				return runAccountsAdd(cfg.Claude, rest[1:])
+				// The one command that works while a vendor is absent: it is
+				// how the first Codex directory comes to exist.
+				return runAccountsAdd(cfg.Scope(vendor), rest[1:])
 			case "remove":
-				return runAccountsRemove(cfg.Claude, rest[1:])
+				scope, ok := one()
+				if !ok {
+					return 1
+				}
+				return runAccountsRemove(scope, rest[1:])
 			}
 			layout, rest = boardLayout(rest)
 		}
 		if !noArgs() {
 			return 2
 		}
-		return runAccounts(cfg.Claude, layout)
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runAccounts(scopes, layout)
 	case "--json":
 		if !noArgs() {
 			return 2
 		}
-		return runDashboardJSON(cfg.Claude)
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runDashboardJSON(scopes)
 	case "check", "--check":
 		if !noArgs() {
 			return 2
 		}
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
 	case "limits":
-		return runLimits(cfg.Claude, rest)
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runLimits(scopes, rest)
 	case "sessions":
 		return runSessions(cfg.Claude, rest)
 	case "resolve":
-		return runResolve(cfg.Claude, rest)
+		scope, ok := one()
+		if !ok {
+			return 1
+		}
+		return runResolve(scope, rest)
 	case "launch":
-		return runLaunch(cfg.Claude, rest)
+		scope, ok := one()
+		if !ok {
+			return 1
+		}
+		return runLaunch(scope, rest)
 	case "-h", "--help", "help":
 		if !noArgs() {
 			return 2
@@ -112,6 +171,46 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		printUsage(os.Stderr)
 		return 2
 	}
+}
+
+// takeVendor lifts `--vendor <v>` (or `--vendor=<v>`) out of a command's own
+// arguments. It stops at `--`: whatever follows belongs to the launched child,
+// and a child's `--vendor` is not headroom's to read.
+func takeVendor(args []string) (config.Vendor, bool, []string, error) {
+	vendor, set := config.Claude, false
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		var value string
+		switch {
+		case a == "--":
+			return vendor, set, append(rest, args[i:]...), nil
+		case a == "--vendor":
+			if i+1 >= len(args) {
+				return "", false, nil, fmt.Errorf("--vendor needs a value: claude or codex")
+			}
+			i++
+			value = args[i]
+		case strings.HasPrefix(a, "--vendor="):
+			value = strings.TrimPrefix(a, "--vendor=")
+		default:
+			rest = append(rest, a)
+			continue
+		}
+		v, err := config.ParseVendor(value)
+		if err != nil {
+			return "", false, nil, err
+		}
+		vendor, set = v, true
+	}
+	return vendor, set, rest, nil
+}
+
+// absentErr is why a command naming an absent vendor fails. Only Codex can be
+// absent.
+func absentErr(scope config.Scope) error {
+	return fmt.Errorf("%s was not found on this machine (no %s, no %s) — `headroom accounts add --vendor %s <email>` seeds the first account",
+		scope.Vendor.Title(), scope.PrimaryDir(), scope.AccountsRoot, scope.Vendor)
 }
 
 // boardLayout reads the board's one presentation flag off the front of its

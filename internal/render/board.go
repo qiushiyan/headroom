@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -83,15 +84,39 @@ const (
 // deterministically. A row whose identity failed the contract forms no
 // column, because a limit that cannot say which limit it is has no place to
 // be compared in.
+//
+// A Codex column is identified by feature and window duration as well: two
+// accounts whose `primary` slots run for different lengths are different
+// limits and get different columns. Pages never share a table, so columns are
+// ranked per vendor — Codex's run rate_limit first, then code review, then
+// the additional limits by feature, and inside a group the longer window
+// first, because the weekly window is the one that strands an account for
+// days.
 type column struct {
 	kind, group, model string
+	feature            string
+	seconds            int64
 	label              string
 	width              int
 	resetWidth         int // widest reset token in the column
 }
 
 func (c column) matches(r usage.Row) bool {
-	return c.kind == r.Kind && c.group == r.Group && c.model == r.Model
+	return c.kind == r.Kind && c.group == r.Group && c.model == r.Model &&
+		c.feature == r.Feature && c.seconds == r.WindowSeconds
+}
+
+func codexGroupRank(group string) int {
+	switch group {
+	case usage.CodexGroupMain:
+		return 0
+	case usage.CodexGroupCodeReview:
+		return 1
+	case usage.CodexGroupAdditional:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func columnRank(kind string) int {
@@ -120,8 +145,20 @@ func columns(views []accountstate.Facts) []column {
 			if slices.ContainsFunc(cols, func(c column) bool { return c.matches(r) }) {
 				continue
 			}
-			cols = append(cols, column{kind: r.Kind, group: r.Group, model: r.Model, label: Sanitize(r.Label)})
+			cols = append(cols, column{kind: r.Kind, group: r.Group, model: r.Model,
+				feature: r.Feature, seconds: r.WindowSeconds, label: Sanitize(r.Label)})
 		}
+	}
+	if len(views) > 0 && views[0].Vendor == config.Codex {
+		slices.SortStableFunc(cols, func(a, b column) int {
+			return cmp.Or(
+				cmp.Compare(codexGroupRank(a.group), codexGroupRank(b.group)),
+				cmp.Compare(a.feature, b.feature),
+				cmp.Compare(b.seconds, a.seconds), // longer window first
+				cmp.Compare(a.kind, b.kind),
+			)
+		})
+		return cols
 	}
 	slices.SortStableFunc(cols, func(a, b column) int {
 		return cmp.Or(
@@ -167,6 +204,8 @@ func (p Palette) cellFor(r usage.Row, now int64) cell {
 	switch {
 	case r.ResetState == usage.StateBad:
 		c.reset, c.resetColor = "reset?", p.Red
+	case r.Unstarted:
+		c.reset = "not started"
 	case r.ResetAt == 0:
 		c.reset = "—"
 	}
@@ -195,6 +234,12 @@ func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	if t := healthText(v); t != "" {
 		parts = append(parts, p.Red+t+p.Rst)
 	}
+	if t := allowanceText(v); t != "" {
+		// Beside health, because it decides the choice the same way: green
+		// figures on an account the vendor refuses must not survive a clip
+		// that the block does not.
+		parts = append(parts, p.Red+t+p.Rst)
+	}
 	if v.DirMismatch != "" {
 		// The mark says something is wrong; the caption says which dir,
 		// which is what the user needs to go and fix it.
@@ -206,8 +251,11 @@ func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	case v.Obs != nil && len(v.Obs.Rows) == 0:
 		parts = append(parts, p.Dim+"no limits reported"+p.Rst)
 	}
-	if drift {
+	if drift || allowanceDrifted(v) {
 		parts = append(parts, p.Red+"⚠ drift — run headroom check"+p.Rst)
+	}
+	if t := featureText(v); t != "" {
+		parts = append(parts, p.Yel+t+p.Rst)
 	}
 	pr := p.provenance(v, now)
 	if pr.stale {
@@ -339,7 +387,7 @@ func budget(views []accountstate.Facts, cols []column, width int) int {
 // figures beside an unusable account is the reading a clip must not produce.
 func (p Palette) compactLine(v accountstate.Facts, row compactRow, cols []column, nameW int, now int64) string {
 	nameColor := p.Bold
-	if healthText(v) != "" {
+	if healthText(v) != "" || v.Blocked() {
 		nameColor = p.Red
 	}
 	var b strings.Builder

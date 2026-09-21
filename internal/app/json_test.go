@@ -44,7 +44,7 @@ func TestJSONDocument(t *testing.T) {
 				Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}},
 		},
 	}
-	data, err := jsonDocument(list, "primary", nil, generatedAt)
+	data, err := jsonDocument(claudeBoard(list, "primary"), generatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestJSONDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
-	if doc["schema"] != float64(4) || doc["current"] != "primary" {
+	if doc["schema"] != float64(5) || doc["current"].(map[string]any)["claude"] != "primary" {
 		t.Errorf("envelope: %v %v", doc["schema"], doc["current"])
 	}
 	if doc["generated_at"] != "2025-08-02T07:50:00Z" {
@@ -147,7 +147,7 @@ func TestJSONSeparatesStaleDataFromFailedRefresh(t *testing.T) {
 			},
 		},
 	}}
-	data, err := jsonDocument(list, "a@x.com", nil, generatedAt)
+	data, err := jsonDocument(claudeBoard(list, "a@x.com"), generatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

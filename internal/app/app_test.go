@@ -389,7 +389,7 @@ func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
 				t.Errorf("missing independent evidence: %s", text)
 			}
 		}
-		data, err := jsonDocument([]*accountData{d}, "a", nil, now)
+		data, err := jsonDocument(claudeBoard([]*accountData{d}, "a"), now)
 		if err != nil || !strings.Contains(string(data), `"problems"`) {
 			t.Errorf("JSON omitted bookkeeping problem: %s %v", data, err)
 		}
@@ -413,16 +413,16 @@ func TestSuccessfulRefreshPresentation(t *testing.T) {
 			for r := range launchFetches(context.Background(), []*accountData{d}, state.Open(config.Scope{AccountsRoot: t.TempDir()})) {
 				resolve(d, r)
 			}
-			ui := picker{list: []*accountData{d}}
+			ui := page{list: []*accountData{d}}
 			if got := ui.ackString(time.Now()); got != "refreshed · all current" {
 				t.Errorf("ack=%q", got)
 			}
-			data, err := jsonDocument(ui.list, "", nil, time.Now())
+			data, err := jsonDocument(claudeBoard(ui.list, ""), time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(string(data), `"http_status"`) || (strings.Contains(string(data), `"next_eligible_at"`) != tc.empty) {
-				t.Errorf("successful schema-4 attempt gained error/retry fields: %s", data)
+				t.Errorf("successful attempt gained error/retry fields: %s", data)
 			}
 		})
 	}

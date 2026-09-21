@@ -36,6 +36,9 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, 
 	for _, a := range set.Accounts {
 		key := state.Key{UUID: a.AccountID, Name: a.Name}
 		v := Facts{Vendor: a.Scope.Vendor, FreshFor: a.Scope.RequestSpacing(), Label: a.Name, Launcher: accounts.Launcher(a), Current: current == a.Name, Health: HealthUnprobed}
+		if a.Scope.Vendor == config.Codex {
+			v.LoginCommand = accounts.EngineLauncher(a) + " -- login"
+		}
 		if a.Email != "" {
 			v.Label = a.Email
 		}

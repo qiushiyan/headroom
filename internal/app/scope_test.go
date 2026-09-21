@@ -14,3 +14,8 @@ func withUsageURL(s config.Scope, url string) config.Scope {
 	s.UsageURL = url
 	return s
 }
+
+// claudeBoard wraps a list the way a Claude Code-only run reports it.
+func claudeBoard(list []*accountData, current string) []vendorBoard {
+	return []vendorBoard{{scope: config.Scope{Vendor: config.Claude}, list: list, current: current}}
+}
