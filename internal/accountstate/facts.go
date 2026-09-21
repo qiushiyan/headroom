@@ -42,10 +42,21 @@ func (s Source) Ours() bool { return s == SourceLive || s == SourceStore }
 
 // Observation keeps rows with the provenance that makes them interpretable.
 // Rows without their original timestamp can make carried-over usage look current.
+//
+// Allowance is the account-level half of the same response: whether the
+// vendor will take work at all, whatever the windows say. Plan is the plan the
+// response named, "" when it named none.
 type Observation struct {
 	Rows       []usage.Row
+	Allowance  usage.Allowance
+	Plan       string
 	ObservedAt int64 // unix seconds
 	Source     Source
+}
+
+// FromReading builds the observation a parsed usage body amounts to.
+func FromReading(r usage.Reading, observedAt int64, source Source) *Observation {
+	return &Observation{Rows: r.Rows, Allowance: r.Allowance, Plan: r.Plan, ObservedAt: observedAt, Source: source}
 }
 
 // AttemptState is what happened the last time headroom tried to refresh —
@@ -100,8 +111,12 @@ type Facts struct {
 	Launcher    string
 	Current     bool // a bare launch (no --account) targets this account
 	Health      Health
-	Obs         *Observation // nil = nothing known
-	Attempt     Attempt
+	// AuthMode names a login headroom does not read usage for (a Codex API
+	// key, agent identity or Bedrock login); health is then unknown and the
+	// caption says why. "" otherwise.
+	AuthMode string
+	Obs      *Observation // nil = nothing known
+	Attempt  Attempt
 }
 
 // Fresh reports whether the observation is recent enough to describe current
@@ -122,8 +137,18 @@ func (v Facts) Fresh(now int64) bool {
 // Nor is a fresh observation enough on its own. A row whose own reset instant
 // has passed describes a window that has since ended: the percent is a fact
 // about the past, and a *low* one reads as headroom that may not exist.
+//
+// Nor are good windows, when the vendor says outright that the account is
+// blocked: only positive evidence blocks, so an unknown or malformed allowance
+// — and every Claude Code response — leaves the answer to the rest.
 func (v Facts) Actionable(now int64) bool {
-	return v.Health == HealthOK && v.Fresh(now) && !v.RolledOver(now)
+	return v.Health == HealthOK && v.Fresh(now) && !v.RolledOver(now) && !v.Blocked()
+}
+
+// Blocked reports positive, account-wide blocking evidence in the newest
+// observation. A block on one feature is not this.
+func (v Facts) Blocked() bool {
+	return v.Obs != nil && v.Obs.Allowance.State == usage.AllowanceBlocked
 }
 
 // RolledOver reports that some row has outlived the window it describes.

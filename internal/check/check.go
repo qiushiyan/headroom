@@ -45,8 +45,14 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	scope := cfg.Claude
 	p := render.NewPalette(color)
 	fails, unknowns, ownFails := 0, 0, 0
+	// prefix marks every line of a vendor's group other than Claude Code's,
+	// whose lines stay exactly as they were; drifted records which vendor a
+	// non-own failure was against, so the closing line blames the right one.
+	prefix, vendor := "", config.Claude
+	drifted := map[config.Vendor]int{}
 
 	chk := func(ok bool, label, hint string) {
+		label = prefix + label
 		if ok {
 			fmt.Fprintf(out, "%s ok %s  %s\n", p.Grn, p.Rst, label)
 			return
@@ -56,6 +62,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		}
 		fmt.Fprintf(out, "%sFAIL%s  %s%s\n", p.Red, p.Rst, label, hint)
 		fails++
+		drifted[vendor]++
 	}
 	// own is chk for headroom's own files. A FAIL here means *this tool*
 	// wrote or lost something, not that Claude Code changed a format — and
@@ -67,6 +74,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		chk(ok, label, hint)
 		if fails > before {
 			ownFails++
+			drifted[vendor]--
 		}
 	}
 	// skip records a fact that could not be tested. It never fails the run.
@@ -74,7 +82,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		if why != "" {
 			why = " — " + why
 		}
-		fmt.Fprintf(out, "%s ?? %s  %s%s\n", p.Yel, p.Rst, label, why)
+		fmt.Fprintf(out, "%s ?? %s  %s%s\n", p.Yel, p.Rst, prefix+label, why)
 		unknowns++
 	}
 
@@ -215,6 +223,18 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	checkRouting(set, os.Environ(), chk, own)
 	checkSessionStore(scope, accts, chk, skip)
 
+	// Codex's group runs after Claude Code's, through the same reporters.
+	// `check` takes no --vendor: it runs every present vendor's checks, and an
+	// absent Codex is one informational line that changes no exit code.
+	if cfg.Codex.Present {
+		prefix, vendor = "codex ", config.Codex
+		checkCodex(cfg.Codex, os.Environ(), chk, own, skip)
+		prefix, vendor = "", config.Claude
+	} else {
+		fmt.Fprintf(out, "%s -- %s  codex: not found (no %s, no %s) — Codex checks not run\n",
+			p.Dim, p.Rst, cfg.Codex.PrimaryDir(), cfg.Codex.AccountsRoot)
+	}
+
 	fmt.Fprintln(out)
 	switch {
 	case fails > 0 && fails == ownFails:
@@ -222,7 +242,14 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			"nothing here says Claude Code changed anything\n", fails)
 		return ExitFail
 	case fails > 0:
-		fmt.Fprintf(out, "%d check(s) failed — Claude Code likely changed a format\n", fails)
+		who := "Claude Code"
+		switch {
+		case drifted[config.Codex] > 0 && drifted[config.Claude] > 0:
+			who = "Claude Code and Codex"
+		case drifted[config.Codex] > 0:
+			who = "Codex"
+		}
+		fmt.Fprintf(out, "%d check(s) failed — %s likely changed a format\n", fails, who)
 		return ExitFail
 	case unknowns > 0:
 		fmt.Fprintf(out, "no assumption broke, but %d could not be tested — "+
@@ -385,14 +412,8 @@ func checkOwnState(snap state.Snapshot,
 		// here by the function rendering uses. A cached copy of Claude Code's
 		// is second-hand evidence next to it.
 		label := fmt.Sprintf("state[%s]: stored usage response parses via shared contract", r.Name)
-		rows, err := usage.ParseLimits(r.Body)
-		nbad := 0
-		for _, row := range rows {
-			if row.Drifted() {
-				nbad++
-			}
-		}
-		chk(err == nil && nbad == 0, label,
+		reading, err := usage.Parse(snap.Vendor(), r.Body)
+		chk(err == nil && reading.Drifted() == 0, label,
 			"the response headroom itself stored no longer parses — shape drifted")
 	}
 }
@@ -426,14 +447,15 @@ func checkRouting(set accounts.Set, environ []string,
 	// stale-wrapper incident's signature and does fail: every unmanaged
 	// `claude` in that shell runs as the primary while writing state beside
 	// whatever directory it happens to start in (verified 2.1.220).
+	homeVar := cfg.Env().HomeVar
 	if v, present := launch.Ambient(cfg.Vendor, environ); present {
-		if v != "" && !filepath.IsAbs(v) {
+		if v != "" && !filepath.IsAbs(v) && cfg.Vendor == config.Claude {
 			// Present-but-empty stays the ok-with-detail line below: it is
 			// unverified vendor territory, not this signature.
 			own(false, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is relative (%q)", v),
 				"the stale-wrapper signature — unmanaged claude runs as the primary while writing state beside the cwd; exec zsh")
 		} else {
-			chk(true, fmt.Sprintf("env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches (%q)", v), "")
+			chk(true, fmt.Sprintf("env: inherited %s is neutralized by managed launches (%q)", homeVar, v), "")
 		}
 	}
 
@@ -441,7 +463,8 @@ func checkRouting(set accounts.Set, environ []string,
 	// launches strip it (obeying it would pair one account's tokens with
 	// another's state — verified 2.1.220), unmanaged tools still obey it.
 	for _, in := range launch.Redirects(cfg.Vendor, environ) {
-		chk(true, fmt.Sprintf("env: inherited %s is neutralized by managed launches (%q)", in.Name, in.Value), "")
+		// A credential variable is named, never quoted.
+		chk(true, fmt.Sprintf("env: inherited %s is neutralized by managed launches", in.String()), "")
 	}
 
 	// Every discovered config dir must be absolute: config.Load refuses
@@ -462,7 +485,7 @@ func checkRouting(set accounts.Set, environ []string,
 	// not what a primary launch would use — the primary is selected by the
 	// variable being absent, resolved by the vendor against the real home.
 	// Own-state, not drift: launch refuses the primary until it is unset.
-	if cfg.PrimaryRelocated {
+	if cfg.PrimaryRelocated && cfg.Vendor == config.Claude {
 		own(false, "home: HEADROOM_HOME re-points the primary headroom describes",
 			"primary launches refuse; the board describes a tree bare `claude` would not use")
 	}
@@ -496,7 +519,7 @@ func checkRouting(set accounts.Set, environ []string,
 		if err != nil {
 			hint = err.Error() + " — launches on this account refuse until it is fixed"
 		}
-		own(err == nil, fmt.Sprintf("topology[%s]: projects/ resolves to the canonical store", a.Name), hint)
+		own(err == nil, fmt.Sprintf("topology[%s]: %s/ resolves to the canonical store", a.Name, cfg.StoreLink()), hint)
 	}
 }
 
@@ -606,6 +629,9 @@ func reportRequest(name string, r refresh.Result, now time.Time, chk, own func(b
 			if row.Drifted() {
 				bad++
 			}
+		}
+		if r.Observation.Allowance.State == usage.AllowanceBad {
+			bad++
 		}
 		hint := ""
 		if bad > 0 {

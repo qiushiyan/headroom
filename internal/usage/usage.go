@@ -51,6 +51,21 @@ type Row struct {
 	// legitimately anonymous, it is unselectable, and only `check` failing
 	// will surface that before a consumer quietly stops matching.
 	IdentityState FieldState
+
+	// WindowSeconds is the window's stated duration; 0 when the vendor does
+	// not state one, which is every Claude Code row. Feature is the metered
+	// feature an additional Codex limit applies to; "" otherwise. Together
+	// with Kind, Group and Model they are the row's identity: two windows
+	// that differ only in duration are different limits.
+	WindowSeconds int64
+	Feature       string
+
+	// Unstarted marks a window nobody has spent against yet: the vendor
+	// reports a reset one full window away that slides forward with every
+	// request, so the instant means nothing. It is a fact about the row, not a
+	// fourth field state — ResetState stays None and ResetAt stays 0, so an
+	// unstarted row can never read as rolled over.
+	Unstarted bool
 }
 
 // Drifted reports whether any field was present but unparseable.

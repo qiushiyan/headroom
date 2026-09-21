@@ -17,6 +17,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/check"
+	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/refresh"
@@ -187,11 +188,13 @@ type sources struct {
 func prepare(scope config.Scope, st *state.Store) ([]*accountData, string, state.Snapshot) {
 	set := accounts.Discover(scope)
 	snap := st.Load()
-	list, current := prepareWith(set, snap, sources{
-		readRaw: creds.ReadRaw,
-		health:  queryHealthParallel(set.Accounts),
-		now:     time.Now(),
-	})
+	src := sources{now: time.Now()}
+	if scope.Vendor == config.Claude {
+		// Only Claude Code's access costs a process and a Keychain read. The
+		// Codex reader works from the auth snapshot discovery already took.
+		src.readRaw, src.health = creds.ReadRaw, queryHealthParallel(set.Accounts)
+	}
+	list, current := prepareWith(set, snap, src)
 	return list, current, snap
 }
 
@@ -221,18 +224,56 @@ func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*account
 	facts, current := accountstate.Assemble(set, snap, src.now)
 	list := accountList(facts)
 	for _, d := range list {
-		raw := src.readRaw(d.Acct.ConfigDir)
-		blob, ok := creds.Parse(raw)
-		if ok {
-			d.View.Plan = blob.PlanLabel()
-		}
-		d.View.Health = resolveHealth(src.health(d.Acct.ConfigDir), raw, blob, ok, src.now.UnixMilli())
-		d.View.Attempt = accountstate.Attempt{}
-		if d.View.Health == accountstate.HealthOK {
-			d.Request, d.View.Attempt.State = refresh.Prepare(d.Acct, blob, ok, src.now)
+		// The second of the three places a vendor document is read: access —
+		// plan, health, and either a candidate or the attempt state that
+		// blocks one.
+		if d.Acct.Scope.Vendor == config.Codex {
+			codexAccess(d, src.now)
+		} else {
+			claudeAccess(d, src)
 		}
 	}
 	return list, current
+}
+
+func claudeAccess(d *accountData, src sources) {
+	raw := src.readRaw(d.Acct.ConfigDir)
+	blob, ok := creds.Parse(raw)
+	if ok {
+		d.View.Plan = blob.PlanLabel()
+	}
+	d.View.Health = resolveHealth(src.health(d.Acct.ConfigDir), raw, blob, ok, src.now.UnixMilli())
+	d.View.Attempt = accountstate.Attempt{}
+	if d.View.Health == accountstate.HealthOK {
+		d.Request, d.View.Attempt.State = refresh.Prepare(d.Acct, blob, ok, src.now)
+	}
+}
+
+// codexAccess is the Codex health and eligibility table, first match wins.
+// There is no vendor probe on this path; the auth snapshot decides. "Relogin
+// required" is never produced: the document carries no refresh-token expiry,
+// and expiry is read only on positive evidence.
+func codexAccess(d *accountData, now time.Time) {
+	snap := d.Acct.Auth
+	d.View.Plan = snap.Plan
+	if d.View.Obs != nil && d.View.Obs.Plan != "" {
+		// The plan headroom's own response named outranks the id token's,
+		// which is as old as the last login refresh.
+		d.View.Plan = d.View.Obs.Plan
+	}
+	d.View.Attempt = accountstate.Attempt{}
+	switch snap.State {
+	case codexauth.Absent:
+		d.View.Health = accountstate.HealthNoLogin
+	case codexauth.Unreadable, codexauth.NoTokens:
+		d.View.Health = accountstate.HealthBadBlob
+	case codexauth.OtherMode:
+		d.View.Health = accountstate.HealthUnknown
+		d.View.AuthMode = snap.Mode
+	default:
+		d.View.Health = accountstate.HealthOK
+		d.Request, d.View.Attempt.State = refresh.PrepareCodex(d.Acct, now)
+	}
 }
 
 // resolveHealth decides one thing: can Claude Code use this account.
@@ -285,6 +326,9 @@ func resolve(d *accountData, result refresh.Result) {
 	d.View.Attempt = result.Attempt
 	if result.Observation != nil {
 		d.View.Obs = result.Observation
+		if result.Observation.Plan != "" {
+			d.View.Plan = result.Observation.Plan
+		}
 	}
 	if result.StoreErr != nil {
 		d.View.Attempt.StoreError = result.StoreErr.Error()

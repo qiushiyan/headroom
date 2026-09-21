@@ -1,6 +1,6 @@
-// Package accounts discovers Claude Code accounts from the filesystem.
-// There is no account list anywhere: the default ~/.claude plus every dir
-// under the accounts root is the registry — the same tree any shell
+// Package accounts discovers a vendor's accounts from the filesystem.
+// There is no account list anywhere: the vendor's default dir (~/.claude,
+// ~/.codex) plus every dir under its accounts root is the registry — the same tree any shell
 // integration globs, so the two views can't drift.
 package accounts
 
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
@@ -35,6 +36,13 @@ type Account struct {
 	AccountID string
 	Readable  bool
 
+	// Auth is the one snapshot of a Codex home's auth.json, taken at
+	// discovery. Labels, the ledger key, replay and the request's credentials
+	// in one round all come from it; nothing reads the file again, so a login
+	// that changes mid-round cannot put one account's response on another's
+	// row. Zero for a Claude Code account.
+	Auth codexauth.Snapshot
+
 	// Meta is the rest of that same .claude.json read, carried so callers
 	// needing the cached usage payload don't re-parse a file Claude Code
 	// rewrites constantly.
@@ -51,6 +59,14 @@ func (a Account) Dir() string {
 		return a.Scope.PrimaryDir()
 	}
 	return a.ConfigDir
+}
+
+// ResponseIdentity is what a usage response for this account must not
+// contradict (usage.Reading.BelongsTo): the Codex account and user ids from
+// the auth snapshot. Claude Code bodies carry no identity, and the ledger key
+// already separates logins there.
+func (a Account) ResponseIdentity() (accountID, userID string) {
+	return a.Auth.AccountID, a.Auth.UserID
 }
 
 // MetaPath is the .claude.json recording the logged-in account.
@@ -127,6 +143,16 @@ func Discover(cfg config.Scope) Set {
 // readIdentity is the first of the three places a vendor document is read:
 // who is logged in here, from decoded fields of the vendor's own file.
 func (a *Account) readIdentity() {
+	if a.Scope.Vendor == config.Codex {
+		a.Auth = codexauth.Read(a.Dir())
+		a.Email = a.Auth.Email
+		// The ledger identity is both parts or nothing: an account that cannot
+		// say whose it is has no key, and Readable false is what keeps the
+		// dir-name fallback Claude Code accounts use away from it.
+		a.AccountID = a.Auth.Identity()
+		a.Readable = a.AccountID != ""
+		return
+	}
 	a.Meta, _ = ReadMeta(a.MetaPath())
 	a.Email, a.AccountID, a.Readable = a.Meta.Email, a.Meta.AccountUUID, a.Meta.Readable
 }
