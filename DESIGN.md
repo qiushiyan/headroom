@@ -316,8 +316,9 @@ ledger, the responses, and the session re-homes.
   own to show, falling back to Claude Code's cache — which is written only
   when Claude Code itself fetches, and has been observed 37 hours stale. So a
   deferred refresh replays headroom's own answer, usually seconds old, under
-  its own provenance. The body is stored raw: `usage.ParseLimits` stays its
-  only reader, and no second row shape exists to drift from it.
+  its own provenance. The body is stored raw: the vendor's usage parser,
+  reached through `usage.Parse`, stays its only reader, and no second row
+  shape exists to drift from it.
 - **Corruption degrades per section, and the two sections are not alike.** The
   ledger is disposable: unreadable bytes are set aside under a name nothing
   reads, and every account starts one full cooldown quiet, so the file
@@ -777,9 +778,10 @@ here.
   one would hide a real reset.
 - **The allowance is the account-level half of the response.** Positive,
   well-typed evidence blocks — `rate_limit.allowed` false, `limit_reached`
-  true, `spend_control.reached`, a `rate_limit_reached_type` naming a reason —
-  and only that: a blocking field under a wrong type, an empty reason
-  included (the vendor types it as a closed set), is drift that never blocks,
+  true, `spend_control.reached`, a `rate_limit_reached_type` naming a kind (on
+  the wire an object, `{"type": …}`; an unrecognized kind still blocks and is
+  shown verbatim) — and only that: a blocking field that does not decode, an
+  empty kind included, is drift that never blocks,
   and unknown (every Claude Code response) is never read as allowed.
   `Actionable` consults it, so a blocked account is not offered as grounds for
   a choice whatever its percentages say, and the footer counts it apart from

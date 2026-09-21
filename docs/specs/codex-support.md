@@ -441,7 +441,7 @@ malformed sibling field.
 
 | order | state | entered when | effect |
 | --- | --- | --- | --- |
-| 1 | blocked | any of these is well-typed and positive: `rate_limit.allowed` is false; `rate_limit.limit_reached` is true; `spend_control.reached` is true; `rate_limit_reached_type` is a non-empty string (kept as the reason; the vendor types it as a closed enum, so an empty string is a malformed value and falls to row 2 — amended in review, 2026-09-21) | `Actionable` is false; caption names the reason |
+| 1 | blocked | any of these is well-typed and positive: `rate_limit.allowed` is false; `rate_limit.limit_reached` is true; `spend_control.reached` is true; `rate_limit_reached_type` names a kind (kept as the reason) — on the wire an object `{"type": "<kind>"}`, per the vendor's `RateLimitReachedType`; a bare non-empty string is accepted too, and a value with no non-empty kind is malformed and falls to row 2 (amended in review, 2026-09-21: this row first said "a non-null string", which the vendor's source contradicts) | `Actionable` is false; caption names the reason |
 | 2 | bad | none of the above, and one of those four fields is present under a wrong type | never blocks; drift tag; `check` fails |
 | 3 | allowed | `rate_limit.allowed` is true and `limit_reached` is false | none |
 | 4 | unknown | anything else, which includes every Claude Code response | none; never blocks |

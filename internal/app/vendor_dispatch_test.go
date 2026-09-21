@@ -18,6 +18,10 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 		t.Setenv(v, "")
 	}
 	t.Setenv("PATH", t.TempDir())
+	// No fixture account can authorize a request, and neither URL is live
+	// should one ever try.
+	t.Setenv("HEADROOM_USAGE_URL", "http://127.0.0.1:1/usage")
+	t.Setenv("HEADROOM_CODEX_USAGE_URL", "http://127.0.0.1:1/usage")
 
 	for _, args := range [][]string{
 		{"launch", "--vendor", "codex", "--account", "a@x.com"},
@@ -87,6 +91,14 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 		if a.Vendor != "codex" {
 			t.Errorf("limits --vendor codex returned a %s account", a.Vendor)
 		}
+	}
+	// The fetching surface filters the same way.
+	var fetched doc5
+	if err := json.Unmarshal([]byte(captureStdout(t, func() { Run([]string{"--json", "--vendor", "codex"}) })), &fetched); err != nil {
+		t.Fatal(err)
+	}
+	if len(fetched.Current) != 1 || len(fetched.Accounts) != 2 || fetched.Accounts[0].Vendor != "codex" {
+		t.Errorf("--json --vendor codex: current %v, accounts %+v", fetched.Current, fetched.Accounts)
 	}
 
 	// And a launch: --vendor reaches the Codex scope, the binary and argv[0]

@@ -114,7 +114,7 @@ func TestCodexUnstartedWindow(t *testing.T) {
 func TestCodexAllowanceCaptions(t *testing.T) {
 	blocked := codexFacts(t, "blocked@x.com", `{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":3,"limit_window_seconds":604800,"reset_after_seconds":10,"reset_at":1790400000}},"spend_control":{"reached":true}}`, renderNow)
 	feature := codexFacts(t, "feature@x.com", `{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":3,"limit_window_seconds":604800,"reset_after_seconds":10,"reset_at":1790400000}},"code_review_rate_limit":{"allowed":false,"limit_reached":true}}`, renderNow)
-	reason := codexFacts(t, "ws@x.com", `{"rate_limit":null,"rate_limit_reached_type":"workspace_owner_usage_limit_reached"}`, renderNow)
+	reason := codexFacts(t, "ws@x.com", `{"rate_limit":null,"rate_limit_reached_type":{"type":"workspace_owner_usage_limit_reached"}}`, renderNow)
 	drift := codexFacts(t, "drift@x.com", `{"rate_limit":{"allowed":"yes","limit_reached":false}}`, renderNow)
 	p := NewPalette(false)
 	for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {

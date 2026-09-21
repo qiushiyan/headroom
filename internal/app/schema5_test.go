@@ -72,7 +72,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	  "code_review_rate_limit":{"allowed":false,"limit_reached":false},
 	  "additional_rate_limits":[{"limit_name":"Astra","metered_feature":"astra_model","rate_limit":{"allowed":true,"limit_reached":false,
 	    "primary_window":{"used_percent":7,"limit_window_seconds":86400,"reset_after_seconds":100,"reset_at":1790080000}}}],
-	  "spend_control":{"reached":false},"rate_limit_reached_type":"usage_limit_reached"}`
+	  "spend_control":{"reached":false},"rate_limit_reached_type":{"type":"usage_limit_reached"}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
 	defer srv.Close()
 	f := newCodexFixture(t, srv.URL)

@@ -19,6 +19,9 @@ import (
 //	 "spend_control":{"reached":false,…},
 //	 "rate_limit_reached_type":null, …}
 //
+// rate_limit_reached_type, when not null, is {"type":"<kind>"} (from the
+// vendor's source; only null has been seen live).
+//
 // An additional_rate_limits entry is {limit_name, metered_feature,
 // rate_limit}, its rate_limit shaped like the top-level one (from the vendor's
 // source; never seen live). Credit balances and reset-credit counts are parsed
@@ -228,13 +231,7 @@ func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	allowed, allowedOK := fields[0].value.(bool)
 	reached, reachedOK := fields[1].value.(bool)
 	spent, spentOK := fields[2].value.(bool)
-	reason, reasonOK := fields[3].value.(string)
-	if reason == "" {
-		// The vendor types this field as a closed set of reasons, and its own
-		// client rejects anything else. An empty string is therefore neither
-		// a block nor an absence: it is a value the field has never had.
-		reasonOK = false
-	}
+	reason, reasonOK := reachedReason(fields[3].value)
 
 	// 1. blocked: any of the four well-typed and positive.
 	switch {
@@ -263,6 +260,25 @@ func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	}
 	// 4. unknown — never read as allowed.
 	return AllowanceUnknown, ""
+}
+
+// reachedReason decodes rate_limit_reached_type. On the wire it is an object
+// naming the kind — {"type":"workspace_owner_usage_limit_reached"}, the
+// vendor's RateLimitReachedType — and a bare string is accepted too: handled
+// drift beats flagged drift. A kind this binary has never heard of still
+// blocks, carried verbatim, because the vendor naming any reached type is the
+// positive evidence. What does not decode to a non-empty kind — an empty
+// string, an object without one, another type — is a value the field has never
+// had: ok=false, which the caller reports as drift and which never blocks.
+func reachedReason(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, t != ""
+	case map[string]any:
+		kind, _ := t["type"].(string)
+		return kind, kind != ""
+	}
+	return "", false
 }
 
 // field reads one key; a JSON null counts as absent.

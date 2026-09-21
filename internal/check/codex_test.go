@@ -310,3 +310,30 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 		t.Errorf("closing line blames the wrong vendor:\n%s", text)
 	}
 }
+
+// A wedged `codex login status` costs one timeout, not one per home and not
+// forever: the probes run side by side and each is bounded.
+func TestCodexCheckProbesAreBoundedAndParallel(t *testing.T) {
+	scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
+	for _, n := range []string{"a@x.com", "b@x.com", "c@x.com"} {
+		seedCodexExtra(t, scope, codexauthtest.Login{Email: n})
+	}
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n# wham/usage ChatGPT-Account-Id CODEX_HOME CODEX_ACCESS_TOKEN\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := loginStatusTimeout
+	loginStatusTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { loginStatusTimeout = prev })
+
+	start := time.Now()
+	r := runCodexCheck(scope, []string{"PATH=" + bin + ":/bin:/usr/bin"})
+	elapsed := time.Since(start)
+	// Five probes (primary, three extras, isolation). Serial would be ≥ 2s;
+	// unbounded would be 30s.
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("probes took %v: not bounded, or not parallel", elapsed)
+	}
+	if r.fails != 0 || !r.has("?? isolation: not tested") || !r.has("?? credentials[c@x.com]: not tested") {
+		t.Errorf("a wedged probe is no evidence either way:\n%s", strings.Join(r.lines, "\n"))
+	}
+}

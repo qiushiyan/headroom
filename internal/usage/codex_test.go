@@ -200,7 +200,13 @@ func TestCodexAllowance(t *testing.T) {
 		{"allowed is false", codexBody(rl(`"allowed":false,"limit_reached":false`), ""), AllowanceBlocked, "rate_limit.allowed is false"},
 		{"limit reached", codexBody(rl(`"allowed":true,"limit_reached":true`), ""), AllowanceBlocked, "rate_limit.limit_reached"},
 		{"spend control reached", codexBody(rl(`"allowed":true,"limit_reached":false`), `"spend_control":{"reached":true}`), AllowanceBlocked, "spend_control.reached"},
-		{"a reached type", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":"workspace_owner_usage_limit_reached"`), AllowanceBlocked, "workspace_owner_usage_limit_reached"},
+		// The wire form is an object naming the kind (the vendor's
+		// RateLimitReachedType{type}); it alone is positive evidence.
+		{"a reached type", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":{"type":"workspace_owner_usage_limit_reached"}`), AllowanceBlocked, "workspace_owner_usage_limit_reached"},
+		{"a reached kind this binary has never heard of", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":{"type":"team_budget_exhausted"}`), AllowanceBlocked, "team_budget_exhausted"},
+		{"a reached type spelled as a bare string is handled, not flagged", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":"rate_limit_reached"`), AllowanceBlocked, "rate_limit_reached"},
+		{"a reached type object without a kind", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":{}`), AllowanceBad, ""},
+		{"a reached type object with an empty kind", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":{"type":""}`), AllowanceBad, ""},
 		{"blocked beside a malformed sibling", codexBody(rl(`"allowed":false,"limit_reached":"no"`), ""), AllowanceBlocked, "rate_limit.allowed is false"},
 		{"blocked with low percents", codexBody(rl(`"allowed":false,"limit_reached":false,"primary_window":`+window(3, 604800, 5, 1790000000)), ""), AllowanceBlocked, "rate_limit.allowed is false"},
 		{"a malformed field and nothing positive", codexBody(rl(`"allowed":true,"limit_reached":"no"`), ""), AllowanceBad, ""},
