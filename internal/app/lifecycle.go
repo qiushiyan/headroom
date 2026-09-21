@@ -38,7 +38,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		case a == "--share-config":
 			// Bare: the primary's config, whitelisted. With a value: that dir,
 			// every entry (a config package holds config and nothing else).
-			opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), accounts.SharedConfigEntries
+			opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), accounts.SharedConfigEntries(cfg.Vendor)
 		case strings.HasPrefix(a, "--share-config="):
 			v := strings.TrimPrefix(a, "--share-config=")
 			if v == "" {
@@ -62,7 +62,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		}
 	}
 	if name == "" {
-		fmt.Fprintln(errw, "usage: headroom accounts add <email> [--share-config[=<dir>]]")
+		fmt.Fprintln(errw, "usage: headroom accounts add [--vendor <claude|codex>] <email> [--share-config[=<dir>]]")
 		return 2
 	}
 	dir, shared, err := accounts.Seed(cfg, name, opt)
@@ -71,7 +71,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		return 1
 	}
 	fmt.Fprintf(out, "seeded %s\n", dir)
-	fmt.Fprintf(out, "  projects → %s (sessions are machine-global)\n", cfg.StoreDir())
+	fmt.Fprintf(out, "  %s → %s (sessions are machine-global)\n", cfg.StoreLink(), cfg.StoreDir())
 	if opt.ShareFrom != "" {
 		if len(shared) == 0 {
 			fmt.Fprintf(out, "  shared nothing from %s (no matching entries)\n", opt.ShareFrom)
@@ -79,7 +79,14 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 			fmt.Fprintf(out, "  shared from %s: %s\n", opt.ShareFrom, strings.Join(shared, ", "))
 		}
 	}
-	fmt.Fprintf(out, "next: headroom launch --account %s   then /login as %s\n", name, name)
+	if cfg.Vendor == config.Codex {
+		// Codex has no in-session /login: logging in is one command, in the
+		// engine's own spelling — a wrapper's argument passing is not
+		// headroom's to know.
+		fmt.Fprintf(out, "next: headroom launch --vendor codex --account %s -- login   and log in as %s\n", name, name)
+	} else {
+		fmt.Fprintf(out, "next: headroom launch --account %s   then /login as %s\n", name, name)
+	}
 	fmt.Fprintf(out, "      (the board warns if the login does not match the dir name; new accounts sort last until listed in %s)\n", cfg.OrderFile())
 	return 0
 }
@@ -99,6 +106,9 @@ type removeDeps struct {
 }
 
 func runAccountsRemove(cfg config.Scope, args []string) int {
+	if cfg.Vendor == config.Codex {
+		return refuseCodexRemove(os.Stderr, cfg, args)
+	}
 	return runAccountsRemoveTo(os.Stdout, os.Stderr, cfg, args, removeDeps{
 		probe:          psProbe,
 		deleteKeychain: creds.DeleteKeychainItem,
@@ -108,6 +118,29 @@ func runAccountsRemove(cfg config.Scope, args []string) int {
 		// tty stdin would wait on a question nobody can see.
 		interactive: term.IsTerminal(int(os.Stdin.Fd())) && stdoutIsTTY(),
 	})
+}
+
+// refuseCodexRemove is the whole of Codex removal in this version. Claude
+// Code's removal is gated on a live-session registry; Codex has none headroom
+// can read, and an empty read must not pass as proof of inactivity — deleting
+// a home under a running codex orphans its login and its index. So the
+// refusal is decided here, in plain sight, before any of the removal
+// machinery runs, with and without --yes, and it names the directory so the
+// cleanup can be done by hand.
+func refuseCodexRemove(errw io.Writer, cfg config.Scope, args []string) int {
+	name := ""
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") && name == "" {
+			name = a
+		}
+	}
+	const why = "headroom cannot tell whether a Codex session is running on a home, so it never removes one"
+	if name == "" || name != filepath.Base(name) {
+		fmt.Fprintf(errw, "headroom accounts remove: %s — delete the account's directory under %s by hand once no codex process runs\n", why, cfg.AccountsRoot)
+		return 1
+	}
+	fmt.Fprintf(errw, "headroom accounts remove: %s — delete %s by hand once no codex process runs\n", why, filepath.Join(cfg.AccountsRoot, name))
+	return 1
 }
 
 // removeCandidate is one thing `accounts remove` will accept by name: an

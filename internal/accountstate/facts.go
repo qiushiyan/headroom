@@ -116,7 +116,7 @@ type Facts struct {
 	// "run Launcher and /login".
 	LoginCommand string
 	Current      bool // a bare launch (no --account) targets this account
-	Health      Health
+	Health       Health
 	// AuthMode names a login headroom does not read usage for (a Codex API
 	// key, agent identity or Bedrock login); health is then unknown and the
 	// caption says why. "" otherwise.

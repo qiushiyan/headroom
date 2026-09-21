@@ -92,7 +92,7 @@ parse:
 			rest = args[i+1:]
 			break parse
 		default:
-			fmt.Fprintf(os.Stderr, "headroom launch: unknown argument %q (claude args go after --)\n", args[i])
+			fmt.Fprintf(os.Stderr, "headroom launch: unknown argument %q (%s args go after --)\n", args[i], cfg.Binary())
 			return 2
 		}
 	}

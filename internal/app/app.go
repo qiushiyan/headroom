@@ -229,34 +229,48 @@ func printUsage(w io.Writer) {
 
   (none)     the account board: live usage for every account, refreshing
   accounts   while it is open; enter picks the account a bare launch targets.
+             With Codex on this machine the board has a page per vendor —
+             tab switches, enter records that vendor's account.
              Off a terminal, prints the board once and exits.
   accounts --compact
              the same board, one row per account: percent and time-to-reset
              per limit window, every warning at the end of the row
-  accounts add <email> [--share-config[=<dir>]]
-             seed the dir for a new subscription: projects/ linked to the
-             machine-global store; --share-config links the primary's
-             config (settings, skills, commands, hooks, …), or every entry
-             of <dir>. Then: launch --account <email> and /login once
+  accounts add [--vendor <v>] <email> [--share-config[=<dir>]]
+             seed the dir for a new subscription: its session store linked
+             to the machine-global one (projects/ for claude, sessions/ for
+             codex); --share-config links the primary's config (settings,
+             skills, …), or every entry of <dir>. Then log in once:
+             claude — launch --account <email> and /login;
+             codex — launch --vendor codex --account <email> -- login
   accounts remove [<email | name.lock>] [--yes]
              bare on a terminal, pick from the removable accounts; refuse
              while a session is live; delete the account's Keychain item
-             and its dir; scrub .order; never touch .current
-  --json     the board as JSON (schema versioned)
+             and its dir; scrub .order; never touch .current.
+             Codex accounts are never removed: headroom cannot tell whether
+             a codex session is running on a home
+  --json     the board as JSON (schema versioned; every account carries its
+             vendor, "current" is keyed by vendor)
   limits     [--account <name>] what is already known about limits, as the
              same JSON document, read from disk alone: no health probe, no
              network — never spends a request. health reads "unprobed"
-  sessions   pick any session on this machine, enter its project dir and
-             continue it on the account that last drove it — execs claude
-             in this terminal. --cd-file <abs path> records the entered
-             dir for the shell's own cd; claude args go after "--";
+  sessions   pick any Claude Code session on this machine, enter its project
+             dir and continue it on the account that last drove it — execs
+             claude in this terminal. --cd-file <abs path> records the
+             entered dir for the shell's own cd; claude args go after "--";
              --json lists the sessions instead (no terminal needed)
-  launch     [--remember] [--account <name>] [-- <claude args>]
-             exec claude on the resolved account; the child environment is
-             built from the decision alone, never inherited
-  resolve    [<name>] print canonical-name<TAB>config-dir<TAB>kind
+  launch     [--vendor <v>] [--remember] [--account <name>] [-- <args>]
+             exec claude (or codex) on the resolved account; the child
+             environment is built from the decision alone, never inherited.
+             Codex sessions are shared across its accounts:
+             launch --vendor codex --account <other> -- resume [--all]
+  resolve    [--vendor <v>] [<name>] print canonical-name<TAB>dir<TAB>kind
              (kind: primary|extra) for shell preflight
-  check      verify the reverse-engineered assumptions still hold
+  check      verify the reverse-engineered assumptions still hold, for
+             every vendor on this machine
+
+  --vendor <claude|codex> defaults to claude on launch, resolve, accounts
+  add and accounts remove. accounts, --json and limits show every vendor
+  present and take --vendor to show one.
 `)
 }
 

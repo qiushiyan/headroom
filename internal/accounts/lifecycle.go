@@ -34,7 +34,7 @@ import (
 // vendor adds next. This list is vendor-perishable, but nothing load-bearing
 // rides on it: a missing entry means one skill or setting is absent in that
 // account, never a misroute, which is why check does not verify it.
-var SharedConfigEntries = []string{
+var claudeSharedConfig = []string{
 	"settings.json",
 	"CLAUDE.md",
 	"keybindings.json",
@@ -44,6 +44,28 @@ var SharedConfigEntries = []string{
 	"hooks",
 	"plugins",
 	"output-styles",
+}
+
+// codexSharedConfig is the same whitelist for a Codex home, for the same
+// reason: auth.json is the login, history.jsonl and the sqlite stores are
+// per-home state, and sessions/ is the store link — none may be shared by
+// accident. Nothing load-bearing rides on the list.
+var codexSharedConfig = []string{
+	"config.toml",
+	"AGENTS.md",
+	"themes",
+	"skills",
+	"prompts",
+	"rules",
+	"plugins",
+}
+
+// SharedConfigEntries is the vendor's default sharing whitelist.
+func SharedConfigEntries(v config.Vendor) []string {
+	if v == config.Codex {
+		return codexSharedConfig
+	}
+	return claudeSharedConfig
 }
 
 // SeedOptions selects what a fresh account dir shares. ShareFrom "" shares
