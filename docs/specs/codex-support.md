@@ -1,7 +1,9 @@
 # Codex support — a second vendor on the board and the launcher
 
-Status: proposed, unbuilt. Written 2026-09-21 against `main` at 8c00fdf,
-codex-cli 0.155.0, macOS.
+Status: built on the `codex-support` branch, 2026-09-21; kept as the dated
+record of the decision. The design as it stands lives in `DESIGN.md` § A
+second vendor: Codex — read that, not this, for what is true today. Written
+against `main` at 8c00fdf, codex-cli 0.155.0, macOS.
 
 ## Summary
 

@@ -1,6 +1,6 @@
 ---
 name: headroom-setup
-description: Set up headroom for several Claude Code subscriptions — install, add and log in each account, share config, keep sessions machine-global, retire an account, shell launchers.
+description: Set up headroom for several Claude Code or Codex subscriptions — install, add and log in each account, share config, keep sessions machine-global, retire an account, shell launchers.
 disable-model-invocation: true
 ---
 
@@ -39,6 +39,27 @@ its login's local part (`alice`), or `export HEADROOM_PRIMARY_NAME=<name>`.
 Board order after the primary: `~/.claude-accounts/.order`, one email per
 line.
 
+## Add a Codex subscription
+
+`~/.codex` is the Codex primary; each extra is a home under
+`~/.codex-accounts/`, named by its login email.
+
+1. `headroom accounts add --vendor codex <email>` — works before any Codex
+   directory exists. `--share-config` links `config.toml`, `AGENTS.md`,
+   themes, skills, prompts, rules and plugins from `~/.codex` (a whitelist:
+   `auth.json`, history and the session index stay per home);
+   `--share-config=<dir>` links every entry of a config package.
+2. Hand the user: `headroom launch --vendor codex --account <email> -- login`,
+   logging in as **that** email. Codex has no in-session `/login`.
+3. `headroom` — tab to the Codex page.
+
+Done when the row shows a plan; usage reads *unknown* until the first
+refresh. A home whose login lives in Codex's keyring credential store shows
+as not logged in — headroom reads only `auth.json`, and `headroom check`
+reports the disagreement. Codex homes are retired by hand: `accounts remove
+--vendor codex` refuses, naming the directory to delete once no `codex`
+process runs.
+
 ## Sessions are machine-global
 
 `accounts add` links each account's `projects/` to `~/.claude/projects`, so
@@ -54,6 +75,12 @@ keep the newer file), then `rmdir <dir>/projects && ln -s ~/.claude/projects
 `headroom launch --account <email>` starts. Folded-in sessions carry no
 ownership evidence, so the picker resumes them on the current account until
 one is re-homed there (`x` on its row).
+
+Codex is the same topology with its own store: each extra home's `sessions/`
+links to `~/.codex/sessions`, so Codex's own `resume` reaches any session
+from any account. A home with a real `sessions/` directory is refused by
+`headroom launch --vendor codex` the same way; fold it in with no `codex`
+running.
 
 ## Retire a subscription
 
@@ -71,7 +98,8 @@ Short names over the engine — the shell owns the spelling, headroom owns
 the routing. A wrapper passes names and flags and nothing else:
 `CLAUDE_CONFIG_DIR`, `.current` and every check stay in `headroom launch`,
 re-resolved from PATH at each keystroke, while a shell function is frozen
-at shell init. The starter set (`x`, `xa`, `xacc` — the board, passed
+at shell init. Codex gets the same pair over `headroom launch --vendor
+codex` and `HEADROOM_CODEX_LAUNCHER_FORMAT`. The starter set (`x`, `xa`, `xacc` — the board, passed
 `--compact` for one row per account — and `xs` with the cd that outlives
 the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the board
 advertise those names, are in the repo's docs/REFERENCE.md § Shell integration

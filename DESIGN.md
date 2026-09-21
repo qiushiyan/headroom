@@ -1,16 +1,22 @@
 # Design — why headroom is shaped this way
 
-headroom is a read-only observer of a system it doesn't own: several Claude
-Code logins on one machine, each keyed to its own config dir. It answers
-"which account has headroom left?" and lets the user act on the answer (the
-account board, `accounts`: live and self-refreshing on a terminal, one frame
-off it, one row per account under `--compact`, a versioned document under
-`--json`), answers "which session do I get back into, and on which account?"
-(`sessions` — see The session surface below),
+headroom is a read-only observer of systems it doesn't own: several Claude
+Code logins on one machine, each keyed to its own config dir, and several
+Codex CLI logins, each keyed to its own home. It answers "which account has
+headroom left?" and lets the user act on the answer (the account board,
+`accounts`: live and self-refreshing on a terminal with a page per vendor,
+one frame off it, one row per account under `--compact`, a versioned document
+under `--json`), answers "which session do I get back into, and on which
+account?" (`sessions`, Claude Code only — see The session surface below),
 turns the chosen account into a running session (`launch`/`resolve` — see
 The launch surface), and proves its own assumptions still hold (`check`).
 This file records the mental model and the vendor contracts — the things the
 code can't say about itself.
+
+Most of this file is written about Claude Code, the vendor the model was
+built on. The mechanisms it describes — discovery, `.current`, the claim
+ledger, the three axes, launch preparation — are the same code for Codex;
+A second vendor: Codex says where Codex differs and why.
 
 ## The system observed: the filesystem is the registry
 
@@ -66,7 +72,7 @@ Everything derives from that tree:
 - **Two one-line files beside the accounts.** `.current` names the account
   bare `x` targets next — written atomically by headroom alone (the board's
   enter, `launch --remember`) and read strictly by headroom alone
-  (`accounts.Select`; see The launch surface for why corrupt state refuses
+  (the discovered set's `Select`; see The launch surface for why corrupt state refuses
   rather than defaulting). `.order` (optional; one email per line, `#`
   comments) sets display order after the primary; unlisted accounts follow
   alphabetically — configuration a human edits. Both stay outside
@@ -102,8 +108,9 @@ verifier's error messages name something that exists on every install:
   same check launch applies, so seed and gate cannot disagree. Names are
   emails: one path element, `@` present, never `.lock`. Sharing is a
   caller choice, never a default: bare `--share-config` links a *whitelist*
-  from the primary's `~/.claude` (`accounts.SharedConfigEntries` —
-  settings, skills, commands, agents, hooks, plugins, …), and
+  from the primary's dir (`accounts.SharedConfigEntries`, per vendor —
+  for Claude Code settings, skills, commands, agents, hooks, plugins, …; for
+  Codex `config.toml`, `AGENTS.md`, themes, skills, prompts, rules, plugins), and
   `--share-config=<dir>` links every entry of that dir (a config package,
   which holds config and nothing else). Whitelist and not blacklist because
   a config dir also holds what must stay per account: `history.jsonl` is
@@ -162,7 +169,9 @@ format drift. Every vendor contract here is reverse-engineered and perishable:
 - **One parser per vendor document type, and no duplicate parse paths.**
   `creds.Parse` (credential blob), `usage.ParseLimits` (usage response, live
   *and* cached — they are the same shape) and `auth.Parse` (auth status) are
-  the only readers of vendor data. Renderer and checker share them, so the
+  the only readers of Claude Code's data, as `codexauth` and the Codex usage
+  parser are of Codex's; callers reach a usage parser only through
+  `usage.Parse(vendor, body)`. Renderer and checker share them, so the
   checker cannot drift from what rendering actually needs.
 - **Tolerant rendering, tagged degradation.** A malformed field degrades
   instead of dropping the account, and degrades visibly — a bad percent is a
@@ -287,6 +296,11 @@ ledger, the responses, and the session re-homes.
   denies, rather than falling through to "try anyway". A completion carries
   the generation its claim was issued under, so a slow request that outlived
   its claim is dropped instead of overwriting a newer answer.
+- **One store per accounts root.** Each vendor's `state.json` sits under its
+  own accounts root beside its own `.current` and `.order`, so nothing in
+  Claude Code's files is re-keyed by Codex existing, and the store a body was
+  read from says which vendor's parser reads it. `config.Load` refuses two
+  roots that name one location, however spelled.
 - **The ledger keys on the account's own UUID**, from `.claude.json`, falling
   back to the dir name only when that file parsed and reported none. The
   budget is per account, so two config dirs logged into the same account share
@@ -355,8 +369,11 @@ keeps the verdict in `attempt` and bookkeeping failures in document-level
 once after a 401 to distinguish a refresh race from unchanged or unreadable
 evidence. The board consumes the endpoint result without that diagnostic read.
 
-Two policies fall out of the budget. Figures are labelled stale only once they
-are older than the request spacing — inside that window no newer answer is
+Two policies fall out of the budget. The spacing is a per-vendor value, and
+every deadline the ledger computes takes it as a floor — the clamps that cap
+a deadline at the maximum cooldown included, so a vendor whose spacing sits
+above that cap is never handed an earlier retry by one. Figures are labelled
+stale only once they are older than the request spacing — inside that window no newer answer is
 obtainable, so nagging about age would be nagging about something nobody can
 act on. And the board's refresh cadence *is* eligibility: there is no interval
 to configure, because asking sooner is refused and asking later says less
@@ -364,6 +381,18 @@ than it could. Presence bounds it: a board left open on a spare tab stops
 asking after a few minutes without a keypress, since a surface that polls for
 hours with nobody looking is the background daemon this design declines to
 have, wearing a TUI.
+
+The interactive board is one page per present vendor. A page owns its list,
+selection, scroll position, schedule and its in-flight round, so a result
+lands on the page that started the round and never on whichever page is
+visible when it arrives. Only the visible page starts rounds: a hidden page
+keeps its figures and their age, its deadline never wakes the loop, and one
+that passed while hidden is simply due at the next tick. Tab switches pages,
+the tab bar ranks with the header when the terminal is short, and enter
+records the visible page's vendor's `.current` and nothing else. With one
+vendor there is no tab bar and no heading. Off a terminal each present
+vendor runs one round, side by side, and the pages print in vendor order
+under a heading each.
 
 `r` means *ask now*, and the claim — never the board's loop — answers. A
 round owns its account list and result channel until the channel has closed
@@ -391,8 +420,8 @@ weekly numbers a few times a minute — and the board's `--json` is the wrong
 instrument for them twice over: it probes health for every account
 (`claude auth status` at ~170ms each is the dominant term of its ~300ms
 warm), and it may spend every account's request budget to answer about one.
-`headroom limits [--account <name>]` is the read that fits: the same
-versioned document, assembled from disk alone — discovery, `.current`, and
+`headroom limits [--vendor <v>] [--account <name>]` is the read that fits:
+the same versioned document, assembled from disk alone — discovery, `.current`, and
 the newest stored observation through `accountstate.Read`
 (headroom's own store and Claude Code's cache, newest wins). No health
 probe, no Keychain read, no claim, no request: it is not a second door onto
@@ -411,6 +440,13 @@ authorizes. The same honesty covers headroom's own file: problems reading
 `state.json` surface in the document (the `--json` board's too), because
 without them an unreadable store and a first run both serialize as
 `usage: null` — and the second is a silence that lies.
+
+The document is one JSON object whatever the vendors. `accounts[]` is one flat
+list and every account and problem carries its `vendor`, because the same
+email can be an account of both; `current` is an object keyed by vendor,
+holding the vendors in the document. `--vendor` restricts all of it to one
+vendor, and `--account` filters by name inside the selected vendors, so an
+email both vendors know answers twice.
 
 Rows are selectable by decoded identity, never by prose. Each limit carries
 the vendor's own vocabulary verbatim — `kind` (observed: `session`,
@@ -542,7 +578,10 @@ account that session ran on — while the board truthfully reported the
 primary as pinned. The invariant, and the reason `internal/launch` exists:
 
 - **The child environment is a total function of the validated decision.**
-  Every inherited `CLAUDE_CONFIG_DIR` is stripped; exactly one is set for a
+  The variables are one policy table with a row per vendor
+  (`config.EnvPolicy`), applied by one constructor; a target strips only its
+  own vendor's variables. For Claude Code, every inherited
+  `CLAUDE_CONFIG_DIR` is stripped; exactly one is set for a
   non-primary account; the primary is selected by the variable being
   *absent* — the only behavior verified against the binary (present-but-
   empty is unverified territory and is never produced). The decision crosses
@@ -601,7 +640,7 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   extra account's dir is what every shell *inside* a managed session
   inherits — this machine's ordinary environment all day — and a notice
   that fires on the ordinary case is noise, so the board and the launch
-  line stay quiet for it (`accounts.KnownExtraDir`, one classifier for
+  line stay quiet for it (the discovered set's `KnownExtraDir`, one classifier for
   both, beside the target's own conflict classifier so diagnostics and the
   environment built cannot disagree). What stays loud, because tools
   *outside* the managed path still obey the variable: a relative value
@@ -644,6 +683,147 @@ stale caller and refuse it, actionably. (An unchanged surface may keep an
 old spelling — `select` still aliases the board — but a surface whose
 contract changed must never reuse its name.)
 
+## A second vendor: Codex
+
+The vendor set is closed at `claude` and `codex`. What differs between them
+enters in exactly two ways. What is only a path, a name or a number is data
+on a per-vendor **scope** that `config.Load` resolves — primary dir, accounts
+root, the canonical session store and the name of the per-account link to it,
+binary, usage URL, request spacing, launcher format, environment policy,
+presence — and an account carries the scope it was discovered under, so no
+operation takes a scope beside an account and the wrong pairing cannot be
+written. What is a *vendor document* is read at three dispatch points and no
+others: identity at discovery, access (health and the request candidate) at
+preparation, and the usage body through `usage.Parse(vendor, body)`, which
+live interpretation, replay and `check` all share. What a vendor supports as a
+command is decided in the command that owns it, in plain sight: the Codex
+removal refusal, Claude Code-only sessions, each vendor's group of checks.
+
+The alternatives this beats: a data-only descriptor cannot say how identity,
+health and credentials are read, so those rules leak into callers behind
+flags; an interface with a method per stage, or a parallel Codex pipeline
+glued at the app layer, gives claims, freshness, launch ordering and topology
+two owners — exactly the mechanisms whose single spelling this design
+protects.
+
+Both scopes always resolve; presence (`~/.codex` or the Codex accounts root
+exists) only decides whether the board, `--json` and `check` include Codex
+unasked. A command naming an absent vendor fails with that reason, except
+`accounts add`, which is how the first Codex directory comes to exist. Claude
+Code is always present.
+
+### Codex observed
+
+Verified on codex-cli 0.155.0 unless marked; as perishable as every contract
+here.
+
+- **Isolation.** `CODEX_HOME` selects the whole state dir (default
+  `~/.codex`); logging in under a second home leaves the first's login
+  byte-identical. A missing path is a hard error and a relative one is
+  canonicalized against the cwd, so headroom only ever hands it an absolute
+  dir. The Codex desktop app shares `~/.codex`; headroom never writes that
+  home's `auth.json`.
+- **The login is a plain file.** `$CODEX_HOME/auth.json` holds `auth_mode`,
+  `tokens{id_token, access_token, refresh_token, account_id}` and
+  `last_refresh`. The id token carries `email` and, under
+  `https://api.openai.com/auth`, `chatgpt_plan_type`, `chatgpt_account_id`
+  and `chatgpt_user_id`. It lives one hour and is routinely days expired on a
+  working account, so its expiry is never read. The access token lives about
+  ten days; only its `exp` is read. `internal/codexauth` is the one reader —
+  JWT payloads decoded, signatures not verified, because the file is local and
+  the vendor is the judge of the token. An account carries the single snapshot
+  discovery took and nothing reads the file again within a round, so a login
+  that changes mid-refresh cannot put one account's response on another's row.
+- **Health is a table over that snapshot, first match wins**, with no vendor
+  probe on the board path: file absent → no login; unreadable, or a ChatGPT
+  login without a string access token → bad blob; another `auth_mode` (API
+  key, agent identity, Bedrock) → unknown, captioned with the mode, no usage
+  read; otherwise OK. "Relogin required" is never produced: the document
+  carries no refresh-token expiry, and expiry is read only on positive
+  evidence. A stale access token and an undecodable identity are *attempt*
+  facts that block headroom's request and say nothing about the account.
+- **The ledger key is the account and the person**,
+  `uuid:<account_id>/<user_id>`, both required: two homes on one login share a
+  budget, two people in one workspace do not. The spelling is permanent —
+  changing it would orphan every Codex quiet period. An account that cannot
+  say whose it is has no key at all: it makes no claim and replays nothing,
+  and the dir-name fallback Claude Code accounts use is closed to it.
+- **The usage endpoint** is `GET https://chatgpt.com/backend-api/wham/usage`
+  with `Authorization: Bearer <access_token>` and `ChatGPT-Account-Id`. The
+  body names whose it is (`account_id`, `user_id`, `plan_type`), and every
+  response — live or replayed — is checked against the account: one naming
+  another account or user is recorded as unparseable and never shown. Its
+  budget is unmeasured; the spacing starts at Claude Code's value as a local
+  policy, not a vendor promise. The same client exposes a POST that spends a
+  rate-limit reset credit; headroom only ever issues the GET.
+- **Windows keep the vendor's words.** A row's `kind` is the slot (`primary`,
+  `secondary`), its `group` the limit object it sits in (`rate_limit`,
+  `code_review_rate_limit`, `additional`), `feature` the `metered_feature` of
+  an additional limit, `window_seconds` the stated duration — and all of them
+  are the column identity, so two accounts whose primary slots run for
+  different lengths get different columns. Severity is always `normal`: the
+  vendor sends none, and a reached limit is the allowance's to carry. The
+  secondary, code-review and additional shapes are built from the vendor's
+  source and have not been seen live.
+- **An unstarted window is a fact about the row, not a fourth field state.** A
+  never-used account reports 0% with a reset one full window away that slides
+  forward on every request until first use (measured once). The row reads "not
+  started", its reset state stays `none` and its instant 0, so it can never
+  read as rolled over. The predicate is deliberately narrow — every field
+  decodes, nothing spent, remaining time at least the whole window — because a
+  missed unstarted window shows a harmless full-window countdown while a false
+  one would hide a real reset.
+- **The allowance is the account-level half of the response.** Positive,
+  well-typed evidence blocks — `rate_limit.allowed` false, `limit_reached`
+  true, `spend_control.reached`, a non-null `rate_limit_reached_type` — and
+  only that: a blocking field under a wrong type is drift that never blocks,
+  and unknown (every Claude Code response) is never read as allowed.
+  `Actionable` consults it, so a blocked account is not offered as grounds for
+  a choice whatever its percentages say, and the footer counts it apart from
+  figures that are merely old. A block on one feature — code review, an
+  additional limit — is a caption and leaves the account usable. Codex itself
+  treats spend control and the workspace reached-types as hard stops, which is
+  why they are account-wide here.
+- **Ambient credentials outrank the home.** `CODEX_ACCESS_TOKEN` is read ahead
+  of `auth.json` unconditionally (measured) and `CODEX_API_KEY` on the exec and
+  main CLI paths (source); `CODEX_SQLITE_HOME` re-points the session index.
+  The launch constructor strips all of them with `CODEX_HOME`, and a
+  credential's value never reaches a notice or a `check` line.
+- **One shared session store.** With only `sessions/` symlinked to
+  `~/.codex/sessions`, a second home resumes the first's sessions, builds its
+  own index by backfill and finds sessions created later; a session created
+  under one account, encrypted reasoning included, continues under another.
+  That is the topology `accounts add --vendor codex` seeds and launch
+  verifies, and it is why continuing on another account is naming it:
+  `headroom launch --vendor codex --account <other> -- resume`, or
+  `-- resume --all` for every project.
+
+### What Codex does not get, and why
+
+- **No usage from session files.** Rollouts carry per-turn rate-limit records
+  but no account identity, and under the shared store one rollout holds turns
+  from several accounts; attributing one would show an account's quota under
+  another's name. Before headroom's first fetch a Codex account's usage is
+  unknown.
+- **No `accounts remove`.** Claude Code's removal is gated on a live-session
+  registry; Codex has none headroom can read, and an empty read is not proof
+  of inactivity. The command refuses outright, with and without `--yes`, and
+  names the directory to delete by hand.
+- **No Codex rows in `headroom sessions`.** Resuming across accounts is the
+  vendor's own picker over the shared store, so no session reader, ownership
+  model or re-home exists for Codex.
+- **Only the file credential store.** A keyring login reads as not logged in.
+  `check` runs `codex login status` per home, through the launch environment
+  constructor, and reports a login with no `auth.json` as an undetermined
+  credential source; it also asserts that an empty `CODEX_HOME` answers "not
+  logged in", the isolation everything above rests on.
+- **A 401 is never drift.** Codex recovers from one by reloading and
+  refreshing, so on the board it is an attempt caption and in `check` it is
+  inconclusive, where Claude Code's unchanged-token 401 fails.
+- **No `/login` hint.** Codex logs in with one command, so every hint names
+  `headroom launch --vendor codex --account <name> -- login` in the engine's
+  own spelling — a wrapper's argument passing is not headroom's to know.
+
 ## Dependencies and shape
 
 stdlib plus `golang.org/x/term` (raw-mode terminal control for the two
@@ -672,6 +852,9 @@ launch tests own routing, refusal-before-persistence and failure-after-write.
 
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
 interaction, selection, refresh scheduling, scrollback and terminal lifetime.
+Codex is absent from the fixture home — so every frame there is the
+single-vendor one — and present for one block that pins the two-vendor print,
+tab switching, and enter on the Codex page writing Codex's `.current` alone.
 Successful session launch must hand the child the restored terminal mode;
 signals must restore it before exit. The harness uses fixture `claude` and
 `security` commands and redirects account and transcript state into a temporary
@@ -683,7 +866,7 @@ against this checkout's binary and a recording `claude` stub.
 ## Status
 
 Personal-first: the defaults fit the author's machine, and `HEADROOM_*`
-environment variables re-point each of them. The endpoint headroom reads is
-undocumented and restricted by the vendor's consumer terms to first-party
+environment variables re-point each of them. The endpoints headroom reads are
+undocumented and restricted by the vendors' consumer terms to first-party
 clients; this repository exists as a personal, read-only instrument, not as
 a distribution.

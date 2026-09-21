@@ -4,7 +4,9 @@ Several Claude Code subscriptions on one machine, each logged in under its
 own config dir. headroom is the instrument for that setup: it shows which
 account has quota left, starts sessions on the account you choose, and lets
 a conversation move between accounts — so a rate limit on one subscription
-stops nothing.
+stops nothing. It does the same for several Codex CLI subscriptions: the
+board gets a Codex page, and the same launcher starts `codex` on the account
+you choose.
 
 ```
 alice@example.com (max 20x · headroom launch --account alice@example.com)
@@ -64,6 +66,22 @@ Without the picker: `headroom launch --account <email> -- --resume <id>`
 session in the current directory. Ownership follows automatically — the
 account that drives a session last is its owner.
 
+### 4. The same, for Codex
+
+With Codex on the machine the board has a second page — **tab** switches — and
+enter there records the Codex account a bare Codex launch targets:
+
+- `headroom launch --vendor codex` — `codex` on the chosen account;
+  `--account <email>` for one session elsewhere, the default untouched.
+- Out of quota mid-session: Codex's sessions are shared across its accounts,
+  so continuing elsewhere is naming the account —
+  `headroom launch --vendor codex --account <other> -- resume` (add `--all`
+  for every project's sessions). `headroom sessions` lists Claude Code
+  sessions only.
+
+A Codex account reads *unknown* until headroom's first fetch, and *blocked*
+when the vendor says so, whatever its percentages.
+
 ## Install
 
 ```sh
@@ -73,7 +91,8 @@ headroom check      # PASS or INCONCLUSIVE on a fresh machine
 
 macOS is the primary target (Claude Code keeps its credentials in the
 Keychain); on machines without one, headroom reads the `.credentials.json`
-Claude Code writes instead. Go and `golang.org/x/term` only.
+Claude Code writes instead. Codex's login is read from its `auth.json`; a
+Codex login kept in the keyring store shows as not logged in. Go and `golang.org/x/term` only.
 
 ## Set up your accounts
 
@@ -90,6 +109,19 @@ Repeat per subscription; that is the setup. `--share-config` is optional
 (login state and history always stay per account). To retire one:
 `headroom accounts remove <email>`.
 
+Codex is the same shape — `~/.codex` is the primary, each further
+subscription a home under `~/.codex-accounts/` — and logs in with one command
+rather than from inside a session:
+
+```sh
+headroom accounts add --vendor codex alice@example.com --share-config   # seed the home; share config.toml, AGENTS.md, skills, …
+headroom launch --vendor codex --account alice@example.com -- login     # log in as that email, once
+```
+
+headroom never removes a Codex home: it cannot tell whether a Codex session
+is running on one, so `accounts remove --vendor codex` names the directory to
+delete by hand.
+
 **Shell shortcuts** (`x`, `xa`, `xs`, …) and the full command reference live
 in [docs/REFERENCE.md](docs/REFERENCE.md).
 
@@ -105,13 +137,13 @@ npx skills add qiushiyan/headroom
 
 ## Status
 
-Everything headroom assumes about Claude Code — Keychain naming, the usage
-endpoint and its response shape, the session store layout — is
-reverse-engineered and perishable. `headroom check` exists precisely because
-any Claude Code update may break it; run it when something looks wrong. The
-usage endpoint is undocumented and the vendor's consumer terms restrict it to
-first-party clients: headroom reads it the way Claude Code's own `/usage`
-screen does and never writes login or quota state. Install it as a read-only
+Everything headroom assumes about Claude Code and Codex — Keychain naming,
+`auth.json`, the usage endpoints and their response shapes, the session store
+layouts — is reverse-engineered and perishable. `headroom check` exists
+precisely because any vendor update may break it; run it when something looks
+wrong. The usage endpoints are undocumented and the vendors' consumer terms
+restrict them to first-party clients: headroom reads them the way the vendors'
+own usage screens do and never writes login or quota state. Install it as a read-only
 instrument you understand, not as a supported product — there are no
 releases; `go install` from source is the distribution.
 

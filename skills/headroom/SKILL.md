@@ -1,6 +1,6 @@
 ---
 name: headroom
-description: Day-to-day use of the headroom CLI — quota per Claude Code account, launching on another account, changing the default, continuing a rate-limited session on another account, checking the board after a Claude Code update.
+description: Day-to-day use of the headroom CLI — quota per Claude Code or Codex account, launching on another account, changing the default, continuing a rate-limited session on another account, checking the board after a vendor update.
 disable-model-invocation: true
 ---
 
@@ -59,7 +59,31 @@ shell's `x-<name>`) — quote that spelling.
 - **Add or retire a subscription**: read `../headroom-setup/SKILL.md`
   (this file's sibling) and follow it.
 
-Routing lives in `headroom launch` — it owns `CLAUDE_CONFIG_DIR` and
-`.current`; the board's enter is what moves the default. The unmanaged
+## Codex
+
+`~/.codex` is the Codex primary, `~/.codex-accounts/<email>` each extra, with
+its own default. Everything above applies with `--vendor codex` on `launch`,
+`resolve` and `accounts add`; the board, `headroom --json` and `headroom
+limits` already show both vendors (`--vendor codex` for one), and every JSON
+account carries `"vendor"`, with `current` keyed by vendor.
+
+- **One session on another account**: `headroom launch --vendor codex
+  --account <name> [-- <codex args>]`.
+- **Change the default**: `headroom accounts`, **tab** to the Codex page,
+  enter on a row.
+- **Out of quota mid-session**: Codex sessions are shared across its
+  accounts and `headroom sessions` does not list them — `headroom launch
+  --vendor codex --account <other> -- resume` opens Codex's own picker for
+  this directory (`-- resume --all` for every project).
+- **Health lines**: *not logged in* → the printed command, which ends in
+  `-- login` (Codex has no `/login`). *access token stale* / *access token
+  rejected* → any Codex session on that account refreshes it. *blocked — …*
+  → the vendor refuses work on that account whatever its percentages; pick
+  another. *usage unknown* before headroom's first fetch is ordinary.
+- **Retiring a Codex account** is by hand: `accounts remove --vendor codex`
+  refuses and names the directory.
+
+Routing lives in `headroom launch` — it owns `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME` and `.current`; the board's enter is what moves the default. The unmanaged
 escape hatch, when the user asks for one, is `env -u CLAUDE_CONFIG_DIR
 claude`. Flags beyond the ones above: `headroom -h`.
