@@ -300,7 +300,12 @@ ledger, the responses, and the session re-homes.
   own accounts root beside its own `.current` and `.order`, so nothing in
   Claude Code's files is re-keyed by Codex existing, and the store a body was
   read from says which vendor's parser reads it. `config.Load` refuses two
-  roots that name one location, however spelled.
+  roots that name one location, judged by the filesystem and not the string:
+  each root's nearest existing ancestor must be a different file, or the
+  components still missing below them must differ — compared without case,
+  since whether the filesystem folds a name cannot be known before it exists.
+  A symlink anywhere above, and `Accounts` beside `accounts` on a case-folding
+  volume, are both one location.
 - **The ledger keys on the account's own UUID**, from `.claude.json`, falling
   back to the dir name only when that file parsed and reported none. The
   budget is per account, so two config dirs logged into the same account share
@@ -757,7 +762,10 @@ here.
   response — live or replayed — is checked against the account: one naming
   another account or user is recorded as unparseable and never shown. Its
   budget is unmeasured; the spacing starts at Claude Code's value as a local
-  policy, not a vendor promise. The same client exposes a POST that spends a
+  policy, not a vendor promise. The plan shown is the stored response's when
+  there is one and the id token's otherwise, chosen when facts are assembled
+  from disk — so `limits`, which never reaches the access reader, reports the
+  plan the board does. The same client exposes a POST that spends a
   rate-limit reset credit; headroom only ever issues the GET.
 - **Windows keep the vendor's words.** A row's `kind` is the slot (`primary`,
   `secondary`), its `group` the limit object it sits in (`rate_limit`,
@@ -857,8 +865,11 @@ launch tests own routing, refusal-before-persistence and failure-after-write.
 
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
 interaction, selection, refresh scheduling, scrollback and terminal lifetime.
-Codex is absent from the fixture home — so every frame there is the
-single-vendor one — and present for one block that pins the two-vendor print,
+Both vendors' accounts roots and usage URLs are fixture values from the
+harness's first command, because `HEADROOM_HOME` does not override an accounts
+root a caller's shell exports. Codex's fixture root does not exist until its
+block creates it — so every frame before that is the single-vendor one — and
+Codex is present for one block that pins the two-vendor print,
 tab switching, and enter on the Codex page writing Codex's `.current` alone.
 Successful session launch must hand the child the restored terminal mode;
 signals must restore it before exit. The harness uses fixture `claude` and
