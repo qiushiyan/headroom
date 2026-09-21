@@ -698,10 +698,11 @@ backfill completed. A session created under one account (plan `pro`,
 containing an encrypted reasoning item) resumed correctly under the other
 (plan `prolite`); that one rollout now records both plan types and no
 account identity. This is why rollout usage snapshots are unattributable.
-Does not establish: that Codex's interactive picker lists the shared
-sessions (resume was exercised by id and by `--last`; obligation 17 checks
-the picker); the desktop app's tolerance of rollouts it did not index;
-`history.jsonl` under a shared store.
+Verified by the owner on 2026-09-21 through the launcher (`cx resume`, i.e.
+`headroom launch --vendor codex -- resume`): Codex's interactive picker lists
+the shared sessions and continues one on the other account, which closes the
+picker half of obligation 17. Does not establish: the desktop app's tolerance
+of rollouts it did not index; `history.jsonl` under a shared store.
 
 **P6. Ambient credentials override the home.** Settled. Basis — established
 from the `openai/codex` source tree (login crate, `load_auth` in the auth
