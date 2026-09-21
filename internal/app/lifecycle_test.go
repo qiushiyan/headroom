@@ -11,10 +11,10 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-func lifecycleConfig(t *testing.T) config.Config {
+func lifecycleConfig(t *testing.T) config.Scope {
 	t.Helper()
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.PrimaryDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestAccountsAddCommand(t *testing.T) {
 	if !strings.Contains(out.String(), "headroom launch --account a@x.com") || !strings.Contains(out.String(), "/login") {
 		t.Errorf("next step not printed:\n%s", out.String())
 	}
-	if err := accounts.VerifyTopology(cfg, accounts.Account{ConfigDir: filepath.Join(cfg.AccountsRoot, "a@x.com"), Name: "a@x.com"}); err != nil {
+	if err := accounts.VerifyTopology(accounts.Account{Scope: cfg, ConfigDir: filepath.Join(cfg.AccountsRoot, "a@x.com"), Name: "a@x.com"}); err != nil {
 		t.Fatal(err)
 	}
 	// Flag policy: no name, unknown flag, extra arg, empty --share-config=.
@@ -90,7 +90,7 @@ func TestAccountsAddCommand(t *testing.T) {
 // as a symlinked one; seeding refuses and creates nothing.
 func TestAccountsAddRefusesFileAsStore(t *testing.T) {
 	cfg := lifecycleConfig(t)
-	os.WriteFile(cfg.ProjectsDir(), []byte("not a dir"), 0o644)
+	os.WriteFile(cfg.StoreDir(), []byte("not a dir"), 0o644)
 	var out, errw bytes.Buffer
 	if code := runAccountsAddTo(&out, &errw, cfg, []string{"a@x.com"}); code != 1 || !strings.Contains(errw.String(), "not a directory") {
 		t.Errorf("exit %d: %s", code, errw.String())
@@ -221,7 +221,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	}
 	// Dead pid: the claim is stale, removal proceeds — Keychain first, then dir.
 	os.WriteFile(cfg.CurrentFile(), []byte("a@x.com\n"), 0o644)
-	os.WriteFile(filepath.Join(cfg.ProjectsDir(), "t.jsonl"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(cfg.StoreDir(), "t.jsonl"), []byte("x"), 0o644)
 	if code := run(deps, "a@x.com", "--yes"); code != 0 {
 		t.Fatalf("remove: exit %d %s", code, errw.String())
 	}
@@ -231,7 +231,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if _, err := os.Lstat(dir); err == nil {
 		t.Error("dir still exists")
 	}
-	if _, err := os.Stat(filepath.Join(cfg.ProjectsDir(), "t.jsonl")); err != nil {
+	if _, err := os.Stat(filepath.Join(cfg.StoreDir(), "t.jsonl")); err != nil {
 		t.Error("store contents deleted")
 	}
 	if !strings.Contains(out.String(), "deleted Keychain item") || !strings.Contains(out.String(), ".current pointed here") {

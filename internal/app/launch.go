@@ -21,9 +21,9 @@ import (
 	"github.com/qiushiyan/headroom/internal/launch"
 )
 
-// execClaude is the one impure edge of the launch surface, injected so tests
+// execVendor is the one impure edge of the launch surface, injected so tests
 // can capture the argv and environment a launch would have used.
-var execClaude = launch.ExecPath
+var execVendor = launch.ExecPath
 
 // runResolve prints one line: canonical-name<TAB>config-dir<TAB>kind, kind
 // being "primary" or "extra". It exists for shell preflight — topology
@@ -33,7 +33,7 @@ var execClaude = launch.ExecPath
 // skips the check whenever a HEADROOM_* override moves the real one. The
 // dir is the primary's real ~/.claude path, never an empty sentinel; the
 // launch itself revalidates, so this answer is advice, not a capability.
-func runResolve(cfg config.Config, args []string) int {
+func runResolve(cfg config.Scope, args []string) int {
 	selector, explicitEmpty := "", false
 	if len(args) > 0 {
 		selector, args = args[0], args[1:]
@@ -50,12 +50,12 @@ func runResolve(cfg config.Config, args []string) int {
 		fmt.Fprintln(os.Stderr, "headroom resolve: an account selector must be non-empty")
 		return 2
 	}
-	a, err := accounts.Select(cfg, accounts.Discover(cfg), selector)
+	a, err := accounts.Discover(cfg).Select(selector)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom resolve: %v\n", err)
 		return 1
 	}
-	dir := a.Dir(cfg)
+	dir := a.Dir()
 	if strings.ContainsAny(a.Name, "\t\n\r") || strings.ContainsAny(dir, "\t\n\r") {
 		fmt.Fprintln(os.Stderr, "headroom resolve: account name or dir contains control characters — not launchable")
 		return 1
@@ -72,7 +72,7 @@ func runResolve(cfg config.Config, args []string) int {
 // goes next, constructs the child environment from the decision alone, and
 // replaces this process with claude. Everything after `--` goes to claude
 // verbatim.
-func runLaunch(cfg config.Config, args []string) int {
+func runLaunch(cfg config.Scope, args []string) int {
 	remember := false
 	account, accountSet := "", false
 	rest := []string(nil)
@@ -105,13 +105,13 @@ parse:
 		return 2
 	}
 
-	accts := accounts.Discover(cfg)
-	a, err := accounts.Select(cfg, accts, account)
+	set := accounts.Discover(cfg)
+	a, err := set.Select(account)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}
-	prepared, err := launch.Prepare(cfg, a, accts, os.Environ())
+	prepared, err := launch.Prepare(a, set, os.Environ())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
@@ -121,7 +121,7 @@ parse:
 		// "chosen and recorded" is one step to the user, and launching on a
 		// choice that could not be recorded would have the next bare `x` go
 		// somewhere else.
-		if err := accounts.SetCurrent(cfg, a.Name); err != nil {
+		if err := set.SetCurrent(a); err != nil {
 			fmt.Fprintf(os.Stderr, "headroom launch: could not record .current (%v) — not launching\n", err)
 			return 1
 		}
@@ -130,8 +130,8 @@ parse:
 	for _, notice := range prepared.Notices {
 		fmt.Fprintln(os.Stderr, "headroom launch: "+notice)
 	}
-	if err := execClaude(prepared.Path, rest, prepared.Env); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: exec claude: %v\n", err)
+	if err := execVendor(prepared.Path, prepared.Binary, rest, prepared.Env); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: exec %s: %v\n", prepared.Binary, err)
 		if remember {
 			fmt.Fprintf(os.Stderr, "headroom launch: .current remains %s\n", a.Name)
 		}

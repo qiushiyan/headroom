@@ -10,17 +10,20 @@ import (
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
-func testConfig(t *testing.T) config.Config {
+func testConfig(t *testing.T) config.Scope {
 	t.Helper()
-	home := t.TempDir()
-	return config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-	}
+	s := config.ForHome(t.TempDir()).Claude
+	s.PrimaryName = "qiushi"
+	return s
 }
 
-func mkAccount(t *testing.T, cfg config.Config, email string) {
+// setCurrent records a name whether or not discovery knows it, as a torn or
+// outdated `.current` would.
+func setCurrent(cfg config.Scope, name string) error {
+	return Set{Scope: cfg}.SetCurrent(Account{Scope: cfg, Name: name})
+}
+
+func mkAccount(t *testing.T, cfg config.Scope, email string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, email), 0o755); err != nil {
 		t.Fatal(err)
@@ -39,7 +42,8 @@ func TestDiscoverOrderAndGlob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	accts := Discover(cfg)
+	set := Discover(cfg)
+	accts := set.Accounts
 	got := make([]string, len(accts))
 	for i, a := range accts {
 		got[i] = a.Name
@@ -71,7 +75,8 @@ func TestDiscoverSkipsLockArtifacts(t *testing.T) {
 	if err := os.WriteFile(cfg.OrderFile(), []byte("stray.lock\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	accts := Discover(cfg)
+	set := Discover(cfg)
+	accts := set.Accounts
 	if len(accts) != 2 || !accts[0].IsPrimary() || accts[1].Name != "a@x.com" {
 		got := make([]string, len(accts))
 		for i, a := range accts {
@@ -83,7 +88,8 @@ func TestDiscoverSkipsLockArtifacts(t *testing.T) {
 
 func TestDiscoverNoRoot(t *testing.T) {
 	cfg := testConfig(t)
-	accts := Discover(cfg)
+	set := Discover(cfg)
+	accts := set.Accounts
 	if len(accts) != 1 || !accts[0].IsPrimary() {
 		t.Fatalf("expected only the primary, got %v", accts)
 	}
@@ -93,9 +99,9 @@ func TestLauncher(t *testing.T) {
 	cfg := testConfig(t)
 	mk := func(name string) Account {
 		if name == "" {
-			return Account{ConfigDir: "", Name: cfg.PrimaryName}
+			return Account{Scope: cfg, ConfigDir: "", Name: cfg.PrimaryName}
 		}
-		return Account{ConfigDir: filepath.Join(cfg.AccountsRoot, name), Name: name}
+		return Account{Scope: cfg, ConfigDir: filepath.Join(cfg.AccountsRoot, name), Name: name}
 	}
 	// Guaranteed identities only: short local-part aliases are a shell
 	// convenience headroom no longer advertises, so there are no collision or
@@ -109,14 +115,14 @@ func TestLauncher(t *testing.T) {
 		{"noatsign", "headroom launch --account noatsign"}, // no @ → the name is the email
 	}
 	for _, c := range cases {
-		if got := Launcher(cfg, mk(c.name)); got != c.want {
+		if got := Launcher(mk(c.name)); got != c.want {
 			t.Errorf("Launcher(%q) = %q, want %q", c.name, got, c.want)
 		}
 	}
 	// A shell integration re-spells the advertised command; the identity
 	// inside it stays the full name.
 	cfg.LauncherFormat = "x-%s"
-	if got := Launcher(cfg, mk("yan@planlab.ai")); got != "x-yan@planlab.ai" {
+	if got := Launcher(mk("yan@planlab.ai")); got != "x-yan@planlab.ai" {
 		t.Errorf("formatted launcher = %q", got)
 	}
 }
@@ -124,25 +130,25 @@ func TestLauncher(t *testing.T) {
 func TestSelect(t *testing.T) {
 	cfg := testConfig(t)
 	mkAccount(t, cfg, "yan@planlab.ai")
-	accts := Discover(cfg)
+	set := Discover(cfg)
 
 	// Absent .current: the documented fresh-start default is the primary.
-	a, err := Select(cfg, accts, "")
+	a, err := set.Select("")
 	if err != nil || !a.IsPrimary() {
 		t.Errorf("absent .current: got (%v, %v), want primary", a.Name, err)
 	}
 
 	// A recorded, discovered account resolves.
-	if err := SetCurrent(cfg, "yan@planlab.ai"); err != nil {
+	if err := setCurrent(cfg, "yan@planlab.ai"); err != nil {
 		t.Fatal(err)
 	}
-	a, err = Select(cfg, accts, "")
+	a, err = set.Select("")
 	if err != nil || a.Name != "yan@planlab.ai" {
 		t.Errorf("recorded account: got (%v, %v)", a.Name, err)
 	}
 
 	// An explicit selector bypasses .current.
-	a, err = Select(cfg, accts, "qiushi")
+	a, err = set.Select("qiushi")
 	if err != nil || !a.IsPrimary() {
 		t.Errorf("explicit primary selector: got (%v, %v)", a.Name, err)
 	}
@@ -152,20 +158,20 @@ func TestSelect(t *testing.T) {
 	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Select(cfg, accts, ""); err == nil {
+	if _, err := set.Select(""); err == nil {
 		t.Error("empty .current: want error, got none")
 	}
 
 	// A recorded account that no longer exists refuses, naming it.
-	if err := SetCurrent(cfg, "gone@x.com"); err != nil {
+	if err := setCurrent(cfg, "gone@x.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Select(cfg, accts, ""); err == nil {
+	if _, err := set.Select(""); err == nil {
 		t.Error("deleted account in .current: want error, got none")
 	}
 
 	// An unknown explicit selector refuses; nothing falls back.
-	if _, err := Select(cfg, accts, "nope@x.com"); err == nil {
+	if _, err := set.Select("nope@x.com"); err == nil {
 		t.Error("unknown selector: want error, got none")
 	}
 }
@@ -174,13 +180,13 @@ func TestSetCurrentAtomicWrite(t *testing.T) {
 	cfg := testConfig(t)
 	mkAccount(t, cfg, "first@x.com")
 	mkAccount(t, cfg, "second@x.com")
-	if err := SetCurrent(cfg, "first@x.com"); err != nil {
+	if err := setCurrent(cfg, "first@x.com"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetCurrent(cfg, "second@x.com"); err != nil {
+	if err := setCurrent(cfg, "second@x.com"); err != nil {
 		t.Fatal(err)
 	}
-	if a, err := Select(cfg, Discover(cfg), ""); err != nil || a.Name != "second@x.com" {
+	if a, err := Discover(cfg).Select(""); err != nil || a.Name != "second@x.com" {
 		t.Errorf("got (%q, %v), want second@x.com", a.Name, err)
 	}
 	// The write goes through a temp file + rename; nothing may be left over.
@@ -405,8 +411,8 @@ func TestPrimaryNameDerivation(t *testing.T) {
 		{"", "noatsign", "primary"},                // not an email → fallback
 	}
 	for _, c := range cases {
-		cfg := config.Config{PrimaryName: c.pinned}
-		if got := PrimaryName(cfg, Meta{Email: c.email}); got != c.want {
+		cfg := config.Scope{PrimaryName: c.pinned}
+		if got := PrimaryName(cfg, c.email); got != c.want {
 			t.Errorf("PrimaryName(pinned=%q, email=%q) = %q, want %q", c.pinned, c.email, got, c.want)
 		}
 	}
@@ -419,12 +425,13 @@ func TestDiscoverDerivesPrimaryNameFromLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	mkAccount(t, cfg, "bob@example.com")
-	accts := Discover(cfg)
-	if accts[0].Name != "alice" || Launcher(cfg, accts[0]) != "headroom launch --account alice" {
-		t.Errorf("primary named %q (launcher %q)", accts[0].Name, Launcher(cfg, accts[0]))
+	set := Discover(cfg)
+	accts := set.Accounts
+	if accts[0].Name != "alice" || Launcher(accts[0]) != "headroom launch --account alice" {
+		t.Errorf("primary named %q (launcher %q)", accts[0].Name, Launcher(accts[0]))
 	}
 	// And the derived name resolves through the strict selector like any other.
-	if a, err := Select(cfg, accts, "alice"); err != nil || !a.IsPrimary() {
+	if a, err := set.Select("alice"); err != nil || !a.IsPrimary() {
 		t.Errorf("Select(alice) = %v, %v; want the primary", a, err)
 	}
 }

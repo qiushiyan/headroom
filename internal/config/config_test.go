@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,8 +44,8 @@ func TestLoadMarksRelocatedPrimary(t *testing.T) {
 	if !cfg.PrimaryRelocated {
 		t.Error("a re-pointed home must be marked: primary launches refuse on it")
 	}
-	if cfg.AccountsRoot != filepath.Join(fixture, ".claude-accounts") {
-		t.Errorf("AccountsRoot = %q, want under the fixture home", cfg.AccountsRoot)
+	if cfg.Claude.AccountsRoot != filepath.Join(fixture, ".claude-accounts") {
+		t.Errorf("AccountsRoot = %q, want under the fixture home", cfg.Claude.AccountsRoot)
 	}
 }
 
@@ -58,13 +59,13 @@ func TestLoadPrimaryNameIsDerivedUnlessPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.PrimaryName != "" {
-		t.Errorf("unset HEADROOM_PRIMARY_NAME: PrimaryName = %q, want \"\" (derive at discovery)", c.PrimaryName)
+	if c.Claude.PrimaryName != "" {
+		t.Errorf("unset HEADROOM_PRIMARY_NAME: PrimaryName = %q, want \"\" (derive at discovery)", c.Claude.PrimaryName)
 	}
 	t.Setenv("HEADROOM_PRIMARY_NAME", "pinned")
 	c, _ = Load()
-	if c.PrimaryName != "pinned" {
-		t.Errorf("pinned: PrimaryName = %q", c.PrimaryName)
+	if c.Claude.PrimaryName != "pinned" {
+		t.Errorf("pinned: PrimaryName = %q", c.Claude.PrimaryName)
 	}
 }
 
@@ -76,17 +77,128 @@ func TestLoadLauncherFormat(t *testing.T) {
 	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
 	t.Setenv("HEADROOM_LAUNCHER_FORMAT", "")
 	c, err := Load()
-	if err != nil || c.LauncherFormat != "headroom launch --account %s" {
-		t.Errorf("default LauncherFormat = %q, %v", c.LauncherFormat, err)
+	if err != nil || c.Claude.LauncherFormat != "headroom launch --account %s" {
+		t.Errorf("default LauncherFormat = %q, %v", c.Claude.LauncherFormat, err)
 	}
 	t.Setenv("HEADROOM_LAUNCHER_FORMAT", "x-%s")
-	if c, err = Load(); err != nil || c.LauncherFormat != "x-%s" {
-		t.Errorf("pinned LauncherFormat = %q, %v", c.LauncherFormat, err)
+	if c, err = Load(); err != nil || c.Claude.LauncherFormat != "x-%s" {
+		t.Errorf("pinned LauncherFormat = %q, %v", c.Claude.LauncherFormat, err)
 	}
 	for _, bad := range []string{"x-", "%s %s", "%d-%s", "100%% %s"} {
 		t.Setenv("HEADROOM_LAUNCHER_FORMAT", bad)
 		if _, err := Load(); err == nil {
 			t.Errorf("HEADROOM_LAUNCHER_FORMAT=%q accepted", bad)
 		}
+	}
+}
+
+func clearOverrides(t *testing.T) {
+	t.Helper()
+	for _, v := range []string{
+		"HEADROOM_HOME", "HEADROOM_ACCOUNTS_ROOT", "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL",
+		"HEADROOM_CODEX_ACCOUNTS_ROOT", "HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL",
+	} {
+		t.Setenv(v, "")
+	}
+}
+
+// Both scopes always resolve — `accounts add --vendor codex` must work before
+// any Codex directory exists — and presence alone says whether the board,
+// `--json` and `check` include Codex unasked.
+func TestLoadResolvesBothScopes(t *testing.T) {
+	clearOverrides(t)
+	home := t.TempDir()
+	t.Setenv("HEADROOM_HOME", home)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Claude.Present {
+		t.Error("Claude Code is always present")
+	}
+	if c.Codex.Present {
+		t.Error("Codex present with neither ~/.codex nor its accounts root")
+	}
+	if got := c.Present(); len(got) != 1 || got[0].Vendor != Claude {
+		t.Errorf("Present() = %v, want Claude Code alone", got)
+	}
+	x := c.Scope(Codex)
+	if x.Vendor != Codex || x.AccountsRoot != filepath.Join(home, ".codex-accounts") ||
+		x.PrimaryDir() != filepath.Join(home, ".codex") || x.StoreDir() != filepath.Join(home, ".codex", "sessions") ||
+		x.StoreLink() != "sessions" || x.Binary() != "codex" || x.Spacing != DefaultSpacing || !x.PrimaryRelocated {
+		t.Errorf("Codex scope = %+v", x)
+	}
+	if x.LauncherFormat != "headroom launch --vendor codex --account %s" {
+		t.Errorf("Codex LauncherFormat = %q", x.LauncherFormat)
+	}
+	if cl := c.Scope(Claude); cl.StoreDir() != filepath.Join(home, ".claude", "projects") || cl.Binary() != "claude" {
+		t.Errorf("Claude scope = %+v", cl)
+	}
+
+	// Either directory makes Codex present.
+	if err := os.MkdirAll(filepath.Join(home, ".codex-accounts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ = Load(); !c.Codex.Present || len(c.Present()) != 2 || c.Present()[0].Vendor != Claude {
+		t.Errorf("accounts root alone must make Codex present, Claude Code first: %v", c.Present())
+	}
+}
+
+func TestLoadCodexOverrides(t *testing.T) {
+	clearOverrides(t)
+	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", "relative/root")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_CODEX_ACCOUNTS_ROOT") {
+		t.Errorf("relative Codex accounts root: err = %v, want a refusal naming it", err)
+	}
+	root := t.TempDir()
+	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", root)
+	t.Setenv("HEADROOM_CODEX_PRIMARY_NAME", "cx")
+	t.Setenv("HEADROOM_CODEX_LAUNCHER_FORMAT", "cx-%s")
+	t.Setenv("HEADROOM_CODEX_USAGE_URL", "http://127.0.0.1:1/usage")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Codex.AccountsRoot != root || c.Codex.PrimaryName != "cx" || c.Codex.LauncherFormat != "cx-%s" || c.Codex.UsageURL != "http://127.0.0.1:1/usage" {
+		t.Errorf("Codex overrides not applied: %+v", c.Codex)
+	}
+	if c.Claude.PrimaryName != "" || c.Claude.LauncherFormat != "headroom launch --account %s" {
+		t.Errorf("a Codex override leaked into Claude Code's scope: %+v", c.Claude)
+	}
+	t.Setenv("HEADROOM_CODEX_LAUNCHER_FORMAT", "cx")
+	if _, err := Load(); err == nil {
+		t.Error("a Codex launcher format without its placeholder was accepted")
+	}
+}
+
+// Distinct roots keep the two vendors' .current, .order and state.json apart.
+// One location refuses however it is spelled.
+func TestLoadRefusesAliasedAccountsRoots(t *testing.T) {
+	clearOverrides(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, roots := range map[string][2]string{
+		"same spelling":                        {real, real},
+		"different spelling":                   {real, real + "/./"},
+		"through a symlink":                    {real, link},
+		"absent leaf under a symlinked parent": {filepath.Join(real, "new"), filepath.Join(link, "new")},
+	} {
+		t.Setenv("HEADROOM_ACCOUNTS_ROOT", roots[0])
+		t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", roots[1])
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "same location") {
+			t.Errorf("%s: err = %v, want a refusal", name, err)
+		}
+	}
+	t.Setenv("HEADROOM_ACCOUNTS_ROOT", real)
+	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(real, "codex"))
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("distinct roots refused: %v", err)
+	}
+	if c.Claude.AccountsRoot != real {
+		t.Errorf("an accepted spelling was rewritten: %q", c.Claude.AccountsRoot)
 	}
 }

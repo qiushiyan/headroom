@@ -98,16 +98,15 @@ func TestLaunchFetchesSingleWriter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Config{UsageURL: srv.URL, AccountsRoot: t.TempDir()}
-	st := state.Open(cfg.AccountsRoot)
+	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
 	list := []*accountData{
-		{Request: candidate("fast", "fast"),
+		{Request: candidate(srv.URL, "fast", "fast"),
 			View: accountstate.Facts{Attempt: accountstate.Attempt{State: accountstate.AttemptPending}}},
-		{Request: candidate("slow", "slow"),
+		{Request: candidate(srv.URL, "slow", "slow"),
 			View: accountstate.Facts{Attempt: accountstate.Attempt{State: accountstate.AttemptPending}}},
 	}
 	list[0].Acct.Name, list[1].Acct.Name = "fast", "slow"
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
 		for _, d := range list {
 			_ = d.View.Attempt.State
@@ -148,7 +147,7 @@ func TestBadBlobIsNotAnAccountHealthProblem(t *testing.T) {
 // on the axis it belongs to.
 func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: home + "/.claude-accounts", PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +155,7 @@ func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
 		[]byte(`{"oauthAccount":{"emailAddress":"p@x.com"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := prepareWith(cfg, accounts.Discover(cfg), state.Open(cfg.AccountsRoot).Load(), sources{
+	list, _ := prepareWith(accounts.Discover(cfg), state.Open(cfg).Load(), sources{
 		readRaw: func(string) string { return `not json` },
 		health:  func(string) auth.Status { return auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK} },
 		now:     time.Now(),
@@ -199,15 +198,15 @@ func TestZeroRowsBecomesTheNewestObservation(t *testing.T) {
 // store handle each time, because every surface is a fresh process — and the
 // bugs below only appear across two rounds, since the first is what leaves the
 // ledger in the state the second one reads.
-func oneRound(t *testing.T, cfg config.Config, blobs map[string]string, now time.Time) map[string]*accountData {
+func oneRound(t *testing.T, cfg config.Scope, blobs map[string]string, now time.Time) map[string]*accountData {
 	t.Helper()
-	st := state.Open(cfg.AccountsRoot)
-	list, _ := prepareWith(cfg, accounts.Discover(cfg), st.Load(), sources{
+	st := state.Open(cfg)
+	list, _ := prepareWith(accounts.Discover(cfg), st.Load(), sources{
 		readRaw: func(dir string) string { return blobs[dir] },
 		health:  func(string) auth.Status { return auth.Status{} },
 		now:     now,
 	})
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
 	}
 	byName := map[string]*accountData{}
@@ -219,15 +218,10 @@ func oneRound(t *testing.T, cfg config.Config, blobs map[string]string, now time
 
 // oneAccount builds a home with the primary logged out and one usable account,
 // and returns the config plus the credential map prepare reads.
-func oneAccount(t *testing.T, usageURL, meta string) (config.Config, map[string]string) {
+func oneAccount(t *testing.T, usageURL, meta string) (config.Scope, map[string]string) {
 	t.Helper()
 	home := t.TempDir()
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "primary",
-		UsageURL:     usageURL,
-	}
+	cfg := withUsageURL(claudeScope(home, "primary"), usageURL)
 	dir := filepath.Join(cfg.AccountsRoot, "a@x.com")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -371,8 +365,8 @@ func TestBoardLayoutFlagIsOptIn(t *testing.T) {
 	}
 }
 
-func candidate(name, token string) *refresh.Candidate {
-	c, _ := refresh.Prepare(accounts.Account{Name: name, Meta: accounts.Meta{Readable: true}}, creds.Blob{Token: token, ExpiresAtMS: time.Now().Add(time.Hour).UnixMilli()}, true, time.Now())
+func candidate(url, name, token string) *refresh.Candidate {
+	c, _ := refresh.Prepare(accounts.Account{Scope: config.Scope{UsageURL: url}, Name: name, Readable: true}, creds.Blob{Token: token, ExpiresAtMS: time.Now().Add(time.Hour).UnixMilli()}, true, time.Now())
 	return c
 }
 
@@ -415,8 +409,8 @@ func TestSuccessfulRefreshPresentation(t *testing.T) {
 				w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
-			d := &accountData{Request: candidate("a", "token")}
-			for r := range launchFetches(context.Background(), config.Config{UsageURL: srv.URL}, []*accountData{d}, state.Open(t.TempDir())) {
+			d := &accountData{Request: candidate(srv.URL, "a", "token")}
+			for r := range launchFetches(context.Background(), []*accountData{d}, state.Open(config.Scope{AccountsRoot: t.TempDir()})) {
 				resolve(d, r)
 			}
 			ui := picker{list: []*accountData{d}}
@@ -461,8 +455,8 @@ func TestBoardLeaves401CredentialSamplingToChecker(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
 	defer srv.Close()
-	d := &accountData{Request: candidate("a", "token")}
-	for r := range launchFetches(context.Background(), config.Config{UsageURL: srv.URL}, []*accountData{d}, state.Open(t.TempDir())) {
+	d := &accountData{Request: candidate(srv.URL, "a", "token")}
+	for r := range launchFetches(context.Background(), []*accountData{d}, state.Open(config.Scope{AccountsRoot: t.TempDir()})) {
 		if r.Attempt.HTTPCode != 401 || r.TokenAfter401 != refresh.TokenUnknown {
 			t.Fatalf("board's evidence=%+v", r)
 		}

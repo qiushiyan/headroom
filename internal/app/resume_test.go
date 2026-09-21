@@ -12,7 +12,7 @@ import (
 // pre-review code, which fell back to the primary in both cases — minting a
 // launch decision no evidence had chosen.
 func TestResumeAccountFailsClosedOnInvalidCurrent(t *testing.T) {
-	ui := &sessionActions{current: "", accts: []accounts.Account{{Name: "qiushi"}}}
+	ui := &sessionActions{current: "", set: accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}}}}
 	if a, ok := ui.resumeAccount(&sessions.Session{}, false); ok {
 		t.Errorf("ownerless session with no valid current resumed on %q — a decision minted from corrupt routing state", a.Name)
 	}
@@ -21,7 +21,7 @@ func TestResumeAccountFailsClosedOnInvalidCurrent(t *testing.T) {
 func TestResumeAccountDeletedOwnerFallsToCurrentNeverPrimary(t *testing.T) {
 	ui := &sessionActions{
 		current: "b@x.com",
-		accts:   []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}},
+		set:     accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}}},
 	}
 	a, ok := ui.resumeAccount(&sessions.Session{Owner: "gone@x.com"}, false)
 	if !ok || a.Name != "b@x.com" {

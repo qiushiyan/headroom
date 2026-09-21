@@ -20,22 +20,22 @@ type Snapshot struct {
 	Store    state.Snapshot
 }
 
-func Read(cfg config.Config, st *state.Store, now time.Time) Snapshot {
+func Read(scope config.Scope, st *state.Store, now time.Time) Snapshot {
 	snap := st.Load()
-	list, current := Assemble(cfg, accounts.Discover(cfg), snap, now)
+	list, current := Assemble(accounts.Discover(scope), snap, now)
 	return Snapshot{list, current, snap}
 }
 
 // Assemble selects strict current-account state and the newest usable observation.
-func Assemble(cfg config.Config, accts []accounts.Account, snap state.Snapshot, now time.Time) ([]Account, string) {
+func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, string) {
 	current := ""
-	if a, err := accounts.Select(cfg, accts, ""); err == nil {
+	if a, err := set.Select(""); err == nil {
 		current = a.Name
 	}
-	list := make([]Account, 0, len(accts))
-	for _, a := range accts {
-		key := state.Key{UUID: a.Meta.AccountUUID, Name: a.Name}
-		v := Facts{Label: a.Name, Launcher: accounts.Launcher(cfg, a), Current: current == a.Name, Health: HealthUnprobed}
+	list := make([]Account, 0, len(set.Accounts))
+	for _, a := range set.Accounts {
+		key := state.Key{UUID: a.AccountID, Name: a.Name}
+		v := Facts{Vendor: a.Scope.Vendor, FreshFor: a.Scope.RequestSpacing(), Label: a.Name, Launcher: accounts.Launcher(a), Current: current == a.Name, Health: HealthUnprobed}
 		if a.Email != "" {
 			v.Label = a.Email
 		}

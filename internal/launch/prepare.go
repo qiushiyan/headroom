@@ -6,32 +6,39 @@ import (
 	"path/filepath"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/config"
 )
 
 // Prepared holds all predictable launch decisions, resolved before the caller
 // records a choice or changes cwd. Persistence and exec remain caller actions.
 type Prepared struct {
 	Path    string
+	Binary  string // argv[0]
 	Env     []string
 	Notices []string
 }
 
-func Prepare(cfg config.Config, account accounts.Account, discovered []accounts.Account, base []string) (Prepared, error) {
+// Prepare takes the account and the set it was selected from; the binary, the
+// stripped variables and the notices all come from the account's own scope.
+func Prepare(account accounts.Account, discovered accounts.Set, base []string) (Prepared, error) {
 	var p Prepared
-	if account.IsPrimary() && cfg.PrimaryRelocated {
+	scope := account.Scope
+	if discovered.Scope.Vendor != scope.Vendor {
+		return p, fmt.Errorf("%s account %q was not selected from the %s accounts", scope.Vendor.Title(), account.Name, discovered.Scope.Vendor.Title())
+	}
+	if account.IsPrimary() && scope.PrimaryRelocated {
 		return p, fmt.Errorf("HEADROOM_HOME re-points the primary — cannot launch it here (extras are unaffected)")
 	}
-	if err := accounts.VerifyTopology(cfg, account); err != nil {
+	if err := accounts.VerifyTopology(account); err != nil {
 		return p, fmt.Errorf("not launching — %w", err)
 	}
-	target, err := For(account.ConfigDir)
+	target, err := For(scope.Vendor, account.ConfigDir)
 	if err != nil {
 		return p, err
 	}
-	path, err := exec.LookPath("claude")
+	p.Binary = scope.Binary()
+	path, err := exec.LookPath(p.Binary)
 	if err != nil {
-		return p, fmt.Errorf("claude not found on PATH: %w", err)
+		return p, fmt.Errorf("%s not found on PATH: %w", p.Binary, err)
 	}
 	// LookPath can return a relative path containing a slash. Anchor it before
 	// the sessions caller enters another project directory.
@@ -40,11 +47,11 @@ func Prepare(cfg config.Config, account accounts.Account, discovered []accounts.
 		return p, err
 	}
 	p.Env = target.Env(base)
-	if value, conflict := target.Conflicts(base); conflict && !accounts.KnownExtraDir(discovered, value) {
-		p.Notices = append(p.Notices, fmt.Sprintf("ignoring inherited CLAUDE_CONFIG_DIR=%s; launching %s (%s)", value, account.Name, account.Dir(cfg)))
+	if value, conflict := target.Conflicts(base); conflict && !discovered.KnownExtraDir(value) {
+		p.Notices = append(p.Notices, fmt.Sprintf("ignoring inherited %s=%s; launching %s (%s)", scope.Env().HomeVar, value, account.Name, account.Dir()))
 	}
-	if value, present := AmbientSecureStorage(base); present {
-		p.Notices = append(p.Notices, "ignoring inherited CLAUDE_SECURESTORAGE_CONFIG_DIR="+value)
+	for _, in := range Redirects(scope.Vendor, base) {
+		p.Notices = append(p.Notices, "ignoring inherited "+in.String())
 	}
 	return p, nil
 }

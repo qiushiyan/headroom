@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
 )
 
@@ -96,7 +97,7 @@ func Query(configDir string) Status {
 	// that rule; For is the sanctioned crossing for this dir-or-empty
 	// parameter, and a dir it refuses must not be probed at all — the child
 	// would answer with the default Keychain item's login, not this dir's.
-	tgt, err := launch.For(configDir)
+	tgt, err := launch.For(config.Claude, configDir)
 	if err != nil {
 		return Status{Outcome: OutcomeUnrunnable}
 	}

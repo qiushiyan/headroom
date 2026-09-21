@@ -21,18 +21,6 @@ const (
 	StateBad  = tag.Bad
 )
 
-// RequestSpacing is the quiet period headroom keeps between requests for one
-// account. The endpoint's budget is per account and refills in roughly 30-70
-// seconds by measurement; this sits deliberately above that, because headroom
-// is a bystander on an undocumented endpoint and should err toward silence.
-//
-// It lives here, with the endpoint it describes, because two packages need it
-// and neither may depend on the other: the request ledger spends against it,
-// and rendering uses it to decide when an observation is old enough to be
-// worth a caption — no newer answer is obtainable inside this window, so
-// nagging about age inside it would be nagging about nothing.
-const RequestSpacing = 90 * time.Second
-
 // Row is the response contract: one rendered line per limit.
 //
 // Kind, Group and Model are the vendor's own identity vocabulary, carried

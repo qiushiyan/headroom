@@ -25,7 +25,7 @@ func capturedSessionsExec(t *testing.T) (path *string, argv *[]string, env *[]st
 	var a, e []string
 	var c bool
 	prev := execSessions
-	execSessions = func(execPath string, claudeArgs, environ []string) error {
+	execSessions = func(execPath, binary string, claudeArgs, environ []string) error {
 		p, a, e, c = execPath, claudeArgs, environ, true
 		return nil
 	}
@@ -42,7 +42,7 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	}
 	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
 		cfg:        cfg,
-		accts:      accounts.Discover(cfg),
+		set:        accounts.Discover(cfg),
 		current:    "yan@planlab.ai",
 		claudeArgs: []string{"--dangerously-skip-permissions"},
 	}}
@@ -125,7 +125,10 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 			os.MkdirAll(link, 0o755) // real dir: the history fork
 		}, "not launching"},
 		{"relocated primary", func(ui *resumeUI, s *sessions.Session) {
+			// Relocation is a fact about the scope, and accounts carry the
+			// scope they were discovered under — as a real run's would.
 			ui.cfg.PrimaryRelocated = true
+			ui.set = accounts.Discover(ui.cfg)
 			s.Owner = "qiushi"
 		}, "HEADROOM_HOME"},
 		{"dir gone at action time", func(ui *resumeUI, s *sessions.Session) {
@@ -167,7 +170,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 
 func TestSessionPreparationPreservesPriorRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
-	ui.st = state.Open(ui.cfg.AccountsRoot)
+	ui.st = state.Open(ui.cfg)
 	if err := ui.st.ReHome(s.ID, "qiushi", time.Now(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -212,8 +215,8 @@ func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	capturedSessionsExec(t) // also restores cwd
-	ui.st = state.Open(ui.cfg.AccountsRoot)
-	execSessions = func(string, []string, []string) error { return os.ErrPermission }
+	ui.st = state.Open(ui.cfg)
+	execSessions = func(string, string, []string, []string) error { return os.ErrPermission }
 	output := captureStderr(t, func() {
 		if done, code := ui.commitResume(true); !done || code != 1 {
 			t.Fatalf("commit: %v %d %s", done, code, ui.message)

@@ -18,7 +18,7 @@ import (
 )
 
 type prepareFixture struct {
-	cfg   config.Config
+	cfg   config.Scope
 	blobs map[string]string
 	auth  map[string]auth.Status
 	store *state.Store
@@ -29,7 +29,7 @@ func (f prepareFixture) run(now time.Time) map[string]*accountData {
 }
 
 func (f prepareFixture) prepare(now time.Time) []*accountData {
-	list, _ := prepareWith(f.cfg, accounts.Discover(f.cfg), f.store.Load(), sources{
+	list, _ := prepareWith(accounts.Discover(f.cfg), f.store.Load(), sources{
 		readRaw: func(dir string) string { return f.blobs[dir] },
 		health:  func(dir string) auth.Status { return f.auth[dir] },
 		now:     now,
@@ -43,7 +43,7 @@ func (f prepareFixture) prepare(now time.Time) []*accountData {
 // because deciding earlier is exactly what let an account skip the claim.
 func (f prepareFixture) round(now time.Time) map[string]*accountData {
 	list := f.prepare(now)
-	for u := range launchFetches(context.Background(), f.cfg, list, f.store) {
+	for u := range launchFetches(context.Background(), list, f.store) {
 		resolve(list[u.Index], u)
 	}
 	return byName(list)
@@ -69,11 +69,7 @@ func writeJSON(t *testing.T, path, content string) {
 // and a healthy account must come out fetch-ready.
 func TestPrepareWith(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "primary",
-	}
+	cfg := claudeScope(home, "primary")
 	mkAccount := func(name, email string) string {
 		t.Helper()
 		dir := filepath.Join(cfg.AccountsRoot, name)
@@ -96,7 +92,7 @@ func TestPrepareWith(t *testing.T) {
 	goodBlob := `{"claudeAiOauth":{"accessToken":"tok-good","rateLimitTier":"default_claude_max_20x"}}`
 	f := prepareFixture{
 		cfg:   cfg,
-		store: state.Open(cfg.AccountsRoot),
+		store: state.Open(cfg),
 		blobs: map[string]string{
 			"":      "", // primary: no credentials anywhere
 			goodDir: goodBlob,
@@ -113,7 +109,7 @@ func TestPrepareWith(t *testing.T) {
 		},
 		auth: map[string]auth.Status{}, // no Claude Code install: fall back to creds
 	}
-	if err := accounts.SetCurrent(cfg, "good@x.com"); err != nil {
+	if err := accounts.Discover(cfg).SetCurrent(accounts.Account{Scope: cfg, Name: "good@x.com"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +158,7 @@ func TestPrepareWith(t *testing.T) {
 // contract still outranks it, because that is drift worth seeing.
 func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +171,7 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 		now.Add(-100*time.Hour).UnixMilli())
 	f := prepareFixture{
 		cfg:   cfg,
-		store: state.Open(cfg.AccountsRoot),
+		store: state.Open(cfg),
 		blobs: map[string]string{"": blob},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -210,7 +206,7 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 // refresh still leaves the user with numbers — labelled with their real age.
 func TestPrepareSeedsFromClaudeCache(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +220,7 @@ func TestPrepareSeedsFromClaudeCache(t *testing.T) {
 
 	f := prepareFixture{
 		cfg:   cfg,
-		store: state.Open(cfg.AccountsRoot),
+		store: state.Open(cfg),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -246,7 +242,7 @@ func TestPrepareSeedsFromClaudeCache(t *testing.T) {
 // to another — worse than showing nothing.
 func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +255,7 @@ func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
 
 	f := prepareFixture{
 		cfg:   cfg,
-		store: state.Open(cfg.AccountsRoot),
+		store: state.Open(cfg),
 		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
 		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
 	}
@@ -272,14 +268,14 @@ func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
 // looking broken.
 func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com"}}`)
 
 	now := time.Now()
-	store := state.Open(cfg.AccountsRoot)
+	store := state.Open(cfg)
 	key := state.Key{Name: "primary"}
 	dec, err := store.Claim([]state.Key{key}, now)
 	if err != nil {
@@ -311,7 +307,7 @@ func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
 // as current on the next run, without a request and without a stale nag.
 func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +318,7 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	    "utilization":{"limits":[{"kind":"session","percent":58}]}}}`,
 		time.Now().Add(-37*time.Hour).UnixMilli()))
 
-	store := state.Open(cfg.AccountsRoot)
+	store := state.Open(cfg)
 	key := state.Key{UUID: "uuid-1", Name: "primary"}
 	fetchedAt := time.Now().Add(-5 * time.Second)
 	dec, err := store.Claim([]state.Key{key}, fetchedAt)

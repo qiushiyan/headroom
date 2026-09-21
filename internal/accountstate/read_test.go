@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -21,7 +20,7 @@ func writeJSON(t *testing.T, path, body string) {
 }
 func TestReadDiskFacts(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +40,7 @@ func TestReadDiskFacts(t *testing.T) {
 	// Seed the store the way the store gets seeded: a claimed, completed
 	// fetch. The claim's spacing is then live, which is exactly the state a
 	// statusline refresher reads in — figures present, next fetch not yet due.
-	st := state.Open(cfg.AccountsRoot)
+	st := state.Open(cfg)
 	now := time.Now()
 	key := state.Key{UUID: "uuid-1", Name: "primary"}
 	decs, err := st.Claim([]state.Key{key}, now)
@@ -53,7 +52,7 @@ func TestReadDiskFacts(t *testing.T) {
 	if _, err := st.Complete(key, decs[0].Generation, state.OutcomeStored, []byte(body), now); err != nil {
 		t.Fatal(err)
 	}
-	if err := accounts.SetCurrent(cfg, "b@x.com"); err != nil {
+	if err := accounts.Discover(cfg).SetCurrent(accounts.Account{Scope: cfg, Name: "b@x.com"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +99,7 @@ func TestReadDiskFacts(t *testing.T) {
 
 func TestReadKeepsZeroRowCache(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +107,7 @@ func TestReadKeepsZeroRowCache(t *testing.T) {
 	  "oauthAccount":{"emailAddress":"p@x.com","accountUuid":"u"},
 	  "cachedUsageUtilization":{"fetchedAtMs":%d,"accountUuid":"u",
 	    "utilization":{"limits":[]}}}`, time.Now().UnixMilli()))
-	v := Read(cfg, state.Open(cfg.AccountsRoot), time.Now()).Accounts[0].View
+	v := Read(cfg, state.Open(cfg), time.Now()).Accounts[0].View
 	if v.Obs == nil {
 		t.Fatal("a zero-row cache was discarded instead of shown as 'no limits'")
 	}
@@ -139,7 +138,7 @@ func TestReadSelectsTheNewestObservation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			home := t.TempDir()
-			cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+			cfg := claudeScope(home, "primary")
 			if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +151,7 @@ func TestReadSelectsTheNewestObservation(t *testing.T) {
 			}
 			writeJSON(t, cfg.PrimaryMeta(), meta)
 
-			store := state.Open(cfg.AccountsRoot)
+			store := state.Open(cfg)
 			key := state.Key{UUID: "uuid-1", Name: "primary"}
 			var storedAt time.Time
 			if c.ownAge != 0 {

@@ -25,11 +25,11 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-func runAccountsAdd(cfg config.Config, args []string) int {
+func runAccountsAdd(cfg config.Scope, args []string) int {
 	return runAccountsAddTo(os.Stdout, os.Stderr, cfg, args)
 }
 
-func runAccountsAddTo(out, errw io.Writer, cfg config.Config, args []string) int {
+func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int {
 	var name string
 	opt := accounts.SeedOptions{}
 	for i := range args {
@@ -71,7 +71,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Config, args []string) int
 		return 1
 	}
 	fmt.Fprintf(out, "seeded %s\n", dir)
-	fmt.Fprintf(out, "  projects → %s (sessions are machine-global)\n", cfg.ProjectsDir())
+	fmt.Fprintf(out, "  projects → %s (sessions are machine-global)\n", cfg.StoreDir())
 	if opt.ShareFrom != "" {
 		if len(shared) == 0 {
 			fmt.Fprintf(out, "  shared nothing from %s (no matching entries)\n", opt.ShareFrom)
@@ -98,7 +98,7 @@ type removeDeps struct {
 	pick func(cands []removeCandidate) (name string, ok bool)
 }
 
-func runAccountsRemove(cfg config.Config, args []string) int {
+func runAccountsRemove(cfg config.Scope, args []string) int {
 	return runAccountsRemoveTo(os.Stdout, os.Stderr, cfg, args, removeDeps{
 		probe:          psProbe,
 		deleteKeychain: creds.DeleteKeychainItem,
@@ -125,9 +125,9 @@ type removeCandidate struct {
 // accounts root that does not exist is an empty list; one that cannot be
 // read is returned as the error, so "nothing to remove" is never said over
 // a root that was merely unreadable.
-func removeCandidates(cfg config.Config) ([]removeCandidate, error) {
+func removeCandidates(cfg config.Scope) ([]removeCandidate, error) {
 	var cands []removeCandidate
-	for _, a := range accounts.Discover(cfg) {
+	for _, a := range accounts.Discover(cfg).Accounts {
 		if a.IsPrimary() {
 			continue
 		}
@@ -252,7 +252,7 @@ func listRemovable(w io.Writer, cands []removeCandidate, err error) {
 	}
 }
 
-func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, deps removeDeps) int {
+func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, deps removeDeps) int {
 	var name string
 	yes := false
 	for _, a := range args {
@@ -295,7 +295,7 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Config, args []string, 
 	}
 	// The primary is not removable: it is Claude Code's default dir, not an
 	// entry in the accounts root, and its name is not a dir name at all.
-	accts := accounts.Discover(cfg)
+	accts := accounts.Discover(cfg).Accounts
 	var target *accounts.Account
 	for i := range accts {
 		if accts[i].Name == name {

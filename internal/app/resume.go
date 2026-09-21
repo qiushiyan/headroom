@@ -48,15 +48,15 @@ func psProbe(pid int) (int64, error) {
 	return t.Unix(), nil
 }
 
-func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []sessions.AccountRef, []accounts.Account, string) {
-	accts := accounts.Discover(cfg)
-	refs := make([]sessions.AccountRef, 0, len(accts))
-	for _, a := range accts {
-		refs = append(refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir(cfg)})
+func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []sessions.AccountRef, accounts.Set, string) {
+	set := accounts.Discover(cfg)
+	refs := make([]sessions.AccountRef, 0, len(set.Accounts))
+	for _, a := range set.Accounts {
+		refs = append(refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
 	}
 	cwd, _ := os.Getwd()
 	listing := sessions.Collect(sessions.Input{
-		ProjectsDir: cfg.ProjectsDir(),
+		ProjectsDir: cfg.StoreDir(),
 		CWD:         cwd,
 		Accounts:    refs,
 		Owners:      st.Load().Owners(),
@@ -67,10 +67,10 @@ func collectSessions(cfg config.Config, st *state.Store) (sessions.Listing, []se
 	// back to the current account by doctrine, so a tolerant read here would
 	// be the resume surface's route around the launch path's refusal.
 	current := ""
-	if sel, err := accounts.Select(cfg, accts, ""); err == nil {
+	if sel, err := set.Select(""); err == nil {
 		current = sel.Name
 	}
-	return listing, refs, accts, current
+	return listing, refs, set, current
 }
 
 // resumeUI is the picker's whole mutable state. One mode value at a time —
@@ -106,7 +106,7 @@ const (
 
 const pendingDTimeout = 800 * time.Millisecond
 
-func runSessions(cfg config.Config, args []string) int {
+func runSessions(cfg config.Scope, args []string) int {
 	jsonMode := false
 	cdFile := ""
 	var claudeArgs []string
@@ -170,8 +170,8 @@ parse:
 		return 1
 	}
 
-	st := state.Open(cfg.AccountsRoot)
-	listing, refs, accts, current := collectSessions(cfg, st)
+	st := state.Open(cfg)
+	listing, refs, set, current := collectSessions(cfg, st)
 	t, err := tui.OpenTTY()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
@@ -180,7 +180,7 @@ parse:
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, accts: accts, current: current, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
+		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, set: set, current: current, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment

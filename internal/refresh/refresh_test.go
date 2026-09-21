@@ -15,15 +15,15 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tag"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
-func requestCandidate(t *testing.T, name, token string) *Candidate {
+func requestCandidate(t *testing.T, url, name, token string) *Candidate {
 	t.Helper()
-	c, status := Prepare(accounts.Account{Name: name, Meta: accounts.Meta{Readable: true}}, creds.Blob{Token: token, ExpiresState: tag.None}, true, time.Now())
+	c, status := Prepare(accounts.Account{Scope: config.Scope{UsageURL: url}, Name: name, Readable: true}, creds.Blob{Token: token, ExpiresState: tag.None}, true, time.Now())
 	if c == nil || status != accountstate.AttemptPending {
 		t.Fatalf("candidate: %v %v", c, status)
 	}
@@ -47,7 +47,7 @@ func TestRequestLifecycle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			st := state.Open(root)
+			st := state.Open(config.Scope{AccountsRoot: root})
 			key := state.Key{Name: "a"}
 			before := time.Now().Truncate(time.Millisecond)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +62,7 @@ func TestRequestLifecycle(t *testing.T) {
 				srv.Close()
 			}
 			results := 0
-			for r := range Start(context.Background(), srv.URL, st, []*Candidate{requestCandidate(t, "a", "secret")}, nil) {
+			for r := range Start(context.Background(), st, []*Candidate{requestCandidate(t, srv.URL, "a", "secret")}, nil) {
 				results++
 				if r.Attempt.State != tc.want || r.Attempt.HTTPCode != tc.code || r.StoreErr != nil {
 					t.Fatalf("result=%+v", r)
@@ -94,7 +94,7 @@ func TestRequestLifecycle(t *testing.T) {
 				t.Fatalf("results=%d", results)
 			}
 			next := st.Load().NextEligible(key, time.Now())
-			spacing := usage.RequestSpacing
+			spacing := config.DefaultSpacing
 			if tc.code == 429 {
 				spacing = state.CooldownBase
 			}
@@ -119,8 +119,8 @@ func TestAnyHTTP200ClearsRefusalStrikes(t *testing.T) {
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
 			defer srv.Close()
-			st := state.Open(root)
-			for r := range Start(context.Background(), srv.URL, st, []*Candidate{requestCandidate(t, "a", "token")}, nil) {
+			st := state.Open(config.Scope{AccountsRoot: root})
+			for r := range Start(context.Background(), st, []*Candidate{requestCandidate(t, srv.URL, "a", "token")}, nil) {
 				if r.StoreErr != nil {
 					t.Fatal(r.StoreErr)
 				}
@@ -146,15 +146,15 @@ func TestFetchClaimsBudgetBeforeRequesting(t *testing.T) {
 		// What a separate process would see, reading the store off disk right
 		// as this request arrives.
 		now := time.Now()
-		eligibleAtRequestTime = !state.Open(root).Load().
+		eligibleAtRequestTime = !state.Open(config.Scope{AccountsRoot: root}).Load().
 			NextEligible(state.Key{Name: "acct"}, now).After(now)
 		<-released
 		w.Write([]byte(`{"limits":[{"kind":"session","percent":1}]}`))
 	}))
 	defer srv.Close()
 
-	st := state.Open(root)
-	updates := Start(context.Background(), srv.URL, st, []*Candidate{requestCandidate(t, "acct", "t")}, nil)
+	st := state.Open(config.Scope{AccountsRoot: root})
+	updates := Start(context.Background(), st, []*Candidate{requestCandidate(t, srv.URL, "acct", "t")}, nil)
 
 	close(released)
 	for range updates {
@@ -177,7 +177,7 @@ func TestUnauthorizedSamplesCredentialsOnce(t *testing.T) {
 		{`unreadable`, TokenUnknown},
 	} {
 		reads := 0
-		for r := range Start(context.Background(), srv.URL, state.Open(t.TempDir()), []*Candidate{requestCandidate(t, "a", "old")}, func(string) string { reads++; return tc.raw }) {
+		for r := range Start(context.Background(), state.Open(config.Scope{AccountsRoot: t.TempDir()}), []*Candidate{requestCandidate(t, srv.URL, "a", "old")}, func(string) (string, bool) { reads++; blob, ok := creds.Parse(tc.raw); return blob.Token, ok }) {
 			if r.TokenAfter401 != tc.want || r.Attempt.HTTPCode != 401 {
 				t.Fatalf("evidence: %+v", r)
 			}
@@ -198,7 +198,7 @@ func TestReceivedObservationSurvivesCompletionFailure(t *testing.T) {
 		w.Write([]byte(`{"limits":[{"kind":"session","percent":42}]}`))
 	}))
 	defer srv.Close()
-	for r := range Start(context.Background(), srv.URL, state.Open(root), []*Candidate{requestCandidate(t, "a", "t")}, nil) {
+	for r := range Start(context.Background(), state.Open(config.Scope{AccountsRoot: root}), []*Candidate{requestCandidate(t, srv.URL, "a", "t")}, nil) {
 		if !errors.Is(r.StoreErr, state.ErrReadOnly) || r.Observation == nil || r.Observation.Rows[0].Percent != 42 {
 			t.Fatalf("lost response or persistence evidence: %+v", r)
 		}

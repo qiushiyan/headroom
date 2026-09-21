@@ -9,19 +9,15 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-func topoConfig(t *testing.T) (config.Config, Account) {
+func topoConfig(t *testing.T) (config.Scope, Account) {
 	t.Helper()
 	home := t.TempDir()
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-	}
+	cfg := claudeScope(home, "qiushi")
 	dir := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return cfg, Account{ConfigDir: dir, Name: "yan@planlab.ai"}
+	return cfg, Account{Scope: cfg, ConfigDir: dir, Name: "yan@planlab.ai"}
 }
 
 // Each failure mode carries its own remedy, so the classification — not just
@@ -29,52 +25,52 @@ func topoConfig(t *testing.T) (config.Config, Account) {
 // a real directory holds unmigrated sessions, an absent link was never
 // seeded, and an absent canonical store is a different message again.
 func TestVerifyTopologyClassifies(t *testing.T) {
-	link := func(cfg config.Config, a Account) string { return filepath.Join(a.ConfigDir, "projects") }
+	link := func(cfg config.Scope, a Account) string { return filepath.Join(a.ConfigDir, "projects") }
 
 	t.Run("valid symlink passes", func(t *testing.T) {
 		cfg, a := topoConfig(t)
-		os.MkdirAll(cfg.ProjectsDir(), 0o755)
-		os.Symlink(cfg.ProjectsDir(), link(cfg, a))
-		if err := VerifyTopology(cfg, a); err != nil {
+		os.MkdirAll(cfg.StoreDir(), 0o755)
+		os.Symlink(cfg.StoreDir(), link(cfg, a))
+		if err := VerifyTopology(a); err != nil {
 			t.Errorf("valid topology refused: %v", err)
 		}
 	})
 	t.Run("primary passes vacuously", func(t *testing.T) {
 		cfg, _ := topoConfig(t)
-		if err := VerifyTopology(cfg, Account{Name: "qiushi"}); err != nil {
+		if err := VerifyTopology(Account{Scope: cfg, Name: "qiushi"}); err != nil {
 			t.Errorf("primary refused: %v", err)
 		}
 	})
 	t.Run("missing link never seeded", func(t *testing.T) {
 		cfg, a := topoConfig(t)
-		os.MkdirAll(cfg.ProjectsDir(), 0o755)
-		err := VerifyTopology(cfg, a)
+		os.MkdirAll(cfg.StoreDir(), 0o755)
+		err := VerifyTopology(a)
 		if err == nil || !strings.Contains(err.Error(), "missing") {
 			t.Errorf("err = %v, want the never-seeded message", err)
 		}
 	})
 	t.Run("real directory is the history fork", func(t *testing.T) {
 		cfg, a := topoConfig(t)
-		os.MkdirAll(cfg.ProjectsDir(), 0o755)
+		os.MkdirAll(cfg.StoreDir(), 0o755)
 		os.MkdirAll(link(cfg, a), 0o755)
-		err := VerifyTopology(cfg, a)
+		err := VerifyTopology(a)
 		if err == nil || !strings.Contains(err.Error(), "real directory") {
 			t.Errorf("err = %v, want the unmigrated-sessions message", err)
 		}
 	})
 	t.Run("link resolving elsewhere", func(t *testing.T) {
 		cfg, a := topoConfig(t)
-		os.MkdirAll(cfg.ProjectsDir(), 0o755)
+		os.MkdirAll(cfg.StoreDir(), 0o755)
 		other := t.TempDir()
 		os.Symlink(other, link(cfg, a))
-		err := VerifyTopology(cfg, a)
+		err := VerifyTopology(a)
 		if err == nil || !strings.Contains(err.Error(), "does not resolve") {
 			t.Errorf("err = %v, want the fix-by-hand message", err)
 		}
 	})
 	t.Run("absent canonical store", func(t *testing.T) {
-		cfg, a := topoConfig(t)
-		err := VerifyTopology(cfg, a)
+		_, a := topoConfig(t)
+		err := VerifyTopology(a)
 		if err == nil || !strings.Contains(err.Error(), "does not exist") {
 			t.Errorf("err = %v, want the absent-store message", err)
 		}
@@ -82,10 +78,10 @@ func TestVerifyTopologyClassifies(t *testing.T) {
 	t.Run("canonical store must not be a symlink", func(t *testing.T) {
 		cfg, a := topoConfig(t)
 		real := t.TempDir()
-		os.MkdirAll(filepath.Dir(cfg.ProjectsDir()), 0o755)
-		os.Symlink(real, cfg.ProjectsDir())
-		os.Symlink(cfg.ProjectsDir(), link(cfg, a))
-		err := VerifyTopology(cfg, a)
+		os.MkdirAll(filepath.Dir(cfg.StoreDir()), 0o755)
+		os.Symlink(real, cfg.StoreDir())
+		os.Symlink(cfg.StoreDir(), link(cfg, a))
+		err := VerifyTopology(a)
 		if err == nil || !strings.Contains(err.Error(), "itself a symlink") {
 			t.Errorf("err = %v, want the canonical-must-be-real message", err)
 		}
@@ -98,24 +94,20 @@ func TestVerifyTopologyClassifies(t *testing.T) {
 // silently to whichever discovery listed first.
 func TestSelectRefusesAmbiguousName(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-	}
+	cfg := claudeScope(home, "qiushi")
 	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "qiushi"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	accts := Discover(cfg)
-	if len(accts) != 2 {
-		t.Fatalf("discovery dropped a row: %d accounts, want 2 (it must stay total)", len(accts))
+	if len(accts.Accounts) != 2 {
+		t.Fatalf("discovery dropped a row: %d accounts, want 2 (it must stay total)", len(accts.Accounts))
 	}
-	if _, err := Select(cfg, accts, "qiushi"); err == nil {
+	if _, err := accts.Select("qiushi"); err == nil {
 		t.Error("an ambiguous name resolved instead of refusing")
 	}
 	// The unambiguous path is untouched.
 	os.WriteFile(cfg.CurrentFile(), []byte("qiushi\n"), 0o644)
-	if _, err := Select(cfg, accts, ""); err == nil {
+	if _, err := accts.Select(""); err == nil {
 		t.Error(".current naming an ambiguous account resolved instead of refusing")
 	}
 }
@@ -125,10 +117,10 @@ func TestSelectRefusesAmbiguousName(t *testing.T) {
 // dir is not — present-but-primary is unverified vendor territory — and
 // neither is anything undiscovered or relative.
 func TestKnownExtraDir(t *testing.T) {
-	accts := []Account{
+	accts := Set{Accounts: []Account{
 		{Name: "qiushi"}, // primary: ConfigDir ""
 		{Name: "yan@planlab.ai", ConfigDir: "/root/yan@planlab.ai"},
-	}
+	}}
 	cases := map[string]bool{
 		"/root/yan@planlab.ai": true,
 		"/root/other@x.com":    false,
@@ -137,7 +129,7 @@ func TestKnownExtraDir(t *testing.T) {
 		"/Users/x/.claude":     false,
 	}
 	for dir, want := range cases {
-		if got := KnownExtraDir(accts, dir); got != want {
+		if got := accts.KnownExtraDir(dir); got != want {
 			t.Errorf("KnownExtraDir(%q) = %v, want %v", dir, got, want)
 		}
 	}

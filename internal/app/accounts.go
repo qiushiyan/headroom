@@ -30,7 +30,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // presenceWindow is how long after the last keypress the board keeps
@@ -45,13 +44,18 @@ func isCancelKey(k tui.Key) bool {
 		k == tui.Key{Kind: tui.KeyCtrl, Rune: 'd'}
 }
 
-// knownExtraDir adapts the board's list to accounts.KnownExtraDir.
-func knownExtraDir(list []*accountData, dir string) bool {
+// knownExtraDir adapts the board's list to the discovered set's KnownExtraDir.
+func knownExtraDir(scope config.Scope, list []*accountData, dir string) bool {
+	return setOf(scope, list).KnownExtraDir(dir)
+}
+
+// setOf rebuilds the discovered set a board list was prepared from.
+func setOf(scope config.Scope, list []*accountData) accounts.Set {
 	accts := make([]accounts.Account, len(list))
 	for i, d := range list {
 		accts[i] = d.Acct
 	}
-	return accounts.KnownExtraDir(accts, dir)
+	return accounts.Set{Scope: scope, Accounts: accts}
 }
 
 // notActionable counts accounts whose displayed figures are not grounds for a
@@ -76,7 +80,7 @@ func notActionable(list []*accountData, now int64) int {
 // layout is the presentation — the classic blocks or one row per account —
 // and nothing but presentation: both layouts run the same rounds, honour
 // the same claim and commit the same choice.
-func runAccounts(cfg config.Config, layout render.Layout) int {
+func runAccounts(cfg config.Scope, layout render.Layout) int {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !stdoutIsTTY() {
 		return printBoard(cfg, layout)
 	}
@@ -96,10 +100,10 @@ func runAccounts(cfg config.Config, layout render.Layout) int {
 // the terminal wraps still says everything. The terminal's width, when
 // there is one, only sizes the compact layout's columns so its rows fit
 // when they can.
-func printBoard(cfg config.Config, layout render.Layout) int {
-	st := state.Open(cfg.AccountsRoot)
+func printBoard(cfg config.Scope, layout render.Layout) int {
+	st := state.Open(cfg)
 	list, _, _ := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
 	}
 	tty := stdoutIsTTY()
@@ -129,7 +133,7 @@ func printBoard(cfg config.Config, layout render.Layout) int {
 
 // picker is the interactive board's mutable state.
 type picker struct {
-	cfg    config.Config
+	cfg    config.Scope
 	st     *state.Store
 	p      render.Palette
 	fp     *framePrinter
@@ -153,7 +157,7 @@ type picker struct {
 
 const ackTTL = 4 * time.Second
 
-func runPicker(cfg config.Config, layout render.Layout) int {
+func runPicker(cfg config.Scope, layout render.Layout) int {
 	t, err := tui.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
@@ -168,7 +172,7 @@ func runPicker(cfg config.Config, layout render.Layout) int {
 
 	ui := &picker{
 		cfg:     cfg,
-		st:      state.Open(cfg.AccountsRoot),
+		st:      state.Open(cfg),
 		p:       render.NewPalette(true),
 		fp:      &framePrinter{},
 		layout:  layout,
@@ -230,7 +234,7 @@ func runPicker(cfg config.Config, layout render.Layout) int {
 			case k.Kind == tui.KeyEnter:
 				chosen := ui.list[ui.sel]
 				t.Close()
-				if err := accounts.SetCurrent(cfg, chosen.Acct.Name); err != nil {
+				if err := setOf(cfg, ui.list).SetCurrent(chosen.Acct); err != nil {
 					fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
 					return 1
 				}
@@ -267,7 +271,7 @@ func (ui *picker) startRound(ctx context.Context, manual bool) {
 			ui.wanted++
 		}
 	}
-	ui.updates = launchFetches(ctx, ui.cfg, list, ui.st)
+	ui.updates = launchFetches(ctx, list, ui.st)
 }
 
 // ackString is the one-line answer to a manual refresh, composed after the
@@ -323,7 +327,7 @@ func (ui *picker) schedule() {
 	// otherwise have expired by the time the round came due — a poll scheduled
 	// past its own gate never fires at all.
 	if ui.wanted == 0 {
-		next = now.Add(usage.RequestSpacing)
+		next = now.Add(ui.cfg.RequestSpacing())
 	}
 	ui.nextAt = next
 }
@@ -540,9 +544,9 @@ func (ui *picker) status(now time.Time) string {
 		// "this shell lives inside a managed session", which is this
 		// machine's ordinary environment — check reports it, the board does
 		// not caption the normal case.
-		if tgt, err := launch.For(d.Acct.ConfigDir); err == nil {
-			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !knownExtraDir(ui.list, v) {
-				parts = append(parts, "ambient CLAUDE_CONFIG_DIR neutralized")
+		if tgt, err := launch.For(ui.cfg.Vendor, d.Acct.ConfigDir); err == nil {
+			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !knownExtraDir(ui.cfg, ui.list, v) {
+				parts = append(parts, "ambient "+ui.cfg.Env().HomeVar+" neutralized")
 			}
 		}
 		break

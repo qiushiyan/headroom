@@ -28,17 +28,17 @@ import (
 // modes have different remedies (a link elsewhere is "fix by hand", a real
 // directory holds unmigrated sessions), and comparing resolved paths as
 // strings would break under symlinked homes.
-func VerifyTopology(cfg config.Config, a Account) error {
+func VerifyTopology(a Account) error {
 	if a.IsPrimary() {
 		return nil
 	}
-	canon := cfg.ProjectsDir()
-	link := a.Dir(cfg) + "/projects"
+	canon := a.Scope.StoreDir()
+	link := a.Dir() + "/" + a.Scope.StoreLink()
 
 	cfi, err := os.Lstat(canon)
 	switch {
 	case os.IsNotExist(err):
-		return fmt.Errorf("canonical session store %s does not exist — %s must be a symlink to it; create the store (mkdir); `headroom accounts add` seeds new accounts", canon, link)
+		return fmt.Errorf("canonical session store %s does not exist — %s must be a symlink to it; create the store (mkdir); `%s` seeds new accounts", canon, link, addCommand(a.Scope))
 	case err != nil:
 		return fmt.Errorf("canonical session store %s unreadable (%v)", canon, err)
 	case cfi.Mode()&os.ModeSymlink != 0:
@@ -50,7 +50,7 @@ func VerifyTopology(cfg config.Config, a Account) error {
 	lfi, err := os.Lstat(link)
 	switch {
 	case os.IsNotExist(err):
-		return fmt.Errorf("%s is missing — it must be a symlink to %s (`headroom accounts add` seeds new accounts with it)", link, canon)
+		return fmt.Errorf("%s is missing — it must be a symlink to %s (`%s` seeds new accounts with it)", link, canon, addCommand(a.Scope))
 	case err != nil:
 		return fmt.Errorf("%s unreadable (%v)", link, err)
 	case lfi.Mode()&os.ModeSymlink != 0:
@@ -61,8 +61,16 @@ func VerifyTopology(cfg config.Config, a Account) error {
 		}
 		return fmt.Errorf("%s is a symlink but does not resolve to %s — fix it by hand", link, canon)
 	case lfi.IsDir():
-		return fmt.Errorf("%s is a real directory (unmigrated sessions?) — move its contents into %s and replace it with a symlink there (with no claude running); it must be a symlink to %s", link, canon, canon)
+		return fmt.Errorf("%s is a real directory (unmigrated sessions?) — move its contents into %s and replace it with a symlink there (with no %s running); it must be a symlink to %s", link, canon, a.Scope.Binary(), canon)
 	default:
 		return fmt.Errorf("%s is not a symlink to %s — fix it by hand", link, canon)
 	}
+}
+
+// addCommand is the seeding command's spelling for a scope.
+func addCommand(s config.Scope) string {
+	if s.Vendor == config.Codex {
+		return "headroom accounts add --vendor codex"
+	}
+	return "headroom accounts add"
 }

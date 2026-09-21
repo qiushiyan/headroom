@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/qiushiyan/headroom/internal/config"
 )
 
 // The shipped command, end to end minus the process boundary: flag policy,
@@ -15,7 +13,7 @@ import (
 // built from.
 func TestLimitsCommand(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	extraDir := filepath.Join(cfg.AccountsRoot, "b@x.com")
 	if err := os.MkdirAll(extraDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -65,7 +63,7 @@ func TestLimitsCommand(t *testing.T) {
 // which one the consumer is looking at.
 func TestLimitsSurfacesStateProblems(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "primary"}
+	cfg := claudeScope(home, "primary")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}

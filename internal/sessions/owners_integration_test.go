@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -24,7 +25,7 @@ func storeFixture(t *testing.T) (string, func(string, string, string, time.Time)
 }
 func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
 	projects, write := storeFixture(t)
-	st := state.Open(t.TempDir())
+	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
 	live := func() (map[string]bool, bool) { return sessions.TranscriptIDs(projects) }
 	now := time.Now()
 	write("-tmp-p", "s-old.jsonl", "", now)
@@ -53,7 +54,7 @@ func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
 
 func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 	projects, write := storeFixture(t)
-	st := state.Open(t.TempDir())
+	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
 	live := func() (map[string]bool, bool) { return sessions.TranscriptIDs(projects) }
 	now := time.Now()
 	write("-p-hidden", "s-hidden.jsonl", "", now)

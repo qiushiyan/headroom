@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -54,7 +55,7 @@ func TestClaimIsTestAndSet(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s := Open(root)
+			s := Open(rootScope(root))
 			<-start
 			dec, _ := s.Claim([]Key{key("a")}, now)
 			permits[i] = dec[0].Permit
@@ -78,7 +79,7 @@ func TestClaimIsTestAndSet(t *testing.T) {
 // they must share one ledger record — keying by dir name would let them
 // double-spend it invisibly.
 func TestIdentityKeyingSharesOneBucket(t *testing.T) {
-	s := Open(t.TempDir())
+	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	a := Key{UUID: "same-uuid", Name: "work@x.com"}
 	b := Key{UUID: "same-uuid", Name: "personal@x.com"}
@@ -100,7 +101,7 @@ func TestIdentityKeyingSharesOneBucket(t *testing.T) {
 }
 
 func TestClaimDeniesInsideTheQuietPeriod(t *testing.T) {
-	s := Open(t.TempDir())
+	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	if !claimOne(t, s, key("a"), now).Permit {
 		t.Fatal("first claim must be granted")
@@ -112,7 +113,7 @@ func TestClaimDeniesInsideTheQuietPeriod(t *testing.T) {
 	if !dec.NextEligible.After(now) {
 		t.Error("a denial must say when the account becomes eligible")
 	}
-	if !claimOne(t, s, key("a"), now.Add(usage.RequestSpacing+time.Second)).Permit {
+	if !claimOne(t, s, key("a"), now.Add(config.DefaultSpacing+time.Second)).Permit {
 		t.Error("the quiet period must end")
 	}
 }
@@ -121,22 +122,22 @@ func TestClaimDeniesInsideTheQuietPeriod(t *testing.T) {
 // seconds and another process can claim, fetch and record inside that. The
 // straggler must not overwrite the newer observation or reset its cooldown.
 func TestStaleCompletionIsDropped(t *testing.T) {
-	s := Open(t.TempDir())
+	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	k := key("a")
 	stale := claimOne(t, s, k, now).Generation
 
-	fresh := claimOne(t, s, k, now.Add(2*usage.RequestSpacing)).Generation
+	fresh := claimOne(t, s, k, now.Add(2*config.DefaultSpacing)).Generation
 	if _, err := s.Complete(k, fresh, OutcomeStored,
-		[]byte(`{"limits":[{"kind":"session","percent":10}]}`), now.Add(2*usage.RequestSpacing)); err != nil {
+		[]byte(`{"limits":[{"kind":"session","percent":10}]}`), now.Add(2*config.DefaultSpacing)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Complete(k, stale, OutcomeStored,
-		[]byte(`{"limits":[{"kind":"session","percent":99}]}`), now.Add(3*usage.RequestSpacing)); err != nil {
+		[]byte(`{"limits":[{"kind":"session","percent":99}]}`), now.Add(3*config.DefaultSpacing)); err != nil {
 		t.Fatal(err)
 	}
 
-	obs, ok := s.Load().Observation(k, now.Add(3*usage.RequestSpacing))
+	obs, ok := s.Load().Observation(k, now.Add(3*config.DefaultSpacing))
 	if !ok {
 		t.Fatal("no observation stored")
 	}
@@ -151,7 +152,7 @@ func TestStaleCompletionIsDropped(t *testing.T) {
 // silent mutation of vendor data by the one component that promised not to
 // interpret it. Whitespace is the encoder's to normalize; values are not.
 func TestStoredBodyKeepsEveryValue(t *testing.T) {
-	s := Open(t.TempDir())
+	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	k := key("a")
 	// A reset epoch and an id past float64's exact-integer range: both would
@@ -183,7 +184,7 @@ func TestOnlyUsableBodiesAreStored(t *testing.T) {
 	now := time.Now()
 	k := key("a")
 
-	s := Open(t.TempDir())
+	s := Open(rootScope(t.TempDir()))
 	dec := claimOne(t, s, k, now)
 	if _, err := s.Complete(k, dec.Generation, OutcomeSpent, []byte(`nonsense`), now); err != nil {
 		t.Fatal(err)
@@ -192,7 +193,7 @@ func TestOnlyUsableBodiesAreStored(t *testing.T) {
 		t.Error("an unparseable body was stored")
 	}
 
-	s = Open(t.TempDir())
+	s = Open(rootScope(t.TempDir()))
 	dec = claimOne(t, s, k, now)
 	huge := make([]byte, BodyLimit+1)
 	if _, err := s.Complete(k, dec.Generation, OutcomeStored, huge, now); err != nil {
@@ -211,7 +212,7 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	k := key("a")
-	s := Open(root)
+	s := Open(rootScope(root))
 	dec := claimOne(t, s, k, now)
 	if _, err := s.Complete(k, dec.Generation, OutcomeStored,
 		[]byte(`{"limits":[]}`), now.Add(time.Hour)); err != nil {
@@ -227,7 +228,7 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 	// A next-eligible further out than this code can produce is a clock step.
 	writeDoc(t, root, `{"version":1,"accounts":{"dir:b":{"request":{"next_eligible_ms":`+
 		itoa(now.Add(72*time.Hour).UnixMilli())+`}}}}`)
-	got := Open(root).Load().NextEligible(key("b"), now)
+	got := Open(rootScope(root)).Load().NextEligible(key("b"), now)
 	if got.After(now.Add(CooldownMax + time.Second)) {
 		t.Errorf("absurd deadline not clamped: %v out", got.Sub(now))
 	}
@@ -240,7 +241,7 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 func TestUnreadableSectionSurvivesAnUnrelatedWrite(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"sessions":"not-an-object","extra":{"future":true}}`)
-	s := Open(root)
+	s := Open(rootScope(root))
 
 	if s.Load().OwnersReadable() {
 		t.Fatal("a bad sessions section must not read as readable")
@@ -271,7 +272,7 @@ func TestUnreadableSectionSurvivesAnUnrelatedWrite(t *testing.T) {
 func TestUnreadableLedgerIsQuarantinedAndQuiet(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"accounts":5}`)
-	s := Open(root)
+	s := Open(rootScope(root))
 	now := time.Now()
 
 	dec := claimOne(t, s, key("a"), now)
@@ -282,7 +283,7 @@ func TestUnreadableLedgerIsQuarantinedAndQuiet(t *testing.T) {
 	if string(raw["accounts_unreadable"]) != "5" {
 		t.Errorf("the unreadable bytes were dropped instead of set aside: %v", raw)
 	}
-	if !claimOne(t, Open(root), key("a"), now.Add(CooldownMax+time.Minute)).Permit {
+	if !claimOne(t, Open(rootScope(root)), key("a"), now.Add(CooldownMax+time.Minute)).Permit {
 		t.Error("the quarantine must self-heal after one cooldown")
 	}
 }
@@ -292,7 +293,7 @@ func TestUnreadableLedgerIsQuarantinedAndQuiet(t *testing.T) {
 func TestUnreadableDocumentIsKept(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{ this is not json`)
-	s := Open(root)
+	s := Open(rootScope(root))
 	if len(s.Load().Problems()) == 0 {
 		t.Error("a corrupt document must be reported")
 	}
@@ -311,7 +312,7 @@ func TestNewerSchemaIsReadOnly(t *testing.T) {
 	root := t.TempDir()
 	doc := `{"version":999,"accounts":{},"tomorrow":{"kept":1}}`
 	writeDoc(t, root, doc)
-	s := Open(root)
+	s := Open(rootScope(root))
 
 	if !s.Load().ReadOnly() {
 		t.Fatal("a newer schema must be reported read-only")
@@ -344,7 +345,7 @@ func TestLegacyImportCheckpointsAllRecords(t *testing.T) {
 	write(t, filepath.Join(root, ".owners"), `{"owners":{"s1":{"account":"a","atMs":100}}}`)
 	write(t, filepath.Join(root, "state.json"), `{"version":1,"sessions":{"s2":{"account":"newer","atMs":300}}}`)
 	write(t, filepath.Join(root, ".owners"), `{"owners":{"s1":{"account":"a","atMs":100},"s2":{"account":"older","atMs":200}}}`)
-	s := Open(root)
+	s := Open(rootScope(root))
 	if s.Load().Owners()["s2"].Account != "newer" {
 		t.Fatal("old owner overwrote a newer re-home")
 	}
@@ -377,7 +378,7 @@ func TestLegacyImportCheckpointsAllRecords(t *testing.T) {
 func TestIncompleteLegacyImportRetriesWithoutRetirement(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, ".owners"), `broken`)
-	s := Open(root)
+	s := Open(rootScope(root))
 	if _, err := s.Claim(nil, time.Now()); err == nil {
 		t.Fatal("incomplete import committed")
 	}
@@ -398,7 +399,7 @@ func TestIncompleteLegacyImportRetriesWithoutRetirement(t *testing.T) {
 
 func TestReHomeAndForget(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "not-yet")
-	s := Open(root)
+	s := Open(rootScope(root))
 	now := time.UnixMilli(1000)
 
 	// A fresh machine has no accounts root yet; the first re-home must create
@@ -430,7 +431,7 @@ func TestReHomeAndForget(t *testing.T) {
 // read mid-write.
 func TestTheLedgerIsBoundedByAgeAlone(t *testing.T) {
 	root := t.TempDir()
-	s := Open(root)
+	s := Open(rootScope(root))
 	now := time.Now()
 	if _, err := s.Claim([]Key{key("old"), key("recent")}, now.Add(-retention-time.Hour)); err != nil {
 		t.Fatal(err)
@@ -461,7 +462,7 @@ func TestTheLedgerIsBoundedByAgeAlone(t *testing.T) {
 // contention between surfaces that all start at once.
 func TestADeniedRoundWritesNothing(t *testing.T) {
 	root := t.TempDir()
-	s := Open(root)
+	s := Open(rootScope(root))
 	now := time.Now()
 	claimOne(t, s, key("a"), now)
 
@@ -531,7 +532,7 @@ func TestLockAcquisitionIsBounded(t *testing.T) {
 	defer syscall.Flock(int(held.Fd()), syscall.LOCK_UN)
 
 	start := time.Now()
-	dec, err := Open(root).Claim([]Key{key("a")}, time.Now())
+	dec, err := Open(rootScope(root)).Claim([]Key{key("a")}, time.Now())
 	elapsed := time.Since(start)
 
 	if err != ErrBusy {
@@ -559,7 +560,7 @@ func TestLockAcquisitionIsBounded(t *testing.T) {
 func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"accounts":null,"sessions":null}`)
-	s := Open(root)
+	s := Open(rootScope(root))
 
 	if !claimOne(t, s, key("a"), time.Now()).Permit {
 		t.Error("a null ledger must read as an empty one, not block the claim")
@@ -569,7 +570,7 @@ func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	}
 	// Nothing was destroyed to get there — a null section held no re-home to
 	// lose, which is what separates this from the hollow-record case.
-	if _, ok := Open(root).Load().Owner("s1"); !ok {
+	if _, ok := Open(rootScope(root)).Load().Owner("s1"); !ok {
 		t.Error("the re-home did not survive")
 	}
 }
@@ -580,7 +581,7 @@ func TestNullSectionsAreNotNilMaps(t *testing.T) {
 func TestHollowRehomeRecordsAreRefused(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"sessions":{"s1":{"account":"a@x.com","atMs":1},"s2":{}}}`)
-	snap := Open(root).Load()
+	snap := Open(rootScope(root)).Load()
 
 	if snap.OwnersReadable() {
 		t.Error("a section with a hollow record must not report itself readable")
@@ -604,7 +605,7 @@ func TestAnUnreadableFileIsNotAnEmptyStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(path, 0o600) })
-	s := Open(root)
+	s := Open(rootScope(root))
 
 	if err := s.ReHome("s2", "b@x.com", time.Now(), nil); err != ErrUnreadable {
 		t.Errorf("mutation against a document that could not be read: %v", err)
@@ -613,7 +614,7 @@ func TestAnUnreadableFileIsNotAnEmptyStore(t *testing.T) {
 		t.Error("traffic was authorized on a ledger that could not be read")
 	}
 	os.Chmod(path, 0o600)
-	if _, ok := Open(root).Load().Owner("s1"); !ok {
+	if _, ok := Open(rootScope(root)).Load().Owner("s1"); !ok {
 		t.Error("the re-home was destroyed by a write that treated the file as absent")
 	}
 }
@@ -626,7 +627,7 @@ func TestLegacyImportCommitFailureKeepsSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(root, 0755)
-	st := Open(root)
+	st := Open(rootScope(root))
 	if _, err := st.Claim(nil, time.Now()); err == nil {
 		t.Fatal("import succeeded in an unwritable directory")
 	}
@@ -651,7 +652,7 @@ func TestLegacyImportKeepsReadableFactsIndependent(t *testing.T) {
 		now := time.Now()
 		write(t, filepath.Join(root, "state.json"), `{"version":1,"accounts":{},"sessions":5}`)
 		write(t, filepath.Join(root, ".throttle"), fmt.Sprintf(`{"a":{"next_eligible_ms":%d}}`, now.Add(10*time.Minute).UnixMilli()))
-		got, err := Open(root).Claim([]Key{key("a")}, now)
+		got, err := Open(rootScope(root)).Claim([]Key{key("a")}, now)
 		if err == nil && got[0].Permit {
 			t.Fatal("incomplete owner evidence bypassed a live legacy cooldown")
 		}
@@ -661,7 +662,7 @@ func TestLegacyImportKeepsReadableFactsIndependent(t *testing.T) {
 		now := time.Now()
 		write(t, filepath.Join(root, ".throttle"), "broken")
 		write(t, filepath.Join(root, ".owners"), `{"owners":{"s":{"account":"chosen","atMs":100}}}`)
-		s := Open(root)
+		s := Open(rootScope(root))
 		snap := s.Load()
 		if !snap.OwnersReadable() || snap.Owners()["s"].Account != "chosen" {
 			t.Errorf("request ledger hid readable owner: %+v, readable=%v", snap.Owners(), snap.OwnersReadable())
@@ -683,7 +684,7 @@ func TestLegacyImportKeepsReadableFactsIndependent(t *testing.T) {
 	t.Run("unreadable legacy owners are visible", func(t *testing.T) {
 		root := t.TempDir()
 		write(t, filepath.Join(root, ".owners"), "broken")
-		if Open(root).Load().OwnersReadable() {
+		if Open(rootScope(root)).Load().OwnersReadable() {
 			t.Fatal("unreadable legacy re-homes reported as readable")
 		}
 	})
@@ -693,7 +694,7 @@ func TestImportedClockAnomalyIsBoundedOnce(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	write(t, filepath.Join(root, ".throttle"), fmt.Sprintf(`{"a":{"next_eligible_ms":%d}}`, now.Add(24*time.Hour).UnixMilli()))
-	s := Open(root)
+	s := Open(rootScope(root))
 	if _, err := s.Claim(nil, now); err != nil {
 		t.Fatal(err)
 	}
@@ -719,7 +720,7 @@ func TestRefusalsEscalateAndStayBounded(t *testing.T) {
 			if tc.strikes > 0 {
 				write(t, filepath.Join(root, "state.json"), fmt.Sprintf(`{"version":1,"accounts":{"dir:a":{"request":{"last_attempt_ms":%d,"strikes":%d}}}}`, now.UnixMilli(), tc.strikes))
 			}
-			s := Open(root)
+			s := Open(rootScope(root))
 			for _, want := range tc.waits {
 				claim := claimOne(t, s, key("a"), now)
 				if !claim.Permit {
@@ -732,5 +733,75 @@ func TestRefusalsEscalateAndStayBounded(t *testing.T) {
 				now = next
 			}
 		})
+	}
+}
+
+// Spacing is a floor on every deadline the ledger computes. A scope whose
+// spacing sits above CooldownMax must never be handed an earlier retry by one
+// of the clamps that cap a deadline there — after a success, after a refusal,
+// in the claim's own answer, in a snapshot's, and on the degraded path.
+func TestSpacingAboveCooldownMaxIsNeverShortened(t *testing.T) {
+	spacing := CooldownMax + 14*time.Minute
+	scope := config.Scope{Vendor: config.Codex, AccountsRoot: t.TempDir(), Spacing: spacing}
+	s := Open(scope)
+	k := Key{UUID: "acct/user", Name: "a@x.com"}
+	now := time.Now()
+	atLeast := func(what string, got time.Time, from time.Time) {
+		t.Helper()
+		// Deadlines are stored in whole milliseconds.
+		if got.Before(from.Add(spacing).Truncate(time.Millisecond)) {
+			t.Errorf("%s: next eligible in %s, sooner than the %s spacing", what, got.Sub(from), spacing)
+		}
+	}
+
+	decs, err := s.Claim([]Key{k}, now)
+	if err != nil || !decs[0].Permit {
+		t.Fatalf("first claim: %+v %v", decs, err)
+	}
+	atLeast("claim", decs[0].NextEligible, now)
+	atLeast("snapshot after claim", s.Load().NextEligible(k, now), now)
+
+	next, err := s.Complete(k, decs[0].Generation, OutcomeStored, []byte(`{"rate_limit":null}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atLeast("success", next, now)
+	atLeast("snapshot after success", s.Load().NextEligible(k, now), now)
+
+	// Inside the spacing but past CooldownMax: still denied, and the denial
+	// names the real deadline rather than one clamped to CooldownMax.
+	later := now.Add(CooldownMax + time.Minute)
+	decs, _ = s.Claim([]Key{k}, later)
+	if decs[0].Permit {
+		t.Fatal("a claim inside the spacing was permitted")
+	}
+	atLeast("denied claim", decs[0].NextEligible, now)
+
+	// A refusal never buys an earlier retry than an ordinary attempt.
+	after := now.Add(spacing + time.Second)
+	decs, _ = s.Claim([]Key{k}, after)
+	if !decs[0].Permit {
+		t.Fatalf("claim after the spacing denied: %+v", decs[0])
+	}
+	next, err = s.Complete(k, decs[0].Generation, OutcomeRefused, nil, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atLeast("refusal", next, after)
+}
+
+// The default spacing leaves today's arithmetic alone: CooldownMax still caps.
+func TestDefaultSpacingKeepsCooldownMaxAsTheCeiling(t *testing.T) {
+	root := t.TempDir()
+	s := Open(rootScope(root))
+	k := Key{Name: "a"}
+	now := time.Now()
+	doc := fmt.Sprintf(`{"version":1,"accounts":{"dir:a":{"request":{"last_attempt_ms":%d,"next_eligible_ms":%d}}}}`,
+		now.UnixMilli(), now.Add(48*time.Hour).UnixMilli())
+	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Load().NextEligible(k, now); got.After(now.Add(CooldownMax)) {
+		t.Errorf("clock-step deadline not clamped: %s out", got.Sub(now))
 	}
 }

@@ -188,12 +188,12 @@ func jsonDocument(list []*accountData, current string, problems []state.Problem,
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-func runDashboardJSON(cfg config.Config) int {
+func runDashboardJSON(cfg config.Scope) int {
 	// current comes from prepare's snapshot: envelope and per-account flags
 	// must agree even if a concurrent select rewrites .current mid-fetch.
-	st := state.Open(cfg.AccountsRoot)
+	st := state.Open(cfg)
 	list, current, snap := prepare(cfg, st)
-	for u := range launchFetches(context.Background(), cfg, list, st) {
+	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
 	}
 	data, err := jsonDocument(list, current, snap.Problems(), time.Now())

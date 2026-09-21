@@ -18,13 +18,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-func runLimits(cfg config.Config, args []string) int {
+func runLimits(cfg config.Scope, args []string) int {
 	return runLimitsTo(os.Stdout, cfg, args)
 }
 
@@ -32,7 +31,7 @@ func runLimits(cfg config.Config, args []string) int {
 // command — flag policy included — is testable without capturing the process's
 // stdout. Diagnostics still go to stderr: the document stream carries JSON or
 // nothing.
-func runLimitsTo(w io.Writer, cfg config.Config, args []string) int {
+func runLimitsTo(w io.Writer, cfg config.Scope, args []string) int {
 	account, accountSet := "", false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -57,14 +56,10 @@ func runLimitsTo(w io.Writer, cfg config.Config, args []string) int {
 	}
 
 	now := time.Now()
-	disk := accountstate.Read(cfg, state.Open(cfg.AccountsRoot), now)
+	disk := accountstate.Read(cfg, state.Open(cfg), now)
 	list, current, snap := accountList(disk.Accounts), disk.Current, disk.Store
-	accts := make([]accounts.Account, len(list))
-	for i, d := range list {
-		accts[i] = d.Acct
-	}
 	if accountSet {
-		a, err := accounts.Select(cfg, accts, account)
+		a, err := setOf(cfg, list).Select(account)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom limits: %v\n", err)
 			return 1

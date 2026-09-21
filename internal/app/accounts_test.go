@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // The board's cadence is eligibility itself. The trap: a floor written as a
@@ -18,21 +18,21 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	now := time.Now()
 	keys := []state.Key{{Name: "a"}, {Name: "b"}}
 
-	st := state.Open(t.TempDir())
+	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
 	if _, err := st.Claim(keys, now); err != nil {
 		t.Fatal(err)
 	}
 	ui := &picker{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
 	ui.schedule()
 
-	if wait := ui.nextAt.Sub(now); wait < usage.RequestSpacing-2*time.Second {
-		t.Errorf("next round in %v; nothing new is obtainable before %v", wait, usage.RequestSpacing)
+	if wait := ui.nextAt.Sub(now); wait < config.DefaultSpacing-2*time.Second {
+		t.Errorf("next round in %v; nothing new is obtainable before %v", wait, config.DefaultSpacing)
 	}
 
 	// One account eligible sooner than the other sets the pace: the board is a
 	// comparison surface, so it refreshes as soon as any row could change.
-	st = state.Open(t.TempDir())
-	if _, err := st.Claim(keys[:1], now.Add(-usage.RequestSpacing/2)); err != nil {
+	st = state.Open(config.Scope{AccountsRoot: t.TempDir()})
+	if _, err := st.Claim(keys[:1], now.Add(-config.DefaultSpacing/2)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Claim(keys[1:], now); err != nil {
@@ -40,13 +40,13 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	}
 	ui = &picker{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
 	ui.schedule()
-	if wait := ui.nextAt.Sub(now); wait > usage.RequestSpacing/2+2*time.Second {
+	if wait := ui.nextAt.Sub(now); wait > config.DefaultSpacing/2+2*time.Second {
 		t.Errorf("next round in %v; the sooner account was ignored", wait)
 	}
 
 	// And an empty ledger — every claim failed, so nothing recorded an
 	// eligibility — must not become a busy loop.
-	ui = &picker{st: state.Open(t.TempDir()), wanted: 1, list: []*accountData{{Key: keys[0]}}}
+	ui = &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), wanted: 1, list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait < refreshFloor-2*time.Second {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
@@ -56,7 +56,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	// either — each round costs a `claude auth status` spawn per account to
 	// re-learn the same answer. How far it backs off is
 	// TestAnIdleBoardStillComesBack's business.
-	ui = &picker{st: state.Open(t.TempDir()), list: []*accountData{{Key: keys[0]}}}
+	ui = &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait <= refreshFloor {
 		t.Errorf("idle board polls every %v, at a subprocess spawn per account", wait)
@@ -101,7 +101,7 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 // press instead of dropping it.
 func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 	now := time.Now()
-	ui := &picker{st: state.Open(t.TempDir())}
+	ui := &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()})}
 
 	// Past the floor `r` runs immediately — even mid-quiet-period, even with
 	// accounts waiting on the budget (wanted > 0): eligibility is the claim's
@@ -147,7 +147,7 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 // the presence window that gates it.
 func TestAnIdleBoardStillComesBack(t *testing.T) {
 	now := time.Now()
-	ui := &picker{st: state.Open(t.TempDir()), list: []*accountData{{Key: state.Key{Name: "a"}}}}
+	ui := &picker{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: state.Key{Name: "a"}}}}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait >= presenceWindow {

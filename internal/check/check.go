@@ -42,6 +42,7 @@ const (
 )
 
 func Run(cfg config.Config, out io.Writer, color bool) int {
+	scope := cfg.Claude
 	p := render.NewPalette(color)
 	fails, unknowns, ownFails := 0, 0, 0
 
@@ -106,15 +107,16 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	// cover the binary side.) Fetches run in parallel and are validated
 	// after the join, so a dead network costs one timeout, not one per
 	// account.
-	accts := accounts.Discover(cfg)
+	set := accounts.Discover(scope)
+	accts := set.Accounts
 	now := time.Now()
-	st := state.Open(cfg.AccountsRoot)
+	st := state.Open(scope)
 	requests := make([]*refresh.Candidate, len(accts))
 	for i, a := range accts {
 		name := a.Name
 		if a.IsPrimary() {
 			name = "primary"
-		} else if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
+		} else if _, err := os.Stat(a.MetaPath()); err != nil {
 			continue
 		}
 		chk(creds.HasKeychainItem(a.ConfigDir), fmt.Sprintf("keychain[%s]: item under predicted name", name), "not logged in, or naming scheme changed")
@@ -126,7 +128,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			reason := "credential blob did not parse"
 			switch eligibility {
 			case accountstate.AttemptTokenStale:
-				reason = fmt.Sprintf("access token stale — any %s session refreshes it", accounts.Launcher(cfg, a))
+				reason = fmt.Sprintf("access token stale — any %s session refreshes it", accounts.Launcher(a))
 			case accountstate.AttemptIdentityUnknown:
 				reason = "account identity unreadable — request budget cannot be identified"
 			}
@@ -134,7 +136,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		}
 	}
 	results := make([]refresh.Result, len(accts))
-	for r := range refresh.Start(context.Background(), cfg.UsageURL, st, requests, creds.ReadKeychain) {
+	for r := range refresh.Start(context.Background(), st, requests, rereadKeychain) {
 		results[r.Index] = r
 	}
 	for i, candidate := range requests {
@@ -149,7 +151,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	}
 
 	// .claude.json still records the logged-in email (dashboard labels).
-	_, ok := accounts.MetaEmail(cfg.PrimaryMeta())
+	_, ok := accounts.MetaEmail(scope.PrimaryMeta())
 	chk(ok, "claude.json: .oauthAccount.emailAddress present", "")
 
 	// The two surfaces this tool grew to depend on are checked through the
@@ -161,7 +163,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			name = a.Name
 		}
 		if !a.IsPrimary() {
-			if _, err := os.Stat(a.MetaPath(cfg)); err != nil {
+			if _, err := os.Stat(a.MetaPath()); err != nil {
 				continue
 			}
 		}
@@ -205,13 +207,13 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 			"cached payload shape drifted — the offline fallback is unreadable")
 	}
 
-	checkOwnState(cfg, accts, st.Load(), chk, own, skip)
+	checkOwnState(st.Load(), chk, own, skip)
 	// Deliberately outside checkOwnState: these depend on .current and the
 	// process environment, not on state.json, so a state document written by
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
-	checkRouting(cfg, accts, os.Environ(), chk, own)
-	checkSessionStore(cfg, accts, chk, skip)
+	checkRouting(set, os.Environ(), chk, own)
+	checkSessionStore(scope, accts, chk, skip)
 
 	fmt.Fprintln(out)
 	switch {
@@ -238,7 +240,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 // registry parses (it is what stops `dd` from deleting an open transcript),
 // and headroom's saved re-homes are readable. Shapes, never census numbers —
 // counts are wrong the day after they're written down.
-func checkSessionStore(cfg config.Config, accts []accounts.Account,
+func checkSessionStore(cfg config.Scope, accts []accounts.Account,
 	chk func(bool, string, string), skip func(string, string)) {
 
 	// history.jsonl: the attribution source. Absent or empty is a fresh
@@ -250,7 +252,7 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 		if !a.IsPrimary() {
 			name = a.Name
 		}
-		f, err := os.Open(filepath.Join(a.Dir(cfg), "history.jsonl"))
+		f, err := os.Open(filepath.Join(a.Dir(), "history.jsonl"))
 		if err != nil {
 			continue
 		}
@@ -268,7 +270,7 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 	// or every open session silently reads as deletable.
 	regFiles, regProblems := 0, 0
 	for _, a := range accts {
-		reg := sessions.ReadRegistry(a.Name, a.Dir(cfg))
+		reg := sessions.ReadRegistry(a.Name, a.Dir())
 		regFiles += len(reg.Entries)
 		regProblems += len(reg.Problems)
 	}
@@ -284,9 +286,9 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 	// *nothing* titles or *nothing* cwd-verifies means the record shapes
 	// drifted.
 	listing := sessions.Collect(sessions.Input{
-		ProjectsDir: cfg.ProjectsDir(),
+		ProjectsDir: cfg.StoreDir(),
 		CWD:         cfg.Home,
-		Owners:      state.Open(cfg.AccountsRoot).Load().Owners(),
+		Owners:      state.Open(cfg).Load().Owners(),
 	})
 	if len(listing.Sessions) == 0 {
 		skip("sessions: not tested", "store is empty")
@@ -344,7 +346,7 @@ func checkSessionStore(cfg config.Config, accts []accounts.Account,
 // a section headroom could not write is headroom's problem, while a stored
 // response that no longer parses is the vendor's, and the closing summary must
 // not confuse the two.
-func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snapshot,
+func checkOwnState(snap state.Snapshot,
 	chk, own func(bool, string, string), skip func(string, string)) {
 
 	if snap.ReadOnly() {
@@ -398,15 +400,16 @@ func checkOwnState(cfg config.Config, accts []accounts.Account, snap state.Snaps
 // checkRouting audits the launch-routing state: the `.current` selection and
 // the process environment. It runs from Run unconditionally — nothing here
 // reads state.json, so no state-schema condition may suppress it.
-func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
+func checkRouting(set accounts.Set, environ []string,
 	chk, own func(bool, string, string)) {
+	cfg, accts := set.Scope, set.Accounts
 
 	// The launch path's own resolver, applied exactly as `headroom launch`
 	// applies it: absent is the documented fresh-start default, while empty,
 	// unreadable or naming a deleted account is corrupt routing state — launch
 	// refuses on it, so the board is where the user hears about it first only
 	// if this line is missing.
-	sel, err := accounts.Select(cfg, accts, "")
+	sel, err := set.Select("")
 	label := "current: .current resolves to a launchable account"
 	if err == nil {
 		label = fmt.Sprintf("%s (%s)", label, sel.Name)
@@ -423,7 +426,7 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 	// stale-wrapper incident's signature and does fail: every unmanaged
 	// `claude` in that shell runs as the primary while writing state beside
 	// whatever directory it happens to start in (verified 2.1.220).
-	if v, present := launch.Ambient(environ); present {
+	if v, present := launch.Ambient(cfg.Vendor, environ); present {
 		if v != "" && !filepath.IsAbs(v) {
 			// Present-but-empty stays the ok-with-detail line below: it is
 			// unverified vendor territory, not this signature.
@@ -437,8 +440,8 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 	// The credential-redirect variable gets the same reporting: managed
 	// launches strip it (obeying it would pair one account's tokens with
 	// another's state — verified 2.1.220), unmanaged tools still obey it.
-	if v, present := launch.AmbientSecureStorage(environ); present {
-		chk(true, fmt.Sprintf("env: inherited CLAUDE_SECURESTORAGE_CONFIG_DIR is neutralized by managed launches (%q)", v), "")
+	for _, in := range launch.Redirects(cfg.Vendor, environ) {
+		chk(true, fmt.Sprintf("env: inherited %s is neutralized by managed launches (%q)", in.Name, in.Value), "")
 	}
 
 	// Every discovered config dir must be absolute: config.Load refuses
@@ -488,13 +491,19 @@ func checkRouting(cfg config.Config, accts []accounts.Account, environ []string,
 		if a.IsPrimary() {
 			continue
 		}
-		err := accounts.VerifyTopology(cfg, a)
+		err := accounts.VerifyTopology(a)
 		hint := ""
 		if err != nil {
 			hint = err.Error() + " — launches on this account refuse until it is fixed"
 		}
 		own(err == nil, fmt.Sprintf("topology[%s]: projects/ resolves to the canonical store", a.Name), hint)
 	}
+}
+
+// rereadKeychain is Claude Code's credential reader for the 401 re-check.
+func rereadKeychain(configDir string) (string, bool) {
+	blob, ok := creds.Parse(creds.ReadKeychain(configDir))
+	return blob.Token, ok
 }
 
 func claudeBinary() string {

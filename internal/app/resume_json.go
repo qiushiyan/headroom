@@ -53,8 +53,8 @@ type jsonSession struct {
 	Path                 string `json:"path"`
 }
 
-func runSessionsJSON(cfg config.Config) int {
-	listing, _, _, current := collectSessions(cfg, state.Open(cfg.AccountsRoot))
+func runSessionsJSON(cfg config.Scope) int {
+	listing, _, _, current := collectSessions(cfg, state.Open(cfg))
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(sessionsDoc(listing, current, time.Now())); err != nil {

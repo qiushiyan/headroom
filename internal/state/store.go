@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
@@ -34,13 +35,35 @@ const (
 // Store is the handle to one accounts root's state file. Every mutation is a
 // locked read-modify-write of its own; nothing is cached between calls, and no
 // method holds the lock across work this package does not own.
-type Store struct{ root string }
+//
+// A store is opened from a scope, so it knows its root, whose responses it
+// holds and the spacing its deadlines respect. One store per accounts root is
+// what lets a second vendor add files without re-keying the first's: nothing
+// in Claude Code's state.json changes when Codex is fetched.
+type Store struct {
+	root    string
+	vendor  config.Vendor
+	spacing time.Duration
+}
 
-func Open(accountsRoot string) *Store { return &Store{root: accountsRoot} }
+func Open(scope config.Scope) *Store {
+	return &Store{root: scope.AccountsRoot, vendor: scope.Vendor, spacing: scope.RequestSpacing()}
+}
+
+// Vendor is whose responses this store holds — and therefore which parser
+// reads a body that came out of it.
+func (s *Store) Vendor() config.Vendor { return s.vendor }
 
 // Load reads the document. No lock: writes land by atomic rename, so a reader
 // sees one whole version or the previous one.
-func (s *Store) Load() Snapshot { return Snapshot{d: read(s.root)} }
+func (s *Store) Load() Snapshot {
+	return Snapshot{d: read(s.root), vendor: s.vendor, spacing: s.spacing}
+}
+
+// ceiling is the furthest out a deadline written by this code can sit: the
+// maximum cooldown, or the scope's spacing when that is longer. Every clamp
+// uses it, so a spacing above CooldownMax is never shortened by one.
+func ceiling(spacing time.Duration) time.Duration { return max(CooldownMax, spacing) }
 
 // Decision is Claim's answer for one account. The zero value denies, so a
 // caller that ignores the error cannot fetch on it.
@@ -92,7 +115,7 @@ const (
 func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	out := make([]Decision, len(keys))
 	for i, k := range keys {
-		out[i] = Decision{Key: k, NextEligible: now.Add(CooldownMax)}
+		out[i] = Decision{Key: k, NextEligible: now.Add(ceiling(s.spacing))}
 	}
 	err := s.update(claimWait, func(d *doc) error {
 		d.sweepStale(now)
@@ -108,9 +131,9 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			for i, k := range keys {
 				r := d.accounts[k.ID()]
 				r.Name = k.Name
-				r.Request.NextEligibleMS = now.Add(CooldownMax).UnixMilli()
+				r.Request.NextEligibleMS = now.Add(ceiling(s.spacing)).UnixMilli()
 				d.accounts[k.ID()] = r
-				out[i] = Decision{Key: k, NextEligible: now.Add(CooldownMax), Degraded: true}
+				out[i] = Decision{Key: k, NextEligible: now.Add(ceiling(s.spacing)), Degraded: true}
 			}
 			return nil
 		}
@@ -121,7 +144,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			if d.imported != nil && d.imported.QuietUntilMS > next {
 				next = d.imported.QuietUntilMS
 			}
-			if maxNext := now.Add(CooldownMax).UnixMilli(); next > maxNext {
+			if maxNext := now.Add(ceiling(s.spacing)).UnixMilli(); next > maxNext {
 				// Further out than this code can produce: a clock step, not a
 				// decision. Clamp rather than let it silence the account for
 				// as long as the step.
@@ -134,7 +157,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			r.Name = k.Name
 			r.Request.Generation++
 			r.Request.LastAttemptMS = now.UnixMilli()
-			r.Request.NextEligibleMS = now.Add(spacing()).UnixMilli()
+			r.Request.NextEligibleMS = now.Add(s.spacing).UnixMilli()
 			d.accounts[id] = r
 			d.dirty = true
 			out[i] = Decision{
@@ -148,7 +171,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	})
 	if err != nil {
 		for i, k := range keys {
-			out[i] = Decision{Key: k, NextEligible: now.Add(CooldownMax)}
+			out[i] = Decision{Key: k, NextEligible: now.Add(ceiling(s.spacing))}
 		}
 		return out, err
 	}
@@ -187,7 +210,7 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 			// reset until the body parses would make a later refusal escalate
 			// as though refusals had been consecutive.
 			r.Request.Strikes = 0
-			r.Request.NextEligibleMS = at.Add(spacing()).UnixMilli()
+			r.Request.NextEligibleMS = at.Add(s.spacing).UnixMilli()
 			if outcome == OutcomeStored && len(body) > 0 && len(body) <= BodyLimit {
 				b := make([]byte, len(body))
 				copy(b, body)
@@ -199,6 +222,8 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 			if cooldown > CooldownMax || cooldown <= 0 {
 				cooldown = CooldownMax
 			}
+			// A refusal never buys an earlier retry than an ordinary attempt.
+			cooldown = max(cooldown, s.spacing)
 			r.Request.NextEligibleMS = at.Add(cooldown).UnixMilli()
 		case OutcomeFailed:
 			// A dead network says nothing about the budget; the claim's own

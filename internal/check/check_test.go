@@ -76,11 +76,7 @@ func TestSearchReader(t *testing.T) {
 // TestRunVerdicts exercises their composition with fixture processes and HTTP.
 func TestCheckRouting(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-	}
+	cfg := claudeScope(home, "qiushi")
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +93,7 @@ func TestCheckRouting(t *testing.T) {
 				ownFails = append(ownFails, label)
 			}
 		}
-		checkRouting(cfg, accts, environ, chk, own)
+		checkRouting(accts, environ, chk, own)
 		return
 	}
 
@@ -134,16 +130,12 @@ func TestCheckRouting(t *testing.T) {
 // checker is where it gets named — an ok-with-detail line, never a failure.
 func TestCheckRoutingNamesLockDebris(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-	}
+	cfg := claudeScope(home, "qiushi")
 	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "a@x.com.lock"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	accts := accounts.Discover(cfg)
-	if len(accts) != 1 {
+	if len(accts.Accounts) != 1 {
 		t.Fatalf("debris must not be discovered: %v", accts)
 	}
 	var noted bool
@@ -157,7 +149,7 @@ func TestCheckRoutingNamesLockDebris(t *testing.T) {
 			t.Errorf("debris must not fail check: %s", label)
 		}
 	}
-	checkRouting(cfg, accts, []string{"HOME=" + home}, chk, own)
+	checkRouting(accts, []string{"HOME=" + home}, chk, own)
 	if !noted {
 		t.Error("stranded lock dir was not named by check")
 	}
@@ -168,7 +160,7 @@ func TestCheckRoutingNamesLockDebris(t *testing.T) {
 // writing state beside the cwd — and fails as own-state, never as drift.
 func TestCheckRoutingFailsRelativeAmbientDir(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "qiushi"}
+	cfg := claudeScope(home, "qiushi")
 	accts := accounts.Discover(cfg)
 
 	var ownFails []string
@@ -178,7 +170,7 @@ func TestCheckRoutingFailsRelativeAmbientDir(t *testing.T) {
 		}
 	}
 	chk := func(bool, string, string) {}
-	checkRouting(cfg, accts, []string{"CLAUDE_CONFIG_DIR=yan@planlab.ai"}, chk, own)
+	checkRouting(accts, []string{"CLAUDE_CONFIG_DIR=yan@planlab.ai"}, chk, own)
 	found := false
 	for _, l := range ownFails {
 		if strings.Contains(l, "relative") {
@@ -194,12 +186,12 @@ func TestCheckRoutingFailsRelativeAmbientDir(t *testing.T) {
 // launch refuses with, so the gate and the report cannot disagree.
 func TestCheckRoutingAssertsTopology(t *testing.T) {
 	home := t.TempDir()
-	cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, ".claude-accounts"), PrimaryName: "qiushi"}
+	cfg := claudeScope(home, "qiushi")
 	extra := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
 	if err := os.MkdirAll(filepath.Join(extra, "projects"), 0o755); err != nil { // real dir: the fork
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(cfg.ProjectsDir(), 0o755); err != nil {
+	if err := os.MkdirAll(cfg.StoreDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	accts := accounts.Discover(cfg)
@@ -210,7 +202,7 @@ func TestCheckRoutingAssertsTopology(t *testing.T) {
 			ownFails = append(ownFails, label)
 		}
 	}
-	checkRouting(cfg, accts, nil, func(bool, string, string) {}, own)
+	checkRouting(accts, nil, func(bool, string, string) {}, own)
 	found := false
 	for _, l := range ownFails {
 		if strings.Contains(l, "topology[yan@planlab.ai]") {
@@ -278,7 +270,8 @@ func TestRunVerdicts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			bin := t.TempDir()
-			cfg := config.Config{Home: home, AccountsRoot: filepath.Join(home, "accounts"), PrimaryName: "primary"}
+			cfg := claudeScope(home, "primary")
+			cfg.AccountsRoot = filepath.Join(home, "accounts")
 			write := func(path, body string, mode os.FileMode) {
 				t.Helper()
 				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -300,7 +293,7 @@ func TestRunVerdicts(t *testing.T) {
 			if err := os.MkdirAll(project, 0755); err != nil {
 				t.Fatal(err)
 			}
-			write(filepath.Join(cfg.ProjectsDir(), sessions.Munge(project), "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
+			write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
 			if tc.name == "newer state" {
 				write(filepath.Join(cfg.AccountsRoot, "state.json"), `{"version":999}`, 0600)
 			}
@@ -317,7 +310,7 @@ func TestRunVerdicts(t *testing.T) {
 			defer srv.Close()
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
-			code := Run(cfg, &out, false)
+			code := Run(config.Config{Home: home, Claude: cfg}, &out, false)
 			if code != tc.want || !strings.Contains(out.String(), tc.phrase) {
 				t.Fatalf("exit=%d want=%d\n%s", code, tc.want, out.String())
 			}

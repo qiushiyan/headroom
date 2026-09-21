@@ -16,14 +16,14 @@ func TestSeedShape(t *testing.T) {
 		t.Fatalf("dir=%q shared=%v", dir, shared)
 	}
 	// The store was created as a real dir and projects/ links to it.
-	if fi, err := os.Lstat(cfg.ProjectsDir()); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+	if fi, err := os.Lstat(cfg.StoreDir()); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("canonical store not a real directory: %v %v", fi, err)
 	}
-	if err := VerifyTopology(cfg, Account{ConfigDir: dir, Name: "new@x.com"}); err != nil {
+	if err := VerifyTopology(Account{Scope: cfg, ConfigDir: dir, Name: "new@x.com"}); err != nil {
 		t.Fatalf("seeded dir fails topology: %v", err)
 	}
 	// Discovery lists it; the strict selector resolves it.
-	if _, err := Select(cfg, Discover(cfg), "new@x.com"); err != nil {
+	if _, err := Discover(cfg).Select("new@x.com"); err != nil {
 		t.Fatalf("Select: %v", err)
 	}
 	// Seeding twice refuses.
@@ -50,7 +50,7 @@ func TestSeedRefusesLinkedStore(t *testing.T) {
 	real := filepath.Join(cfg.Home, "elsewhere")
 	os.MkdirAll(real, 0o755)
 	os.MkdirAll(cfg.PrimaryDir(), 0o755)
-	os.Symlink(real, cfg.ProjectsDir())
+	os.Symlink(real, cfg.StoreDir())
 	if _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil {
 		t.Fatal("a symlinked canonical store must refuse")
 	}
@@ -98,7 +98,7 @@ func TestSeedShareWholeDir(t *testing.T) {
 	if len(shared) != 3 {
 		t.Fatalf("shared = %v, want every entry but projects", shared)
 	}
-	if err := VerifyTopology(cfg, Account{ConfigDir: dir, Name: "a@x.com"}); err != nil {
+	if err := VerifyTopology(Account{Scope: cfg, ConfigDir: dir, Name: "a@x.com"}); err != nil {
 		t.Fatalf("projects link was shadowed: %v", err)
 	}
 	// Relative and missing sources refuse before anything is made.
@@ -120,7 +120,7 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A session in the store, and a private file in the account dir.
-	os.WriteFile(filepath.Join(cfg.ProjectsDir(), "t.jsonl"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(cfg.StoreDir(), "t.jsonl"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, "history.jsonl"), []byte("x"), 0o644)
 	os.WriteFile(cfg.OrderFile(), []byte("# order\nb@x.com\na@x.com   \nc@x.com\n"), 0o644)
 	os.WriteFile(cfg.CurrentFile(), []byte("a@x.com\n"), 0o644)
@@ -131,7 +131,7 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	if _, err := os.Lstat(dir); err == nil {
 		t.Fatal("dir still exists")
 	}
-	if _, err := os.Stat(filepath.Join(cfg.ProjectsDir(), "t.jsonl")); err != nil {
+	if _, err := os.Stat(filepath.Join(cfg.StoreDir(), "t.jsonl")); err != nil {
 		t.Fatal("removing an account deleted the canonical store's contents")
 	}
 	if got, _ := os.ReadFile(cfg.OrderFile()); string(got) != "# order\nb@x.com\nc@x.com\n" {

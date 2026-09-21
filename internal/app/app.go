@@ -72,34 +72,34 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		if cmd == "accounts" && len(rest) > 0 {
 			switch rest[0] {
 			case "add":
-				return runAccountsAdd(cfg, rest[1:])
+				return runAccountsAdd(cfg.Claude, rest[1:])
 			case "remove":
-				return runAccountsRemove(cfg, rest[1:])
+				return runAccountsRemove(cfg.Claude, rest[1:])
 			}
 			layout, rest = boardLayout(rest)
 		}
 		if !noArgs() {
 			return 2
 		}
-		return runAccounts(cfg, layout)
+		return runAccounts(cfg.Claude, layout)
 	case "--json":
 		if !noArgs() {
 			return 2
 		}
-		return runDashboardJSON(cfg)
+		return runDashboardJSON(cfg.Claude)
 	case "check", "--check":
 		if !noArgs() {
 			return 2
 		}
 		return check.Run(cfg, os.Stdout, stdoutIsTTY())
 	case "limits":
-		return runLimits(cfg, rest)
+		return runLimits(cfg.Claude, rest)
 	case "sessions":
-		return runSessions(cfg, rest)
+		return runSessions(cfg.Claude, rest)
 	case "resolve":
-		return runResolve(cfg, rest)
+		return runResolve(cfg.Claude, rest)
 	case "launch":
-		return runLaunch(cfg, rest)
+		return runLaunch(cfg.Claude, rest)
 	case "-h", "--help", "help":
 		if !noArgs() {
 			return 2
@@ -184,12 +184,12 @@ type sources struct {
 // It also returns the current-target name it marked the views with —
 // consumers that report the current account must use this value, not re-read
 // the state file, or a concurrent `select` could make the two disagree.
-func prepare(cfg config.Config, st *state.Store) ([]*accountData, string, state.Snapshot) {
-	accts := accounts.Discover(cfg)
+func prepare(scope config.Scope, st *state.Store) ([]*accountData, string, state.Snapshot) {
+	set := accounts.Discover(scope)
 	snap := st.Load()
-	list, current := prepareWith(cfg, accts, snap, sources{
+	list, current := prepareWith(set, snap, sources{
 		readRaw: creds.ReadRaw,
-		health:  queryHealthParallel(accts),
+		health:  queryHealthParallel(set.Accounts),
 		now:     time.Now(),
 	})
 	return list, current, snap
@@ -217,8 +217,8 @@ func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
 }
 
 // prepareWith is prepare with its inputs injected.
-func prepareWith(cfg config.Config, accts []accounts.Account, snap state.Snapshot, src sources) ([]*accountData, string) {
-	facts, current := accountstate.Assemble(cfg, accts, snap, src.now)
+func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*accountData, string) {
+	facts, current := accountstate.Assemble(set, snap, src.now)
 	list := accountList(facts)
 	for _, d := range list {
 		raw := src.readRaw(d.Acct.ConfigDir)
@@ -273,12 +273,12 @@ func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, now
 }
 
 // Each round owns its channel and list until the channel has closed and drained.
-func launchFetches(ctx context.Context, cfg config.Config, list []*accountData, st *state.Store) <-chan refresh.Result {
+func launchFetches(ctx context.Context, list []*accountData, st *state.Store) <-chan refresh.Result {
 	requests := make([]*refresh.Candidate, len(list))
 	for i, d := range list {
 		requests[i] = d.Request
 	}
-	return refresh.Start(ctx, cfg.UsageURL, st, requests, nil)
+	return refresh.Start(ctx, st, requests, nil)
 }
 
 func resolve(d *accountData, result refresh.Result) {

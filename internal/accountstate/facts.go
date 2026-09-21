@@ -5,6 +5,7 @@ package accountstate
 import (
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -81,14 +82,18 @@ type Attempt struct {
 
 // FreshWindow follows the request spacing: no newer answer is obtainable
 // inside that period. It is a display policy, not a vendor promise.
-// Sharing the spacing constant prevents a timing change from marking every
-// other run stale while no newer answer is obtainable.
-const FreshWindow = usage.RequestSpacing
+// Sharing the spacing prevents a timing change from marking every other run
+// stale while no newer answer is obtainable. Spacing is per vendor, so facts
+// carry their own window (Facts.FreshFor, set at assembly from the scope);
+// this is the default for facts assembled without one.
+const FreshWindow = config.DefaultSpacing
 
 // Facts carries three independent answers: an account can be logged in,
 // have figures 22 hours old, and have its newest refresh refused. Keeping
 // them separate prevents a 429 or stale token from erasing known usage.
 type Facts struct {
+	Vendor      config.Vendor
+	FreshFor    time.Duration // the scope's spacing; 0 means FreshWindow
 	Label       string
 	DirMismatch string // dir name when the logged-in email doesn't match it
 	Plan        string
@@ -102,7 +107,11 @@ type Facts struct {
 // Fresh reports whether the observation is recent enough to describe current
 // headroom.
 func (v Facts) Fresh(now int64) bool {
-	return v.Obs != nil && now-v.Obs.ObservedAt <= int64(FreshWindow/time.Second)
+	window := v.FreshFor
+	if window <= 0 {
+		window = FreshWindow
+	}
+	return v.Obs != nil && now-v.Obs.ObservedAt <= int64(window/time.Second)
 }
 
 // Actionable is the question the picker actually asks: are these figures

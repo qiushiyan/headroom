@@ -16,10 +16,10 @@ import (
 // sessionActions owns routing and launch effects. The picker supplies terminal
 // restoration as the commit boundary; action tests need no terminal object.
 type sessionActions struct {
-	cfg          config.Config
+	cfg          config.Scope
 	st           *state.Store
 	refs         []sessions.AccountRef
-	accts        []accounts.Account
+	set          accounts.Set
 	current      string
 	cdFile       string
 	claudeArgs   []string
@@ -43,12 +43,12 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if !ok {
 		return false, fmt.Errorf("no account to resume on — run headroom accounts")
 	}
-	prepared, err := launch.Prepare(actions.cfg, acct, actions.accts, os.Environ())
+	prepared, err := launch.Prepare(acct, actions.set, os.Environ())
 	if err != nil {
 		return false, err
 	}
 	if override {
-		err := actions.st.ReHome(s.ID, acct.Name, time.Now(), func() (map[string]bool, bool) { return sessions.TranscriptIDs(actions.cfg.ProjectsDir()) })
+		err := actions.st.ReHome(s.ID, acct.Name, time.Now(), func() (map[string]bool, bool) { return sessions.TranscriptIDs(actions.cfg.StoreDir()) })
 		if err != nil {
 			return false, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", err)
 		}
@@ -70,7 +70,7 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		}
 	}
 	argv := append(append([]string{}, actions.claudeArgs...), "--resume", s.ID)
-	if err := execSessions(prepared.Path, argv, envWithPWD(prepared.Env, s.CWD)); err != nil {
+	if err := execSessions(prepared.Path, prepared.Binary, argv, envWithPWD(prepared.Env, s.CWD)); err != nil {
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil
@@ -86,7 +86,7 @@ func (actions *sessionActions) resumeAccount(s *sessions.Session, override bool)
 	if name == "" {
 		return accounts.Account{}, false
 	}
-	for _, a := range actions.accts {
+	for _, a := range actions.set.Accounts {
 		if a.Name == name {
 			return a, true
 		}
@@ -95,7 +95,7 @@ func (actions *sessionActions) resumeAccount(s *sessions.Session, override bool)
 	// attribution falls back to the *current* account — the row's owner tag
 	// already says so — never to the primary, which no evidence chose.
 	if name != actions.current && actions.current != "" {
-		for _, a := range actions.accts {
+		for _, a := range actions.set.Accounts {
 			if a.Name == actions.current {
 				return a, true
 			}

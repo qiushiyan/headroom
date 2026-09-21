@@ -85,7 +85,7 @@ func ValidateExtraName(name string) error {
 // the error naming it: a half-seeded dir is inert (discovery lists it, the
 // board shows it as never logged in, launch refuses it on topology) and
 // deleting someone's directory to tidy up is not this function's call.
-func Seed(cfg config.Config, name string, opt SeedOptions) (dir string, shared []string, err error) {
+func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared []string, err error) {
 	if err := ValidateExtraName(name); err != nil {
 		return "", nil, err
 	}
@@ -112,8 +112,8 @@ func Seed(cfg config.Config, name string, opt SeedOptions) (dir string, shared [
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return dir, nil, err
 	}
-	if err := os.Symlink(cfg.ProjectsDir(), filepath.Join(dir, "projects")); err != nil {
-		return dir, nil, fmt.Errorf("linking projects: %v (partial dir left at %s)", err, dir)
+	if err := os.Symlink(cfg.StoreDir(), filepath.Join(dir, cfg.StoreLink())); err != nil {
+		return dir, nil, fmt.Errorf("linking %s: %v (partial dir left at %s)", cfg.StoreLink(), err, dir)
 	}
 	if opt.ShareFrom != "" {
 		names := opt.ShareNames
@@ -127,8 +127,8 @@ func Seed(cfg config.Config, name string, opt SeedOptions) (dir string, shared [
 			}
 		}
 		for _, n := range names {
-			if n == "projects" || strings.ContainsAny(n, `/\`) || n == "." || n == ".." {
-				continue // projects is the store link; anything else odd is not a config entry
+			if n == cfg.StoreLink() || strings.ContainsAny(n, `/\`) || n == "." || n == ".." {
+				continue // the store link itself; anything else odd is not a config entry
 			}
 			src := filepath.Join(opt.ShareFrom, n)
 			if _, err := os.Lstat(src); err != nil {
@@ -140,8 +140,8 @@ func Seed(cfg config.Config, name string, opt SeedOptions) (dir string, shared [
 			shared = append(shared, n)
 		}
 	}
-	a := Account{ConfigDir: dir, Name: name}
-	if err := VerifyTopology(cfg, a); err != nil {
+	a := Account{Scope: cfg, ConfigDir: dir, Name: name}
+	if err := VerifyTopology(a); err != nil {
 		return dir, shared, fmt.Errorf("seeded dir failed the topology check it was built to pass: %v", err)
 	}
 	return dir, shared, nil
@@ -152,8 +152,8 @@ func Seed(cfg config.Config, name string, opt SeedOptions) (dir string, shared [
 // on a fresh machine is not a fork of anyone's history. A store that exists
 // as a symlink or a file is a topology violation and refuses, same as
 // VerifyTopology would.
-func ensureCanonicalStore(cfg config.Config) error {
-	canon := cfg.ProjectsDir()
+func ensureCanonicalStore(cfg config.Scope) error {
+	canon := cfg.StoreDir()
 	fi, err := os.Lstat(canon)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -178,7 +178,7 @@ func ensureCanonicalStore(cfg config.Config) error {
 // the store, and removing the account would silently delete them. That is
 // the same state VerifyTopology names as "unmigrated sessions?", and the
 // remedy is the same — move them into the store first.
-func CheckRemovable(cfg config.Config, name string) error {
+func CheckRemovable(cfg config.Scope, name string) error {
 	if name == "" || strings.ContainsAny(name, `/\`) || name != filepath.Base(name) {
 		return fmt.Errorf("%q is a path, not an account name", name)
 	}
@@ -201,7 +201,7 @@ func CheckRemovable(cfg config.Config, name string) error {
 		return fmt.Errorf("%s is not a directory", dir)
 	}
 	if pfi, err := os.Lstat(filepath.Join(dir, "projects")); err == nil && pfi.Mode()&os.ModeSymlink == 0 && pfi.IsDir() {
-		return fmt.Errorf("%s/projects is a real directory — it holds sessions never migrated into %s; move them there (with no claude running) before removing the account", dir, cfg.ProjectsDir())
+		return fmt.Errorf("%s/projects is a real directory — it holds sessions never migrated into %s; move them there (with no claude running) before removing the account", dir, cfg.StoreDir())
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func CheckRemovable(cfg config.Config, name string) error {
 // `.current` is deliberately not rewritten: it is headroom's routing fact
 // with a fail-closed reader, and a removed current account makes launch
 // refuse until the board repicks — corrupt-vs-chosen stays distinguishable.
-func RemoveDir(cfg config.Config, name string) error {
+func RemoveDir(cfg config.Scope, name string) error {
 	if err := CheckRemovable(cfg, name); err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func RemoveDir(cfg config.Config, name string) error {
 
 // scrubOrder drops name's line from .order, if present, keeping every other
 // byte of the file (comments, spacing) as the human wrote it.
-func scrubOrder(cfg config.Config, name string) error {
+func scrubOrder(cfg config.Scope, name string) error {
 	data, err := os.ReadFile(cfg.OrderFile())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

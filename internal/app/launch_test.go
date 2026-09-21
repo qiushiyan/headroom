@@ -11,7 +11,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-func launchConfig(t *testing.T) config.Config {
+func launchConfig(t *testing.T) config.Scope {
 	t.Helper()
 	home := t.TempDir()
 	bin := t.TempDir()
@@ -19,20 +19,16 @@ func launchConfig(t *testing.T) config.Config {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cfg := config.Config{
-		Home:         home,
-		AccountsRoot: filepath.Join(home, ".claude-accounts"),
-		PrimaryName:  "qiushi",
-	}
+	cfg := claudeScope(home, "qiushi")
 	extra := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
 	if err := os.MkdirAll(extra, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Valid shared-sessions topology: launch verifies it before any exec.
-	if err := os.MkdirAll(cfg.ProjectsDir(), 0o755); err != nil {
+	if err := os.MkdirAll(cfg.StoreDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(cfg.ProjectsDir(), filepath.Join(extra, "projects")); err != nil {
+	if err := os.Symlink(cfg.StoreDir(), filepath.Join(extra, "projects")); err != nil {
 		t.Fatal(err)
 	}
 	return cfg
@@ -43,13 +39,13 @@ func capturedExec(t *testing.T) (args *[]string, env *[]string, called *bool) {
 	t.Helper()
 	var a, e []string
 	var c bool
-	prev := execClaude
-	execClaude = func(path string, claudeArgs, environ []string) error {
+	prev := execVendor
+	execVendor = func(path, binary string, claudeArgs, environ []string) error {
 		a, e, c = claudeArgs, environ, true
 		args, env = &a, &e
 		return nil
 	}
-	t.Cleanup(func() { execClaude = prev })
+	t.Cleanup(func() { execVendor = prev })
 	return &a, &e, &c
 }
 
@@ -107,7 +103,7 @@ func TestLaunchRememberRecordsBeforeExec(t *testing.T) {
 	if !*called {
 		t.Fatal("exec never ran")
 	}
-	if a, err := accounts.Select(cfg, accounts.Discover(cfg), ""); err != nil || a.Name != "yan@planlab.ai" {
+	if a, err := accounts.Discover(cfg).Select(""); err != nil || a.Name != "yan@planlab.ai" {
 		t.Errorf(".current = (%q, %v), want yan@planlab.ai", a.Name, err)
 	}
 }
@@ -232,7 +228,7 @@ func TestLaunchRefusesRelocatedPrimary(t *testing.T) {
 
 func TestLaunchResolvesExecutableBeforeRemembering(t *testing.T) {
 	cfg := launchConfig(t)
-	if err := accounts.SetCurrent(cfg, "qiushi"); err != nil {
+	if err := accounts.Discover(cfg).SetCurrent(accounts.Account{Scope: cfg, Name: "qiushi"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", t.TempDir())
@@ -240,7 +236,7 @@ func TestLaunchResolvesExecutableBeforeRemembering(t *testing.T) {
 	if code := runLaunch(cfg, []string{"--remember", "--account", "yan@planlab.ai"}); code != 1 {
 		t.Fatalf("exit %d", code)
 	}
-	a, err := accounts.Select(cfg, accounts.Discover(cfg), "")
+	a, err := accounts.Discover(cfg).Select("")
 	if err != nil || a.Name != "qiushi" || *called {
 		t.Fatalf("missing executable changed choice: %+v %v", a, err)
 	}
@@ -248,9 +244,9 @@ func TestLaunchResolvesExecutableBeforeRemembering(t *testing.T) {
 
 func TestExecFailureKeepsRememberedChoice(t *testing.T) {
 	cfg := launchConfig(t)
-	prev := execClaude
-	execClaude = func(string, []string, []string) error { return os.ErrPermission }
-	t.Cleanup(func() { execClaude = prev })
+	prev := execVendor
+	execVendor = func(string, string, []string, []string) error { return os.ErrPermission }
+	t.Cleanup(func() { execVendor = prev })
 	output := captureStderr(t, func() {
 		if code := runLaunch(cfg, []string{"--remember", "--account", "yan@planlab.ai"}); code != 1 {
 			t.Fatalf("exit %d", code)
@@ -260,7 +256,7 @@ func TestExecFailureKeepsRememberedChoice(t *testing.T) {
 		t.Fatalf("missing persistence explanation: %s", output)
 	}
 
-	a, err := accounts.Select(cfg, accounts.Discover(cfg), "")
+	a, err := accounts.Discover(cfg).Select("")
 	if err != nil || a.Name != "yan@planlab.ai" {
 		t.Fatalf("choice after failed exec: %+v %v", a, err)
 	}

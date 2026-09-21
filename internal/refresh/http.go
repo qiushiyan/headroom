@@ -13,12 +13,17 @@ type response struct {
 	Err        error
 }
 
-func fetch(ctx context.Context, client *http.Client, url, token string) response {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// fetch sends the candidate's prepared request: always a GET, never anything
+// that could change vendor state.
+func fetch(ctx context.Context, client *http.Client, c Candidate) response {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return response{Err: err}
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	for _, h := range c.headers {
+		req.Header.Set(h[0], h[1])
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return response{Err: err}

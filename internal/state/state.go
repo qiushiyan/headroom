@@ -28,8 +28,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 const (
@@ -194,7 +194,15 @@ func (d *doc) readOnly() bool { return d.version > Version }
 // Every failure short of "a newer schema" degrades to something usable: an
 // absent file is an empty store, and a section that will not decode is
 // reported rather than thrown away.
-type Snapshot struct{ d *doc }
+type Snapshot struct {
+	d       *doc
+	vendor  config.Vendor
+	spacing time.Duration
+}
+
+// Vendor is whose responses this snapshot holds: the store a body was read
+// from says which vendor's parser reads it.
+func (s Snapshot) Vendor() config.Vendor { return s.vendor }
 
 func statePath(accountsRoot string) string {
 	return filepath.Join(accountsRoot, "state.json")
@@ -325,7 +333,7 @@ func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
 	if s.d.badAccounts || s.d.readOnly() || s.d.migrationErr != nil {
 		// Nothing here can be trusted to say an account is eligible, and
 		// guessing "eligible" is the guess that generates traffic.
-		return now.Add(CooldownMax)
+		return now.Add(ceiling(s.spacing))
 	}
 	r, ok := s.d.accounts[k.ID()]
 	next := int64(0)
@@ -338,8 +346,8 @@ func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
 	if next == 0 {
 		return time.Time{}
 	}
-	if max := now.Add(CooldownMax).UnixMilli(); next > max {
-		return now.Add(CooldownMax)
+	if limit := now.Add(ceiling(s.spacing)); next > limit.UnixMilli() {
+		return limit
 	}
 	return time.UnixMilli(next)
 }
@@ -417,10 +425,6 @@ func mergeOwners(dst, src map[string]sessions.OwnerRec) {
 		}
 	}
 }
-
-// spacing is the quiet period after any attempt: the endpoint's own budget,
-// which lives in the package that speaks to it.
-func spacing() time.Duration { return usage.RequestSpacing }
 
 func (d *doc) marshal() ([]byte, error) {
 	// Start from the raw sections so anything this binary did not decode —

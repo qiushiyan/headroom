@@ -19,9 +19,21 @@ import (
 )
 
 type Account struct {
-	ConfigDir string // "" = the primary ~/.claude (Claude Code's default dir)
-	Name      string // dir basename (the email), or PrimaryName(cfg, meta) for the primary
-	Email     string // what .claude.json reports as actually logged in ("" = none)
+	// Scope is the vendor configuration this account was discovered under.
+	// An account carries it so that no operation takes a scope beside an
+	// account: the wrong pairing cannot be written.
+	Scope config.Scope
+
+	ConfigDir string // "" = the vendor's primary dir (selected by the home variable's absence)
+	Name      string // dir basename (the email), or PrimaryName(scope, email) for the primary
+	Email     string // what the vendor's identity document reports as logged in ("" = none)
+
+	// AccountID is the vendor's identity for the logged-in account — what the
+	// request ledger keys on. Readable distinguishes "the identity document
+	// parsed and reports no id" from "it could not be read at all"; only the
+	// first may fall back to the dir name (see Meta.Readable).
+	AccountID string
+	Readable  bool
 
 	// Meta is the rest of that same .claude.json read, carried so callers
 	// needing the cached usage payload don't re-parse a file Claude Code
@@ -34,24 +46,32 @@ func (a Account) IsPrimary() bool { return a.ConfigDir == "" }
 // Dir is the account's real config dir. ConfigDir is "" for the primary —
 // the value CLAUDE_CONFIG_DIR takes — so per-account files that live inside
 // the dir (prompt history, the live-session registry) resolve through here.
-func (a Account) Dir(cfg config.Config) string {
+func (a Account) Dir() string {
 	if a.IsPrimary() {
-		return cfg.PrimaryDir()
+		return a.Scope.PrimaryDir()
 	}
 	return a.ConfigDir
 }
 
 // MetaPath is the .claude.json recording the logged-in account.
-func (a Account) MetaPath(cfg config.Config) string {
+func (a Account) MetaPath() string {
 	if a.IsPrimary() {
-		return cfg.PrimaryMeta()
+		return a.Scope.PrimaryMeta()
 	}
 	return filepath.Join(a.ConfigDir, ".claude.json")
 }
 
+// Set is what discovery found under one scope. Selection and recording the
+// current account are operations on it, so `.current` is only ever resolved
+// against — and written for — the accounts of the scope it belongs to.
+type Set struct {
+	Scope    config.Scope
+	Accounts []Account
+}
+
 // Discover returns the primary first, then .order-listed dirs in file order,
 // then the remaining dirs alphabetically.
-func Discover(cfg config.Config) []Account {
+func Discover(cfg config.Scope) Set {
 	dirs := []string{""}
 	seen := map[string]bool{"": true}
 
@@ -92,17 +112,23 @@ func Discover(cfg config.Config) []Account {
 
 	accts := make([]Account, 0, len(dirs))
 	for _, d := range dirs {
-		a := Account{ConfigDir: d}
-		a.Meta, _ = ReadMeta(a.MetaPath(cfg))
-		a.Email = a.Meta.Email
+		a := Account{Scope: cfg, ConfigDir: d}
+		a.readIdentity()
 		if d == "" {
-			a.Name = PrimaryName(cfg, a.Meta)
+			a.Name = PrimaryName(cfg, a.Email)
 		} else {
 			a.Name = filepath.Base(d)
 		}
 		accts = append(accts, a)
 	}
-	return accts
+	return Set{Scope: cfg, Accounts: accts}
+}
+
+// readIdentity is the first of the three places a vendor document is read:
+// who is logged in here, from decoded fields of the vendor's own file.
+func (a *Account) readIdentity() {
+	a.Meta, _ = ReadMeta(a.MetaPath())
+	a.Email, a.AccountID, a.Readable = a.Meta.Email, a.Meta.AccountUUID, a.Meta.Readable
 }
 
 // LockArtifact reports whether a name in the accounts root is vendor lock
@@ -236,11 +262,11 @@ func MetaEmail(metaPath string) (string, bool) {
 // records the *name*, so a primary logout after `.current` was pinned to it
 // makes Select refuse (fail-closed, as for any unmatched name) until the
 // board repicks — or the name is pinned by the variable.
-func PrimaryName(cfg config.Config, meta Meta) string {
+func PrimaryName(cfg config.Scope, email string) string {
 	if cfg.PrimaryName != "" {
 		return cfg.PrimaryName
 	}
-	if local, _, ok := strings.Cut(meta.Email, "@"); ok && local != "" {
+	if local, _, ok := strings.Cut(email, "@"); ok && local != "" {
 		return local
 	}
 	return "primary"
@@ -254,11 +280,20 @@ func PrimaryName(cfg config.Config, meta Meta) string {
 // the board promising a command that resolves is worth more than promising
 // the shortest one. By default that command is `headroom launch --account
 // <name>`, which exists on every install; a shell integration re-spells it.
-func Launcher(cfg config.Config, a Account) string {
-	if cfg.LauncherFormat == "" {
-		return "headroom launch --account " + a.Name
+func Launcher(a Account) string {
+	if a.Scope.LauncherFormat == "" {
+		return EngineLauncher(a)
 	}
-	return fmt.Sprintf(cfg.LauncherFormat, a.Name)
+	return fmt.Sprintf(a.Scope.LauncherFormat, a.Name)
+}
+
+// EngineLauncher is the engine's own spelling of a launch on this account,
+// whatever wrapper the shell configured.
+func EngineLauncher(a Account) string {
+	if a.Scope.Vendor == config.Codex {
+		return "headroom launch --vendor codex --account " + a.Name
+	}
+	return "headroom launch --account " + a.Name
 }
 
 // KnownExtraDir reports whether dir is exactly some discovered non-primary
@@ -270,8 +305,8 @@ func Launcher(cfg config.Config, a Account) string {
 // spelled explicitly — present-but-primary is not the verified absent
 // state). check still reports every present value; this only quiets the
 // board and the launch line for the case that is true all day.
-func KnownExtraDir(accts []Account, dir string) bool {
-	for _, a := range accts {
+func (s Set) KnownExtraDir(dir string) bool {
+	for _, a := range s.Accounts {
 		if !a.IsPrimary() && a.ConfigDir == dir {
 			return true
 		}
@@ -287,10 +322,11 @@ func KnownExtraDir(accts []Account, dir string) bool {
 // `.current` or a deleted account into "launch the primary with permissions
 // bypassed", which makes corruption indistinguishable from a valid choice.
 // Display surfaces treat the error as "no current account" and mark nothing.
-func Select(cfg config.Config, accts []Account, selector string) (Account, error) {
+func (s Set) Select(selector string) (Account, error) {
+	accts := s.Accounts
 	name := selector
 	if name == "" {
-		data, err := os.ReadFile(cfg.CurrentFile())
+		data, err := os.ReadFile(s.Scope.CurrentFile())
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			return primaryOf(accts)
@@ -338,7 +374,11 @@ func primaryOf(accts []Account) (Account, error) {
 // `headroom launch` resolving mid-write — never observes a truncated or
 // empty file. The Keychain and every other piece of Claude Code's state are
 // never touched.
-func SetCurrent(cfg config.Config, name string) error {
+func (s Set) SetCurrent(a Account) error {
+	cfg, name := s.Scope, a.Name
+	if a.Scope.Vendor != cfg.Vendor || a.Scope.AccountsRoot != cfg.AccountsRoot {
+		return fmt.Errorf("%s account %q cannot be recorded as the %s current account", a.Scope.Vendor.Title(), name, cfg.Vendor.Title())
+	}
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		return err
 	}
