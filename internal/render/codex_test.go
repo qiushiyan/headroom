@@ -55,23 +55,40 @@ func TestCodexCompactColumnOrderAndLabels(t *testing.T) {
 }
 
 // Two accounts whose primary slots run for different lengths get different
-// columns; neither figure is shown under the other's heading.
+// columns, and each figure sits under its own heading — never the other's.
 func TestCodexDifferentDurationsAreDifferentColumns(t *testing.T) {
-	win := func(secs string) string {
-		return `{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":33,"limit_window_seconds":` + secs + `,"reset_after_seconds":100,"reset_at":1790003600}}}`
+	win := func(pct, secs string) string {
+		return `{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":` + pct + `,"limit_window_seconds":` + secs + `,"reset_after_seconds":100,"reset_at":1790003600}}}`
 	}
 	p := NewPalette(false)
 	b := p.Board([]accountstate.Facts{
-		codexFacts(t, "a@x.com", win("604800"), renderNow),
-		codexFacts(t, "b@x.com", win("18000"), renderNow),
+		codexFacts(t, "a@x.com", win("71", "604800"), renderNow),
+		codexFacts(t, "b@x.com", win("22", "18000"), renderNow),
 	}, renderNow, LayoutCompact, 0)
-	if !strings.Contains(b.Header[0], "weekly") || !strings.Contains(b.Header[0], "5h") {
-		t.Fatalf("header = %q", b.Header[0])
-	}
-	for i, g := range b.Groups {
-		if strings.Count(g[0], "33%") != 1 || !strings.Contains(g[0], "—") {
-			t.Errorf("row %d = %q: want its figure once and a dash in the other column", i, g[0])
+	header := b.Header[0]
+	// Columns are counted in cells, not bytes: the dash is a multi-byte rune.
+	cellIndex := func(s, sub string) int {
+		i := strings.Index(s, sub)
+		if i < 0 {
+			return -1
 		}
+		return len([]rune(s[:i]))
+	}
+	weekly, fiveHour := cellIndex(header, "weekly"), cellIndex(header, "5h")
+	if weekly < 0 || fiveHour < 0 || weekly > fiveHour {
+		t.Fatalf("header = %q: want weekly before 5h", header)
+	}
+	// A cell's percent is right-aligned in a slot that starts at its heading.
+	under := func(line string, col int) string {
+		r := []rune(line)
+		return strings.TrimSpace(string(r[col:min(col+pctWidth, len(r))]))
+	}
+	a, bRow := b.Groups[0][0], b.Groups[1][0]
+	if under(a, weekly) != "71%" || under(a, fiveHour) != "—" {
+		t.Errorf("a@x.com: weekly %q, 5h %q\n%s\n%s", under(a, weekly), under(a, fiveHour), header, a)
+	}
+	if under(bRow, weekly) != "—" || under(bRow, fiveHour) != "22%" {
+		t.Errorf("b@x.com: weekly %q, 5h %q\n%s\n%s", under(bRow, weekly), under(bRow, fiveHour), header, bRow)
 	}
 }
 

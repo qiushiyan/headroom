@@ -266,22 +266,47 @@ func relativeErr(name, v string) error {
 	return fmt.Errorf("%s=%q is not absolute — a relative config-dir path would make claude run as the primary while writing state beside the cwd; spell it absolute", name, v)
 }
 
-// sameLocation compares two roots after cleaning and, where a path exists,
-// after resolving symlinks. It only compares: an accepted spelling is never
-// rewritten.
+// sameLocation reports whether two roots name one directory. It only
+// compares: an accepted spelling is never rewritten.
+//
+// Identity is the filesystem's, not the string's. Each root is walked up to
+// its nearest existing ancestor; the two name one location when those
+// ancestors are the same file (so a symlink anywhere above, and a spelling
+// that differs only in case on a filesystem that folds it, both count) and
+// the components still missing below them match. The missing components are
+// compared case-insensitively: whether the filesystem would fold them cannot
+// be known before they exist, and refusing a pair of roots that differ only
+// by case costs a rename, while accepting one that folds puts both vendors'
+// .current and state.json in one directory.
 func sameLocation(a, b string) bool {
-	resolve := func(p string) string {
-		p = filepath.Clean(p)
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			return r
-		}
-		// The leaf may not exist yet while its parent is the symlink.
-		if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
-			return filepath.Join(r, filepath.Base(p))
-		}
-		return p
+	aDir, aRest := nearestExisting(filepath.Clean(a))
+	bDir, bRest := nearestExisting(filepath.Clean(b))
+	if !strings.EqualFold(aRest, bRest) {
+		return false
 	}
-	return resolve(a) == resolve(b)
+	ai, errA := os.Stat(aDir)
+	bi, errB := os.Stat(bDir)
+	if errA != nil || errB != nil {
+		return aDir == bDir
+	}
+	return os.SameFile(ai, bi)
+}
+
+// nearestExisting splits path into its deepest existing ancestor and the
+// components below it that do not exist yet.
+func nearestExisting(path string) (dir, rest string) {
+	dir = path
+	for {
+		if _, err := os.Stat(dir); err == nil {
+			return dir, rest
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return dir, rest
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
 }
 
 func isDir(path string) bool {

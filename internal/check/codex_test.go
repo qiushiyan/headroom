@@ -279,25 +279,34 @@ func TestCodexCheckCorruptStateIsOwn(t *testing.T) {
 	}
 }
 
-// A machine without Codex: one informational line, the exit code unchanged.
-// With Codex present, its lines carry the vendor's prefix and the closing line
-// blames the right vendor.
-func TestRunCodexPresence(t *testing.T) {
+// A machine without Codex: one informational line, the verdict unchanged.
+// With Codex present and only Codex drifted, the run fails and the closing
+// line blames Codex alone — a sound Claude Code tree is not implicated.
+func TestRunCodexPresenceAndBlame(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"limits":[]}`)) }))
+	defer srv.Close()
 	home := t.TempDir()
-	cfg := config.ForHome(home)
-	t.Setenv("PATH", t.TempDir())
+	claude, _ := soundClaudeTree(t, home)
+	claude.UsageURL = srv.URL
+	cfg := config.Config{Home: home, Claude: claude, Codex: config.ForHome(home).Codex}
+
 	var out strings.Builder
-	Run(cfg, &out, false)
+	if code := Run(cfg, &out, false); code != ExitPass {
+		t.Fatalf("absent Codex changed the verdict: exit %d\n%s", code, out.String())
+	}
 	if !strings.Contains(out.String(), "codex: not found") || strings.Contains(out.String(), "codex auth[") {
 		t.Errorf("absent Codex:\n%s", out.String())
 	}
 
 	cfg.Codex.Present = true
-	dir := filepath.Join(cfg.Codex.AccountsRoot, "a@x.com")
-	codexauthtest.WriteRaw(t, dir, []byte(`nope`))
+	codexauthtest.WriteRaw(t, filepath.Join(cfg.Codex.AccountsRoot, "a@x.com"), []byte(`nope`))
 	out.Reset()
-	Run(cfg, &out, false)
-	if !strings.Contains(out.String(), "codex auth[a@x.com]") || !strings.Contains(out.String(), "Codex likely changed a format") {
-		t.Errorf("present Codex:\n%s", out.String())
+	code := Run(cfg, &out, false)
+	text := out.String()
+	if code != ExitFail || !strings.Contains(text, "FAIL  codex auth[a@x.com]") {
+		t.Fatalf("drifted Codex auth: exit %d\n%s", code, text)
+	}
+	if !strings.Contains(text, "— Codex likely changed a format") || strings.Contains(text, "Claude Code likely") || strings.Contains(text, "Claude Code and Codex") {
+		t.Errorf("closing line blames the wrong vendor:\n%s", text)
 	}
 }

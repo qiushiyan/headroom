@@ -788,6 +788,21 @@ func TestSpacingAboveCooldownMaxIsNeverShortened(t *testing.T) {
 		t.Fatal(err)
 	}
 	atLeast("refusal", next, after)
+
+	// The degraded path: an unreadable ledger starts every account quiet, and
+	// that quiet is no shorter than the spacing either — in the claim's
+	// answer and in what a snapshot then reports.
+	broken := Open(config.Scope{Vendor: config.Codex, AccountsRoot: t.TempDir(), Spacing: spacing})
+	if err := os.WriteFile(filepath.Join(broken.root, "state.json"), []byte(`{"version":1,"accounts":"broken"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	atLeast("snapshot over an unreadable ledger", broken.Load().NextEligible(k, now), now)
+	decs, err = broken.Claim([]Key{k}, now)
+	if err != nil || decs[0].Permit || !decs[0].Degraded {
+		t.Fatalf("degraded claim: %+v %v", decs, err)
+	}
+	atLeast("degraded claim", decs[0].NextEligible, now)
+	atLeast("snapshot after a degraded claim", broken.Load().NextEligible(k, now), now)
 }
 
 // The default spacing leaves today's arithmetic alone: CooldownMax still caps.

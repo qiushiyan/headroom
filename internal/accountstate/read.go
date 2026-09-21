@@ -14,7 +14,13 @@ type Account struct {
 	Key  state.Key
 	View Facts
 }
+
+// Snapshot is one disk read: the discovered set, what is known about each of
+// its accounts, and the store it was read against. The set travels with the
+// facts so that selection and recording the current account are asked of the
+// accounts that were actually discovered, never of a set rebuilt beside them.
 type Snapshot struct {
+	Set      accounts.Set
 	Accounts []Account
 	Current  string
 	Store    state.Snapshot
@@ -22,8 +28,9 @@ type Snapshot struct {
 
 func Read(scope config.Scope, st *state.Store, now time.Time) Snapshot {
 	snap := st.Load()
-	list, current := Assemble(accounts.Discover(scope), snap, now)
-	return Snapshot{list, current, snap}
+	set := accounts.Discover(scope)
+	list, current := Assemble(set, snap, now)
+	return Snapshot{set, list, current, snap}
 }
 
 // Assemble selects strict current-account state and the newest usable observation.
@@ -45,6 +52,10 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, 
 		if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
 			v.DirMismatch = a.Name
 		}
+		if a.Scope.Vendor == config.Codex {
+			// What the login's id token says, until a response names a plan.
+			v.Plan = a.Auth.Plan
+		}
 		if a.Scope.Vendor == config.Codex && !a.Readable {
 			// A Codex account that cannot say whose it is has no ledger key at
 			// all: it replays nothing, even if an earlier login on this home
@@ -53,6 +64,12 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, 
 			continue
 		}
 		v.Obs = newestObservation(snap, key, a, now)
+		if v.Obs != nil && v.Obs.Plan != "" {
+			// The plan headroom's own response named outranks the id token's,
+			// which is as old as the last login refresh. Decided here, from
+			// disk alone, so `limits` reports the plan the board does.
+			v.Plan = v.Obs.Plan
+		}
 		if next := snap.NextEligible(key, now); next.After(now) {
 			v.Attempt.NextEligibleAt = next.Unix()
 		}

@@ -298,7 +298,18 @@ type sources struct {
 // It also returns the current-target name it marked the views with —
 // consumers that report the current account must use this value, not re-read
 // the state file, or a concurrent `select` could make the two disagree.
-func prepare(scope config.Scope, st *state.Store) ([]*accountData, string, state.Snapshot) {
+// prepared is one local half of a round. The discovered set stays with the
+// list built from it: selection, recording the current account and the
+// known-extra-dir question are asked of the set, never of one reconstructed
+// from a scope and a list.
+type prepared struct {
+	set     accounts.Set
+	list    []*accountData
+	current string
+	snap    state.Snapshot
+}
+
+func prepare(scope config.Scope, st *state.Store) prepared {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -308,7 +319,7 @@ func prepare(scope config.Scope, st *state.Store) ([]*accountData, string, state
 		src.readRaw, src.health = creds.ReadRaw, queryHealthParallel(set.Accounts)
 	}
 	list, current := prepareWith(set, snap, src)
-	return list, current, snap
+	return prepared{set, list, current, snap}
 }
 
 // queryHealthParallel runs `claude auth status` for every account at once and
@@ -368,12 +379,6 @@ func claudeAccess(d *accountData, src sources) {
 // and expiry is read only on positive evidence.
 func codexAccess(d *accountData, now time.Time) {
 	snap := d.Acct.Auth
-	d.View.Plan = snap.Plan
-	if d.View.Obs != nil && d.View.Obs.Plan != "" {
-		// The plan headroom's own response named outranks the id token's,
-		// which is as old as the last login refresh.
-		d.View.Plan = d.View.Obs.Plan
-	}
 	d.View.Attempt = accountstate.Attempt{}
 	switch snap.State {
 	case codexauth.Absent:

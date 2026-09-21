@@ -6,7 +6,7 @@ package check
 //
 // Two things differ from Claude Code's group, both on purpose. A 401 is never
 // a FAIL: Codex itself recovers from one by reloading and refreshing, so a
-// rejected token is not evidence that anything drifted. And there is a
+// rejected token is not evidence that anything drifted (reportRequest). And there is a
 // credential-source probe: headroom reads only Codex's file credential store,
 // so a home where `codex login status` and auth.json disagree is said out
 // loud rather than rendered as a plain "not logged in".
@@ -14,7 +14,6 @@ package check
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,8 +39,9 @@ const (
 	loginNo
 )
 
-// loginStatusTimeout bounds one probe. The command is local (~17ms measured).
-const loginStatusTimeout = 5 * time.Second
+// loginStatusTimeout bounds one probe. The command is local (~17ms measured);
+// a variable so a test can prove the bound with a wedged stub.
+var loginStatusTimeout = 5 * time.Second
 
 // probeLogin runs `codex login status` against one home. home "" is the
 // primary, selected by CODEX_HOME's absence. The environment is the launch
@@ -58,6 +58,8 @@ func probeLogin(bin, home string, environ []string) loginVerdict {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "login", "status")
 	cmd.Env = tgt.Env(environ)
+	// A grandchild holding the output pipe must not outlive the bound.
+	cmd.WaitDelay = time.Second
 	out, _ := cmd.CombinedOutput()
 	return classifyLogin(string(out))
 }
@@ -147,7 +149,7 @@ func checkCodex(scope config.Scope, environ []string,
 	}
 	for i, candidate := range requests {
 		if candidate != nil {
-			reportCodexRequest(name(accts[i]), results[i], now, chk, own, skip)
+			reportRequest(config.Codex, name(accts[i]), results[i], now, chk, own, skip)
 		}
 	}
 
@@ -217,21 +219,6 @@ func checkCodex(scope config.Scope, environ []string,
 func rereadCodex(home string) (string, bool) {
 	snap := codexauth.Read(home)
 	return snap.AccessToken, snap.AccessToken != ""
-}
-
-// reportCodexRequest is reportRequest with Codex's 401 rule: any 401 is
-// inconclusive. Claude Code's rule — an unchanged token rejected is drift —
-// does not carry over, because Codex recovers from a 401 by refreshing.
-func reportCodexRequest(name string, r refresh.Result, now time.Time, chk, own func(bool, string, string), skip func(string, string)) {
-	if r.Attempt.State == accountstate.AttemptHTTP && r.Attempt.HTTPCode == http.StatusUnauthorized {
-		detail := "access token rejected — any Codex session refreshes it; no evidence either way"
-		if r.TokenAfter401 == refresh.TokenChanged {
-			detail = "token was refreshed mid-check — no evidence either way"
-		}
-		skip(fmt.Sprintf("api[%s]: HTTP 401", name), detail)
-		return
-	}
-	reportRequest(name, r, now, chk, own, skip)
 }
 
 func codexBinary() (path, resolved string) {

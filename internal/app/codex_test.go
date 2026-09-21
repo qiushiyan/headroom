@@ -74,7 +74,7 @@ func codexUsage(accountID, userID string, percent int) string {
 func (f codexFixture) round(t *testing.T) map[string]*accountData {
 	t.Helper()
 	st := state.Open(f.scope)
-	list, _, _ := prepare(f.scope, st)
+	list := prepare(f.scope, st).list
 	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
 	}
@@ -137,6 +137,9 @@ func TestCodexRefreshRound(t *testing.T) {
 	}
 	if v.Label != "u1@x.com" || v.Launcher != "headroom launch --vendor codex --account u1@x.com" {
 		t.Errorf("label %q launcher %q", v.Label, v.Launcher)
+	}
+	if v.LoginCommand != "headroom launch --vendor codex --account u1@x.com -- login" {
+		t.Errorf("login command = %q: every Codex log-in hint is built from it", v.LoginCommand)
 	}
 
 	// The primary has no auth.json: no login, and no request left for it.
@@ -247,10 +250,14 @@ func TestCodexIdentityWithinARound(t *testing.T) {
 	first, second := login(1), login(2)
 	dir := f.extra(t, first)
 
+	// The home is logged into another account right after discovery — before
+	// preparation, which must work from the snapshot and never read the file
+	// again: a re-read there would send the second login's token under the
+	// first's label and ledger key.
 	st := state.Open(f.scope)
-	list, _, _ := prepare(f.scope, st)
-	// The home is logged into another account between discovery and fetch.
+	set := accounts.Discover(f.scope)
 	second.Write(t, dir)
+	list, _ := prepareWith(set, st.Load(), sources{now: time.Now()})
 	var d *accountData
 	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
@@ -456,5 +463,51 @@ func TestStartRefusesTheOtherVendorsCandidate(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.cfg.Claude.AccountsRoot, "state.json")); err == nil {
 		t.Error("a claim was written to Claude Code's ledger")
+	}
+}
+
+// The ledger key's spelling is permanent: a quiet period written under the
+// shipped key must still defer. The document is seeded literally, because a
+// test that writes and reads through Key.ID would follow a respelling.
+func TestCodexLedgerKeySpellingIsPermanent(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte(codexUsage("acct-1", "user-1", 5)))
+	}))
+	defer srv.Close()
+	f := newCodexFixture(t, srv.URL)
+	f.extra(t, login(1))
+	now := time.Now()
+	doc := fmt.Sprintf(`{"version":1,"accounts":{"uuid:acct-1/user-1":{"name":"u1@x.com","request":{"last_attempt_ms":%d,"next_eligible_ms":%d}}}}`,
+		now.UnixMilli(), now.Add(time.Minute).UnixMilli())
+	if err := os.MkdirAll(f.scope.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.scope.AccountsRoot, "state.json"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v := f.round(t)["u1@x.com"].View
+	if hits != 0 || v.Attempt.State != accountstate.AttemptDeferred {
+		t.Errorf("a quiet period under uuid:acct-1/user-1 was not honoured: %d request(s), attempt %+v", hits, v.Attempt)
+	}
+}
+
+// Spacing is the scope's, and it reaches the consumers that used to read one
+// global constant: the facts' fresh window and the idle board's cadence.
+func TestScopeSpacingReachesFreshnessAndTheIdleCadence(t *testing.T) {
+	f := newCodexFixture(t, "http://127.0.0.1:1")
+	f.scope.Spacing = 7 * time.Minute
+	f.extra(t, login(1))
+	st := state.Open(f.scope)
+	for _, a := range accountstate.Read(f.scope, st, time.Now()).Accounts {
+		if a.View.FreshFor != 7*time.Minute {
+			t.Errorf("%s: fresh window %v, want the scope's spacing", a.Acct.Name, a.View.FreshFor)
+		}
+	}
+	pg := &page{scope: f.scope, st: st} // nothing to ask about: the idle cadence
+	pg.schedule()
+	if wait := time.Until(pg.nextAt); wait < 6*time.Minute || wait > 8*time.Minute {
+		t.Errorf("idle cadence %v, want the scope's spacing", wait)
 	}
 }

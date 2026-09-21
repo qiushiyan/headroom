@@ -202,3 +202,57 @@ func TestLoadRefusesAliasedAccountsRoots(t *testing.T) {
 		t.Errorf("an accepted spelling was rewritten: %q", c.Claude.AccountsRoot)
 	}
 }
+
+// One location must refuse however it is reached: through an alias above
+// several components that do not exist yet, and under a spelling that differs
+// only in case on a filesystem that folds it. Seeding under an accepted pair
+// would otherwise create the shared root the refusal exists to prevent.
+func TestLoadRefusesAliasedRootsAboveMissingComponentsAndByCase(t *testing.T) {
+	clearOverrides(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HEADROOM_ACCOUNTS_ROOT", filepath.Join(real, "new", "accounts"))
+	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(link, "new", "accounts"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "same location") {
+		t.Errorf("alias above two missing components: err = %v, want a refusal", err)
+	}
+
+	existing := filepath.Join(real, "Accounts")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HEADROOM_ACCOUNTS_ROOT", existing)
+	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(real, "accounts"))
+	_, err := Load()
+	if _, statErr := os.Stat(filepath.Join(real, "accounts")); statErr == nil {
+		// The filesystem folds case: both spellings are one directory.
+		if err == nil || !strings.Contains(err.Error(), "same location") {
+			t.Errorf("case-folded spellings of one directory: err = %v, want a refusal", err)
+		}
+	} else if err != nil {
+		t.Errorf("distinct directories on a case-sensitive filesystem refused: %v", err)
+	}
+
+	// Distinct siblings above missing components stay accepted.
+	t.Setenv("HEADROOM_ACCOUNTS_ROOT", filepath.Join(real, "a", "accounts"))
+	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(real, "b", "accounts"))
+	if _, err := Load(); err != nil {
+		t.Errorf("distinct roots refused: %v", err)
+	}
+}
+
+// Either directory makes Codex present — the primary home alone included.
+func TestCodexPresentFromItsPrimaryHomeAlone(t *testing.T) {
+	clearOverrides(t)
+	home := t.TempDir()
+	t.Setenv("HEADROOM_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Load(); err != nil || !c.Codex.Present {
+		t.Errorf("~/.codex alone: present=%v err=%v", c.Codex.Present, err)
+	}
+}

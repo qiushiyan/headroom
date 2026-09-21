@@ -19,6 +19,7 @@ type doc5 struct {
 	Accounts []struct {
 		Vendor  string `json:"vendor"`
 		Name    string `json:"name"`
+		Plan    string `json:"plan"`
 		Current bool   `json:"current"`
 		Usage   *struct {
 			Source          string   `json:"source"`
@@ -62,19 +63,25 @@ func decode5(t *testing.T, data []byte) doc5 {
 // Obligation 15: the schema 5 contract over a two-vendor fixture, from the
 // fetching surface and from `limits`, unfiltered and filtered.
 func TestSchema5TwoVendors(t *testing.T) {
-	body := `{"plan_type":"pro","account_id":"acct-1","user_id":"user-1",
+	// The response names another plan than the login's id token does, so the
+	// test can tell which one a surface reported.
+	body := `{"plan_type":"prolite","account_id":"acct-1","user_id":"user-1",
 	  "rate_limit":{"allowed":false,"limit_reached":true,
 	    "primary_window":{"used_percent":0,"limit_window_seconds":18000,"reset_after_seconds":18000,"reset_at":1790018000},
 	    "secondary_window":{"used_percent":100,"limit_window_seconds":604800,"reset_after_seconds":5000,"reset_at":1790239759}},
 	  "code_review_rate_limit":{"allowed":false,"limit_reached":false},
+	  "additional_rate_limits":[{"limit_name":"Astra","metered_feature":"astra_model","rate_limit":{"allowed":true,"limit_reached":false,
+	    "primary_window":{"used_percent":7,"limit_window_seconds":86400,"reset_after_seconds":100,"reset_at":1790080000}}}],
 	  "spend_control":{"reached":false},"rate_limit_reached_type":"usage_limit_reached"}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
 	defer srv.Close()
 	f := newCodexFixture(t, srv.URL)
 	f.extra(t, login(1))
-	// The same email as an account of both vendors.
-	if err := os.MkdirAll(filepath.Join(f.cfg.Claude.AccountsRoot, "u1@x.com"), 0o755); err != nil {
-		t.Fatal(err)
+	// The same email as an account of both vendors, and one only Claude Code has.
+	for _, name := range []string{"u1@x.com", "claude-only@x.com"} {
+		if err := os.MkdirAll(filepath.Join(f.cfg.Claude.AccountsRoot, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(f.scope.CurrentFile(), []byte("u1@x.com\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -110,8 +117,14 @@ func TestSchema5TwoVendors(t *testing.T) {
 			len(u.BlockedFeatures) != 1 || u.BlockedFeatures[0] != "code review" {
 			t.Errorf("usage = %+v", u)
 		}
-		if len(u.Limits) != 2 {
+		if a.Plan != "prolite" {
+			t.Errorf("plan = %q, want the one headroom's own response named", a.Plan)
+		}
+		if len(u.Limits) != 3 {
 			t.Fatalf("limits = %+v", u.Limits)
+		}
+		if extra := u.Limits[2]; extra.Feature != "astra_model" || extra.Group != "additional" || extra.WindowSeconds != 86400 {
+			t.Errorf("additional limit = %+v", extra)
 		}
 		un, wk := u.Limits[0], u.Limits[1]
 		if !un.Unstarted || un.ResetState != "none" || un.ResetsAt != nil || un.WindowSeconds != 18000 || un.Kind != "primary" || un.Group != "rate_limit" {
@@ -131,7 +144,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 			}
 		}
 	}
-	if vendors["claude"] != 2 || vendors["codex"] != 2 {
+	if vendors["claude"] != 3 || vendors["codex"] != 2 {
 		t.Errorf("accounts by vendor = %v, want one flat list of both", vendors)
 	}
 
@@ -141,12 +154,17 @@ func TestSchema5TwoVendors(t *testing.T) {
 		t.Fatalf("limits exit %d", code)
 	}
 	ld := decode5(t, buf.Bytes())
-	if len(ld.Accounts) != 4 || ld.Current["codex"] != "u1@x.com" {
+	if len(ld.Accounts) != 5 || ld.Current["codex"] != "u1@x.com" {
 		t.Errorf("limits: %d accounts, current %v", len(ld.Accounts), ld.Current)
 	}
 	for _, a := range ld.Accounts {
 		if a.Vendor == "codex" && a.Name == "u1@x.com" && (a.Usage == nil || a.Usage.Source != "headroom_cache" || a.Usage.Allowance != "blocked") {
 			t.Errorf("limits did not replay the stored Codex body: %+v", a.Usage)
+		}
+		// The disk-only surface knows the plan as well as the fetching one:
+		// the stored response's when there is one, the login's otherwise.
+		if a.Vendor == "codex" && a.Name == "u1@x.com" && a.Plan != "prolite" {
+			t.Errorf("limits plan = %q, want the stored response's", a.Plan)
 		}
 		if a.Usage != nil && a.Usage.Source == "claude_cache" && a.Vendor == "codex" {
 			t.Error("a Codex account reported claude_cache")
@@ -179,13 +197,13 @@ func TestSchema5TwoVendors(t *testing.T) {
 		t.Errorf("--account across vendors: %+v current %v", named.Accounts, named.Current)
 	}
 	// A name only one vendor has still answers, and the other vendor stays in
-	// the envelope with no accounts.
+	// the envelope — its `current` is still a fact — with no accounts.
 	buf.Reset()
-	if code := runLimitsTo(&buf, both, []string{"--account", "primary"}); code != 0 {
-		t.Fatal("limits --account primary failed")
+	if code := runLimitsTo(&buf, both, []string{"--account", "claude-only@x.com"}); code != 0 {
+		t.Fatal("limits --account claude-only@x.com failed")
 	}
-	if p := decode5(t, buf.Bytes()); len(p.Accounts) != 2 || len(p.Current) != 2 {
-		t.Errorf("--account primary: %+v", p.Accounts)
+	if p := decode5(t, buf.Bytes()); len(p.Accounts) != 1 || p.Accounts[0].Vendor != "claude" || p.Current["codex"] != "u1@x.com" {
+		t.Errorf("--account claude-only@x.com: %+v current %v", p.Accounts, p.Current)
 	}
 	buf.Reset()
 	if code := runLimitsTo(&buf, both, []string{"--account", "nobody@x.com"}); code != 1 || buf.Len() != 0 {
@@ -254,4 +272,27 @@ func join(s []string) string {
 		out += x
 	}
 	return out
+}
+
+// A problem in a state file is attributed to the vendor whose file it is, and
+// --vendor filters problems with everything else.
+func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
+	f := newCodexFixture(t, "http://127.0.0.1:1")
+	f.extra(t, login(1))
+	if err := os.WriteFile(filepath.Join(f.scope.AccountsRoot, "state.json"), []byte(`{"version":1,"accounts":"broken"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if code := runLimitsTo(&buf, []config.Scope{f.cfg.Claude, f.scope}, nil); code != 0 {
+		t.Fatal("limits failed")
+	}
+	d := decode5(t, buf.Bytes())
+	if len(d.Problems) != 1 || d.Problems[0].Vendor != "codex" {
+		t.Errorf("problems = %+v, want the one Codex problem under its vendor", d.Problems)
+	}
+	buf.Reset()
+	runLimitsTo(&buf, []config.Scope{f.cfg.Claude}, nil)
+	if d := decode5(t, buf.Bytes()); len(d.Problems) != 0 {
+		t.Errorf("--vendor claude reported Codex's problem: %+v", d.Problems)
+	}
 }

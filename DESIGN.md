@@ -732,8 +732,10 @@ here.
   ten days; only its `exp` is read. `internal/codexauth` is the one reader —
   JWT payloads decoded, signatures not verified, because the file is local and
   the vendor is the judge of the token. An account carries the single snapshot
-  discovery took and nothing reads the file again within a round, so a login
-  that changes mid-refresh cannot put one account's response on another's row.
+  discovery took, and its label, ledger key and request credentials stay bound
+  to it for the whole round, so a login that changes mid-refresh cannot put
+  one account's response on another's row. The one later read — `check`
+  sampling the token after a 401 — is diagnostic and replaces none of them.
 - **Health is a table over that snapshot, first match wins**, with no vendor
   probe on the board path: file absent → no login; unreadable, or a ChatGPT
   login without a string access token → bad blob; another `auth_mode` (API
@@ -775,8 +777,9 @@ here.
   one would hide a real reset.
 - **The allowance is the account-level half of the response.** Positive,
   well-typed evidence blocks — `rate_limit.allowed` false, `limit_reached`
-  true, `spend_control.reached`, a non-null `rate_limit_reached_type` — and
-  only that: a blocking field under a wrong type is drift that never blocks,
+  true, `spend_control.reached`, a `rate_limit_reached_type` naming a reason —
+  and only that: a blocking field under a wrong type, an empty reason
+  included (the vendor types it as a closed set), is drift that never blocks,
   and unknown (every Claude Code response) is never read as allowed.
   `Actionable` consults it, so a blocked account is not offered as grounds for
   a choice whatever its percentages say, and the footer counts it apart from

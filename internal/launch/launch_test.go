@@ -1,6 +1,8 @@
 package launch
 
 import (
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -233,5 +235,28 @@ func TestCodexEnv(t *testing.T) {
 	}
 	if _, err := Extra(config.Codex, "relative/home"); err == nil {
 		t.Error("a relative Codex home must refuse")
+	}
+}
+
+// ExecPath hands the child the vendor's own name as argv[0] — Codex dispatches
+// on it — not a name compiled in for another vendor. Exec replaces the
+// process, so the call runs in a copy of this test binary.
+func TestExecPathSetsArgv0(t *testing.T) {
+	if os.Getenv("HEADROOM_TEST_EXEC_ARGV0") != "" {
+		// `ps -o args=` prints the shell's own argv; the trailing command
+		// keeps sh from exec'ing ps in its place.
+		err := ExecPath("/bin/sh", os.Getenv("HEADROOM_TEST_EXEC_ARGV0"), []string{"-c", "ps -o args= -p $$; true"}, os.Environ())
+		t.Fatalf("exec failed: %v", err)
+	}
+	for _, name := range []string{"codex", "claude"} {
+		cmd := exec.Command(os.Args[0], "-test.run", "^TestExecPathSetsArgv0$")
+		cmd.Env = append(os.Environ(), "HEADROOM_TEST_EXEC_ARGV0="+name)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", name, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, name+" -c") {
+			t.Errorf("argv = %q, want argv[0] %q", got, name)
+		}
 	}
 }

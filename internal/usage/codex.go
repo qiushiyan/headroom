@@ -157,9 +157,12 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		// at least the whole window — which a started window fails after one
 		// second. A missed unstarted window shows a full-window countdown,
 		// which is harmless; a false "not started" would hide a real reset.
+		// "Nothing spent" is the decoded value, not the rounded display figure:
+		// 0.1% used is a started window with a real reset.
+		used, _ := w["used_percent"].(float64)
 		if after, ok := w["reset_after_seconds"].(float64); ok &&
 			row.PercentState == StateOK && row.ResetState == StateOK && row.IdentityState == StateOK &&
-			row.Percent == 0 && int64(after) >= row.WindowSeconds {
+			used == 0 && int64(after) >= row.WindowSeconds {
 			row.Unstarted, row.ResetAt, row.ResetState = true, 0, StateNone
 		}
 		row.Label = codexLabel(row.WindowSeconds, suffix)
@@ -226,10 +229,16 @@ func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	reached, reachedOK := fields[1].value.(bool)
 	spent, spentOK := fields[2].value.(bool)
 	reason, reasonOK := fields[3].value.(string)
+	if reason == "" {
+		// The vendor types this field as a closed set of reasons, and its own
+		// client rejects anything else. An empty string is therefore neither
+		// a block nor an absence: it is a value the field has never had.
+		reasonOK = false
+	}
 
 	// 1. blocked: any of the four well-typed and positive.
 	switch {
-	case reasonOK && reason != "":
+	case reasonOK:
 		return AllowanceBlocked, reason
 	case spentOK && spent:
 		return AllowanceBlocked, "spend_control.reached"

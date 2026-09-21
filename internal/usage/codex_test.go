@@ -205,6 +205,8 @@ func TestCodexAllowance(t *testing.T) {
 		{"blocked with low percents", codexBody(rl(`"allowed":false,"limit_reached":false,"primary_window":`+window(3, 604800, 5, 1790000000)), ""), AllowanceBlocked, "rate_limit.allowed is false"},
 		{"a malformed field and nothing positive", codexBody(rl(`"allowed":true,"limit_reached":"no"`), ""), AllowanceBad, ""},
 		{"a malformed reached type", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":7`), AllowanceBad, ""},
+		{"an empty reached type is malformed, neither a block nor allowed", codexBody(rl(`"allowed":true,"limit_reached":false`), `"rate_limit_reached_type":""`), AllowanceBad, ""},
+		{"a null boolean is absence, as a null window is", codexBody(rl(`"allowed":true,"limit_reached":false`), `"spend_control":{"reached":null}`), AllowanceAllowed, ""},
 		{"a malformed spend control", codexBody(rl(`"allowed":true,"limit_reached":false`), `"spend_control":"x"`), AllowanceBad, ""},
 		{"allowed", codexBody(rl(`"allowed":true,"limit_reached":false`), `"spend_control":{"reached":false},"rate_limit_reached_type":null`), AllowanceAllowed, ""},
 		{"allowed alone says too little", codexBody(rl(`"allowed":true`), ""), AllowanceUnknown, ""},
@@ -256,5 +258,17 @@ func TestParseDispatch(t *testing.T) {
 	}
 	if _, err := Parse(config.Claude, []byte(observedCodexBody)); err == nil {
 		t.Error("a Codex body parsed as Claude Code")
+	}
+}
+
+// The unstarted predicate is about what was spent, not about what the percent
+// rounds to: a sliver of use starts the window, and its reset is real.
+func TestCodexUnstartedTestsTheDecodedPercentNotTheRoundedOne(t *testing.T) {
+	row := mustCodex(t, codexBody(`{"primary_window":`+window(0.1, 604800, 604800, 1790604800)+`}`, "")).Rows[0]
+	if row.Unstarted || row.ResetAt != 1790604800 || row.ResetState != StateOK {
+		t.Errorf("0.1%% used read as not started and lost its reset: %+v", row)
+	}
+	if row.Percent != 0 {
+		t.Errorf("display percent = %d", row.Percent)
 	}
 }

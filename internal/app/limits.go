@@ -65,9 +65,9 @@ func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
 	for _, scope := range scopes {
 		st := state.Open(scope)
 		disk := accountstate.Read(scope, st, now)
-		b := vendorBoard{scope: scope, st: st, list: accountList(disk.Accounts), current: disk.Current, problems: disk.Store.Problems()}
+		b := vendorBoard{scope: scope, set: disk.Set, st: st, list: accountList(disk.Accounts), current: disk.Current, problems: disk.Store.Problems()}
 		if accountSet {
-			a, err := setOf(scope, b.list).Select(account)
+			a, err := disk.Set.Select(account)
 			if err != nil {
 				if selectErr == nil {
 					selectErr = err

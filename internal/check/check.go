@@ -155,7 +155,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		if accts[i].IsPrimary() {
 			name = "primary"
 		}
-		reportRequest(name, results[i], now, chk, own, skip)
+		reportRequest(config.Claude, name, results[i], now, chk, own, skip)
 	}
 
 	// .claude.json still records the logged-in email (dashboard labels).
@@ -586,8 +586,11 @@ func searchReader(r io.Reader, needles []string, bufSize int) map[string]bool {
 	}
 }
 
-// reportRequest is diagnostic policy over the same request evidence the board uses.
-func reportRequest(name string, r refresh.Result, now time.Time, chk, own func(bool, string, string), skip func(string, string)) {
+// reportRequest is diagnostic policy over the same request evidence the board
+// uses, for either vendor. Bookkeeping failures are reported first and
+// unconditionally — they are independent of whatever the endpoint said — and
+// the vendor only decides what a 401 means.
+func reportRequest(vendor config.Vendor, name string, r refresh.Result, now time.Time, chk, own func(bool, string, string), skip func(string, string)) {
 	status := "n/a"
 	if r.Attempt.HTTPCode != 0 {
 		status = fmt.Sprint(r.Attempt.HTTPCode)
@@ -616,6 +619,11 @@ func reportRequest(name string, r refresh.Result, now time.Time, chk, own func(b
 		switch {
 		case r.Attempt.HTTPCode >= 500:
 			skip(label, "vendor-side error — no evidence either way")
+		case r.Attempt.HTTPCode == http.StatusUnauthorized && vendor == config.Codex && r.TokenAfter401 != refresh.TokenChanged:
+			// Codex recovers from a 401 by reloading and refreshing, so a
+			// rejected token is never evidence that anything drifted — where
+			// Claude Code's unchanged-token 401 below is.
+			skip(label, "access token rejected — any Codex session refreshes it; no evidence either way")
 		case r.Attempt.HTTPCode == http.StatusUnauthorized && r.TokenAfter401 == refresh.TokenChanged:
 			skip(label, "token was refreshed mid-check — no evidence either way")
 		case r.Attempt.HTTPCode == http.StatusUnauthorized && r.TokenAfter401 == refresh.TokenUnknown:

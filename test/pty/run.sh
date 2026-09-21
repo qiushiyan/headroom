@@ -25,6 +25,16 @@ HEADROOM_BIN="$work/headroom"
 export HEADROOM_ACCOUNTS_ROOT="$work/accounts"
 export HEADROOM_PRIMARY_NAME=primary
 export HEADROOM_USAGE_URL="http://127.0.0.1:1/usage"
+# The same for Codex, from the first invocation on: a shell that exports
+# HEADROOM_CODEX_ACCOUNTS_ROOT would otherwise lend its real root — which
+# HEADROOM_HOME does not override — to every case below, against the live
+# usage URL. The fixture root does not exist until the two-vendor block
+# creates it, so until then Codex is absent and every frame is the
+# single-vendor one.
+export HEADROOM_CODEX_ACCOUNTS_ROOT="$work/codex-accounts"
+export HEADROOM_CODEX_USAGE_URL="http://127.0.0.1:1/usage"
+unset HEADROOM_CODEX_PRIMARY_NAME HEADROOM_CODEX_LAUNCHER_FORMAT HEADROOM_LAUNCHER_FORMAT
+unset CODEX_HOME CODEX_SQLITE_HOME CODEX_API_KEY CODEX_ACCESS_TOKEN
 # One account carries an accountUuid (every real dir on this machine does —
 # it is what the request ledger keys on) and one deliberately does not, so the
 # degraded dir-name path stays exercised too.
@@ -184,12 +194,10 @@ fi
 
 # Two vendors. Codex is absent from every other case — its directories do not
 # exist under the fixture home, so those frames are what they always were —
-# and present for this block alone, through its own accounts root. The tokens
+# and present for this block alone, once its fixture root exists. The tokens
 # are unsigned fixtures and the usage URL is a closed port.
 b64() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
 jwt() { printf '%s.%s.sig' "$(b64 '{"alg":"none"}')" "$(b64 "$1")"; }
-export HEADROOM_CODEX_ACCOUNTS_ROOT="$work/codex-accounts"
-export HEADROOM_CODEX_USAGE_URL="http://127.0.0.1:1/usage"
 mkdir -p "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com" "$HEADROOM_HOME/.codex/sessions"
 ln -s "$HEADROOM_HOME/.codex/sessions" "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/sessions"
 id_token=$(jwt '{"email":"cx@x.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro","chatgpt_account_id":"acct-cx","chatgpt_user_id":"user-cx"}}')
@@ -237,7 +245,6 @@ if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
 fi
 # Codex goes absent again for everything below.
 rm -rf "$HEADROOM_CODEX_ACCOUNTS_ROOT" "$HEADROOM_HOME/.codex"
-unset HEADROOM_CODEX_ACCOUNTS_ROOT HEADROOM_CODEX_USAGE_URL
 
 # SIGTERM mid-session must leave the terminal in canonical echoing mode.
 run accounts_sigterm

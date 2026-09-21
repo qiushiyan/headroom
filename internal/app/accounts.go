@@ -45,20 +45,6 @@ func isCancelKey(k tui.Key) bool {
 		k == tui.Key{Kind: tui.KeyCtrl, Rune: 'd'}
 }
 
-// knownExtraDir adapts the board's list to the discovered set's KnownExtraDir.
-func knownExtraDir(scope config.Scope, list []*accountData, dir string) bool {
-	return setOf(scope, list).KnownExtraDir(dir)
-}
-
-// setOf rebuilds the discovered set a board list was prepared from.
-func setOf(scope config.Scope, list []*accountData) accounts.Set {
-	accts := make([]accounts.Account, len(list))
-	for i, d := range list {
-		accts[i] = d.Acct
-	}
-	return accounts.Set{Scope: scope, Accounts: accts}
-}
-
 // notActionable counts accounts whose displayed figures are not grounds for a
 // choice — the account isn't usable, its numbers are too old, or a limit
 // window has rolled over since they were taken. The picker warns rather than
@@ -162,6 +148,7 @@ type page struct {
 	scope config.Scope
 	st    *state.Store
 
+	set     accounts.Set // what the current list was discovered as
 	list    []*accountData
 	updates <-chan refresh.Result // non-nil while this page's round is in flight
 	sel     int
@@ -179,7 +166,7 @@ type page struct {
 
 	// begin starts a round: the local half, then the claim and whatever
 	// fetches it permits. nil means the real thing; tests inject channels.
-	begin func(ctx context.Context, pg *page) ([]*accountData, <-chan refresh.Result)
+	begin func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result)
 }
 
 // picker is the interactive board: the pages, which one is visible, and the
@@ -234,59 +221,80 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 	defer tick.Stop()
 
 	for {
-		// The vendor set is closed at two, so the loop receives from every
-		// page's channel by name. A page with no round in flight has a nil
-		// channel, which never delivers.
-		var second <-chan refresh.Result
-		if len(ui.pages) > 1 {
-			second = ui.pages[1].updates
-		}
-		select {
-		case u, open := <-ui.pages[0].updates:
-			ui.pages[0].receive(u, open, time.Now())
-			ui.draw()
-		case u, open := <-second:
-			ui.pages[1].receive(u, open, time.Now())
-			ui.draw()
-		case <-tick.C:
-			if pg := ui.page(); pg.due(ui.lastKey) {
-				// A round due because it was armed is still the user's ask.
-				pg.startRound(ctx, pg.armed)
-			}
-			ui.draw()
-		case k := <-t.Events():
-			ui.lastKey = time.Now()
+		switch ui.step(ctx, tick.C, t.Events()) {
+		case stepCancel:
+			t.Close()
+			return 1
+		case stepChoose:
 			pg := ui.page()
-			switch {
-			case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
-				pg.move(-1)
-			case k.Kind == tui.KeyDown || k == tui.Key{Kind: tui.KeyRune, Rune: 'j'}:
-				pg.move(1)
-			case k.Kind == tui.KeyTab:
-				ui.show(ctx, (ui.visible+1)%len(ui.pages))
-			case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
-				pg.refresh(ctx)
-			case isCancelKey(k):
-				t.Close()
+			chosen := pg.list[pg.sel]
+			t.Close()
+			// Enter records this page's vendor's current account and nothing
+			// else: the other vendor's .current is not touched.
+			if err := pg.set.SetCurrent(chosen.Acct); err != nil {
+				fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
 				return 1
-			case k.Kind == tui.KeyEnter:
-				if len(pg.list) == 0 {
-					break
-				}
-				chosen := pg.list[pg.sel]
-				t.Close()
-				// Enter records this page's vendor's current account and
-				// nothing else: the other vendor's .current is not touched.
-				if err := setOf(pg.scope, pg.list).SetCurrent(chosen.Acct); err != nil {
-					fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
-					return 1
-				}
-				fmt.Println(chosenLine(pg.scope, chosen.View.Label))
-				return 0
 			}
-			ui.draw()
+			fmt.Println(chosenLine(pg.scope, chosen.View.Label))
+			return 0
+		}
+		ui.draw()
+	}
+}
+
+// stepOutcome is what one turn of the board's loop asks of its caller.
+type stepOutcome int
+
+const (
+	stepContinue stepOutcome = iota
+	stepCancel
+	stepChoose // enter on a row of the visible page
+)
+
+// step is one turn of the board's loop: one refresh result, one tick or one
+// key. It is the only place results are routed and rounds are started, which
+// is what the page model's two promises rest on — a result is applied to the
+// page whose channel delivered it, whichever page is visible, and only the
+// visible page is ever asked whether a round is due.
+func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan tui.Key) stepOutcome {
+	// The vendor set is closed at two, so the loop receives from every
+	// page's channel by name. A page with no round in flight has a nil
+	// channel, which never delivers.
+	var second <-chan refresh.Result
+	if len(ui.pages) > 1 {
+		second = ui.pages[1].updates
+	}
+	select {
+	case u, open := <-ui.pages[0].updates:
+		ui.pages[0].receive(u, open, time.Now())
+	case u, open := <-second:
+		ui.pages[1].receive(u, open, time.Now())
+	case <-tick:
+		if pg := ui.page(); pg.due(ui.lastKey) {
+			// A round due because it was armed is still the user's ask.
+			pg.startRound(ctx, pg.armed)
+		}
+	case k := <-keys:
+		ui.lastKey = time.Now()
+		pg := ui.page()
+		switch {
+		case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
+			pg.move(-1)
+		case k.Kind == tui.KeyDown || k == tui.Key{Kind: tui.KeyRune, Rune: 'j'}:
+			pg.move(1)
+		case k.Kind == tui.KeyTab:
+			ui.show(ctx, (ui.visible+1)%len(ui.pages))
+		case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
+			pg.refresh(ctx)
+		case isCancelKey(k):
+			return stepCancel
+		case k.Kind == tui.KeyEnter:
+			if len(pg.list) > 0 {
+				return stepChoose
+			}
 		}
 	}
+	return stepContinue
 }
 
 // chosenLine says what enter just did, naming the bare launch that now
@@ -322,9 +330,7 @@ func (ui *picker) show(ctx context.Context, i int) {
 // out when its channel has drained. Only this receiving path updates facts.
 func (pg *page) receive(u refresh.Result, open bool, now time.Time) {
 	if open {
-		if u.Index >= 0 && u.Index < len(pg.list) {
-			resolve(pg.list[u.Index], u)
-		}
+		resolve(pg.list[u.Index], u)
 		return
 	}
 	pg.updates = nil
@@ -352,13 +358,13 @@ func (pg *page) receive(u refresh.Result, open bool, now time.Time) {
 func (ui *page) startRound(ctx context.Context, manual bool) {
 	begin := ui.begin
 	if begin == nil {
-		begin = func(ctx context.Context, pg *page) ([]*accountData, <-chan refresh.Result) {
-			list, _, _ := prepare(pg.scope, pg.st)
-			return list, launchFetches(ctx, list, pg.st)
+		begin = func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result) {
+			p := prepare(pg.scope, pg.st)
+			return p.set, p.list, launchFetches(ctx, p.list, pg.st)
 		}
 	}
-	list, updates := begin(ctx, ui)
-	ui.list = list
+	set, list, updates := begin(ctx, ui)
+	ui.set, ui.list = set, list
 	ui.restoreSelection()
 	ui.lastLocal = time.Now()
 	ui.armed = false
@@ -681,7 +687,7 @@ func (ui *picker) status(now time.Time) string {
 		// machine's ordinary environment — check reports it, the board does
 		// not caption the normal case.
 		if tgt, err := launch.For(pg.scope.Vendor, d.Acct.ConfigDir); err == nil {
-			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !knownExtraDir(pg.scope, pg.list, v) {
+			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !pg.set.KnownExtraDir(v) {
 				parts = append(parts, "ambient "+pg.scope.Env().HomeVar+" neutralized")
 			}
 		}

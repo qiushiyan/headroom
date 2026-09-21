@@ -12,6 +12,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/tui"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -24,7 +25,7 @@ func injectedPage(t *testing.T, vendor config.Vendor, names ...string) (*page, c
 	ch := make(chan refresh.Result, 8)
 	begun := 0
 	pg := &page{scope: scope, st: state.Open(scope)}
-	pg.begin = func(ctx context.Context, _ *page) ([]*accountData, <-chan refresh.Result) {
+	pg.begin = func(ctx context.Context, _ *page) (accounts.Set, []*accountData, <-chan refresh.Result) {
 		begun++
 		list := make([]*accountData, len(names))
 		for i, n := range names {
@@ -34,7 +35,7 @@ func injectedPage(t *testing.T, vendor config.Vendor, names ...string) (*page, c
 				Request: &refresh.Candidate{},
 			}
 		}
-		return list, ch
+		return accounts.Set{Scope: scope}, list, ch
 	}
 	return pg, ch, &begun
 }
@@ -46,31 +47,34 @@ func observed(percent int) refresh.Result {
 	}
 }
 
-// Pages own their rounds. A result that arrives after the person switched
-// away updates the page that started the round — the same index on the now
-// visible page is somebody else's account — and a hidden page starts none.
+// Pages own their rounds, through the loop's own dispatch. A result that
+// arrives after the person switched away lands on the page that started the
+// round — the same index on the now-visible page is somebody else's account —
+// and a tick never starts a round on a hidden page, however overdue it is.
 func TestPagesOwnTheirRounds(t *testing.T) {
 	claude, claudeCh, claudeBegun := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com")
-	codex, _, codexBegun := injectedPage(t, config.Codex, "x0@x.com", "x1@x.com")
+	codex, codexCh, codexBegun := injectedPage(t, config.Codex, "x0@x.com", "x1@x.com")
 	ui := &picker{pages: []*page{claude, codex}, p: render.NewPalette(false), lastKey: time.Now()}
 	ctx := context.Background()
+	tick := make(chan time.Time, 1)
+	keys := make(chan tui.Key, 1)
 
 	ui.show(ctx, 0)
 	if *claudeBegun != 1 || *codexBegun != 0 {
 		t.Fatalf("opening: claude began %d, codex began %d — only the visible page may start a round", *claudeBegun, *codexBegun)
 	}
 
-	// Switch away while Claude Code's round is still in flight…
-	ui.show(ctx, 1)
-	if *codexBegun != 1 {
-		t.Fatalf("first visit to a page must start its round (began %d)", *codexBegun)
+	// Tab away while Claude Code's round is still in flight…
+	keys <- tui.Key{Kind: tui.KeyTab}
+	ui.step(ctx, tick, keys)
+	if ui.visible != 1 || *codexBegun != 1 {
+		t.Fatalf("tab: visible %d, codex began %d — a first visit starts that page's round", ui.visible, *codexBegun)
 	}
-	// …then its result lands.
+	// …then its result lands, addressed to index 1, while Codex is visible.
 	r := observed(61)
 	r.Index = 1
 	claudeCh <- r
-	u, open := <-claude.updates
-	claude.receive(u, open, time.Now())
+	ui.step(ctx, tick, keys)
 
 	if got := claude.list[1].View.Obs; got == nil || got.Rows[0].Percent != 61 {
 		t.Errorf("the originating page did not get its result: %+v", claude.list[1].View)
@@ -80,15 +84,10 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 			t.Errorf("codex[%d] was touched by Claude Code's round: %+v", i, d.View)
 		}
 	}
-	if claude.updates == nil {
-		t.Error("a round with its channel still open was closed out")
-	}
 
-	// The round closes on its own page, which schedules itself; the visible
-	// page is unaffected.
+	// The round closes on its own page, which schedules itself.
 	close(claudeCh)
-	u, open = <-claude.updates
-	claude.receive(u, open, time.Now())
+	ui.step(ctx, tick, keys)
 	if claude.updates != nil || claude.nextAt.IsZero() {
 		t.Errorf("round not closed out on its page: updates=%v nextAt=%v", claude.updates, claude.nextAt)
 	}
@@ -96,27 +95,57 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 		t.Error("closing Claude Code's round ended Codex's")
 	}
 
-	// Coming back does not start a second round on a page that has a list:
-	// a deadline that passed while hidden is simply due at the next tick.
-	ui.show(ctx, 0)
+	// Claude Code is hidden and long overdue; a tick asks only the visible
+	// page, whose own round is still in flight — so nothing starts.
+	claude.nextAt = time.Now().Add(-time.Hour)
+	tick <- time.Now()
+	ui.step(ctx, tick, keys)
+	if *claudeBegun != 1 || *codexBegun != 1 {
+		t.Errorf("a tick started a round off the visible page: claude %d, codex %d", *claudeBegun, *codexBegun)
+	}
+
+	// Back on its page, the passed deadline is simply due at the next tick.
+	close(codexCh)
+	ui.step(ctx, tick, keys)
+	keys <- tui.Key{Kind: tui.KeyTab}
+	ui.step(ctx, tick, keys)
 	if *claudeBegun != 1 {
 		t.Errorf("returning to a page restarted it (%d rounds)", *claudeBegun)
 	}
-	claude.nextAt = time.Now().Add(-time.Second)
-	if !claude.due(ui.lastKey) {
-		t.Error("a page whose deadline passed while hidden must be due when visible")
+	claude.lastLocal = time.Now().Add(-time.Hour)
+	tick <- time.Now()
+	ui.step(ctx, tick, keys)
+	if *claudeBegun != 2 {
+		t.Errorf("a deadline that passed while hidden did not fire once visible (%d rounds)", *claudeBegun)
 	}
 }
 
-// A late or out-of-range result cannot index past its page's list.
-func TestReceiveIgnoresAnIndexOutsideItsList(t *testing.T) {
-	pg, _, _ := injectedPage(t, config.Codex, "only@x.com")
-	pg.startRound(context.Background(), false)
-	r := observed(9)
-	r.Index = 5
-	pg.receive(r, true, time.Now())
-	if pg.list[0].View.Obs != nil {
-		t.Error("a result addressed elsewhere landed on the only row")
+// Enter and cancel leave the loop to its caller; enter on an empty page is
+// not a choice.
+func TestStepOutcomes(t *testing.T) {
+	pg, _, _ := injectedPage(t, config.Codex, "x0@x.com")
+	empty, _, _ := injectedPage(t, config.Claude)
+	ui := &picker{pages: []*page{pg, empty}, p: render.NewPalette(false), lastKey: time.Now()}
+	ctx := context.Background()
+	keys := make(chan tui.Key, 1)
+	ui.show(ctx, 0)
+	for _, c := range []struct {
+		key  tui.Key
+		want stepOutcome
+	}{
+		{tui.Key{Kind: tui.KeyDown}, stepContinue},
+		{tui.Key{Kind: tui.KeyEnter}, stepChoose},
+		{tui.Key{Kind: tui.KeyEsc}, stepCancel},
+	} {
+		keys <- c.key
+		if got := ui.step(ctx, nil, keys); got != c.want {
+			t.Errorf("key %+v: outcome %v, want %v", c.key, got, c.want)
+		}
+	}
+	ui.show(ctx, 1)
+	keys <- tui.Key{Kind: tui.KeyEnter}
+	if got := ui.step(ctx, nil, keys); got != stepContinue {
+		t.Errorf("enter on an empty page: outcome %v", got)
 	}
 }
 

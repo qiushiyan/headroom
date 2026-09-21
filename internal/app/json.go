@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -143,6 +144,7 @@ var sourceNames = map[accountstate.Source]string{
 // with, and the problems of that vendor's own state file.
 type vendorBoard struct {
 	scope    config.Scope
+	set      accounts.Set
 	st       *state.Store
 	list     []*accountData
 	current  string
@@ -249,11 +251,11 @@ func fetchBoards(scopes []config.Scope) []vendorBoard {
 			// current comes from prepare's snapshot: envelope and per-account
 			// flags must agree even if a concurrent select rewrites .current
 			// mid-fetch.
-			list, current, snap := prepare(scope, st)
-			for u := range launchFetches(context.Background(), list, st) {
-				resolve(list[u.Index], u)
+			p := prepare(scope, st)
+			for u := range launchFetches(context.Background(), p.list, st) {
+				resolve(p.list[u.Index], u)
 			}
-			boards[i] = vendorBoard{scope: scope, st: st, list: list, current: current, problems: snap.Problems()}
+			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.current, problems: p.snap.Problems()}
 		}(i, scope)
 	}
 	wg.Wait()

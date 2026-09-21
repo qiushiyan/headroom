@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,44 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 	if out != "new@x.com\t"+filepath.Join(home, ".codex-accounts", "new@x.com")+"\textra\n" {
 		t.Errorf("resolve = %q", out)
 	}
+	// The reporting surfaces, through the public command line: unfiltered they
+	// hold both vendors, and --vendor restricts accounts and current to one.
+	var all, only doc5
+	if err := json.Unmarshal([]byte(captureStdout(t, func() { Run([]string{"limits"}) })), &all); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(captureStdout(t, func() { Run([]string{"limits", "--vendor", "codex"}) })), &only); err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Current) != 2 || len(only.Current) != 1 || len(only.Accounts) != 2 {
+		t.Errorf("limits: unfiltered current %v; filtered current %v, %d accounts", all.Current, only.Current, len(only.Accounts))
+	}
+	for _, a := range only.Accounts {
+		if a.Vendor != "codex" {
+			t.Errorf("limits --vendor codex returned a %s account", a.Vendor)
+		}
+	}
+
+	// And a launch: --vendor reaches the Codex scope, the binary and argv[0]
+	// are Codex's, and the child's own arguments pass through untouched.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	binary, args, env, called := recordExec(t)
+	captureStderr(t, func() {
+		if code := Run([]string{"launch", "--vendor", "codex", "--account", "new@x.com", "--", "exec", "--vendor", "x"}); code != 0 {
+			t.Errorf("launch --vendor codex: exit %d", code)
+		}
+	})
+	if !*called || *binary != "codex" || strings.Join(*args, " ") != "exec --vendor x" {
+		t.Errorf("launch: called=%v argv0=%q args=%v", *called, *binary, *args)
+	}
+	if v, _ := envValue(*env, "CODEX_HOME"); v != filepath.Join(home, ".codex-accounts", "new@x.com") {
+		t.Errorf("CODEX_HOME = %q", v)
+	}
+
 	// Every existing invocation means what it meant: no --vendor is claude.
 	out = captureStdout(t, func() { Run([]string{"resolve"}) })
 	if !strings.HasSuffix(out, filepath.Join(home, ".claude")+"\tprimary\n") {

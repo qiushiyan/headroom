@@ -220,20 +220,32 @@ func TestRequestVerdictsSeparateStateFailureAndVendorEvidence(t *testing.T) {
 		result               refresh.Result
 		vendor, own, unknown int
 		wantLabel            string
+		codex                bool
 	}{
-		{"busy claim", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptStateUnavailable}, StoreErr: state.ErrBusy}, 0, 0, 2, ""},
-		{"transport", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}}, 0, 0, 1, "api[a]: HTTP n/a"},
-		{"degraded claim", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptStateUnavailable}, StoreErr: state.ErrCorrupt}, 0, 1, 1, ""},
-		{"received but not stored", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptUnparseable, HTTPCode: 200}, StoreErr: state.ErrCorrupt}, 1, 1, 0, ""},
-		{"malformed response", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptUnparseable, HTTPCode: 200}}, 1, 0, 0, ""},
-		{"token changed", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenChanged}, 0, 0, 1, ""},
-		{"token unknown", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenUnknown}, 0, 0, 1, ""},
-		{"token unchanged", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenUnchanged}, 1, 0, 0, ""},
+		{"busy claim", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptStateUnavailable}, StoreErr: state.ErrBusy}, 0, 0, 2, "", false},
+		{"transport", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}}, 0, 0, 1, "api[a]: HTTP n/a", false},
+		{"degraded claim", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptStateUnavailable}, StoreErr: state.ErrCorrupt}, 0, 1, 1, "", false},
+		{"received but not stored", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptUnparseable, HTTPCode: 200}, StoreErr: state.ErrCorrupt}, 1, 1, 0, "", false},
+		{"malformed response", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptUnparseable, HTTPCode: 200}}, 1, 0, 0, "", false},
+		{"token changed", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenChanged}, 0, 0, 1, "", false},
+		{"token unknown", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenUnknown}, 0, 0, 1, "", false},
+		{"token unchanged", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenUnchanged}, 1, 0, 0, "", false},
+		// Codex recovers from a 401 by refreshing: never drift, whatever the re-read says.
+		{"codex token unchanged", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenUnchanged}, 0, 0, 1, "api[a]: HTTP 401", true},
+		{"codex token unknown", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, TokenAfter401: refresh.TokenUnknown}, 0, 0, 1, "", true},
+		// A completion that could not be recorded is headroom's own failure,
+		// independent of the endpoint's verdict — a Codex 401 included.
+		{"codex 401 and not stored", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}, StoreErr: state.ErrCorrupt}, 0, 1, 1, "", true},
+		{"codex other 4xx is still drift", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 403}}, 1, 0, 0, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vendor, own, unknown := 0, 0, 0
 			var labels []string
-			reportRequest("a", tc.result, time.Now(), func(ok bool, _, _ string) {
+			v := config.Claude
+			if tc.codex {
+				v = config.Codex
+			}
+			reportRequest(v, "a", tc.result, time.Now(), func(ok bool, _, _ string) {
 				if !ok {
 					vendor++
 				}
@@ -269,31 +281,7 @@ func TestRunVerdicts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			bin := t.TempDir()
-			cfg := claudeScope(home, "primary")
-			cfg.AccountsRoot = filepath.Join(home, "accounts")
-			write := func(path, body string, mode os.FileMode) {
-				t.Helper()
-				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(body), mode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			write(filepath.Join(bin, "claude"), "#!/bin/sh\n# api/oauth/usage CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR -credentials\necho '{\"loggedIn\":true}'\n", 0755)
-			write(filepath.Join(bin, "security"), "#!/bin/sh\necho '{\"claudeAiOauth\":{\"accessToken\":\"fixture\"}}'\n", 0755)
-			t.Setenv("PATH", bin)
-			t.Setenv("CLAUDE_CONFIG_DIR", "")
-			t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
-			write(cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"}}`, 0600)
-			write(filepath.Join(cfg.PrimaryDir(), "sessions", "1.json"), `{"sessionId":"session","pid":1,"startedAt":1}`, 0600)
-			write(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), `{"sessionId":"session","timestamp":1}`+"\n", 0600)
-			project := filepath.Join(home, "project")
-			if err := os.MkdirAll(project, 0755); err != nil {
-				t.Fatal(err)
-			}
-			write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
+			cfg, write := soundClaudeTree(t, home)
 			if tc.name == "newer state" {
 				write(filepath.Join(cfg.AccountsRoot, "state.json"), `{"version":999}`, 0600)
 			}
@@ -316,4 +304,38 @@ func TestRunVerdicts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// soundClaudeTree builds a Claude Code fixture every assertion passes on —
+// stub claude and security on PATH, a logged-in primary, a registry, history
+// and one transcript — and hands back its scope and a file writer. The usage
+// URL is the caller's to set.
+func soundClaudeTree(t *testing.T, home string) (config.Scope, func(path, body string, mode os.FileMode)) {
+	t.Helper()
+	bin := t.TempDir()
+	cfg := claudeScope(home, "primary")
+	cfg.AccountsRoot = filepath.Join(home, "accounts")
+	write := func(path, body string, mode os.FileMode) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(bin, "claude"), "#!/bin/sh\n# api/oauth/usage CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR -credentials\necho '{\"loggedIn\":true}'\n", 0755)
+	write(filepath.Join(bin, "security"), "#!/bin/sh\necho '{\"claudeAiOauth\":{\"accessToken\":\"fixture\"}}'\n", 0755)
+	t.Setenv("PATH", bin)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+	write(cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"}}`, 0600)
+	write(filepath.Join(cfg.PrimaryDir(), "sessions", "1.json"), `{"sessionId":"session","pid":1,"startedAt":1}`, 0600)
+	write(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), `{"sessionId":"session","timestamp":1}`+"\n", 0600)
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
+	return cfg, write
 }
