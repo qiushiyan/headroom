@@ -91,7 +91,8 @@ type Candidate struct {
 	Excluded     string
 	Unlaunchable bool
 
-	ObservedAt int64 // unix seconds; 0 = never observed
+	ObservedAt int64  // unix seconds; 0 = never observed
+	Source     string // where the observation came from; carried for the record
 	Limits     []Limit
 
 	Busy     []Proc   // verified-live sessions the vendor reports as working
@@ -211,6 +212,7 @@ type Counted struct {
 	Excluded     string
 	Unlaunchable bool
 	ObservedAt   int64
+	Source       string
 	Stale        bool
 	Limits       []CountedLimit
 	Statuses     []string
@@ -401,7 +403,7 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 	nowS, nowMS := now.Unix(), now.UnixMilli()
 	out := Counted{
 		Name: c.Name, Key: c.Key, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
-		ObservedAt: c.ObservedAt, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
+		ObservedAt: c.ObservedAt, Source: c.Source, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
 		Stale:  c.ObservedAt > 0 && nowS-c.ObservedAt > int64(StaleAfter/time.Second),
 		Limits: make([]CountedLimit, 0, len(c.Limits)),
 	}
