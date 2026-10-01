@@ -37,6 +37,11 @@ shell's `x-<name>`) — quote that spelling.
 - **Where launches went**: `headroom launches` — newest launches, one line
   each: account, how it was decided, the runner-up. `--json` for the full
   records.
+- **A `sessions:` line** under an account counts the sessions busy on it and
+  the launches of the last fifteen minutes; a name in parentheses
+  (`steward-home: 1 busy`) is another home on this machine spending the same
+  subscription — its sessions count against that account for every launch.
+- **Which binary**: `headroom version` — the commit it was built from.
 
 ## Act
 

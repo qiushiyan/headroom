@@ -98,6 +98,17 @@ enter there records the Codex account a bare Codex launch targets:
 A Codex account reads *unknown* until headroom's first fetch, and *blocked*
 when the vendor says so, whatever its percentages.
 
+### 5. A second home on the same machine
+
+An automated pipeline running headless `claude` sessions under its own
+`HOME` can hold its own logins of the same subscriptions and still be placed
+against the same load: `headroom accounts ledger <first home's accounts
+root>`, run as that home, makes both homes ask each subscription once per
+spacing and count each other's busy sessions and launches. Each home keeps
+its own dirs, settings, sessions and default; the board names the other
+home's share (`sessions: 2 busy (steward-home: 1 busy)`). See
+[docs/REFERENCE.md](docs/REFERENCE.md#a-second-home-on-the-same-machine).
+
 ## Install
 
 ```sh
