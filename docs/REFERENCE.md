@@ -138,7 +138,11 @@ naming a vendor this machine does not have fails saying so, except
   says when this home's primary is spelled out and which homes share its
   ledger. Its `retention:` line prints how long the shared session store is
   kept and fails when accounts sharing it disagree on `cleanupPeriodDays`:
-  every account's cleanup sweep prunes the one store, so the shortest wins. A configuration headroom refuses (a relative `HEADROOM_*`
+  every account's cleanup sweep prunes the one store, so the shortest wins.
+  Once a second account shares the store it also fails when any sharing
+  account leaves `cleanupPeriodDays` unset (Claude Code's default is the
+  vendor's to change), and its `settings:` line fails unless every sharing
+  account, the primary included, reads one `settings.json`. A configuration headroom refuses (a relative `HEADROOM_*`
   override, an unusable `.ledger`) exits 1 with a `config:` FAIL.
 - **`headroom version`:** one line, `headroom <commit>[+dirty] <commit time>`
   — the commit the binary was built from. Answers whatever the environment

@@ -60,7 +60,7 @@ func VerifyTopology(a Account) error {
 		}
 		return fmt.Errorf("%s is a symlink but does not resolve to %s — fix it by hand", link, canon)
 	case lfi.IsDir():
-		return fmt.Errorf("%s is a real directory (unmigrated sessions?) — move its contents into %s and replace it with a symlink there (with no %s running); it must be a symlink to %s", link, canon, a.Scope.Binary(), canon)
+		return fmt.Errorf("%s is a real directory (unmigrated sessions?) — with no %s running, move its contents into %s, keeping a file both hold only when the two are identical (different contents are two histories: stop and reconcile them by hand), then replace it with a symlink to %s", link, a.Scope.Binary(), canon, canon)
 	default:
 		return fmt.Errorf("%s is not a symlink to %s — fix it by hand", link, canon)
 	}

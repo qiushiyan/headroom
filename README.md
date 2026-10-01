@@ -135,8 +135,11 @@ headroom launch --account alice@example.com              # claude opens on that 
 headroom                                                 # the new row is on the board
 ```
 
-Repeat per subscription; that is the setup. `--share-config` is optional
-(login state and history always stay per account). To retire one:
+Repeat per subscription; that is the setup. Login state and history always
+stay per account. `--share-config` is optional, but `headroom check` expects
+every account to read the primary's `settings.json`, with
+`cleanupPeriodDays` set: every account's cleanup sweep prunes the one shared
+session store. Without `--share-config`, link that one file by hand. To retire one:
 `headroom accounts remove <email>`.
 
 Codex is the same shape — `~/.codex` is the primary, each further

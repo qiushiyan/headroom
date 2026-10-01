@@ -125,8 +125,11 @@ verifier's error messages name something that exists on every install:
   `.credentials.json` a file-backed login, including when an SSH session
   cannot use the login Keychain. The list is
   vendor-perishable, but nothing load-bearing rides on it, which is why
-  `check` does not verify it. Whatever the share mode, the entries that are
-  never configuration (`accounts.PerDirEntries`: for Claude Code
+  `check` does not verify it — except `settings.json`, whose
+  `cleanupPeriodDays` prunes the shared store: `check` requires every
+  account sharing the store to read one (§ The session surface, on
+  retention). Whatever the share mode, the entries that are never
+  configuration (`accounts.PerDirEntries`: for Claude Code
   `.credentials.json`, `.claude.json`, `history.jsonl`, `sessions/` and the
   store link) are skipped and named: a config package that happens to hold
   a login must not make two dirs one login, and `check` fails on a dir
@@ -593,8 +596,14 @@ engineered from the 2.1.220 store and all perishable:
   shortest period any sharing account names. `check` reads each sharing
   account's value and fails when they disagree; an unreadable or rejected
   value (below 1) is untested, since Claude Code pauses its sweep then too.
-  The value itself is the user's policy, printed on the ok line, never
-  judged. Proving cross-account resume end to end would take a real request
+  Once a second account shares the store, agreement today is not enough:
+  `check` also fails when sharing accounts read separate `settings.json`
+  files (compared by inode, the primary included — separate files agree
+  only until one is edited) and when any leaves `cleanupPeriodDays` unset
+  (the default is the vendor's to change, and a lower one prunes every
+  account's history at once). A primary alone shares nothing and is only
+  reported. The value itself is the user's policy, printed on the ok line,
+  never judged. Proving cross-account resume end to end would take a real request
   on two accounts and leave a transcript in the store, so `check` does not:
   the topology line is the static proof, and every resume from the picker
   exercises the rest.

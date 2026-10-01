@@ -27,7 +27,9 @@ named failure.
    `--share-config` when the user wants their `~/.claude` settings, skills,
    commands, hooks and plugins in this account too (a whitelist; login state
    and history stay per account); `--share-config=<dir>` links every entry
-   of a config package instead.
+   of a config package instead. Without it, link the account's
+   `settings.json` to the primary's by hand: `headroom check` fails unless
+   every account sharing the session store reads one `settings.json`.
 2. Hand the user: `headroom launch --account <email>`, then `/login` in that
    session choosing **that** email.
 3. `headroom` — the board.
@@ -96,17 +98,25 @@ each on the account that last drove it. Accounts seeded this way are done.
 An account dir that predates headroom with a *real* `projects/` directory
 holds sessions only it can see, and `headroom launch` refuses it. Fold them
 in with no `claude` running: move each `<dir>/projects/<project>/` into
-`~/.claude/projects/<project>/` (same names merge; on a filename collision
-keep the newer file), then `rmdir <dir>/projects && ln -s ~/.claude/projects
+`~/.claude/projects/<project>/` (same names merge). A file both trees hold
+is dropped from the account's tree only when the two are byte-identical
+(`cmp`); different contents are two histories of one session — neither
+timestamp nor size says one contains the other — so stop, keep both, and
+hand them to the user to reconcile. Only once nothing is left under
+`<dir>/projects`: `rmdir <dir>/projects && ln -s ~/.claude/projects
 <dir>/projects`. Done when `headroom check` passes topology and
 `headroom launch --account <email>` starts. Folded-in sessions carry no
 ownership evidence, so the picker resumes them on the current account until
 one is re-homed there (`x` on its row).
 
 Every account's Claude Code cleanup sweep prunes that one store with its own
-`settings.json`'s `cleanupPeriodDays`, so the shortest wins; `headroom check`
-fails its `retention:` line when they disagree. `--share-config` links one
-`settings.json` into every account, which keeps them equal.
+`settings.json`'s `cleanupPeriodDays`, so the shortest wins. Once a second
+account shares the store, `headroom check` fails its `settings:` line unless
+every sharing account (the primary included) reads one `settings.json`, and
+its `retention:` line when they disagree or when `cleanupPeriodDays` is
+unset — the default is Claude Code's to change. `--share-config` links the
+primary's `settings.json` into the account; set `cleanupPeriodDays` there to
+the period the user wants kept.
 
 Codex is the same topology with its own store: each extra home's `sessions/`
 links to `~/.codex/sessions`, so Codex's own `resume` reaches any session

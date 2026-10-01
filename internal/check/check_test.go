@@ -217,23 +217,32 @@ func TestCheckRoutingAssertsTopology(t *testing.T) {
 }
 
 // Every account's cleanup sweep prunes the one shared store, so the store
-// keeps the shortest period any sharing account names. Disagreement fails as
-// own-state; an unreadable setting is untested; an account off the store is
-// not judged (its topology line fails instead).
+// keeps the shortest period any sharing account names. Once a second account
+// shares the store, every sharing account must read one settings.json and
+// that file must set the period: separate files drift apart, and an unset
+// value is whatever Claude Code's default is in the running version. Both
+// fail as own-state; an unreadable setting is untested; an account off the
+// store is not judged (its topology line fails instead); a primary alone
+// shares nothing, so its default is reported, not judged.
 func TestCheckRetention(t *testing.T) {
 	const shared = `{"cleanupPeriodDays": 365}`
+	const oneFile = "every account sharing the session store reads one settings.json"
 	for _, tc := range []struct {
 		name               string
-		primary, a, forked string // settings.json bodies; "" = no file, "link" = the primary's
-		wantOK, wantFail   string
+		primary, a, forked string // settings.json bodies; "" = no file, "link" = the primary's, "-" = no account a
+		wantOK             []string
+		wantFail           []string
 		wantSkip           string
 	}{
-		{name: "one shared file", primary: shared, a: "link", wantOK: "after 365 days"},
-		{name: "account on the default", primary: shared, wantFail: "primary 365, a@x.com 30 (unset)"},
-		{name: "every account unset", wantOK: "after 30 days (cleanupPeriodDays unset"},
-		{name: "unreadable is untested", primary: shared, a: "{", wantOK: "after 365 days", wantSkip: "retention[a@x.com]"},
-		{name: "rejected value is untested", primary: shared, a: `{"cleanupPeriodDays": 0}`, wantOK: "after 365 days", wantSkip: "retention[a@x.com]"},
-		{name: "forked account not judged", primary: shared, a: "link", forked: `{"cleanupPeriodDays": 7}`, wantOK: "after 365 days"},
+		{name: "one shared file", primary: shared, a: "link", wantOK: []string{oneFile, "after 365 days"}},
+		{name: "account on the default", primary: shared, wantFail: []string{oneFile, "primary 365, a@x.com 30 (unset)"}},
+		{name: "one shared file, period unset", primary: "{}", a: "link", wantOK: []string{oneFile}, wantFail: []string{"cleanupPeriodDays unset (primary, a@x.com)"}},
+		{name: "no settings anywhere", wantFail: []string{oneFile, "cleanupPeriodDays unset (primary, a@x.com)"}},
+		{name: "separate files that agree", primary: shared, a: shared, wantOK: []string{"after 365 days"}, wantFail: []string{oneFile + " — primary reads "}},
+		{name: "primary alone on the default", a: "-", wantOK: []string{"after 30 days (cleanupPeriodDays unset"}},
+		{name: "unreadable is untested", primary: "{", a: "link", wantOK: []string{oneFile}, wantSkip: "retention[a@x.com]"},
+		{name: "rejected value is untested", primary: `{"cleanupPeriodDays": 0}`, a: "link", wantOK: []string{oneFile}, wantSkip: "retention[a@x.com]"},
+		{name: "forked account not judged", primary: shared, a: "link", forked: `{"cleanupPeriodDays": 7}`, wantOK: []string{oneFile, "after 365 days"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -255,12 +264,14 @@ func TestCheckRetention(t *testing.T) {
 				write(primarySettings, tc.primary)
 			}
 			extra := filepath.Join(cfg.AccountsRoot, "a@x.com")
-			write(filepath.Join(extra, ".claude.json"), `{}`)
-			if err := os.Symlink(cfg.StoreDir(), filepath.Join(extra, "projects")); err != nil {
-				t.Fatal(err)
+			if tc.a != "-" {
+				write(filepath.Join(extra, ".claude.json"), `{}`)
+				if err := os.Symlink(cfg.StoreDir(), filepath.Join(extra, "projects")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			switch tc.a {
-			case "":
+			case "", "-":
 			case "link":
 				if err := os.Symlink(primarySettings, filepath.Join(extra, "settings.json")); err != nil {
 					t.Fatal(err)
@@ -288,11 +299,18 @@ func TestCheckRetention(t *testing.T) {
 			has := func(lines []string, want string) bool {
 				return slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, want) })
 			}
-			if tc.wantOK != "" && (!has(oks, tc.wantOK) || len(fails) != 0) {
-				t.Errorf("want ok %q, got ok=%v fail=%v", tc.wantOK, oks, fails)
+			for _, w := range tc.wantOK {
+				if !has(oks, w) {
+					t.Errorf("want ok %q, got ok=%v fail=%v", w, oks, fails)
+				}
 			}
-			if tc.wantFail != "" && !has(fails, tc.wantFail) {
-				t.Errorf("want fail %q, got ok=%v fail=%v", tc.wantFail, oks, fails)
+			for _, w := range tc.wantFail {
+				if !has(fails, w) {
+					t.Errorf("want fail %q, got ok=%v fail=%v", w, oks, fails)
+				}
+			}
+			if len(fails) != len(tc.wantFail) {
+				t.Errorf("want %d fail(s), got %v", len(tc.wantFail), fails)
 			}
 			if (tc.wantSkip != "" && !has(skips, tc.wantSkip)) || (tc.wantSkip == "" && len(skips) != 0) {
 				t.Errorf("want skip %q, got %v", tc.wantSkip, skips)
