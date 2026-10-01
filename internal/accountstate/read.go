@@ -23,22 +23,21 @@ type Snapshot struct {
 	Set      accounts.Set
 	Accounts []Account
 	Current  string
+	Mode     string
 	Store    state.Snapshot
 }
 
 func Read(scope config.Scope, st *state.Store, now time.Time) Snapshot {
 	snap := st.Load()
 	set := accounts.Discover(scope)
-	list, current := Assemble(set, snap, now)
-	return Snapshot{set, list, current, snap}
+	list, routing := Assemble(set, snap, now)
+	return Snapshot{set, list, routing.Current, routing.Mode, snap}
 }
 
 // Assemble selects strict current-account state and the newest usable observation.
-func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, string) {
-	current := ""
-	if a, err := set.Select(""); err == nil {
-		current = a.Name
-	}
+func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, accounts.Routing) {
+	routing := set.Routing()
+	current := routing.Current
 	list := make([]Account, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
 		key := state.Key{UUID: a.AccountID, Name: a.Name}
@@ -75,7 +74,7 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, 
 		}
 		list = append(list, Account{a, key, v})
 	}
-	return list, current
+	return list, routing
 }
 
 // newestObservation replays through the one parse dispatch: the store a body

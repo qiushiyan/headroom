@@ -13,6 +13,21 @@ import (
 	"github.com/qiushiyan/headroom/internal/placement"
 )
 
+// place is one ordinary launch: the positional spelling these tests read best in.
+func place(s *Store, cands []placement.Candidate, intent placement.Intent, pid int, session string, now time.Time) (Placed, error) {
+	return s.Place(Launch{Candidates: cands, Intent: intent, PID: pid, Session: session, Now: now})
+}
+
+// rehome moves a session to an account the way the picker's override does: a
+// launch that exists to move it.
+func rehome(s *Store, id, account string, at time.Time, live Enumerator) error {
+	_, err := s.Place(Launch{
+		Candidates: idle(account), Intent: placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
+		Session: id, MustReHome: true, Live: live, Now: at,
+	})
+	return err
+}
+
 func idle(names ...string) []placement.Candidate {
 	out := make([]placement.Candidate, len(names))
 	for i, n := range names {
@@ -39,7 +54,7 @@ func TestPlaceIsChooseAndRecord(t *testing.T) {
 			defer wg.Done()
 			s := Open(rootScope(root))
 			<-start
-			p, err := s.Place(cands, placement.Intent{}, 1000+i, "", now)
+			p, err := place(s, cands, placement.Intent{}, 1000+i, "", now)
 			if err != nil || !p.Recorded {
 				t.Errorf("place %d: recorded=%v err=%v", i, p.Recorded, err)
 			}
@@ -70,7 +85,7 @@ func TestAPlacementOutlivesItsProcess(t *testing.T) {
 	cands := idle("a", "b")
 	var got []string
 	for i, at := range []time.Duration{0, time.Second, 2 * time.Second} {
-		p, err := s.Place(cands, placement.Intent{}, 1+i, "", now.Add(at))
+		p, err := place(s, cands, placement.Intent{}, 1+i, "", now.Add(at))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +96,7 @@ func TestAPlacementOutlivesItsProcess(t *testing.T) {
 	}
 	// Past the span the record no longer counts, and is pruned from the file.
 	later := now.Add(placement.PendingFor + time.Minute)
-	p, err := s.Place(cands, placement.Intent{}, 9, "", later)
+	p, err := place(s, cands, placement.Intent{}, 9, "", later)
 	if err != nil || p.Decision.Chosen != "b" {
 		// b was placed least recently of the two.
 		t.Fatalf("after the span: %q %v", p.Decision.Chosen, err)
@@ -95,23 +110,23 @@ func TestPlaceForcedAndLast(t *testing.T) {
 	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	cands := idle("a", "b")
-	if p, err := s.Place(cands, placement.Intent{Kind: placement.LastUsed}, 1, "", now); err != nil || p.Decision.Chosen != "" || p.Recorded {
+	if p, err := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 1, "", now); err != nil || p.Decision.Chosen != "" || p.Recorded {
 		t.Fatalf("last with nothing recorded: %+v %v", p, err)
 	}
-	if _, err := s.Place(cands, placement.Intent{Kind: placement.Forced, Account: "b", Reason: "named"}, 2, "", now); err != nil {
+	if _, err := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "b", Reason: "named"}, 2, "", now); err != nil {
 		t.Fatal(err)
 	}
 	// A named launch is load for the automatic ones…
-	if p, _ := s.Place(cands, placement.Intent{}, 3, "", now.Add(time.Second)); p.Decision.Chosen != "a" {
+	if p, _ := place(s, cands, placement.Intent{}, 3, "", now.Add(time.Second)); p.Decision.Chosen != "a" {
 		t.Fatalf("automatic launch after a named one on b chose %q", p.Decision.Chosen)
 	}
 	// …and the last account used is whichever launch came last, in any mode.
-	if p, _ := s.Place(cands, placement.Intent{Kind: placement.LastUsed}, 4, "", now.Add(2*time.Second)); p.Decision.Chosen != "a" {
+	if p, _ := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 4, "", now.Add(2*time.Second)); p.Decision.Chosen != "a" {
 		t.Fatalf("last = %q, want a", p.Decision.Chosen)
 	}
 	// A refused choice records nothing.
 	before := s.Load().Placements()
-	if p, _ := s.Place(cands, placement.Intent{Kind: placement.Forced, Account: "nobody"}, 5, "", now.Add(3*time.Second)); p.Recorded {
+	if p, _ := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "nobody"}, 5, "", now.Add(3*time.Second)); p.Recorded {
 		t.Fatal("a refusal was recorded")
 	}
 	if after := s.Load().Placements(); len(after.Recent) != len(before.Recent) {
@@ -126,7 +141,7 @@ func TestPlaceUnderAHeldLockStillChooses(t *testing.T) {
 	s := Open(rootScope(root))
 	now := time.Now()
 	cands := idle("a", "b")
-	if _, err := s.Place(cands, placement.Intent{}, 1, "", now); err != nil {
+	if _, err := place(s, cands, placement.Intent{}, 1, "", now); err != nil {
 		t.Fatal(err)
 	}
 	held, err := os.OpenFile(filepath.Join(root, "state.json.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -141,7 +156,7 @@ func TestPlaceUnderAHeldLockStillChooses(t *testing.T) {
 	before, _ := os.ReadFile(filepath.Join(root, "state.json"))
 
 	start := time.Now()
-	p, err := s.Place(cands, placement.Intent{}, 2, "", now.Add(time.Second))
+	p, err := place(s, cands, placement.Intent{}, 2, "", now.Add(time.Second))
 	if err != ErrBusy || p.Recorded {
 		t.Fatalf("recorded=%v err=%v, want unrecorded and ErrBusy", p.Recorded, err)
 	}
@@ -169,7 +184,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	if probs := s.Load().Problems(); len(probs) != 1 || probs[0].Section != "placements" {
 		t.Fatalf("problems = %+v", probs)
 	}
-	p, err := s.Place(idle("a", "b"), placement.Intent{}, 1, "new-session", time.Now())
+	p, err := place(s, idle("a", "b"), placement.Intent{}, 1, "new-session", time.Now())
 	if err != nil || !p.Recorded || !p.ReHomed {
 		t.Fatalf("place over an unreadable placements section: %+v %v", p, err)
 	}
@@ -196,7 +211,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = Open(rootScope(root))
-	p, err = s.Place(idle("a"), placement.Intent{}, 1, "new-session", time.Now())
+	p, err = place(s, idle("a"), placement.Intent{}, 1, "new-session", time.Now())
 	if err != nil || !p.Recorded || p.ReHomed || p.SessionErr != ErrCorrupt {
 		t.Fatalf("place beside an unreadable sessions section: %+v %v", p, err)
 	}
@@ -212,7 +227,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = Open(rootScope(root))
-	p, err = s.Place(idle("a", "b"), placement.Intent{}, 1, "", time.Now())
+	p, err = place(s, idle("a", "b"), placement.Intent{}, 1, "", time.Now())
 	if err != ErrReadOnly || p.Recorded || p.Decision.Chosen != "b" {
 		t.Fatalf("newer schema: %+v %v", p, err)
 	}
@@ -226,7 +241,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 func TestPlaceFollowingTheOwnerWritesNoReHome(t *testing.T) {
 	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
-	p, err := s.Place(idle("a", "b"), placement.Intent{Owner: "b"}, 1, "sess", now)
+	p, err := place(s, idle("a", "b"), placement.Intent{Owner: "b"}, 1, "sess", now)
 	if err != nil || p.Decision.Chosen != "b" || p.ReHomed {
 		t.Fatalf("%+v %v", p, err)
 	}
@@ -245,7 +260,7 @@ func TestUnknownSectionsSurvivePlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := Open(rootScope(root))
-	if _, err := s.Place(idle("a"), placement.Intent{}, 1, "", time.Now()); err != nil {
+	if _, err := place(s, idle("a"), placement.Intent{}, 1, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got := compact(t, readRaw(t, root)["future"]); got != `{"keep":true}` {

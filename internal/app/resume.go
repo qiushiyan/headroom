@@ -57,7 +57,7 @@ func (actions *sessionActions) shown() string {
 	return actions.current
 }
 
-func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []sessions.AccountRef, accounts.Set, string) {
+func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []sessions.AccountRef, accounts.Set, accounts.Routing) {
 	set := accounts.Discover(cfg)
 	refs := make([]sessions.AccountRef, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
@@ -75,11 +75,9 @@ func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []ses
 	// yields "" — no current — rather than a primary nobody chose. Rows fall
 	// back to the current account by doctrine, so a tolerant read here would
 	// be the resume surface's route around the launch path's refusal.
-	current := ""
-	if sel, err := set.Select(""); err == nil {
-		current = sel.Name
-	}
-	return listing, refs, set, current
+	// One read serves both facts: the current account, and whether there is
+	// none because launches choose.
+	return listing, refs, set, set.Routing()
 }
 
 // resumeUI is the picker's whole mutable state. One mode value at a time —
@@ -180,7 +178,7 @@ parse:
 	}
 
 	st := state.Open(cfg)
-	listing, refs, set, current := collectSessions(cfg, st)
+	listing, refs, set, routing := collectSessions(cfg, st)
 	t, err := tui.OpenTTY()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
@@ -189,7 +187,7 @@ parse:
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, set: set, current: current, auto: set.Mode() == "auto", cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
+		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, set: set, current: routing.Current, auto: routing.Mode == "auto", cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment

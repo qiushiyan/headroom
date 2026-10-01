@@ -274,39 +274,35 @@ func (d *doc) sweepStale(now time.Time) {
 // Enumerator lists the session ids that exist right now. It is invoked *inside*
 // the lock, which is the whole reason it is a function and not a set: a
 // snapshot taken by the caller before the lock cannot see a session another
-// process re-homed since, and garbage-collecting against it would delete that
+// launch re-homed since, and garbage-collecting against it would delete that
 // re-home. ok=false means the enumeration failed and no sweep may happen — a
 // partial listing would sweep every record whose transcript it missed.
 type Enumerator func() (ids map[string]bool, ok bool)
 
-// ReHome records that the user explicitly routed a session to an account.
-//
-// The sweep runs before the mutation, so the record this very call writes can
-// never be swept by it.
-func (s *Store) ReHome(id, account string, at time.Time, live Enumerator) error {
-	if id == "" || account == "" {
-		return errors.New("state: re-home needs a session and an account")
-	}
-	return s.update(claimWait, func(d *doc) error {
-		if d.badSessions {
-			// Re-homes are user decisions. Writing a fresh section over bytes
-			// that merely failed to decode would destroy them for good.
-			return ErrCorrupt
-		}
-		if live != nil {
-			if exists, ok := live(); ok {
-				young := at.Add(-rehomeGrace).UnixMilli()
-				for sid, rec := range d.sessions {
-					if !exists[sid] && rec.AtMS < young {
-						delete(d.sessions, sid)
-					}
-				}
-			}
-		}
-		d.sessions[id] = sessions.OwnerRec{Account: account, AtMS: at.UnixMilli()}
-		d.dirty = true
-		return nil
-	})
+// Launch is one launch to place: who may take it, how the account is to be
+// decided, and — when it is for a session — what to record about where that
+// session now runs.
+type Launch struct {
+	Candidates []placement.Candidate
+	Intent     placement.Intent
+	PID        int // the launching process's own, which the exec keeps
+	Now        time.Time
+
+	// Session is the explicit id of the session this launch is for, "" when it
+	// is for none. Its routing is recorded as a re-home when the launch puts it
+	// anywhere but Intent.Owner; a launch that follows the owner writes none.
+	Session string
+
+	// MustReHome says the launch exists to move the session — the picker's
+	// override — so the re-home is written whoever the owner was, and a launch
+	// whose re-home cannot be written is not recorded at all: the caller
+	// refuses it, and nothing is left behind for the next launch to count.
+	MustReHome bool
+
+	// Live lists the transcripts that exist, for sweeping re-homes whose
+	// sessions are gone. It runs inside the lock, for Enumerator's reason, and
+	// only when this launch writes a re-home.
+	Live Enumerator
 }
 
 // Placed is Place's answer. The decision is always there; the two flags say
@@ -315,9 +311,10 @@ type Placed struct {
 	Decision placement.Decision
 	Recorded bool // the launch is in the record the next placement reads
 
-	// ReHomed reports that the named session's routing was recorded. SessionErr
-	// says why it was not when it should have been: an unreadable sessions
-	// section is never written over, here as everywhere.
+	// ReHomed reports that the session's routing was recorded. SessionErr says
+	// why it was not when it should have been and the launch did not depend on
+	// it: an unreadable sessions section is never written over, here as
+	// everywhere.
 	ReHomed    bool
 	SessionErr error
 }
@@ -330,22 +327,28 @@ type Placed struct {
 // both read an account as empty and both go there; here whoever loses the lock
 // race reads the winner's placement and counts it. The rule itself is
 // placement.Choose — pure, imported, and called by this package, so no caller
-// hands a function into the lock and the document is published to nobody.
+// hands a decision function into the lock and the document is published to
+// nobody.
 //
-// pid is the launching process's own, which the exec keeps, so a later read can
-// tell that a recorded launch became a session the vendor's registry reports.
-// session, when not empty, is an explicit session id this launch names: if the
-// rule put it anywhere but its owner, that routing is recorded as a re-home —
-// the record the session picker's override writes — so the session's next
-// turn follows it. A launch that follows the owner writes no re-home.
+// A launch and what it means for a session are one fact, so they are one
+// write: the load the next launch counts and the re-home that routes the
+// session's next turn land together or not at all. Recording them in two
+// operations is how a resume that was then refused left a placement, a log
+// line and a "last account" behind it.
 //
-// An error means the bookkeeping failed, never that the launch may not
-// proceed: the decision is then made from an unlocked read and Recorded is
-// false. In auto mode every usable account is a correct answer, and a missing
-// record costs a launch its view of the ones beside it — nothing more.
-func (s *Store) Place(cands []placement.Candidate, intent placement.Intent, pid int, session string, now time.Time) (Placed, error) {
+// An error means the bookkeeping failed. For an ordinary launch that is never
+// a reason to stop — in auto mode every usable account is a correct answer —
+// so the decision is then made from an unlocked read and Recorded is false.
+// For a launch that must re-home it is: the caller refuses.
+func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
+	now := l.Now
 	err := s.update(placeWait, func(d *doc) error {
+		if l.MustReHome && d.badSessions {
+			// Re-homes are user decisions. Writing a fresh section over bytes
+			// that merely failed to decode would destroy them for good.
+			return ErrCorrupt
+		}
 		if d.badPlacements {
 			// Disposable, like the request ledger: set the unreadable bytes
 			// aside for `check` and start from nothing.
@@ -357,26 +360,39 @@ func (s *Store) Place(cands []placement.Candidate, intent placement.Intent, pid 
 		if d.placements.Prune(now, retention) {
 			d.dirty = true
 		}
-		out.Decision = placement.Choose(cands, d.placements, intent, now)
+		out.Decision = placement.Choose(l.Candidates, d.placements, l.Intent, now)
 		chosen, ok := out.Decision.Find(out.Decision.Chosen)
 		if out.Decision.Chosen == "" || !ok {
 			return nil
 		}
-		d.placements.Record(chosen.Key, chosen.Name, pid, now)
+		d.placements.Record(chosen.Key, chosen.Name, l.PID, now)
 		d.dirty = true
 		out.Recorded = true
-		if session != "" && chosen.Name != intent.Owner {
-			if d.badSessions {
-				out.SessionErr = ErrCorrupt
-			} else {
-				d.sessions[session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
-				out.ReHomed = true
+		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
+			return nil
+		}
+		if d.badSessions {
+			out.SessionErr = ErrCorrupt
+			return nil
+		}
+		if l.Live != nil {
+			// The sweep runs before the write, so the record this very call
+			// writes can never be swept by it.
+			if exists, ok := l.Live(); ok {
+				young := now.Add(-rehomeGrace).UnixMilli()
+				for sid, rec := range d.sessions {
+					if !exists[sid] && rec.AtMS < young {
+						delete(d.sessions, sid)
+					}
+				}
 			}
 		}
+		d.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
+		out.ReHomed = true
 		return nil
 	})
 	if err != nil {
-		out = Placed{Decision: placement.Choose(cands, s.Load().Placements(), intent, now)}
+		out = Placed{Decision: placement.Choose(l.Candidates, s.Load().Placements(), l.Intent, now)}
 		return out, err
 	}
 	return out, nil

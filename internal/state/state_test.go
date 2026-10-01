@@ -258,8 +258,8 @@ func TestUnreadableSectionSurvivesAnUnrelatedWrite(t *testing.T) {
 		t.Errorf("an unknown section was dropped: %s", raw["extra"])
 	}
 	// And mutations against it are refused rather than silently rebuilding it.
-	if err := s.ReHome("s1", "a@x.com", time.Now(), nil); err != ErrCorrupt {
-		t.Errorf("ReHome over a corrupt section: %v", err)
+	if err := rehome(s, "s1", "a@x.com", time.Now(), nil); err != ErrCorrupt {
+		t.Errorf("re-home over a corrupt section: %v", err)
 	}
 	if err := s.Forget("s1"); err != ErrCorrupt {
 		t.Errorf("Forget over a corrupt section: %v", err)
@@ -320,8 +320,8 @@ func TestNewerSchemaIsReadOnly(t *testing.T) {
 	if _, err := s.Claim([]Key{key("a")}, time.Now()); err != ErrReadOnly {
 		t.Errorf("Claim: %v, want ErrReadOnly", err)
 	}
-	if err := s.ReHome("s1", "a@x.com", time.Now(), nil); err != ErrReadOnly {
-		t.Errorf("ReHome: %v, want ErrReadOnly", err)
+	if err := rehome(s, "s1", "a@x.com", time.Now(), nil); err != ErrReadOnly {
+		t.Errorf("re-home: %v, want ErrReadOnly", err)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "state.json"))
 	if err != nil || string(got) != doc {
@@ -404,10 +404,10 @@ func TestReHomeAndForget(t *testing.T) {
 
 	// A fresh machine has no accounts root yet; the first re-home must create
 	// it rather than fail and strand a routing the user asked for.
-	if err := s.ReHome("s1", "a@x.com", now, nil); err != nil {
+	if err := rehome(s, "s1", "a@x.com", now, nil); err != nil {
 		t.Fatalf("re-home into a missing parent: %v", err)
 	}
-	if err := s.ReHome("s2", "b@x.com", now, nil); err != nil {
+	if err := rehome(s, "s2", "b@x.com", now, nil); err != nil {
 		t.Fatal(err)
 	}
 	m := s.Load().Owners()
@@ -565,7 +565,7 @@ func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	if !claimOne(t, s, key("a"), time.Now()).Permit {
 		t.Error("a null ledger must read as an empty one, not block the claim")
 	}
-	if err := s.ReHome("s1", "a@x.com", time.Now(), nil); err != nil {
+	if err := rehome(s, "s1", "a@x.com", time.Now(), nil); err != nil {
 		t.Errorf("re-home over a null sessions section: %v", err)
 	}
 	// Nothing was destroyed to get there — a null section held no re-home to
@@ -607,7 +607,7 @@ func TestAnUnreadableFileIsNotAnEmptyStore(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(path, 0o600) })
 	s := Open(rootScope(root))
 
-	if err := s.ReHome("s2", "b@x.com", time.Now(), nil); err != ErrUnreadable {
+	if err := rehome(s, "s2", "b@x.com", time.Now(), nil); err != ErrUnreadable {
 		t.Errorf("mutation against a document that could not be read: %v", err)
 	}
 	if dec, _ := s.Claim([]Key{key("a")}, time.Now()); dec[0].Permit {

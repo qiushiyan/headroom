@@ -388,17 +388,26 @@ func (s Set) Bare() (Bare, error) {
 	return Bare{Account: a}, err
 }
 
-// Mode is Bare for a surface that only reports it: "pinned", "auto", or ""
-// when `.current` cannot be resolved.
-func (s Set) Mode() string {
+// Routing is Bare for a surface that only reports it, from one read of
+// `.current`: Mode is "pinned", "auto", or "" when the file cannot be
+// resolved, and Current names the pinned account ("" otherwise). A surface
+// carries this one value through — its mode, its current and its per-account
+// flags are then one statement, whatever is written to `.current` while the
+// surface is still working.
+type Routing struct {
+	Mode    string
+	Current string
+}
+
+func (s Set) Routing() Routing {
 	b, err := s.Bare()
 	switch {
 	case err != nil:
-		return ""
+		return Routing{}
 	case b.Auto:
-		return "auto"
+		return Routing{Mode: "auto"}
 	default:
-		return "pinned"
+		return Routing{Mode: "pinned", Current: b.Account.Name}
 	}
 }
 

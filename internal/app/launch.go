@@ -21,7 +21,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -90,9 +89,10 @@ func runResolve(cfg config.Scope, args []string) int {
 // The account is decided one of four ways: named (`--account`), the last one
 // used (`--last`), pinned (`.current` names it) or automatic (`.current` says
 // auto, or `--auto`). Every one of them takes the same path from there —
-// prepare, place, log, exec — so a named launch is recorded as load the
-// automatic ones can see, and the child environment is built by launch.Prepare
-// from the validated account whichever way it was chosen.
+// placeLaunch, which the session picker shares: prepare, place, log, announce
+// — so a named launch is recorded as load the automatic ones can see, says
+// where it went like any other, and the child environment is built by
+// launch.Prepare from the validated account whichever way it was chosen.
 //
 // In auto mode every usable account is a correct answer, so nothing about the
 // bookkeeping can refuse the launch: a lock that will not come, a section that
@@ -184,14 +184,6 @@ parse:
 
 	st := state.Open(cfg)
 	facts := gatherPlacement(set, st, os.Environ(), automatic, now)
-	if intent.Kind == placement.Forced {
-		// The account was named, by flag or by pin: its own preparation error
-		// is the answer, said the way it always was.
-		if err := facts.prepareErr[intent.Account]; err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
-			return 1
-		}
-	}
 
 	// A launch that names a session follows the account that last drove it,
 	// so its prompt cache and its checkpoints stay usable. Only an automatic
@@ -208,6 +200,12 @@ parse:
 	}
 
 	if dryRun {
+		if intent.Kind == placement.Forced {
+			if err := facts.prepareErr[intent.Account]; err != nil {
+				fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+				return 1
+			}
+		}
 		d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now)
 		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now)
 		if d.Chosen == "" {
@@ -220,17 +218,23 @@ parse:
 		// Before the placement and before the exec, necessarily — and a
 		// failure refuses the launch: "chosen and recorded" is one step to
 		// the user, and launching on a choice that could not be recorded
-		// would have the next bare `x` go somewhere else. An automatic
-		// launch that no account can take records nothing either.
+		// would have the next bare `x` go somewhere else. A launch that no
+		// account can take records nothing either.
 		var err error
-		if automatic {
+		switch {
+		case automatic:
 			if d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now); d.Chosen == "" {
 				fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
 				return 1
 			}
 			err = set.SetAuto()
-		} else if a, ok := facts.account(intent.Account); ok {
-			err = set.SetCurrent(a)
+		case facts.prepareErr[intent.Account] != nil:
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", facts.prepareErr[intent.Account])
+			return 1
+		default:
+			if a, ok := facts.account(intent.Account); ok {
+				err = set.SetCurrent(a)
+			}
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom launch: could not record .current (%v) — not launching\n", err)
@@ -238,50 +242,22 @@ parse:
 		}
 	}
 
-	placed, placeErr := st.Place(facts.cands, intent, os.Getpid(), ref.Record, now)
-	d := placed.Decision
-	if d.Chosen == "" {
-		fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
+	cwd, _ := os.Getwd()
+	out, err := placeLaunch(launchRequest{st: st, intent: intent, mode: mode, ref: ref, owner: owner, cwd: cwd, now: now}, facts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
-	}
-	prepared, ok := facts.prepared[d.Chosen]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", facts.prepareErr[d.Chosen])
-		return 1
-	}
-
-	rec := launchlog.New(d, now)
-	rec.Vendor, rec.PID, rec.Mode, rec.Session, rec.Recorded = string(cfg.Vendor), os.Getpid(), mode, ref.Route, placed.Recorded
-	rec.CWD, _ = os.Getwd()
-	if placeErr != nil {
-		rec.Problem = placeErr.Error()
-	}
-	if err := launchlog.Append(cfg.AccountsRoot, rec); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: launch log not written (%v)\n", err)
 	}
 	if automatic && refreshWorthStarting(facts, now) {
 		// For the next launch, not this one: nothing here waits on a network.
 		_ = startRefresh(cfg)
 	}
 
-	for _, notice := range prepared.Notices {
-		fmt.Fprintln(os.Stderr, "headroom launch: "+notice)
-	}
-	if mode != "named" {
-		// A named launch says nothing, as it never did: the person typed the
-		// account. Every other way of deciding says which account it was.
-		fmt.Fprintln(os.Stderr, "headroom launch: "+launchLine(d, mode, ref, owner, now))
-		if placeErr != nil && mode != "pinned" {
-			fmt.Fprintf(os.Stderr, "headroom launch: placement not recorded (%v) — the next launch will not count this one\n", placeErr)
-		}
-		if placed.SessionErr != nil {
-			fmt.Fprintf(os.Stderr, "headroom launch: session routing not recorded (%v) — run headroom check\n", placed.SessionErr)
-		}
-	}
-	if err := execVendor(prepared.Path, prepared.Binary, rest, prepared.Env); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: exec %s: %v\n", prepared.Binary, err)
+	out.announce(os.Stderr, "headroom launch: ")
+	if err := execVendor(out.prepared.Path, out.prepared.Binary, rest, out.prepared.Env); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: exec %s: %v\n", out.prepared.Binary, err)
 		if remember {
-			current := d.Chosen
+			current := out.decision.Chosen
 			if automatic {
 				current = accounts.AutoWord
 			}

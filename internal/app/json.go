@@ -267,8 +267,11 @@ func fetchBoards(scopes []config.Scope) []vendorBoard {
 			for u := range launchFetches(context.Background(), p.list, st) {
 				resolve(p.list[u.Index], u)
 			}
-			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.current, mode: p.set.Mode(), problems: p.snap.Problems()}
-			markNext(p.set, p.list, st.Load().Placements(), time.Now())
+			// Mode, current and the marker all come from prepare's one read of
+			// `.current`: the document must say one thing about routing even
+			// if the file is rewritten while the round is in flight.
+			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.routing.Current, mode: p.routing.Mode, problems: p.snap.Problems()}
+			markNext(p.set, p.list, p.routing.Mode, st.Load().Placements(), time.Now())
 		}(i, scope)
 	}
 	wg.Wait()

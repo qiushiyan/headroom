@@ -305,15 +305,15 @@ func TestPinnedLaunchRoutesAsBeforeAndIsRecorded(t *testing.T) {
 	}
 }
 
-// A named launch says nothing, as it never did, and is still load.
-func TestNamedLaunchIsSilentAndCounts(t *testing.T) {
+// A named launch says where it went, like every other launch, and is load.
+func TestNamedLaunchSaysWhereItWentAndCounts(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
 	f.observe("qiushi", 0, 50, time.Minute)
 	f.observe("a@x.com", 0, 10, time.Minute)
 
 	named := f.launch("--account", "a@x.com")
-	if named.code != 0 || named.account(f.cfg) != "a@x.com" || named.stderr != "" {
+	if named.code != 0 || named.account(f.cfg) != "a@x.com" || named.stderr != "headroom launch: a@x.com · named\n" {
 		t.Fatalf("named launch: %+v", named)
 	}
 	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
@@ -357,8 +357,8 @@ func TestModeIsReadStrictly(t *testing.T) {
 	if err := set.SetAuto(); err == nil {
 		t.Error("SetAuto succeeded beside an account named auto")
 	}
-	if set.Mode() != "" {
-		t.Errorf("mode = %q, want unresolvable", set.Mode())
+	if set.Routing().Mode != "" {
+		t.Errorf("mode = %q, want unresolvable", set.Routing().Mode)
 	}
 }
 
@@ -425,6 +425,9 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 	if first.account(f.cfg) != "qiushi" || !slices.Equal(first.args, []string{"-p", "--session-id", sessA, "hi"}) {
 		t.Fatalf("first turn: %+v", first)
 	}
+	if !strings.Contains(first.stderr, "session had no known account") {
+		t.Errorf("a first turn's line does not say the session was new to headroom:\n%s", first.stderr)
+	}
 	rec, ok := f.st.Load().Owner(sessA)
 	if !ok || rec.Account != "qiushi" {
 		t.Fatalf("the placed session was not re-homed: %+v", rec)
@@ -464,7 +467,7 @@ func TestAnOwnerNearALimitIsLeftAndTheMoveIsRecorded(t *testing.T) {
 	f.observe("qiushi", 50, 50, time.Minute)
 	f.observe("full@x.com", 10, 91, time.Minute)
 	f.observe("room@x.com", 0, 5, time.Minute)
-	if err := f.st.ReHome(sessA, "full@x.com", time.Now().Add(-time.Hour), nil); err != nil {
+	if err := rehome(f.st, sessA, "full@x.com", time.Now().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	got := f.launch("--", "--resume", sessA)
@@ -484,7 +487,7 @@ func TestAnOwnerNearALimitIsLeftAndTheMoveIsRecorded(t *testing.T) {
 func TestALiveClaimOutranksAReHome(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
 	f.setCurrent("auto\n")
-	if err := f.st.ReHome(sessA, "a@x.com", time.Now(), nil); err != nil {
+	if err := rehome(f.st, sessA, "a@x.com", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	started := time.Now().Add(-time.Hour)
@@ -506,7 +509,7 @@ func TestALiveClaimOutranksAReHome(t *testing.T) {
 func TestUnidentifiedSessionsArePlacedAndNothingIsRecorded(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
-	if err := f.st.ReHome(sessA, "a@x.com", time.Now().Add(-time.Hour), nil); err != nil {
+	if err := rehome(f.st, sessA, "a@x.com", time.Now().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	before := f.st.Load().Owners()
@@ -573,7 +576,7 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	t.Run("held lock", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
 		f.setCurrent("auto\n")
-		if err := f.st.ReHome(sessA, "a@x.com", time.Now(), nil); err != nil {
+		if err := rehome(f.st, sessA, "a@x.com", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		statePath := filepath.Join(f.cfg.AccountsRoot, "state.json")
@@ -792,8 +795,8 @@ func TestRememberRecordsTheMode(t *testing.T) {
 	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
 		t.Fatalf(".current = %q, want auto", data)
 	}
-	if set := accounts.Discover(f.cfg); set.Mode() != "auto" {
-		t.Errorf("mode = %q", set.Mode())
+	if set := accounts.Discover(f.cfg); set.Routing().Mode != "auto" {
+		t.Errorf("mode = %q", set.Routing().Mode)
 	}
 	if _, err := accounts.Discover(f.cfg).Select(""); err != accounts.ErrAuto {
 		t.Errorf("Select(\"\") under auto = %v, want ErrAuto", err)
@@ -802,8 +805,8 @@ func TestRememberRecordsTheMode(t *testing.T) {
 	if got := f.launch("--account", "a@x.com", "--remember"); got.code != 0 {
 		t.Fatal(got.stderr)
 	}
-	if set := accounts.Discover(f.cfg); set.Mode() != "pinned" {
-		t.Errorf("mode after pinning = %q", set.Mode())
+	if set := accounts.Discover(f.cfg); set.Routing().Mode != "pinned" {
+		t.Errorf("mode after pinning = %q", set.Routing().Mode)
 	}
 
 	// A failed exec leaves the recorded mode, and says so.
@@ -974,6 +977,17 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 	if code := runLaunchesTo(&out, []config.Scope{empty.cfg}, nil); code != 0 || !strings.Contains(out.String(), "no launches recorded") {
 		t.Errorf("empty log: exit %d, %q", code, out.String())
 	}
+}
+
+// rehome moves a session to an account the way the picker's override does: a
+// launch that exists to move it.
+func rehome(st *state.Store, id, account string, at time.Time) error {
+	_, err := st.Place(state.Launch{
+		Candidates: []placement.Candidate{{Name: account, Key: "test:" + account}},
+		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
+		Session:    id, MustReHome: true, Now: at,
+	})
+	return err
 }
 
 func readLog(t *testing.T, scope config.Scope) ([]launchlog.Record, int, error) {

@@ -116,7 +116,9 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 	for _, v := range []string{"CODEX_SQLITE_HOME", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
 		os.Unsetenv(v)
 	}
-	if quiet := captureStderr(t, func() { runLaunch(scope, []string{"--account", "primary"}) }); quiet != "" {
+	// The launch still says where it went; what stays unsaid is the inherited
+	// variable.
+	if quiet := captureStderr(t, func() { runLaunch(scope, []string{"--account", "primary"}) }); quiet != "headroom launch: primary · named\n" {
 		t.Errorf("a known extra's home was reported: %q", quiet)
 	}
 }

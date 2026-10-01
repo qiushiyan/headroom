@@ -223,9 +223,12 @@ type Counted struct {
 
 	// Weekly is the highest counted figure among the rows that are not the
 	// session window; Highest is the highest over all rows, with HighestLabel
-	// and HighestReset naming it.
+	// and HighestReset naming it. Each carries the basis of the row it came
+	// from, so a surface that prints the figure can say what it rests on.
 	Weekly       int
+	WeeklyBasis  Basis // "" when the account has no such row
 	Highest      int
+	HighestBasis Basis // "" when the account has no rows
 	HighestLabel string
 	HighestReset int64
 	NearLimit    bool
@@ -425,12 +428,12 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 			out.NearLimit = true
 		}
 		if i == 0 || cl.Counted > out.Highest {
-			out.Highest, out.HighestLabel, out.HighestReset = cl.Counted, l.Label, l.ResetAt
+			out.Highest, out.HighestBasis, out.HighestLabel, out.HighestReset = cl.Counted, cl.Basis, l.Label, l.ResetAt
 		}
 		if l.Session {
 			session = cl.Counted
-		} else if cl.Counted > out.Weekly {
-			out.Weekly = cl.Counted
+		} else if out.WeeklyBasis == "" || cl.Counted > out.Weekly {
+			out.Weekly, out.WeeklyBasis = cl.Counted, cl.Basis
 		}
 	}
 	cutoff := nowMS - int64(PendingFor/time.Millisecond)

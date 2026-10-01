@@ -46,7 +46,8 @@ room and leave the others to recover:
   default untouched. Anything after `--` goes to `claude`.
 
 Or let headroom choose. Press `a` on the board and each bare launch goes to
-the least-loaded account, saying which before `claude` starts:
+the least-loaded account. Every launch says which account it took before
+`claude` starts:
 
 ```
 headroom launch: alice@example.com · auto · 5h 1% · week 3% · load 0 (next: bob@example.com)

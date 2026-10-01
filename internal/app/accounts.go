@@ -170,8 +170,9 @@ type page struct {
 	wanted    int // accounts the last round had anything to ask about
 	top       int // first body line in view when the board outgrows the terminal
 
-	// mode is what a bare launch of this page's vendor does, re-read with
-	// every round: "pinned", "auto", or "" when `.current` will not resolve.
+	// mode is what a bare launch of this page's vendor does, as the round's
+	// own read of `.current` found it: "pinned", "auto", or "" when the file
+	// will not resolve.
 	mode string
 
 	// begin starts a round: the local half, then the claim and whatever
@@ -405,6 +406,9 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	if begin == nil {
 		begin = func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result) {
 			p := prepare(pg.scope, pg.st)
+			// The mode comes from the same read of `.current` that marked
+			// the rows, so the header and the marks are one statement.
+			pg.mode = p.routing.Mode
 			return p.set, p.list, launchFetches(ctx, p.list, pg.st)
 		}
 	}
@@ -425,15 +429,15 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	ui.updates = updates
 }
 
-// mark re-reads the mode and, under auto, marks the row a launch would take
-// from the figures this page holds. It runs when a round starts — the stored
-// figures are already worth a mark — and again when its results have landed.
+// mark marks, under auto, the row a launch would take from the figures this
+// page holds. It runs when a round starts — the stored figures are already
+// worth a mark — and again when its results have landed. The mode is the
+// round's own reading of `.current`, never a second one.
 func (ui *page) mark(now time.Time) {
-	ui.mode = ui.set.Mode()
 	if ui.st == nil {
 		return
 	}
-	markNext(ui.set, ui.list, ui.st.Load().Placements(), now)
+	markNext(ui.set, ui.list, ui.mode, ui.st.Load().Placements(), now)
 }
 
 // ackString is the one-line answer to a manual refresh, composed after the

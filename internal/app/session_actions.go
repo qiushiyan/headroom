@@ -8,8 +8,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -27,7 +25,6 @@ type sessionActions struct {
 	// account, and wherever this surface would fall back to one it asks the
 	// placement rule instead.
 	auto         bool
-	placed       bool // this resume was placed by the rule, and so already recorded
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
@@ -46,34 +43,33 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
-	// One resume, one record: a refused attempt earlier in this picker session
-	// must not make this one look already recorded.
-	actions.placed = false
-	acct, ok, why := actions.resumeAccount(s, override)
+	intent, ok := actions.resumeIntent(s, override)
 	if !ok {
-		if why == "" {
-			why = "no account to resume on — run headroom accounts"
-		}
-		return false, fmt.Errorf("%s", why)
+		return false, fmt.Errorf("no account to resume on — run headroom accounts")
 	}
-	prepared, err := launch.Prepare(acct, actions.set, os.Environ())
+
+	// From here the resume is a launch like any other: one operation decides
+	// the account, records the launch as load and — for the override — the
+	// re-home with it, and logs it. A refusal there has recorded nothing.
+	now := time.Now()
+	req := launchRequest{st: actions.st, intent: intent, mode: "picker", ref: sessionRef{Route: s.ID}, owner: s.Owner, cwd: s.CWD, now: now}
+	if override {
+		// The override moves the session, so its routing is part of the
+		// launch: written with it, or the launch does not happen.
+		req.ref.Record, req.mustReHome = s.ID, true
+		req.live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(actions.cfg.StoreDir()) }
+	}
+	facts := gatherPlacement(actions.set, actions.st, os.Environ(), intent.Kind == placement.Auto, now)
+	out, err := placeLaunch(req, facts)
 	if err != nil {
 		return false, err
 	}
-	if override {
-		err := actions.st.ReHome(s.ID, acct.Name, time.Now(), func() (map[string]bool, bool) { return sessions.TranscriptIDs(actions.cfg.StoreDir()) })
-		if err != nil {
-			return false, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", err)
-		}
-	}
-	actions.recordResume(s, acct)
+
 	actions.beforeLaunch()
-	for _, notice := range prepared.Notices {
-		fmt.Fprintln(os.Stderr, "headroom sessions: "+notice)
-	}
+	out.announce(os.Stderr, "headroom sessions: ")
 	recorded := ""
 	if override {
-		recorded = "; re-home remains recorded for " + acct.Name
+		recorded = "; re-home remains recorded for " + out.account.Name
 	}
 	if err := os.Chdir(s.CWD); err != nil {
 		return true, fmt.Errorf("cd %s: %v%s", s.CWD, err, recorded)
@@ -84,92 +80,44 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		}
 	}
 	argv := append(append([]string{}, actions.claudeArgs...), "--resume", s.ID)
-	if err := execSessions(prepared.Path, prepared.Binary, argv, envWithPWD(prepared.Env, s.CWD)); err != nil {
+	if err := execSessions(out.prepared.Path, out.prepared.Binary, argv, envWithPWD(out.prepared.Env, s.CWD)); err != nil {
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil
 }
 
-// resumeAccount chooses the owner, then valid current. An override chooses
-// current directly; an unresolved current leaves the action without a target.
+// resumeIntent says how a resume's account is decided: the owner, then valid
+// current. An override chooses current directly; an unresolved current leaves
+// the action without a target, never the primary, which no evidence chose.
 //
 // Under automatic placement there is no current account, and each place this
 // would have fallen back to one asks the rule instead: a session with no
 // evidence, or whose owner is gone, is placed like a new one, and the override
 // moves the session to the least-loaded of the *other* accounts — moving means
-// somewhere other than where it is. why says what refused, when the rule did.
-func (actions *sessionActions) resumeAccount(s *sessions.Session, override bool) (acct accounts.Account, ok bool, why string) {
-	find := func(name string) (accounts.Account, bool) {
+// somewhere other than where it is.
+func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) (placement.Intent, bool) {
+	known := func(name string) bool {
 		for _, a := range actions.set.Accounts {
 			if a.Name == name {
-				return a, name != ""
+				return name != ""
 			}
 		}
-		return accounts.Account{}, false
+		return false
 	}
-	if !override {
-		if a, found := find(s.Owner); found {
-			return a, true, ""
-		}
+	switch {
+	case !override && known(s.Owner):
+		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}, true
+	case actions.auto && override:
+		return placement.Intent{Exclude: s.Owner}, true
+	case actions.auto:
+		return placement.Intent{}, true
+	case known(actions.current):
+		// Degraded attribution — no evidence, or an owner the filesystem no
+		// longer has — falls back to the *current* account; the row's owner
+		// tag already says so.
+		return placement.Intent{Kind: placement.Forced, Account: actions.current, Reason: "pinned"}, true
 	}
-	if actions.auto {
-		exclude := ""
-		if override {
-			exclude = s.Owner
-		}
-		return actions.place(s, exclude)
-	}
-	// The owner names an account the filesystem no longer has, or there is no
-	// evidence at all: degraded attribution falls back to the *current*
-	// account — the row's owner tag already says so — never to the primary,
-	// which no evidence chose.
-	a, found := find(actions.current)
-	return a, found, ""
-}
-
-// recordResume records a resume the rule did not place — the owner's, or the
-// pinned account's — so that it is load the next automatic launch counts and
-// a line in the log, like every other session headroom starts. A resume the
-// rule placed was recorded when it was placed. Nothing here can refuse: the
-// account is already decided, and a record that fails is a record lost.
-func (actions *sessionActions) recordResume(s *sessions.Session, acct accounts.Account) {
-	if actions.placed || actions.st == nil {
-		return
-	}
-	now := time.Now()
-	facts := gatherPlacement(actions.set, actions.st, os.Environ(), false, now)
-	placed, placeErr := actions.st.Place(facts.cands, placement.Intent{Kind: placement.Forced, Account: acct.Name, Reason: "picker"}, os.Getpid(), "", now)
-	actions.log(s, placed, placeErr, now)
-}
-
-func (actions *sessionActions) log(s *sessions.Session, placed state.Placed, placeErr error, now time.Time) {
-	if placed.Decision.Chosen == "" {
-		return
-	}
-	rec := launchlog.New(placed.Decision, now)
-	rec.Vendor, rec.PID, rec.Mode, rec.Session, rec.Recorded = string(actions.cfg.Vendor), os.Getpid(), "picker", s.ID, placed.Recorded
-	rec.CWD = s.CWD
-	if placeErr != nil {
-		rec.Problem = placeErr.Error()
-	}
-	_ = launchlog.Append(actions.cfg.AccountsRoot, rec)
-}
-
-// place asks the placement rule where a resumed session goes, records the
-// answer the way a launch does, and logs it. A bookkeeping failure costs the
-// record and nothing else, as on the launch path.
-func (actions *sessionActions) place(s *sessions.Session, exclude string) (accounts.Account, bool, string) {
-	now := time.Now()
-	facts := gatherPlacement(actions.set, actions.st, os.Environ(), true, now)
-	placed, placeErr := actions.st.Place(facts.cands, placement.Intent{Exclude: exclude}, os.Getpid(), "", now)
-	d := placed.Decision
-	if d.Chosen == "" {
-		return accounts.Account{}, false, d.Refusal
-	}
-	actions.placed = true
-	actions.log(s, placed, placeErr, now)
-	a, ok := facts.account(d.Chosen)
-	return a, ok, ""
+	return placement.Intent{}, false
 }
 
 // liveNow re-establishes the selected session's liveness at action time —

@@ -291,7 +291,7 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	cfg := config.Config{Home: home, Claude: claude, Codex: config.ForHome(home).Codex}
 
 	var out strings.Builder
-	if code := Run(cfg, &out, false); code != ExitPass {
+	if code := Run(cfg, &out, false, nil); code != ExitPass {
 		t.Fatalf("absent Codex changed the verdict: exit %d\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "codex: not found") || strings.Contains(out.String(), "codex auth[") {
@@ -301,7 +301,7 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	cfg.Codex.Present = true
 	codexauthtest.WriteRaw(t, filepath.Join(cfg.Codex.AccountsRoot, "a@x.com"), []byte(`nope`))
 	out.Reset()
-	code := Run(cfg, &out, false)
+	code := Run(cfg, &out, false, nil)
 	text := out.String()
 	if code != ExitFail || !strings.Contains(text, "FAIL  codex auth[a@x.com]") {
 		t.Fatalf("drifted Codex auth: exit %d\n%s", code, text)

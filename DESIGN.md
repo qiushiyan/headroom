@@ -755,10 +755,12 @@ that turning auto on forgets the pin.
   The constants are policy, not measurement, and the rule's name travels in
   every log line.
 - **Weekly room matters as much as the five-hour window.** Over thirty days of
-  transcripts on the author's machine, the model-scoped weekly limit stopped
-  work on four days and the five-hour limit on one. So a weekly limit can take
-  an account out of the running, and decides every tie — but it never hides a
-  five-hour difference between two others.
+  transcripts on the author's machine, messages about the model-scoped weekly
+  limit appeared on four days and messages about the five-hour limit on one.
+  That counts messages, not lost work, and it is enough to say the weekly
+  limit is not the rare case. So a weekly limit can take an account out of
+  the running, and decides every tie — but it never hides a five-hour
+  difference between two others.
 - **A figure counts only for the window it describes.** An observation older
   than fifteen minutes is stale and its rows are lower bounds; a row whose
   reset has passed counts as zero, because that window has ended. The board
@@ -781,10 +783,17 @@ that turning auto on forgets the pin.
   launched at all. A credential that could not be read excludes nothing: with
   a locked Keychain every account reads that way, and in auto mode every
   usable account is a correct answer. For the same reason missing bookkeeping
-  never refuses a launch — a busy lock, an undecodable section or a newer
-  schema costs the launch its record and a line on stderr — while corrupt
-  routing state still does, since an unreadable `.current` says nothing about
-  what the person chose.
+  never refuses an ordinary launch: a busy lock or a newer schema costs the
+  launch its record and a line on stderr, and a placements section that does
+  not decode is set aside and begun again by the launch's own placement,
+  like the request ledger. Corrupt routing state still refuses, since an
+  unreadable `.current` says nothing about what the person chose.
+- **The board's mark and the launch are one judgment.** `← next` and a launch
+  build their candidates with one function (`buildCandidates`), from the same
+  credential reader and the same exclusions, so the row the board marks is
+  the row a launch would take from those figures. Two builders agreed on the
+  rule and still disagreed on who was eligible. The mark stays advice — a
+  launch reads the disk again — but it is never a second opinion.
 - **Choosing and recording are one store operation.** `state.Place` reads the
   recent launches, calls the rule and records the result inside one locked
   section, which is `Claim`'s shape applied to launches: two launches started
@@ -792,6 +801,24 @@ that turning auto on forgets the pin.
   called by the store, so no caller hands a function into the lock. Every
   launch goes through it — a pinned or named one with its account forced —
   because a session started by name is load an automatic one must count.
+- **A launch is one operation, whoever asks for it.** `headroom launch` and
+  the session picker each build an intent and hand it to `placeLaunch`, which
+  places, prepares, logs and announces. What the launch means for a session
+  travels into `state.Place` with it, so the load and the session's re-home
+  are one write: both land or neither does. The picker's `x` is the one
+  launch that depends on its bookkeeping — the re-home is what routes the
+  session's next turn — so it is refused when the re-home cannot be written,
+  and a refusal leaves no placement and no log line. The picker once ran its
+  own sequence of the same steps, and a refused move was still counted as
+  load and remembered as the last account.
+- **Every launch says where it went, and what its figures rest on.** One line
+  on stderr before the vendor starts, on every path — automatic, pinned,
+  named, `--last`, the picker — because a line that appears on some paths
+  teaches nothing about the others. A figure from an old observation is
+  printed as a bound (`≥12%`), a window whose reset has passed as
+  `window ended`, a percent that does not parse as `?%`: the rule counts
+  each of those differently from a measured figure, and the line must not
+  print them as one.
 - **A launch counts for a fixed span.** Fifteen minutes, whether or not its
   process is still alive and whatever was observed since: a short job that has
   exited still spent what the figures have not caught up with, and an
@@ -817,7 +844,11 @@ that turning auto on forgets the pin.
   placements).
 - **The log explains; it is never an input.** `launches.jsonl` holds one line
   per launch with every candidate as counted. No routing code reads it, it
-  has its own lock, and it is bounded by age once it grows. Replaying another
+  has its own lock, and it is bounded by age once it grows. Appenders hold
+  that lock shared and the pruner holds it exclusively, since a prune
+  rewrites the file and a record appended to the old one meanwhile would be
+  lost; an append waits a quarter of a second for a prune and then gives the
+  line up, and one that follows a torn line starts on a new one. Replaying another
   rule over it shows what that rule would have decided on the recorded inputs,
   not what the usage would then have been.
 

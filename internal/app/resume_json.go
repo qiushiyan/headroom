@@ -54,7 +54,8 @@ type jsonSession struct {
 }
 
 func runSessionsJSON(cfg config.Scope) int {
-	listing, _, _, current := collectSessions(cfg, state.Open(cfg))
+	listing, _, _, routing := collectSessions(cfg, state.Open(cfg))
+	current := routing.Current
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(sessionsDoc(listing, current, time.Now())); err != nil {

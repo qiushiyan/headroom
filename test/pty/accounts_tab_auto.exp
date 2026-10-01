@@ -1,0 +1,26 @@
+#!/usr/bin/expect -f
+# Two vendors: `a` on the Codex page turns automatic placement on for Codex
+# alone. run.sh asserts that Codex's .current holds the word and that Claude
+# Code's was not written.
+set timeout 10
+spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts"
+expect {
+    "tab switch" {}
+    timeout { puts "the footer never offered tab — is Codex present in the fixture?"; exit 2 }
+}
+send -- "\t"
+expect {
+    "cx@x.com" {}
+    timeout { puts "tab did not show the Codex page"; exit 2 }
+}
+send -- "a"
+expect {
+    "bare Codex launches (headroom launch --vendor codex, no --account) now choose the least-loaded account" {}
+    timeout { puts "no Codex confirmation line after a"; exit 2 }
+}
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} {
+    puts "a exited [lindex $result 3], want 0"
+    exit 2
+}

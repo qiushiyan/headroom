@@ -375,7 +375,7 @@ func (s Snapshot) Owner(id string) (sessions.OwnerRec, bool) {
 }
 
 // Owners is every explicit re-home. The map is the caller's to read, not to
-// keep: mutations go through ReHome.
+// keep: a re-home is written by Place, with the launch it belongs to.
 func (s Snapshot) Owners() map[string]sessions.OwnerRec {
 	out := make(map[string]sessions.OwnerRec, len(s.d.sessions))
 	maps.Copy(out, s.d.sessions)

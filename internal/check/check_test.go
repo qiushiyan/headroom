@@ -299,7 +299,7 @@ func TestRunVerdicts(t *testing.T) {
 			defer srv.Close()
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
-			code := Run(config.Config{Home: home, Claude: cfg}, &out, false)
+			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, nil)
 			if code != tc.want || !strings.Contains(out.String(), tc.phrase) {
 				t.Fatalf("exit=%d want=%d\n%s", code, tc.want, out.String())
 			}
@@ -329,7 +329,7 @@ func TestRunPrimaryCredentialSource(t *testing.T) {
 			defer srv.Close()
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
-			code := Run(config.Config{Home: home, Claude: cfg}, &out, false)
+			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, nil)
 			if code != tc.wantCode || !strings.Contains(out.String(), tc.wantLine) {
 				t.Fatalf("exit=%d want=%d, missing %q:\n%s", code, tc.wantCode, tc.wantLine, out.String())
 			}
@@ -428,12 +428,50 @@ func TestCheckRegistryStatus(t *testing.T) {
 	}
 }
 
-func TestPidRuns(t *testing.T) {
-	if !pidRuns(os.Getpid()) {
-		t.Error("this process does not run")
+// The status assertion reaches the checker through the session-store check,
+// and judges only claims that are live by the definition placement uses: the
+// pid runs and started when the claim says. A stale record whose pid another
+// process has since taken is not a running session, and its missing status is
+// not vendor drift.
+func TestCheckSessionStoreJudgesOnlyVerifiedLiveClaims(t *testing.T) {
+	home := t.TempDir()
+	cfg := claudeScope(home, "qiushi")
+	sdir := filepath.Join(cfg.PrimaryDir(), "sessions")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if pidRuns(0) || pidRuns(-1) {
-		t.Error("a non-positive pid runs")
+	const started = 1_785_700_003_000
+	write := func(pid int, extra string) {
+		body := fmt.Sprintf(`{"sessionId":"s%d","pid":%d,"startedAt":%d%s}`, pid, pid, started, extra)
+		if err := os.WriteFile(filepath.Join(sdir, fmt.Sprintf("%d.json", pid)), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(probe sessions.PIDProbe) (fails []string) {
+		chk := func(ok bool, label, hint string) {
+			if !ok && strings.HasPrefix(label, "registry: running sessions") {
+				fails = append(fails, label+" — "+hint)
+			}
+		}
+		checkSessionStore(cfg, accounts.Discover(cfg).Accounts, probe, chk, func(string, string) {})
+		return
+	}
+
+	write(7, "") // no status
+	recycled := func(int) (int64, error) { return started/1000 + 86_400, nil }
+	if fails := run(recycled); len(fails) != 0 {
+		t.Errorf("a recycled pid was judged as a running session: %v", fails)
+	}
+	live := func(int) (int64, error) { return started / 1000, nil }
+	if fails := run(live); len(fails) != 1 {
+		t.Errorf("a live session with no status must fail the check: %v", fails)
+	}
+	if fails := run(nil); len(fails) != 0 {
+		t.Errorf("without a probe nothing is known to be live: %v", fails)
+	}
+	write(7, `,"status":"busy"`)
+	if fails := run(live); len(fails) != 0 {
+		t.Errorf("a live session with a status: %v", fails)
 	}
 }
 

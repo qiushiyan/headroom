@@ -139,7 +139,7 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		if !noArgs() {
 			return 2
 		}
-		return check.Run(cfg, os.Stdout, stdoutIsTTY())
+		return check.Run(cfg, os.Stdout, stdoutIsTTY(), psProbe)
 	case "limits":
 		scopes, ok := reported()
 		if !ok {
@@ -338,7 +338,7 @@ type sources struct {
 type prepared struct {
 	set     accounts.Set
 	list    []*accountData
-	current string
+	routing accounts.Routing // one read of `.current`: mode and current together
 	snap    state.Snapshot
 }
 
@@ -370,8 +370,8 @@ func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Acco
 		}
 		src.health = health(set.Accounts)
 	}
-	list, current := prepareWith(set, snap, src)
-	return prepared{set, list, current, snap}
+	list, routing := prepareWith(set, snap, src)
+	return prepared{set, list, routing, snap}
 }
 
 // queryHealthParallel runs `claude auth status` for every account at once and
@@ -396,8 +396,8 @@ func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
 }
 
 // prepareWith is prepare with its inputs injected.
-func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*accountData, string) {
-	facts, current := accountstate.Assemble(set, snap, src.now)
+func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*accountData, accounts.Routing) {
+	facts, routing := accountstate.Assemble(set, snap, src.now)
 	list := accountList(facts)
 	for _, d := range list {
 		// The second of the three places a vendor document is read: access —
@@ -409,7 +409,7 @@ func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*account
 			claudeAccess(d, src)
 		}
 	}
-	return list, current
+	return list, routing
 }
 
 func claudeAccess(d *accountData, src sources) {

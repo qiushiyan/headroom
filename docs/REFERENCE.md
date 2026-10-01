@@ -69,8 +69,13 @@ naming a vendor this machine does not have fails saying so, except
   - `--auto` — this one launch placed automatically, the pin untouched;
   - `--last` — the account of the newest recorded launch.
 
-  A bare, `--auto` or `--last` launch says on stderr which account it took and
-  why, before the vendor starts; a named one says nothing, as before.
+  Every launch says on stderr which account it took and why, before the
+  vendor starts: `<account> · auto · 5h 12% · week 33% · load 2 (next: …)`,
+  `· pinned`, `· named`, `· last`. A figure that is not a fresh measurement
+  says so: `≥12%` is a lower bound from an observation older than fifteen
+  minutes, `window ended` a window whose reset has passed, `?%` a percent
+  that did not parse. A launch whose placement or log line could not be
+  written still starts, and says so on a second line.
   `--remember` records the account for later bare launches, or with `--auto`
   the mode. `--dry-run` prints the choice and one row per account — figures,
   their age, busy sessions, pending launches, load, why an account was left

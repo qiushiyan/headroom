@@ -192,12 +192,16 @@ if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
     fail=1
 fi
 
-# `a` records auto for the visible vendor, and the board then says so.
+# `a` records auto for the visible vendor (the script checks the file between
+# its two boards); the board then says so, and enter pins an account again.
 run accounts_auto
-if [ "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "auto" ]; then
-    echo "FAIL accounts_auto: .current not written with auto"
+case "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)" in
+primary | a@x.com | b@x.com) ;;
+*)
+    echo "FAIL accounts_auto: enter under auto left .current as '$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)', want an account"
     fail=1
-fi
+    ;;
+esac
 
 # Automatic placement through the real binary. Four more accounts with a valid
 # topology join a@x.com; the primary cannot be launched under a re-pointed
@@ -262,10 +266,11 @@ if [ -z "$first" ] || [ "$first" != "$second" ] || ! grep -q "this session's acc
 else
     echo "ok   launch-auto-session"
 fi
-# The one-shot board says the mode and marks one row; --json says it too.
+# The one-shot board says the mode and marks one account's row — the header
+# names the mark too, so the count is of rows; --json says the mode as well.
 auto_board=$("$HEADROOM_BIN" 2>/dev/null)
 if ! printf '%s\n' "$auto_board" | grep -q 'bare launches are automatic' ||
-    [ "$(printf '%s\n' "$auto_board" | grep -c '← next')" != 1 ] ||
+    [ "$(printf '%s\n' "$auto_board" | grep -c '@x\.com.*← next')" != 1 ] ||
     ! "$HEADROOM_BIN" --json 2>/dev/null | grep -q '"claude": "auto"'; then
     echo "FAIL board-auto: the board under auto must say the mode and mark one row"
     printf '%s\n' "$auto_board" | sed 's/^/     /'
@@ -326,6 +331,17 @@ if [ "$(cat "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "cx@x.com"
 fi
 if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
     echo "FAIL accounts_tab: enter on the Codex page wrote Claude Code's .current"
+    fail=1
+fi
+# `a` on the Codex page records auto for Codex and leaves Claude Code alone.
+rm -f "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" "$HEADROOM_CODEX_ACCOUNTS_ROOT/state.json"
+run accounts_tab_auto
+if [ "$(cat "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "auto" ]; then
+    echo "FAIL accounts_tab_auto: Codex .current not written with auto"
+    fail=1
+fi
+if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+    echo "FAIL accounts_tab_auto: a on the Codex page wrote Claude Code's .current"
     fail=1
 fi
 # Codex goes absent again for everything below.

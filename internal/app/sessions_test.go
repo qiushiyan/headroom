@@ -41,6 +41,7 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 		t.Fatal(err)
 	}
 	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
+		st:         state.Open(cfg),
 		cfg:        cfg,
 		set:        accounts.Discover(cfg),
 		current:    "yan@planlab.ai",
@@ -171,7 +172,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 func TestSessionPreparationPreservesPriorRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	ui.st = state.Open(ui.cfg)
-	if err := ui.st.ReHome(s.ID, "qiushi", time.Now(), nil); err != nil {
+	if err := rehome(ui.st, s.ID, "qiushi", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", t.TempDir())

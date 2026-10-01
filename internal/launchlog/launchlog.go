@@ -131,9 +131,25 @@ func stamp(t time.Time) *string {
 	return &s
 }
 
+// ErrBusy is Append's answer when the log is being rewritten and stayed so past
+// the wait: the record was not written, and the caller says so.
+var ErrBusy = errors.New("launch log is busy")
+
+const (
+	appendWait = 250 * time.Millisecond
+	lockPoll   = 10 * time.Millisecond
+)
+
 // Append writes one record as one line, in one write, so concurrent appenders
 // interleave whole lines. A failure is the caller's to mention and never to
 // act on: a launch that could not be logged is still a launch.
+//
+// Appending and the rewrite that bounds the file are one protocol on the log's
+// own lock: appenders share it, the rewrite holds it alone. Without that, a
+// rewrite renames a new file over the one an appender has just written to, and
+// a launch that succeeded leaves no line. The state lock is never involved —
+// routing must not wait on a file it does not read — and an appender waits
+// only as long as a rewrite takes, then gives up and reports it.
 func Append(accountsRoot string, r Record) error {
 	line, err := json.Marshal(r)
 	if err != nil {
@@ -143,33 +159,74 @@ func Append(accountsRoot string, r Record) error {
 		return err
 	}
 	path := Path(accountsRoot)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
-	_, werr := f.Write(append(line, '\n'))
-	fi, serr := f.Stat()
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
+	defer lock.Close()
+	if err := flock(lock, syscall.LOCK_SH, appendWait); err != nil {
+		return err
 	}
-	if werr == nil && serr == nil && fi.Size() > MaxBytes {
-		prune(path, time.Now())
+	size, err := appendLine(path, line)
+	_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	if err == nil && size > MaxBytes {
+		prune(path, lock, time.Now())
 	}
-	return werr
+	return err
 }
 
-// prune rewrites the log without the lines older than Keep. It takes the log's
-// own lock without waiting — whoever holds it is already doing this — and
-// never the state lock: routing must not wait on a file it does not read. A
-// line that does not parse, or carries no time, is dropped with the old ones.
-// An append racing the rename can lose its line; the log is a record for a
-// person, and a launch never depended on it.
-func prune(path string, now time.Time) {
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+// appendLine writes the record and reports the file's size afterwards. A file
+// that does not end in a newline holds a line some writer never finished; the
+// record then starts on a line of its own, so the damage costs the damaged
+// line and not the launch after it.
+func appendLine(path string, line []byte) (int64, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return
+		return 0, err
 	}
-	defer lock.Close()
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	out := make([]byte, 0, len(line)+2)
+	if fi.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, fi.Size()-1); err == nil && last[0] != '\n' {
+			out = append(out, '\n')
+		}
+	}
+	out = append(append(out, line...), '\n')
+	if _, err := f.Write(out); err != nil {
+		return 0, err
+	}
+	return fi.Size() + int64(len(out)), nil
+}
+
+// flock takes the lock in the given mode, polling for at most wait.
+func flock(f *os.File, how int, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return ErrBusy
+		}
+		time.Sleep(lockPoll)
+	}
+}
+
+// prune rewrites the log without the lines older than Keep, holding the log's
+// lock alone so no appender writes to the file being replaced. It does not
+// wait for the lock: an appender holding it is about to make the same check,
+// and a rewrite skipped now happens at a later append. A line that does not
+// parse, or carries no time, is dropped with the old ones.
+func prune(path string, lock *os.File, now time.Time) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return
 	}
@@ -182,7 +239,7 @@ func prune(path string, now time.Time) {
 	cutoff := now.Add(-Keep)
 	var kept bytes.Buffer
 	dropped := false
-	for _, line := range bytes.SplitAfter(data, []byte("\n")) {
+	for _, line := range bytes.Split(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -198,6 +255,7 @@ func prune(path string, now time.Time) {
 			continue
 		}
 		kept.Write(line)
+		kept.WriteByte('\n')
 	}
 	if !dropped {
 		return

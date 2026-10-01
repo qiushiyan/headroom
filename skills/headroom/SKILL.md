@@ -49,8 +49,10 @@ shell's `x-<name>`) — quote that spelling.
 - **Let headroom choose the account**: `headroom accounts`, press **`a`**
   (or `headroom launch --auto --remember`). Each bare launch then goes to
   the least-loaded account — five-hour usage plus busy sessions and recent
-  launches, an account near any limit set aside, weekly room breaking ties —
-  and prints which on stderr before `claude` starts. Enter on a row pins one
+  launches, an account near any limit set aside, weekly room breaking ties.
+  Every launch prints the account it took on stderr before `claude` starts
+  (`· auto`, `· pinned`, `· named`, `· last`; `≥12%` there is a lower bound
+  from old figures). Enter on a row pins one
   account again. `headroom launch --auto` places a single launch that way
   without changing the default; `headroom launch --last` reuses the account
   of the last launch.

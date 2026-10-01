@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -44,7 +43,11 @@ const (
 	ExitInconclusive = 2
 )
 
-func Run(cfg config.Config, out io.Writer, color bool) int {
+// probe is the process inspection that proves a registry claim live — a pid
+// that runs *and* started when the claim says. It is injected because exec
+// stays at the edges; nil means liveness cannot be established, and the
+// assertions that need a live session are then not made.
+func Run(cfg config.Config, out io.Writer, color bool, probe sessions.PIDProbe) int {
 	scope := cfg.Claude
 	p := render.NewPalette(color)
 	fails, unknowns, ownFails := 0, 0, 0
@@ -225,7 +228,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
 	checkRouting(set, os.Environ(), chk, own)
-	checkSessionStore(scope, accts, chk, skip)
+	checkSessionStore(scope, accts, probe, chk, skip)
 
 	// Codex's group runs after Claude Code's, through the same reporters.
 	// `check` takes no --vendor: it runs every present vendor's checks, and an
@@ -271,7 +274,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 // registry parses (it is what stops `dd` from deleting an open transcript),
 // and headroom's saved re-homes are readable. Shapes, never census numbers —
 // counts are wrong the day after they're written down.
-func checkSessionStore(cfg config.Scope, accts []accounts.Account,
+func checkSessionStore(cfg config.Scope, accts []accounts.Account, probe sessions.PIDProbe,
 	chk func(bool, string, string), skip func(string, string)) {
 
 	// history.jsonl: the attribution source. Absent or empty is a fresh
@@ -300,17 +303,17 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account,
 	// The live-session registry: when claim files exist, they must parse,
 	// or every open session silently reads as deletable.
 	regFiles, regProblems := 0, 0
-	var running []sessions.RegistryEntry
+	var claims []sessions.RegistryEntry
 	for _, a := range accts {
 		reg := sessions.ReadRegistry(a.Name, a.Dir())
 		regFiles += len(reg.Entries)
 		regProblems += len(reg.Problems)
-		for _, e := range reg.Entries {
-			if e.OK && pidRuns(e.PID) {
-				running = append(running, e)
-			}
-		}
+		claims = append(claims, reg.Entries...)
 	}
+	// Live by the one definition placement itself uses: the pid runs and its
+	// start matches the claim. A stale record whose pid another process has
+	// since taken is not a running session, and must not be judged as one.
+	_, running := sessions.InspectClaims(claims, probe)
 	if regFiles == 0 && regProblems == 0 {
 		skip("registry: not tested", "no live-session records right now")
 	} else {
@@ -377,17 +380,16 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account,
 
 // checkRegistryStatus verifies the one registry field automatic placement
 // reads beyond liveness: the vendor's word for what a session is doing. Only
-// records whose process runs are judged — a record left by an older build, or
-// by a crash, says nothing about what the vendor writes today.
+// verified-live claims are judged — a record left by a crash, or one whose pid
+// has been recycled, says nothing about what the vendor writes today.
 //
-// When no running session carries a status string the field is gone, and that
+// When no live session carries a status string the field is gone, and that
 // fails: busy sessions would silently stop counting as load. When only some
-// lack one, the likelier story is a stale record whose pid another process has
-// since taken — "runs" here is a signal-0 probe, not a start-time match — so
-// that is reported as untested rather than as drift. A status this binary has
-// not seen is not drift either: the vocabulary is the vendor's and open, the
-// assumption could not be tested for that record, and such a session counts
-// as not busy.
+// lack one — sessions started under a build from before the field, still
+// running beside newer ones — that is reported as untested rather than as
+// drift. A status this binary has not seen is not drift either: the
+// vocabulary is the vendor's and open, the assumption could not be tested for
+// that record, and such a session counts as not busy.
 func checkRegistryStatus(running []sessions.RegistryEntry, chk func(bool, string, string), skip func(string, string)) {
 	if len(running) == 0 {
 		return
@@ -407,7 +409,7 @@ func checkRegistryStatus(running []sessions.RegistryEntry, chk func(bool, string
 	case missing == len(running):
 		chk(false, label, "none carries a status string — busy sessions are no longer counted as load")
 	case missing > 0:
-		skip(label, fmt.Sprintf("%d of %d carry no status string — stale records, or the field is going away", missing, len(running)))
+		skip(label, fmt.Sprintf("%d of %d carry no status string — sessions from an older build, or the field is going away", missing, len(running)))
 	default:
 		chk(true, label, "")
 	}
@@ -426,17 +428,6 @@ func checkRegistryStatus(running []sessions.RegistryEntry, chk func(bool, string
 // Only "busy" is given a meaning; the others are listed so a new word is
 // noticed.
 var knownStatus = map[string]bool{sessions.StatusBusy: true, "idle": true, "shell": true}
-
-// pidRuns reports whether a process with this pid exists, without spawning
-// anything: signal 0 delivers nothing and fails only when there is no such
-// process (EPERM means there is one, owned by someone else).
-func pidRuns(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
 
 // checkOwnState audits state.json — the one file headroom writes for itself.
 //

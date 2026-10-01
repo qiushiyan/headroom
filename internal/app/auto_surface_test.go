@@ -166,7 +166,7 @@ func TestTheAKeyAsksForAuto(t *testing.T) {
 	if err := set.SetCurrent(a); err != nil {
 		t.Fatal(err)
 	}
-	if got := accounts.Discover(f.cfg).Mode(); got != "pinned" {
+	if got := accounts.Discover(f.cfg).Routing().Mode; got != "pinned" {
 		t.Errorf("mode after enter = %q", got)
 	}
 	// The word cannot be written as a pin.
@@ -207,7 +207,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	set := accounts.Discover(f.cfg)
 	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
 		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
-			cfg: f.cfg, st: f.st, set: set, auto: set.Mode() == "auto",
+			cfg: f.cfg, st: f.st, set: set, auto: set.Routing().Mode == "auto",
 		}}
 		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
 		ui.listing.Sessions = []*sessions.Session{s}
@@ -242,7 +242,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 	// Every session headroom starts is a line in the log and load on its
 	// account, a resume on its owner included — once each.
-	if recs := f.log(); len(recs) != 2 || recs[1].Mode != "picker" || recs[1].Reason != "picker" || recs[1].Chosen != "b@x.com" {
+	if recs := f.log(); len(recs) != 2 || recs[1].Mode != "picker" || recs[1].Reason != placement.ReasonOwner || recs[1].Chosen != "b@x.com" {
 		t.Fatalf("log after two resumes = %+v", recs)
 	}
 	if n := len(f.st.Load().Placements().Recent); n != 2 {
@@ -299,12 +299,15 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	f.extra(t, login(2))
 	f.extra(t, login(3))
 	st := state.Open(f.scope)
-	store := func(n, percent int, blocked bool) {
+	store := func(n, percent int, edit ...[2]string) {
 		t.Helper()
 		l := login(n)
 		body := codexUsage(l.AccountID, l.UserID, percent)
-		if blocked {
-			body = strings.Replace(body, `"limit_reached":false`, `"limit_reached":true`, 1)
+		for _, e := range edit {
+			if !strings.Contains(body, e[0]) {
+				t.Fatalf("the usage fixture has no %s to replace", e[0])
+			}
+			body = strings.Replace(body, e[0], e[1], 1)
 		}
 		k := state.Key{UUID: "uuid:" + l.AccountID + "/" + l.UserID, Name: l.Email}
 		for _, a := range accounts.Discover(f.scope).Accounts {
@@ -321,9 +324,16 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	store(1, 55, false)
-	store(2, 12, false)
-	store(3, 0, true) // the emptiest, and the vendor refuses work on it
+	// A spent window that meters one feature — code review, an additional
+	// limit — leaves the account usable for ordinary work, so it decides
+	// nothing here: u2 carries both and is still the least loaded.
+	spent := fmt.Sprintf(`{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":100,`+
+		`"limit_window_seconds":604800,"reset_after_seconds":1000,"reset_at":%d},"secondary_window":null}`,
+		time.Now().Add(72*time.Hour).Unix())
+	store(1, 25)
+	store(2, 12, [2]string{`"spend_control"`, `"code_review_rate_limit":` + spent +
+		`,"additional_rate_limits":[{"limit_name":"spark","metered_feature":"spark","rate_limit":` + spent + `}],"spend_control"`})
+	store(3, 0, [2]string{`"limit_reached":false`, `"limit_reached":true`}) // the emptiest, and the vendor refuses work on it
 
 	if err := os.MkdirAll(f.scope.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
@@ -351,9 +361,12 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	if !strings.Contains(stderr, "· auto ·") || strings.Contains(stderr, "session") {
 		t.Errorf("a Codex `resume` is placed like a new session and says nothing of one:\n%s", stderr)
 	}
-	// Its own placement is one step; ten points of the window are another.
-	if second, _ := launch(); second == "u3@x.com" {
-		t.Fatal("a blocked account was chosen")
+	// That launch is one step of load on u2 until the vendor's figure catches
+	// up with it, which puts it level with u1's two steps of usage; the tie
+	// goes to the account not placed on. Without the pending step this is u2
+	// again.
+	if second, stderr := launch(); second != "u1@x.com" {
+		t.Fatalf("the second launch went to %q, want u1@x.com: the first one's pending load did not count\n%s", second, stderr)
 	}
 	recs, _, _ := readLog(t, f.scope)
 	for _, c := range recs[0].Candidates {
@@ -389,31 +402,31 @@ func TestLaunchLineWording(t *testing.T) {
 	cases := []struct {
 		name  string
 		d     placement.Decision
-		mode  string
+		auto  bool
 		ref   sessionRef
 		owner string
 		want  []string
 		not   []string
 	}{
-		{"least load", choose(placement.Intent{}, obs("a", 12, 3, time.Minute), obs("b", 40, 3, time.Minute)), "auto", sessionRef{}, "",
+		{"least load", choose(placement.Intent{}, obs("a", 12, 3, time.Minute), obs("b", 40, 3, time.Minute)), true, sessionRef{}, "",
 			[]string{"a · auto · 5h 12% · week 3% · load 1 (next: b)"}, []string{"old"}},
-		{"stale", choose(placement.Intent{}, obs("a", 0, 18, 40*time.Hour)), "auto", sessionRef{}, "",
-			[]string{"a · auto · 5h 0% · week 18% · figures 1d old · load 0"}, []string{"next"}},
-		{"never observed", choose(placement.Intent{}, placement.Candidate{Name: "a", Key: "a"}), "auto", sessionRef{}, "",
+		{"stale", choose(placement.Intent{}, obs("a", 0, 18, 40*time.Hour)), true, sessionRef{}, "",
+			[]string{"a · auto · 5h ≥0% · week ≥18% · figures 1d old · load 0"}, []string{"next"}},
+		{"never observed", choose(placement.Intent{}, placement.Candidate{Name: "a", Key: "a"}), true, sessionRef{}, "",
 			[]string{"a · auto · never observed · load 0"}, nil},
-		{"near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute)), "auto", sessionRef{}, "",
+		{"near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute)), true, sessionRef{}, "",
 			[]string{"a · auto · every account is near a limit · All models (7d) 84%, resets in 1.2d"}, []string{"load"}},
-		{"owner", choose(placement.Intent{Owner: "a"}, obs("a", 30, 30, time.Minute), obs("b", 0, 0, time.Minute)), "auto", sessionRef{Route: sessA}, "a",
+		{"owner", choose(placement.Intent{Owner: "a"}, obs("a", 30, 30, time.Minute), obs("b", 0, 0, time.Minute)), true, sessionRef{Route: sessA}, "a",
 			[]string{"a · auto · this session's account"}, nil},
-		{"moved", choose(placement.Intent{Owner: "a"}, obs("a", 30, 95, time.Minute), obs("b", 0, 0, time.Minute)), "auto", sessionRef{Route: sessA}, "a",
+		{"moved", choose(placement.Intent{Owner: "a"}, obs("a", 30, 95, time.Minute), obs("b", 0, 0, time.Minute)), true, sessionRef{Route: sessA}, "a",
 			[]string{"b · auto · session moved from a"}, nil},
-		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), "auto", sessionRef{Unidentified: true}, "",
+		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, sessionRef{Unidentified: true}, "",
 			[]string{"session not identified"}, nil},
-		{"pinned", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "pinned"}, obs("a", 0, 0, time.Minute)), "pinned", sessionRef{}, "",
+		{"pinned", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "pinned"}, obs("a", 0, 0, time.Minute)), false, sessionRef{}, "",
 			[]string{"a · pinned (a on the board turns auto on)"}, []string{"auto ·"}},
 	}
 	for _, c := range cases {
-		line := launchLine(c.d, c.mode, c.ref, c.owner, now)
+		line := launchLine(c.d, c.auto, c.ref, c.owner, now)
 		for _, w := range c.want {
 			if !strings.Contains(line, w) {
 				t.Errorf("%s: %q lacks %q", c.name, line, w)
@@ -425,11 +438,17 @@ func TestLaunchLineWording(t *testing.T) {
 			}
 		}
 	}
-	// A session that named an id nobody owned.
+	// A session nobody owned yet, named by id.
 	d := choose(placement.Intent{}, obs("a", 0, 0, time.Minute))
-	d.Reason = placement.ReasonMoved
-	if line := launchLine(d, "auto", sessionRef{Route: sessA}, "", now); !strings.Contains(line, "session had no known account") {
+	if line := launchLine(d, true, sessionRef{Route: sessA, Record: sessA}, "", now); !strings.Contains(line, "session had no known account") {
 		t.Errorf("unowned: %q", line)
+	}
+	// The other ways of deciding say which they were.
+	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
+		forced := choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: reason}, obs("a", 0, 0, time.Minute))
+		if line := launchLine(forced, false, sessionRef{}, "", now); line != want {
+			t.Errorf("%s: %q, want %q", reason, line, want)
+		}
 	}
 	_ = fmt.Sprint
 }

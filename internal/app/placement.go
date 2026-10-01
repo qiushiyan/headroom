@@ -9,6 +9,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -45,7 +47,7 @@ var (
 	placementProbe sessions.PIDProbe = psProbe
 )
 
-// placeFacts is everything one launch read. The discovered set travels with
+// placeFacts is everything one placement read. The discovered set travels with
 // what was built from it, as everywhere else.
 type placeFacts struct {
 	set   accounts.Set
@@ -82,7 +84,33 @@ func (f placeFacts) owner(id string) string {
 	return name
 }
 
-// gatherPlacement reads what is known about every account of the set.
+// placeSource is one account as a surface holds it: who it is, the quota it
+// spends, and the newest observation that surface has of it.
+type placeSource struct {
+	acct accounts.Account
+	key  state.Key
+	obs  *accountstate.Observation
+}
+
+// gatherPlacement reads what is known on disk about every account of the set:
+// what a launch chooses from.
+func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic bool, now time.Time) placeFacts {
+	snap := st.Load()
+	facts, _ := accountstate.Assemble(set, snap, now)
+	src := make([]placeSource, len(facts))
+	for i, fa := range facts {
+		src[i] = placeSource{acct: fa.Acct, key: fa.Key, obs: fa.View.Obs}
+	}
+	f := buildCandidates(set, src, env, automatic, now)
+	f.snap = snap
+	return f
+}
+
+// buildCandidates is the one place an account becomes a placement candidate,
+// for a launch and for the board's mark alike: the two differ only in which
+// observations they hand in — the disk's, or the ones on screen. Everything
+// that decides whether an account may be chosen is read here, the same way,
+// so the mark and the launch cannot hold two opinions of one account.
 //
 // automatic says the rule will choose. Only then are credentials read: they
 // are the evidence that a login has expired, which matters to a choice made
@@ -94,47 +122,48 @@ func (f placeFacts) owner(id string) string {
 // demonstrably expired, or the vendor says it is blocked. A credential that
 // could not be read excludes nothing. With a locked Keychain every account
 // reads that way, and in auto mode a usable account must never be refused for
-// want of bookkeeping.
-func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic bool, now time.Time) placeFacts {
+// want of bookkeeping. The vendor's health probe is not consulted: it can say
+// "logged in" over a refresh token that has expired, and a launch has only
+// the credential to go by.
+func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time) placeFacts {
 	scope := set.Scope
-	f := placeFacts{
-		set: set, snap: st.Load(),
-		prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{},
-	}
-	facts, _ := accountstate.Assemble(set, f.snap, now)
+	f := placeFacts{set: set, prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{}}
 
 	var blobs []string
 	if automatic && scope.Vendor == config.Claude {
-		blobs = readCredsParallel(set.Accounts)
+		accts := make([]accounts.Account, len(src))
+		for i, s := range src {
+			accts[i] = s.acct
+		}
+		blobs = readCredsParallel(accts)
 	}
-
 	load := readSessionLoad(set)
 	f.refs, f.evidence = load.refs, load.evidence
 
-	for i, fa := range facts {
-		a := fa.Acct
-		c := placement.Candidate{Name: a.Name, Key: fa.Key.ID(), Busy: load.busy[a.Name], Statuses: load.statuses[a.Name]}
+	for i, s := range src {
+		a := s.acct
+		c := placement.Candidate{Name: a.Name, Key: s.key.ID(), Busy: load.busy[a.Name], Statuses: load.statuses[a.Name]}
+		raw := ""
+		if blobs != nil {
+			raw = blobs[i]
+		}
 		if p, err := launch.Prepare(a, set, env); err != nil {
 			f.prepareErr[a.Name] = err
 			c.Excluded, c.Unlaunchable = err.Error(), true
 		} else {
 			f.prepared[a.Name] = p
-			raw := ""
-			if blobs != nil {
-				raw = blobs[i]
-			}
-			c.Excluded = avoidReason(fa, raw, now)
+			c.Excluded = avoidReason(a, s.obs, raw, now)
 		}
-		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, fa.View.Obs)
+		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
 		f.cands = append(f.cands, c)
-		f.keys = append(f.keys, fa.Key)
+		f.keys = append(f.keys, s.key)
 		askable := false
 		switch {
 		case !automatic:
 		case scope.Vendor == config.Codex:
 			askable = a.Auth.State == codexauth.OK && !a.Auth.TokenStale(now.Unix())
 		default:
-			blob, ok := creds.Parse(blobs[i])
+			blob, ok := creds.Parse(raw)
 			askable = ok && a.Readable && blob.TokenUsable(now.UnixMilli())
 		}
 		f.askable = append(f.askable, askable)
@@ -197,50 +226,29 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 }
 
 // markNext sets Next on the row an automatic launch would take from the
-// figures a board is showing, and clears it everywhere else. Outside auto
-// mode nothing is marked. The mark is advice: it is computed from this
-// surface's own facts and the record as it stood, and a launch decides again
-// from the disk — counting whatever was placed in between.
-func markNext(set accounts.Set, list []*accountData, ledger placement.Ledger, now time.Time) {
+// figures a board is showing, and clears it everywhere else. mode is the
+// board's own reading of `.current`, taken once with its facts; outside auto
+// nothing is marked. The mark is advice: it is computed from this surface's
+// observations and the record as it stood, and a launch decides again from
+// the disk — counting whatever was placed in between. What it is not allowed
+// to be is a second opinion: the candidates come from buildCandidates, the
+// builder a launch uses.
+func markNext(set accounts.Set, list []*accountData, mode string, ledger placement.Ledger, now time.Time) {
 	for _, d := range list {
 		d.View.Next = false
 	}
-	if set.Mode() != "auto" || len(list) == 0 {
+	if mode != "auto" || len(list) == 0 {
 		return
 	}
-	load := readSessionLoad(set)
-	env := os.Environ()
-	cands := make([]placement.Candidate, len(list))
+	src := make([]placeSource, len(list))
 	for i, d := range list {
-		c := placement.Candidate{Name: d.Acct.Name, Key: d.Key.ID(), Busy: load.busy[d.Acct.Name], Statuses: load.statuses[d.Acct.Name]}
-		if _, err := launch.Prepare(d.Acct, set, env); err != nil {
-			c.Excluded, c.Unlaunchable = err.Error(), true
-		} else {
-			c.Excluded = boardAvoid(d.View)
-		}
-		c.ObservedAt, c.Source, c.Limits = limitsOf(set.Scope.Vendor, d.View.Obs)
-		cands[i] = c
+		src[i] = placeSource{acct: d.Acct, key: d.Key, obs: d.View.Obs}
 	}
-	chosen := placement.Choose(cands, ledger, placement.Intent{}, now).Chosen
+	f := buildCandidates(set, src, os.Environ(), true, now)
+	chosen := placement.Choose(f.cands, ledger, placement.Intent{}, now).Chosen
 	for _, d := range list {
 		d.View.Next = chosen != "" && d.Acct.Name == chosen
 	}
-}
-
-// boardAvoid is avoidReason for a surface that has probed health: the vendor's
-// own verdict, where the launch path has only credential evidence.
-func boardAvoid(v accountstate.Facts) string {
-	switch {
-	case v.Health == accountstate.HealthNoLogin:
-		return "not logged in"
-	case v.Health == accountstate.HealthReloginRequired:
-		return "login expired"
-	case v.Health == accountstate.HealthBadBlob && v.Vendor == config.Codex:
-		return "login unreadable"
-	case v.Blocked():
-		return "blocked by the vendor"
-	}
-	return ""
 }
 
 // statusWord is a live session's status as the vendor wrote it. Absent and
@@ -257,9 +265,8 @@ func statusWord(e sessions.RegistryEntry) string {
 }
 
 // avoidReason is why an automatic choice must not land on this account, or "".
-// Positive evidence only — see gatherPlacement.
-func avoidReason(fa accountstate.Account, raw string, now time.Time) string {
-	a := fa.Acct
+// Positive evidence only — see buildCandidates.
+func avoidReason(a accounts.Account, obs *accountstate.Observation, raw string, now time.Time) string {
 	switch {
 	case a.Scope.Vendor == config.Codex && a.Auth.State == codexauth.Absent:
 		return "not logged in"
@@ -271,7 +278,7 @@ func avoidReason(fa accountstate.Account, raw string, now time.Time) string {
 	if blob, ok := creds.Parse(raw); ok && blob.ReloginRequired(now.UnixMilli()) {
 		return "login expired"
 	}
-	if fa.View.Blocked() {
+	if obs != nil && obs.Allowance.State == usage.AllowanceBlocked {
 		return "blocked by the vendor"
 	}
 	return ""
@@ -351,41 +358,154 @@ func runRefresh(scopes []config.Scope) int {
 	return 0
 }
 
+// ---- the launch itself ----
+
+// launchRequest is what a surface asks for: how the account is to be decided,
+// and what the launch means for a session. `launch` and the session picker
+// both ask this way, so a launch is placed, recorded, logged and announced by
+// one operation whichever surface started it.
+type launchRequest struct {
+	st     *state.Store
+	intent placement.Intent
+	mode   string // how the account came to be decided: auto, pinned, named, last, picker
+
+	// ref is the session the launch is for. Its Record id is re-homed when the
+	// launch puts it somewhere other than its owner; mustReHome says the
+	// launch exists to move it, and is refused if that cannot be recorded.
+	ref        sessionRef
+	owner      string
+	mustReHome bool
+	live       state.Enumerator
+
+	cwd string
+	now time.Time
+}
+
+// launchOutcome is a launch that has been decided and recorded and has not
+// yet replaced this process.
+type launchOutcome struct {
+	req      launchRequest
+	decision placement.Decision
+	account  accounts.Account
+	prepared launch.Prepared
+
+	// notes are the bookkeeping that did not happen, worded for the person:
+	// the launch proceeds regardless, and says so.
+	notes []string
+}
+
+// placeLaunch decides the account, records the launch and whatever it means
+// for the session in one store operation, and appends the log line. An error
+// is a refusal — nothing was recorded and nothing may start. Bookkeeping that
+// merely failed is a note on the outcome, never a refusal: in auto mode every
+// usable account is a correct answer.
+func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
+	out := launchOutcome{req: req}
+	scope := facts.set.Scope
+	if req.intent.Kind == placement.Forced {
+		// The account was named — by flag, by pin, or as a session's owner:
+		// its own preparation error is the answer, said the way it always was.
+		if err := facts.prepareErr[req.intent.Account]; err != nil {
+			return out, err
+		}
+	}
+	placed, placeErr := req.st.Place(state.Launch{
+		Candidates: facts.cands, Intent: req.intent, PID: os.Getpid(), Now: req.now,
+		Session: req.ref.Record, MustReHome: req.mustReHome, Live: req.live,
+	})
+	if req.mustReHome && placeErr != nil {
+		return out, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", placeErr)
+	}
+	out.decision = placed.Decision
+	if out.decision.Chosen == "" {
+		return out, errors.New(out.decision.Refusal)
+	}
+	prepared, ok := facts.prepared[out.decision.Chosen]
+	acct, found := facts.account(out.decision.Chosen)
+	if !ok || !found {
+		if err := facts.prepareErr[out.decision.Chosen]; err != nil {
+			return out, err
+		}
+		return out, fmt.Errorf("%s cannot be launched", out.decision.Chosen)
+	}
+	out.prepared, out.account = prepared, acct
+
+	if placeErr != nil {
+		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", placeErr))
+	}
+	if placed.SessionErr != nil {
+		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
+	}
+	rec := launchlog.New(out.decision, req.now)
+	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.cwd, req.mode, placed.Recorded
+	rec.Session = req.ref.Route
+	if placeErr != nil {
+		rec.Problem = placeErr.Error()
+	}
+	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
+		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
+	}
+	return out, nil
+}
+
+// announce says, before the vendor starts, where the launch is going and why,
+// and what bookkeeping was missed on the way. Every launch says it, whichever
+// surface started it and however the account was decided: a line that appears
+// for some launches and not others is one a person stops reading.
+func (o launchOutcome) announce(w io.Writer, prefix string) {
+	for _, notice := range o.prepared.Notices {
+		fmt.Fprintln(w, prefix+notice)
+	}
+	fmt.Fprintln(w, prefix+launchLine(o.decision, o.req.intent.Kind == placement.Auto, o.req.ref, o.req.owner, o.req.now))
+	for _, note := range o.notes {
+		fmt.Fprintln(w, prefix+note)
+	}
+}
+
 // ---- saying the choice ----
 
 // launchLine is the one line a launch prints before the vendor starts: the
-// account, how it was decided, and the figures that decided it. mode is how
-// the account came to be decided; ref is the session the launch named.
-func launchLine(d placement.Decision, mode string, ref sessionRef, owner string, now time.Time) string {
+// account, how it was decided, and — when the rule decided — the figures it
+// decided on, each said as what it is. automatic says the rule chose; ref and
+// owner are the session the launch is for and the account that last drove it.
+func launchLine(d placement.Decision, automatic bool, ref sessionRef, owner string, now time.Time) string {
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
-	switch mode {
-	case "pinned":
-		return d.Chosen + " · pinned (a on the board turns auto on)"
-	case "last":
-		return d.Chosen + " · the last account used"
+	if !automatic {
+		switch d.Reason {
+		case "pinned":
+			parts = append(parts, "pinned (a on the board turns auto on)")
+		case placement.ReasonLast:
+			parts = append(parts, "the last account used")
+		case placement.ReasonOwner:
+			parts = append(parts, "this session's account")
+		default:
+			parts = append(parts, d.Reason)
+		}
+		return strings.Join(parts, " · ")
 	}
 	parts = append(parts, "auto")
-	switch d.Reason {
-	case placement.ReasonOwner:
+	switch {
+	case ref.Unidentified:
+		parts = append(parts, "session not identified")
+	case ref.Route == "":
+	case owner == "":
+		parts = append(parts, "session had no known account")
+	case owner == d.Chosen:
 		parts = append(parts, "this session's account")
-	case placement.ReasonMoved:
-		if owner != "" {
-			parts = append(parts, "session moved from "+owner)
-		} else {
-			parts = append(parts, "session had no known account")
-		}
-	case placement.ReasonNearLimit:
-		near := "every account is near a limit · " + shortLabel(c.HighestLabel) + fmt.Sprintf(" %d%%", c.Highest)
+	default:
+		parts = append(parts, "session moved from "+owner)
+	}
+	if d.Reason == placement.ReasonNearLimit {
+		near := "every account is near a limit · " + shortLabel(c.HighestLabel) + " " + figure(c.Highest, c.HighestBasis)
 		if c.HighestReset > now.Unix() {
 			near += ", resets in " + render.Remaining(c.HighestReset-now.Unix())
 		}
 		parts = append(parts, near)
-	}
-	if ref.Unidentified {
-		parts = append(parts, "session not identified")
-	}
-	if d.Reason != placement.ReasonNearLimit {
+		if c.Stale {
+			parts = append(parts, "figures "+render.Age(now.Unix()-c.ObservedAt)+" old")
+		}
+	} else {
 		parts = append(parts, figures(c, now)...)
 		parts = append(parts, fmt.Sprintf("load %d", c.Load))
 	}
@@ -396,18 +516,34 @@ func launchLine(d placement.Decision, mode string, ref sessionRef, owner string,
 	return line
 }
 
-// figures is one account's counted session and weekly figures, and how far
-// they can be trusted: an old observation's are lower bounds and say so.
+// figure is one counted percentage said as what it rests on: measured, a lower
+// bound from an old observation, a window that has since ended, or a figure
+// that did not parse. A bound printed as a bare percent reads as measured.
+func figure(counted int, basis placement.Basis) string {
+	switch basis {
+	case placement.BasisStale:
+		return fmt.Sprintf("≥%d%%", counted)
+	case placement.BasisEnded:
+		return "window ended"
+	case placement.BasisBad:
+		return "?%"
+	default:
+		return fmt.Sprintf("%d%%", counted)
+	}
+}
+
+// figures is one account's session and weekly figures, and how old they are
+// when that matters.
 func figures(c placement.Counted, now time.Time) []string {
 	if c.ObservedAt == 0 {
 		return []string{"never observed"}
 	}
 	var out []string
 	if s, ok := c.Session(); ok {
-		out = append(out, fmt.Sprintf("%s %d%%", shortLabel(s.Label), s.Counted))
+		out = append(out, shortLabel(s.Label)+" "+figure(s.Counted, s.Basis))
 	}
-	if len(c.Limits) > 1 || (len(c.Limits) == 1 && !c.Limits[0].Session) {
-		out = append(out, fmt.Sprintf("week %d%%", c.Weekly))
+	if c.WeeklyBasis != "" {
+		out = append(out, "week "+figure(c.Weekly, c.WeeklyBasis))
 	}
 	if len(c.Limits) == 0 {
 		out = append(out, "no limits reported")
@@ -456,14 +592,22 @@ func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode s
 		}
 		session, week := "—", "—"
 		if s, ok := c.Session(); ok {
-			session = fmt.Sprintf("%d%%", s.Counted)
+			session = cell(s.Counted, s.Basis)
 		}
-		if c.ObservedAt > 0 && len(c.Limits) > 0 {
-			week = fmt.Sprintf("%d%%", c.Weekly)
+		if c.WeeklyBasis != "" {
+			week = cell(c.Weekly, c.WeeklyBasis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
 			session, week, c.Busy, c.Pending, c.Load, dryRunNote(c, now))
 	}
+}
+
+// cell is figure for a table column: the same distinctions, in fewer cells.
+func cell(counted int, basis placement.Basis) string {
+	if basis == placement.BasisEnded {
+		return "ended"
+	}
+	return figure(counted, basis)
 }
 
 func dryRunNote(c placement.Counted, now time.Time) string {

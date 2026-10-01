@@ -308,11 +308,20 @@ records unchanged.
 
 ### 10. Bookkeeping that cannot be read or written
 
-After: when the store's lock is busy past its wait, the placements section
-does not decode, or the file was written by a newer headroom, the launch
-chooses from what it could read, says on stderr that the placement was not
-recorded, and starts. A log line that cannot be written is one stderr line
-and nothing more. A refresh that cannot be started is silent.
+After: when the store's lock is busy past its wait or the file was written
+by a newer headroom, the launch chooses from what it could read, says on
+stderr that the placement was not recorded, and starts. A placements
+section that does not decode is set aside the way the store sets aside any
+section it cannot read: the launch chooses with no placements counted,
+starts, and its own placement begins the section again, recorded and
+without a warning. The other sections of the file are untouched. A log
+line that cannot be written is one stderr line and nothing more. A refresh
+that cannot be started is silent.
+
+One launch does depend on the bookkeeping: the picker's `x`, which moves a
+session to another account. Its re-home is what routes the session's next
+turn, so when the re-home cannot be written the move is refused, and
+nothing is recorded, logged or started.
 
 `.current` keeps its strict reading. Empty, unreadable, or naming neither
 an account nor `auto`, it refuses the launch. A discovered account named
@@ -686,19 +695,24 @@ and refuses (`internal/accounts/accounts.go`). An older binary on a
 machine with an account actually named `auto` launches that account.
 
 **P13. Cost at launch.** Measured on the built binary against the owner's
-six accounts and seven live sessions, warm: about 20 ms up to the choice
-for a named launch, and 40 to 50 ms for an automatic one, which also reads
-six credentials.
+six accounts, warm, as the wall time of `launch --dry-run`, which runs a
+launch's reads and its rule and then prints instead of recording and
+exec'ing: 20 ms for a named launch and 39 to 49 ms for an automatic one,
+which also reads six credentials, against 4 ms for the process doing
+nothing. Twenty runs each. Does not establish: the cost of the locked
+write and the exec that a real launch adds.
 
 **P14. Which limit has stopped work.** Measured, roughly: among transcripts
 modified in the last thirty days, vendor limit messages appear on five
 days. Seven say the session limit was hit, all on 2026-09-09. Nine say
-the Fable limit was reached, on 09-15, 09-17, 09-21 and 09-23. Does not
-establish: how many incidents these were, on which accounts, or whether
-another account had room at the time; transcripts carry no account. It
-does establish that the model-scoped weekly limit stops work at least as
-often as the five-hour one, which is why a weekly row can set an account
-aside and decides ties.
+the Fable limit was reached, on 09-15, 09-17, 09-21 and 09-23. The
+seven belong to two sessions and the nine to seven. Does not establish:
+how many incidents these were, on which accounts, whether another account
+had room at the time (transcripts carry no account), or which limit costs
+more work. It does establish that messages about the model-scoped weekly
+limit appeared on more days, and in more sessions, than messages about
+the five-hour one, which is why a weekly row can set an account aside and
+decides ties.
 
 ## Verification
 
@@ -744,10 +758,14 @@ Runners: `make check` and `make test-pty`. The pty harness already stubs
    vendor's argv is byte-identical to what was passed; two sessions
    re-homed within a second both keep their records before their
    transcripts exist; verified live evidence still outranks a re-home.
-7. Obligation: degraded bookkeeping never refuses. Observe: a held lock, a
-   placements section that does not decode, and a document from a newer
-   schema each still exec, with the stderr line and `recorded: false` in
-   the log; re-homes in the same file are byte-identical afterwards.
+7. Obligation: degraded bookkeeping never refuses an ordinary launch.
+   Observe: a held lock and a document from a newer schema each still
+   exec, with the stderr line and `recorded: false` in the log; a
+   placements section that does not decode still execs, is replaced by
+   the launch's own placement and is recorded; re-homes in the same file
+   are byte-identical afterwards in all three. The picker's `x` with
+   re-homes unwritable is refused and leaves no placement and no log
+   line, and the next resume in the same picker is counted once.
 8. Obligation: the log is complete and inert. Observe: one line per exec
    in every mode and from the picker; a launch with the log deleted, with
    a torn last line, and with the log's lock held chooses the same account
@@ -825,9 +843,35 @@ before.
 - `check` fails on the registry status only when no running session
   carries one.
 
-Not done: obligation 16. The branch's binary has not been installed, so
-no bare launch has yet run in auto mode on the owner's machine; P3 is
-therefore still open.
+- Every launch prints its line, a named one included (`<account> · named`),
+  and so does the picker's resume. The first text kept a named launch
+  silent; a line that appears on some paths and not others is one more
+  thing to remember about which path was taken.
+- A launch is one operation for both callers. `headroom launch` and the
+  picker build an intent and hand it to the same function, which gathers
+  candidates, places, prepares, logs and announces; the store's placement
+  takes the session with it, so the load and the session's re-home are
+  one write. The first build gave the picker its own sequence, and a
+  refused `x` left a placement and a log line behind.
+- The board and a launch build their candidates with one function, so the
+  `← next` row and the launch cannot judge an account's eligibility by
+  different evidence.
+- A figure in the launch line says what it rests on: `≥N%` for an old
+  observation, `window ended` for a window whose reset has passed, `?%`
+  for a percent that does not parse.
+- A placements section that does not decode is replaced by the next
+  placement rather than left to keep every launch unrecorded
+  (Behaviour 10).
+- The log's appenders hold its lock shared and its pruner holds it
+  exclusively, so a record written during a prune is not lost; an append
+  that follows a torn line starts on a new one.
+- `check` judges the registry status over sessions verified live by pid
+  and start time, the evidence routing uses, not over pids that answer a
+  signal.
+
+Not done: obligation 16. The binary is installed and the owner's mode is
+still pinned, so no bare launch has yet run in auto mode on the owner's
+machine; P3 is therefore still open.
 
 Outside this repository, and therefore separate: the owner's dotfiles
 (`docs/claude-accounts.md`, the comments in `claude.zsh`, and launcher

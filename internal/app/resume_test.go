@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
@@ -13,8 +14,11 @@ import (
 // launch decision no evidence had chosen.
 func TestResumeAccountFailsClosedOnInvalidCurrent(t *testing.T) {
 	ui := &sessionActions{current: "", set: accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}}}}
-	if a, ok, _ := ui.resumeAccount(&sessions.Session{}, false); ok {
-		t.Errorf("ownerless session with no valid current resumed on %q — a decision minted from corrupt routing state", a.Name)
+	if intent, ok := ui.resumeIntent(&sessions.Session{}, false); ok {
+		t.Errorf("ownerless session with no valid current resumed on %q — a decision minted from corrupt routing state", intent.Account)
+	}
+	if intent, ok := ui.resumeIntent(&sessions.Session{Owner: "qiushi"}, true); ok {
+		t.Errorf("the override with no valid current chose %q", intent.Account)
 	}
 }
 
@@ -23,9 +27,16 @@ func TestResumeAccountDeletedOwnerFallsToCurrentNeverPrimary(t *testing.T) {
 		current: "b@x.com",
 		set:     accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}}},
 	}
-	a, ok, _ := ui.resumeAccount(&sessions.Session{Owner: "gone@x.com"}, false)
-	if !ok || a.Name != "b@x.com" {
-		t.Errorf("deleted owner resumed on (%q, %v) — degraded attribution falls back to current, never primary", a.Name, ok)
+	intent, ok := ui.resumeIntent(&sessions.Session{Owner: "gone@x.com"}, false)
+	if !ok || intent.Kind != placement.Forced || intent.Account != "b@x.com" {
+		t.Errorf("deleted owner resumed on (%+v, %v) — degraded attribution falls back to current, never primary", intent, ok)
+	}
+	// An owner that exists is followed; the override goes to current instead.
+	if intent, _ := ui.resumeIntent(&sessions.Session{Owner: "qiushi"}, false); intent.Account != "qiushi" || intent.Reason != placement.ReasonOwner {
+		t.Errorf("an existing owner: %+v", intent)
+	}
+	if intent, _ := ui.resumeIntent(&sessions.Session{Owner: "qiushi"}, true); intent.Account != "b@x.com" {
+		t.Errorf("the override: %+v", intent)
 	}
 }
 
