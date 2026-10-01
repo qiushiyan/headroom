@@ -62,7 +62,7 @@ naming a vendor this machine does not have fails saying so, except
   decision: an inherited `CLAUDE_CONFIG_DIR`, or for Codex `CODEX_HOME`,
   `CODEX_SQLITE_HOME`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`, is stripped,
   never obeyed. Everything after `--` goes to the vendor's binary unchanged.
-  The account is decided one of four ways:
+  How the launch is spelled decides the account:
   - bare — what the board recorded: the pinned account, or under auto the
     least-loaded one;
   - `--account <name>` — that account, whatever the mode;

@@ -1,12 +1,13 @@
 # Automatic placement — a bare launch chooses the least-loaded account
 
 Status: built on the `auto-placement` branch, 2026-10-01, after one consult
-round (envoy job `consult-r1`, Codex); kept as the dated record of the
+round (envoy job `consult-r1`, Codex), and reviewed after the merge in two
+rounds (`review-r1`, `review-r2`, Codex); kept as the dated record of the
 decision. The design as it stands lives in `DESIGN.md` § Automatic placement —
 read that, not this, for what is true today. Written against `main` at
 81c3045, Claude Code 2.1.286, codex-cli 0.155.1, macOS. Every measurement
 below was taken on the owner's laptop on that date. Obligation 16 — a day of
-real use — is not yet met; § Delivery — What the build changed lists where
+real use — is owed (§ Owed); § Delivery — What the build changed lists where
 the build departed from the first text.
 
 ## Summary
@@ -872,10 +873,6 @@ before.
   and start time, the evidence routing uses, not over pids that answer a
   signal.
 
-Not done: obligation 16. The binary is installed and the owner's mode is
-still pinned, so no bare launch has yet run in auto mode on the owner's
-machine; P3 is therefore still open.
-
 Outside this repository, and therefore separate: the owner's dotfiles
 (`docs/claude-accounts.md`, the comments in `claude.zsh`, and launcher
 functions for `--last` and `--auto` if wanted), and the steward host.
@@ -894,3 +891,13 @@ has been tried: on the 09:30 figures, five launches in six would have gone
 to the two accounts already in use.
 
 Open decisions: none.
+
+## Owed
+
+**Closing read owed** (no PR: merged locally as `a7b4f89`) — ready when: the
+owner's Claude Code `.current` has held `auto` for a day of ordinary use.
+Read: `headroom launches` shows no automatic launch placed on an account
+with more load than another candidate in the same record; launches started
+together landed on different accounts when their loads were equal; and a
+print-mode session's record shows whether it registered as live, which
+settles P3.

@@ -299,7 +299,7 @@ coordination the whole fleet would go dark together rather than one account at
 a time. Every process is short-lived and there is no daemon, so coordination
 has to live on disk. `internal/state` owns that file — one JSON document under
 the accounts root, written atomically under an flock, holding the request
-ledger, the responses, and the session re-homes.
+ledger, the responses, the session re-homes and the recent launches.
 
 - **A claim is a test-and-set, and the claim is the authorization.**
   Eligibility is decided and the claim recorded inside one locked section, so
@@ -540,7 +540,7 @@ engineered from the 2.1.220 store and all perishable:
   id — all timestamps from this machine's clock, on one axis, never
   re-stamped. Attribution parses the decoded `sessionId`
   field, never substrings: prompt bodies quote other sessions' UUIDs.
-  `enter` resumes on the owner and writes nothing — the launch itself
+  `enter` resumes on the owner and writes no re-home — the launch itself
   becomes vendor evidence. The override key re-homes: it records the one
   fact the vendor never will ("the user pointed this session here before
   prompting") and is superseded by any newer evidence. An automatic launch
@@ -548,9 +548,13 @@ engineered from the 2.1.220 store and all perishable:
   same reason: a print-mode session leaves no prompt history at all, so
   without it each later turn would be placed afresh. The sweep that retires
   re-homes of deleted transcripts leaves a record younger than ten minutes
-  alone — a first turn's id is known before the vendor has written a line. Degradation is
-  visible: no evidence, a re-home to a deleted account, or a same-instant
-  conflict each fall back to the current account under their own tag.
+  alone — a first turn's id is known before the vendor has written a line.
+  Degradation is visible: no evidence, a re-home to a deleted account, or a
+  same-instant conflict each fall back to the current account under their
+  own tag. Under auto mode there is no current account, and each of those
+  asks the placement rule instead; the override then moves the session to
+  the least-loaded of the *other* accounts, since moving means somewhere
+  other than where it is.
 - **Liveness is pid + start instant, and it gates the mutations.** Each
   account dir's `sessions/<pid>.json` registers a running session. A claim
   counts only when the pid is alive *and* its kernel start time matches the
@@ -592,8 +596,10 @@ engineered from the 2.1.220 store and all perishable:
   no routing — it is advisory by construction. A write failure is one
   stderr line, never a refusal. Deliberately without `--remember`, which
   the exec makes tempting: `.current` means "where new sessions go", and
-  this picker leaves it untouched. This surface does no network I/O and
-  never spends the usage budget.
+  this picker leaves it untouched. The picker itself does no network I/O
+  and spends none of the usage budget; a resume is a launch like any other
+  (see Automatic placement), so one the rule places leaves the same
+  detached refresh behind it.
 - **`resume` is a tombstone, permanently.** The predecessor printed a
   `dir\tid\taccount` line for the wrapper to recombine, and a shell
   function loaded before the account-name protocol misread the third field
@@ -680,10 +686,10 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   regardless; what varies is the reporting. A value naming a discovered
   extra account's dir is what every shell *inside* a managed session
   inherits — this machine's ordinary environment all day — and a notice
-  that fires on the ordinary case is noise, so the board and the launch
-  line stay quiet for it (the discovered set's `KnownExtraDir`, one classifier for
-  both, beside the target's own conflict classifier so diagnostics and the
-  environment built cannot disagree). What stays loud, because tools
+  that fires on the ordinary case is noise, so the board's note and the
+  launch's notice stay quiet for it (the discovered set's `KnownExtraDir`,
+  one classifier for both, beside the target's own conflict classifier so
+  diagnostics and the environment built cannot disagree). What stays loud, because tools
   *outside* the managed path still obey the variable: a relative value
   (the stale-wrapper incident signature — an own-state FAIL in `check`), a
   value naming nothing discovered, and the primary dir spelled explicitly
@@ -791,9 +797,10 @@ that turning auto on forgets the pin.
 - **The board's mark and the launch are one judgment.** `← next` and a launch
   build their candidates with one function (`buildCandidates`), from the same
   credential reader and the same exclusions, so the row the board marks is
-  the row a launch would take from those figures. Two builders agreed on the
-  rule and still disagreed on who was eligible. The mark stays advice — a
-  launch reads the disk again — but it is never a second opinion.
+  the row a launch would take from those figures. A builder of the board's
+  own can share the rule and still disagree on who is eligible, and then the
+  mark names an account a launch refuses. The mark stays advice — a launch
+  reads the disk again — but it is never a second opinion.
 - **Choosing and recording are one store operation.** `state.Place` reads the
   recent launches, calls the rule and records the result inside one locked
   section, which is `Claim`'s shape applied to launches: two launches started
@@ -808,15 +815,15 @@ that turning auto on forgets the pin.
   are one write: both land or neither does. The picker's `x` is the one
   launch that depends on its bookkeeping — the re-home is what routes the
   session's next turn — so it is refused when the re-home cannot be written,
-  and a refusal leaves no placement and no log line. The picker once ran its
-  own sequence of the same steps, and a refused move was still counted as
-  load and remembered as the last account. What a launch owes the next one
-  is decided there as well: a launch the rule placed leaves the refresh
-  behind it, and a launch that records a session sweeps the re-homes whose
-  transcripts are gone. While those two belonged to one surface each, a
-  resume the picker placed refreshed nothing, and an agent naming a new
-  session id every run grew the file until somebody pressed `x`. A surface
-  keeps its terminal, its working directory and the exec.
+  and a refusal leaves no placement and no log line. A surface that ran
+  those steps itself could refuse after recording, and a move that never
+  happened would count as load and answer `--last`. What a launch owes the
+  next one is decided there as well: a launch the rule placed leaves the
+  refresh behind it, and a launch that records a session sweeps the re-homes
+  whose transcripts are gone. Left to the surfaces, a resume the picker
+  places would refresh nothing, and an agent that names a new session id on
+  every run would grow the file until somebody pressed `x`. A surface keeps
+  its terminal, its working directory and the exec.
 - **Every launch says where it went, and what its figures rest on.** One line
   on stderr before the vendor starts, on every path — automatic, pinned,
   named, `--last`, the picker — because a line that appears on some paths
@@ -854,9 +861,9 @@ that turning auto on forgets the pin.
   that lock shared and the pruner holds it exclusively, since a prune
   rewrites the file and a record appended to the old one meanwhile would be
   lost; an append waits a quarter of a second for a prune and then gives the
-  line up, and one that follows a torn line starts on a new one. Replaying another
-  rule over it shows what that rule would have decided on the recorded inputs,
-  not what the usage would then have been.
+  line up, and one that follows a torn line starts on a new one. Replaying
+  another rule over it shows what that rule would have decided on the
+  recorded inputs, not what the usage would then have been.
 
 Codex follows the same mode through its own `.current`, with what it has:
 the shortest window of its main rate limit as the session window, its
@@ -1033,7 +1040,12 @@ keypress only after a pause.
 contracts and visible drift. The placement rule is a table over candidates;
 the store's place operation is tested for the same property as the claim —
 contending handles on the real lock — and the launch path through the exec
-seam with credentials, the process table and the detached refresh injected. Operation tests exercise request preparation,
+seam with credentials and the process table injected. The detached refresh
+is the exception: it is exercised through the built binary against a local
+endpoint that stalls, since the property is that the launch returns first
+and a process that outlived it records the answer. The launch operation's
+tests drive both of its callers, `launch` and the session picker.
+Operation tests exercise request preparation,
 local HTTP and the real store together, so sent credentials, received facts,
 refusal backoff and persistence are tested through the callers' interface.
 Checker tests use fixture processes and HTTP to verify the final exit verdict.
@@ -1043,8 +1055,10 @@ launch tests own routing, refusal-before-persistence and failure-after-write.
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
 interaction, selection, refresh scheduling, scrollback and terminal lifetime.
 Automatic placement is exercised there through the real binary: five launches
-started together reach five accounts, and a session named on its first turn
-resumes on the same account. Both vendors' accounts roots and usage URLs are fixture values from the
+started together reach five accounts, a session named on its first turn
+resumes on the same account, the board under auto marks an account's row,
+and `a` and enter move one vendor's `.current` between the word and a pin.
+Both vendors' accounts roots and usage URLs are fixture values from the
 harness's first command, because `HEADROOM_HOME` does not override an accounts
 root a caller's shell exports. Codex's fixture root does not exist until its
 block creates it — so every frame before that is the single-vendor one — and
