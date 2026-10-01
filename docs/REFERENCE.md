@@ -136,7 +136,9 @@ naming a vendor this machine does not have fails saying so, except
   also fails when an account dir's login, history or session registry is a
   link, or when an account dir belongs to two homes sharing a ledger, and it
   says when this home's primary is spelled out and which homes share its
-  ledger. A configuration headroom refuses (a relative `HEADROOM_*`
+  ledger. Its `retention:` line prints how long the shared session store is
+  kept and fails when accounts sharing it disagree on `cleanupPeriodDays`:
+  every account's cleanup sweep prunes the one store, so the shortest wins. A configuration headroom refuses (a relative `HEADROOM_*`
   override, an unusable `.ledger`) exits 1 with a `config:` FAIL.
 - **`headroom version`:** one line, `headroom <commit>[+dirty] <commit time>`
   — the commit the binary was built from. Answers whatever the environment

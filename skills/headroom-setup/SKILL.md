@@ -103,6 +103,11 @@ keep the newer file), then `rmdir <dir>/projects && ln -s ~/.claude/projects
 ownership evidence, so the picker resumes them on the current account until
 one is re-homed there (`x` on its row).
 
+Every account's Claude Code cleanup sweep prunes that one store with its own
+`settings.json`'s `cleanupPeriodDays`, so the shortest wins; `headroom check`
+fails its `retention:` line when they disagree. `--share-config` links one
+`settings.json` into every account, which keeps them equal.
+
 Codex is the same topology with its own store: each extra home's `sessions/`
 links to `~/.codex/sessions`, so Codex's own `resume` reaches any session
 from any account. A home with a real `sessions/` directory is refused by

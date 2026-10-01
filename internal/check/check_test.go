@@ -216,6 +216,91 @@ func TestCheckRoutingAssertsTopology(t *testing.T) {
 	}
 }
 
+// Every account's cleanup sweep prunes the one shared store, so the store
+// keeps the shortest period any sharing account names. Disagreement fails as
+// own-state; an unreadable setting is untested; an account off the store is
+// not judged (its topology line fails instead).
+func TestCheckRetention(t *testing.T) {
+	const shared = `{"cleanupPeriodDays": 365}`
+	for _, tc := range []struct {
+		name               string
+		primary, a, forked string // settings.json bodies; "" = no file, "link" = the primary's
+		wantOK, wantFail   string
+		wantSkip           string
+	}{
+		{name: "one shared file", primary: shared, a: "link", wantOK: "after 365 days"},
+		{name: "account on the default", primary: shared, wantFail: "primary 365, a@x.com 30 (unset)"},
+		{name: "every account unset", wantOK: "after 30 days (cleanupPeriodDays unset"},
+		{name: "unreadable is untested", primary: shared, a: "{", wantOK: "after 365 days", wantSkip: "retention[a@x.com]"},
+		{name: "rejected value is untested", primary: shared, a: `{"cleanupPeriodDays": 0}`, wantOK: "after 365 days", wantSkip: "retention[a@x.com]"},
+		{name: "forked account not judged", primary: shared, a: "link", forked: `{"cleanupPeriodDays": 7}`, wantOK: "after 365 days"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := claudeScope(home, "qiushi")
+			write := func(path, body string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(cfg.StoreDir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			primarySettings := filepath.Join(cfg.PrimaryDir(), "settings.json")
+			if tc.primary != "" {
+				write(primarySettings, tc.primary)
+			}
+			extra := filepath.Join(cfg.AccountsRoot, "a@x.com")
+			write(filepath.Join(extra, ".claude.json"), `{}`)
+			if err := os.Symlink(cfg.StoreDir(), filepath.Join(extra, "projects")); err != nil {
+				t.Fatal(err)
+			}
+			switch tc.a {
+			case "":
+			case "link":
+				if err := os.Symlink(primarySettings, filepath.Join(extra, "settings.json")); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				write(filepath.Join(extra, "settings.json"), tc.a)
+			}
+			if tc.forked != "" {
+				forked := filepath.Join(cfg.AccountsRoot, "b@x.com")
+				write(filepath.Join(forked, "projects", "-p", "s.jsonl"), "")
+				write(filepath.Join(forked, "settings.json"), tc.forked)
+			}
+
+			var oks, fails, skips []string
+			own := func(ok bool, label, hint string) {
+				if ok {
+					oks = append(oks, label)
+				} else {
+					fails = append(fails, label+" — "+hint)
+				}
+			}
+			skip := func(label, why string) { skips = append(skips, label) }
+			checkRetention(accounts.Discover(cfg), own, skip)
+
+			has := func(lines []string, want string) bool {
+				return slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, want) })
+			}
+			if tc.wantOK != "" && (!has(oks, tc.wantOK) || len(fails) != 0) {
+				t.Errorf("want ok %q, got ok=%v fail=%v", tc.wantOK, oks, fails)
+			}
+			if tc.wantFail != "" && !has(fails, tc.wantFail) {
+				t.Errorf("want fail %q, got ok=%v fail=%v", tc.wantFail, oks, fails)
+			}
+			if (tc.wantSkip != "" && !has(skips, tc.wantSkip)) || (tc.wantSkip == "" && len(skips) != 0) {
+				t.Errorf("want skip %q, got %v", tc.wantSkip, skips)
+			}
+		})
+	}
+}
+
 func TestRequestVerdictsSeparateStateFailureAndVendorEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
@@ -301,7 +386,7 @@ func TestRunVerdicts(t *testing.T) {
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
 			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, nil)
-			if code != tc.want || !strings.Contains(out.String(), tc.phrase) {
+			if code != tc.want || !strings.Contains(out.String(), tc.phrase) || !strings.Contains(out.String(), "retention:") {
 				t.Fatalf("exit=%d want=%d\n%s", code, tc.want, out.String())
 			}
 		})

@@ -20,9 +20,8 @@ import (
 
 // VerifyTopology checks one non-primary account's shared-sessions link. The
 // primary passes vacuously — it owns the canonical store. Each failure names
-// the exact end state required, not just a repair command: the repair lives
-// in another repo's tooling, and a message that only names the command
-// strands anyone on a machine without it.
+// the exact end state required: the repair is a manual move, and the
+// message is the only runbook a refused launch has at hand.
 //
 // Classification is by Lstat, decision by inode identity: the two failure
 // modes have different remedies (a link elsewhere is "fix by hand", a real

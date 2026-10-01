@@ -7,9 +7,11 @@ package check
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -229,6 +231,7 @@ func Run(cfg config.Config, out io.Writer, color bool, probe sessions.PIDProbe) 
 	// not silence them.
 	checkRouting(set, os.Environ(), chk, own)
 	checkHomes(set, st.Load(), chk, own)
+	checkRetention(set, own, skip)
 	checkSessionStore(scope, accts, probe, chk, skip)
 
 	// Codex's group runs after Claude Code's, through the same reporters.
@@ -610,6 +613,83 @@ func checkRouting(set accounts.Set, environ []string,
 		}
 		own(err == nil, fmt.Sprintf("topology[%s]: %s/ resolves to the canonical store", a.Name, cfg.StoreLink()), hint)
 	}
+}
+
+// defaultCleanupPeriodDays is Claude Code's retention when no settings source
+// sets cleanupPeriodDays (its documented retention_sweep event; read 2.1.287).
+const defaultCleanupPeriodDays = 30
+
+// checkRetention audits the one setting every account applies to the shared
+// session store. Claude Code's cleanup sweep deletes transcripts older than
+// the cleanupPeriodDays its config dir's settings.json names, and through the
+// store link every account's sweep prunes the one shared store — so the store
+// keeps only the shortest period any sharing account names, and one account
+// left on the default quietly undoes a longer period set everywhere else.
+// Only the user settings file varies by account; managed and project settings
+// apply to every account alike. An unreadable settings.json is untested, not
+// failed: Claude Code pauses its sweep when it cannot read its settings.
+func checkRetention(set accounts.Set, own func(bool, string, string), skip func(string, string)) {
+	var periods []string
+	shortest, longest, unset := 0, 0, 0
+	for _, a := range set.Accounts {
+		if accounts.VerifyTopology(a) != nil {
+			continue // not sharing the store; its topology line fails instead
+		}
+		name := a.Name
+		if a.IsPrimary() {
+			name = "primary"
+		}
+		days, isSet, err := cleanupPeriod(filepath.Join(a.Dir(), "settings.json"))
+		if err != nil {
+			skip(fmt.Sprintf("retention[%s]: not tested", name),
+				fmt.Sprintf("%v — Claude Code pauses its cleanup sweep until it can read the setting", err))
+			continue
+		}
+		label := fmt.Sprintf("%s %d", name, days)
+		if !isSet {
+			label += " (unset)"
+			unset++
+		}
+		periods = append(periods, label)
+		if shortest == 0 || days < shortest {
+			shortest = days
+		}
+		longest = max(longest, days)
+	}
+	if len(periods) == 0 {
+		return
+	}
+	label := fmt.Sprintf("retention: every account sharing the session store prunes it after %d days", shortest)
+	if unset == len(periods) {
+		label += " (cleanupPeriodDays unset — Claude Code's default)"
+	}
+	own(shortest == longest, label, fmt.Sprintf("accounts disagree on cleanupPeriodDays (%s) — every account's cleanup sweep prunes the shared store, so it keeps only %d days; "+
+		"set one value in every account's settings.json (`accounts add --share-config` links them to one file)", strings.Join(periods, ", "), shortest))
+}
+
+// cleanupPeriod reads cleanupPeriodDays from one settings.json: absent file or
+// key is the vendor default, unset.
+func cleanupPeriod(path string) (days int, isSet bool, err error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return defaultCleanupPeriodDays, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	var s struct {
+		CleanupPeriodDays *int `json:"cleanupPeriodDays"`
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		return 0, false, fmt.Errorf("%s: %v", path, err)
+	}
+	switch {
+	case s.CleanupPeriodDays == nil:
+		return defaultCleanupPeriodDays, false, nil
+	case *s.CleanupPeriodDays < 1:
+		return 0, false, fmt.Errorf("%s: cleanupPeriodDays is %d, which Claude Code rejects (minimum 1)", path, *s.CleanupPeriodDays)
+	}
+	return *s.CleanupPeriodDays, true, nil
 }
 
 // checkHomes audits what a second home on this machine rests on: how this

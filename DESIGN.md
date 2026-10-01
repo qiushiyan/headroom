@@ -586,6 +586,18 @@ engineered from the 2.1.220 store and all perishable:
   asks the placement rule instead; the override then moves the session to
   the least-loaded of the *other* accounts, since moving means somewhere
   other than where it is.
+- **Retention is one setting, read per account.** Claude Code's cleanup
+  sweep deletes transcripts older than the `cleanupPeriodDays` in its config
+  dir's `settings.json` (30 when unset), and through the store link every
+  account's sweep prunes the one shared store — so the store keeps only the
+  shortest period any sharing account names. `check` reads each sharing
+  account's value and fails when they disagree; an unreadable or rejected
+  value (below 1) is untested, since Claude Code pauses its sweep then too.
+  The value itself is the user's policy, printed on the ok line, never
+  judged. Proving cross-account resume end to end would take a real request
+  on two accounts and leave a transcript in the store, so `check` does not:
+  the topology line is the static proof, and every resume from the picker
+  exercises the rest.
 - **Liveness is pid + start instant, and it gates the mutations.** Each
   account dir's `sessions/<pid>.json` registers a running session. A claim
   counts only when the pid is alive *and* its kernel start time matches the
