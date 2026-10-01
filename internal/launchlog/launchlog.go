@@ -77,6 +77,18 @@ type Candidate struct {
 	Load       int      `json:"load"`
 	Weekly     int      `json:"weekly"`
 	LastPlaced *string  `json:"last_placed_at,omitempty"`
+
+	// Homes splits busy and pending by the home they came from, by accounts
+	// root: another home holding logins of the same subscription puts its
+	// sessions and launches on the same count.
+	Homes []Share `json:"homes,omitempty"`
+}
+
+// Share is one home's part of a candidate's busy sessions and pending launches.
+type Share struct {
+	Home    string `json:"home"`
+	Busy    int    `json:"busy"`
+	Pending int    `json:"pending"`
 }
 
 // Limit is one row: what the vendor said and what the rule counted for it.
@@ -113,6 +125,9 @@ func New(d placement.Decision, at time.Time) Record {
 		}
 		if c.LastPlacedMS > 0 {
 			lc.LastPlaced = stamp(time.UnixMilli(c.LastPlacedMS))
+		}
+		for _, sh := range c.Shares {
+			lc.Homes = append(lc.Homes, Share{Home: sh.Home, Busy: sh.Busy, Pending: sh.Pending})
 		}
 		for _, l := range c.Limits {
 			ll := Limit{Kind: l.Kind, Label: l.Label, Percent: l.Percent, Session: l.Session, Counted: l.Counted, Basis: string(l.Basis)}

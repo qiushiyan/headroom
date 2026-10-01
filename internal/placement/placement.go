@@ -75,9 +75,13 @@ type Limit struct {
 }
 
 // Proc identifies a process: pids recycle, so the start instant travels along.
+// Home is the accounts root of the home whose registry reported it — every
+// home on the machine shares one pid space, so a launch recorded by one home
+// and the session another home's registry shows are the same process.
 type Proc struct {
 	PID       int
 	StartedMS int64
+	Home      string
 }
 
 // Candidate is everything the rule knows about one account.
@@ -95,16 +99,21 @@ type Candidate struct {
 	Source     string // where the observation came from; carried for the record
 	Limits     []Limit
 
-	Busy     []Proc   // verified-live sessions the vendor reports as working
+	// Busy is every verified-live session the vendor reports as working on
+	// this subscription, in any home that shares the ledger: two homes'
+	// logins of one account spend one quota.
+	Busy     []Proc
 	Statuses []string // every verified-live session's status, as read
 }
 
-// Pending is one recorded launch.
+// Pending is one recorded launch. Home is the accounts root of the home that
+// made it: the rule counts every home's alike, and a surface says whose.
 type Pending struct {
 	Key  string `json:"account"`
 	Name string `json:"name"`
 	PID  int    `json:"pid"`
 	AtMS int64  `json:"at_ms"`
+	Home string `json:"home,omitempty"`
 }
 
 // Last is the newest launch recorded on one account.
@@ -114,21 +123,38 @@ type Last struct {
 }
 
 // Ledger is the record of launches the rule reads and the store keeps: the
-// recent ones, which are load, and the newest per account, which breaks ties
-// and answers "the last account used".
+// recent ones, which are load; the newest per subscription, which breaks
+// ties; and the newest per home, which answers "the last account used".
+//
+// The last two are kept apart because their units differ. Ties are broken by
+// how recently a subscription was placed, whichever home placed it. But an
+// account name belongs to one home — two homes holding logins of one
+// subscription name their dirs alike — so a launch in one home must never
+// answer the other's --last.
 type Ledger struct {
 	Recent []Pending       `json:"recent,omitempty"`
 	Last   map[string]Last `json:"last,omitempty"`
+	ByHome map[string]Last `json:"by_home,omitempty"`
 }
 
-// Record adds a launch on an account.
-func (l *Ledger) Record(key, name string, pid int, now time.Time) {
+// Record adds a launch on an account, made by the home at that accounts root.
+func (l *Ledger) Record(key, name string, pid int, home string, now time.Time) {
 	at := now.UnixMilli()
-	l.Recent = append(l.Recent, Pending{Key: key, Name: name, PID: pid, AtMS: at})
+	l.Recent = append(l.Recent, Pending{Key: key, Name: name, PID: pid, AtMS: at, Home: home})
 	if l.Last == nil {
 		l.Last = map[string]Last{}
 	}
-	l.Last[key] = Last{Name: name, AtMS: at}
+	if l.ByHome == nil {
+		l.ByHome = map[string]Last{}
+	}
+	// Newest wins: two homes' clocks are one machine's, but a record is never
+	// replaced by an older one.
+	if cur, ok := l.Last[key]; !ok || at >= cur.AtMS {
+		l.Last[key] = Last{Name: name, AtMS: at}
+	}
+	if cur, ok := l.ByHome[home]; !ok || at >= cur.AtMS {
+		l.ByHome[home] = Last{Name: name, AtMS: at}
+	}
 }
 
 // Prune drops what no longer counts: recent launches past PendingFor, and
@@ -146,24 +172,22 @@ func (l *Ledger) Prune(now time.Time, keep time.Duration) bool {
 	}
 	l.Recent = kept
 	old := now.Add(-keep).UnixMilli()
-	for k, rec := range l.Last {
-		if rec.AtMS < old {
-			delete(l.Last, k)
-			changed = true
+	for _, m := range []map[string]Last{l.Last, l.ByHome} {
+		for k, rec := range m {
+			if rec.AtMS < old {
+				delete(m, k)
+				changed = true
+			}
 		}
 	}
 	return changed
 }
 
-// Newest is the account of the newest recorded launch.
-func (l Ledger) Newest() (Last, bool) {
-	var best Last
-	for _, rec := range l.Last {
-		if rec.AtMS > best.AtMS || (rec.AtMS == best.AtMS && rec.Name < best.Name) {
-			best = rec
-		}
-	}
-	return best, best.Name != ""
+// Newest is the account of the newest launch the home at that accounts root
+// recorded.
+func (l Ledger) Newest(home string) (Last, bool) {
+	rec, ok := l.ByHome[home]
+	return rec, ok && rec.Name != ""
 }
 
 // IntentKind is how the account is to be decided.
@@ -180,6 +204,10 @@ type Intent struct {
 	Kind    IntentKind
 	Account string // Forced: the account
 	Reason  string // Forced: why, for the record ("pinned", "named")
+
+	// Home is the accounts root of the home placing the launch: whose last
+	// launch LastUsed means, and whose share of the load is its own.
+	Home string
 
 	// Owner is the account that last drove the session this launch names, ""
 	// when it names none or none is known. Exclude is never chosen: moving a
@@ -221,6 +249,10 @@ type Counted struct {
 	Pending int
 	Load    int
 
+	// Shares splits Busy and Pending by the home they came from, for a
+	// surface that says whose they are: the rule counts every home's alike.
+	Shares []Share
+
 	// Weekly is the highest counted figure among the rows that are not the
 	// session window; Highest is the highest over all rows, with HighestLabel
 	// and HighestReset naming it. Each carries the basis of the row it came
@@ -235,6 +267,24 @@ type Counted struct {
 
 	LastPlacedMS int64
 	order        int
+}
+
+// Share is one home's part of an account's busy sessions and pending launches.
+type Share struct {
+	Home    string // accounts root
+	Busy    int
+	Pending int
+}
+
+// Elsewhere is the part of the load that came from homes other than home.
+func (c Counted) Elsewhere(home string) []Share {
+	var out []Share
+	for _, s := range c.Shares {
+		if s.Home != home {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Session returns the session window's row, if the account has one.
@@ -288,7 +338,7 @@ func Choose(cands []Candidate, ledger Ledger, intent Intent, now time.Time) Deci
 			d.Chosen, d.Reason = c.Name, intent.Reason
 		}
 	case LastUsed:
-		last, ok := ledger.Newest()
+		last, ok := ledger.Newest(intent.Home)
 		c, found := d.Find(last.Name)
 		switch {
 		case !ok:
@@ -436,6 +486,16 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 			out.Weekly, out.WeeklyBasis = cl.Counted, cl.Basis
 		}
 	}
+	shares := map[string]*Share{}
+	share := func(home string) *Share {
+		if shares[home] == nil {
+			shares[home] = &Share{Home: home}
+		}
+		return shares[home]
+	}
+	for _, b := range c.Busy {
+		share(b.Home).Busy++
+	}
 	cutoff := nowMS - int64(PendingFor/time.Millisecond)
 	for _, p := range ledger.Recent {
 		if p.Key != c.Key || p.AtMS < cutoff {
@@ -445,7 +505,12 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 			continue // counted once, as the busy session it became
 		}
 		out.Pending++
+		share(p.Home).Pending++
 	}
+	for _, s := range shares {
+		out.Shares = append(out.Shares, *s)
+	}
+	slices.SortFunc(out.Shares, func(a, b Share) int { return cmp.Compare(a.Home, b.Home) })
 	out.Load = max(session, 0)/StepPoints + out.Busy + out.Pending
 	out.LastPlacedMS = ledger.Last[c.Key].AtMS
 	return out

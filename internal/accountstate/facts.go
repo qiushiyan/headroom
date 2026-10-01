@@ -128,6 +128,47 @@ type Facts struct {
 	AuthMode string
 	Obs      *Observation // nil = nothing known
 	Attempt  Attempt
+
+	// Load is what an automatic launch counts on this account's subscription
+	// beyond its figures — busy sessions and recent launches — from every
+	// home that shares the ledger. nil when the surface did not read it: the
+	// limits surface spawns nothing, and reading liveness takes a process
+	// sample per session.
+	Load *Load
+}
+
+// Load is one subscription's busy sessions and recent launches, as the
+// placement rule counted them, and whose they are.
+type Load struct {
+	Value    int // what an automatic launch ranks by: session usage in steps, plus busy, plus launched
+	Busy     int // verified-live sessions the vendor reports as working
+	Launched int // launches of the last fifteen minutes not yet among them
+	Homes    []HomeLoad
+}
+
+// HomeLoad is one home's share of a Load. This marks the home the surface
+// runs in; every other is another home holding logins of the same
+// subscriptions.
+type HomeLoad struct {
+	Home     string // accounts root
+	Label    string
+	This     bool
+	Busy     int
+	Launched int
+}
+
+// Elsewhere is the share of homes other than the surface's own.
+func (l *Load) Elsewhere() []HomeLoad {
+	if l == nil {
+		return nil
+	}
+	var out []HomeLoad
+	for _, h := range l.Homes {
+		if !h.This {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // Fresh reports whether the observation is recent enough to describe current

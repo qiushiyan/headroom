@@ -1,8 +1,10 @@
 package state
 
 import (
+	"cmp"
 	"errors"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -35,6 +37,11 @@ const (
 	// first's routing before its transcript appeared.
 	rehomeGrace = 10 * time.Minute
 
+	// memberRefresh is how stale a home's registration may grow before a
+	// request rewrites it. Registration is otherwise written only when it
+	// changes, so a claim that permits nothing stays a read.
+	memberRefresh = 24 * time.Hour
+
 	// retention bounds the ledger by age. Sweeping by absence instead would
 	// need a complete account registry, which no caller can promise: an
 	// account's key comes from a vendor file Claude Code rewrites constantly,
@@ -45,32 +52,66 @@ const (
 	retention = 30 * 24 * time.Hour
 )
 
-// Store is the handle to one accounts root's state file. Every mutation is a
-// locked read-modify-write of its own; nothing is cached between calls, and no
-// method holds the lock across work this package does not own.
+// Store is the handle to one home's state: its own accounts root's file, and
+// the subscription ledger — the same file, unless the home shares another
+// home's ledger. Every mutation is a locked read-modify-write of its own;
+// nothing is cached between calls, and no method holds a lock across work
+// this package does not own.
 //
-// A store is opened from a scope, so it knows its root, whose responses it
+// A store is opened from a scope, so it knows its roots, whose responses it
 // holds and the spacing its deadlines respect. One store per accounts root is
 // what lets a second vendor add files without re-keying the first's: nothing
-// in Claude Code's state.json changes when Codex is fetched.
+// in Claude Code's state.json changes when Codex is fetched. A second home of
+// the same vendor shares the first's ledger instead of keeping one, because
+// the budget and the load are the subscription's, not the home's.
 type Store struct {
-	root    string
+	root    string // this home's accounts root: its re-homes, and its identity in the ledger
+	ledger  string // the accounts root whose state.json holds the subscription ledger
 	vendor  config.Vendor
 	spacing time.Duration
+	member  Member
 }
 
 func Open(scope config.Scope) *Store {
-	return &Store{root: scope.AccountsRoot, vendor: scope.Vendor, spacing: scope.RequestSpacing()}
+	root := filepath.Clean(scope.AccountsRoot)
+	return &Store{
+		root: root, ledger: filepath.Clean(scope.Ledger()), vendor: scope.Vendor, spacing: scope.RequestSpacing(),
+		member: Member{Root: root, Home: scope.Home, Explicit: scope.PrimaryExplicit},
+	}
 }
 
 // Vendor is whose responses this store holds — and therefore which parser
 // reads a body that came out of it.
 func (s *Store) Vendor() config.Vendor { return s.vendor }
 
-// Load reads the document. No lock: writes land by atomic rename, so a reader
-// sees one whole version or the previous one.
+// Home is this home's identity in the ledger: its accounts root, as every
+// record of a launch or a busy session names it.
+func (s *Store) Home() string { return s.root }
+
+// Ledger is the accounts root whose state.json holds the subscription ledger.
+func (s *Store) Ledger() string { return s.ledger }
+
+func (s *Store) shared() bool { return s.ledger != s.root }
+
+// Load reads the documents. No lock: writes land by atomic rename, so a reader
+// sees one whole version or the previous one of each.
 func (s *Store) Load() Snapshot {
-	return Snapshot{d: read(s.root), vendor: s.vendor, spacing: s.spacing}
+	d := read(s.ledger)
+	h := d
+	if s.shared() {
+		h = read(s.root)
+	}
+	return Snapshot{d: d, h: h, vendor: s.vendor, spacing: s.spacing}
+}
+
+// Register records this home in the ledger it spends against, so the other
+// homes can find its account dirs. Every request and launch registers on its
+// way; this is for a home that has just joined and done neither.
+func (s *Store) Register(now time.Time) error {
+	return s.update(s.ledger, claimWait, func(d *doc) error {
+		d.register(s.member, now)
+		return nil
+	})
 }
 
 // ceiling is the furthest out a deadline written by this code can sit: the
@@ -130,7 +171,8 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	for i, k := range keys {
 		out[i] = Decision{Key: k, NextEligible: now.Add(ceiling(s.spacing))}
 	}
-	err := s.update(claimWait, func(d *doc) error {
+	err := s.update(s.ledger, claimWait, func(d *doc) error {
+		d.register(s.member, now)
 		d.sweepStale(now)
 		if d.badAccounts {
 			// No readable ledger. "Eligible" is then a guess, and a live
@@ -204,7 +246,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 // arithmetic this package owns.
 func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, at time.Time) (time.Time, error) {
 	var next time.Time
-	err := s.update(completeWait, func(d *doc) error {
+	err := s.update(s.ledger, completeWait, func(d *doc) error {
 		if d.badAccounts {
 			return ErrCorrupt
 		}
@@ -305,11 +347,17 @@ type Launch struct {
 	Live Enumerator
 }
 
-// Placed is Place's answer. The decision is always there; the two flags say
-// what reached disk.
+// Placed is Place's answer. The decision is always there; the flags say what
+// reached disk.
 type Placed struct {
 	Decision placement.Decision
 	Recorded bool // the launch is in the record the next placement reads
+
+	// RecordErr says why the launch is not in the record although Place
+	// returned no error: the ledger is another home's file, the re-home this
+	// launch depended on was written first, and the ledger's write then
+	// failed. The launch goes ahead — it is routed — and misses only its load.
+	RecordErr error
 
 	// ReHomed reports that the session's routing was recorded. SessionErr says
 	// why it was not when it should have been and the launch did not depend on
@@ -336,62 +384,84 @@ type Placed struct {
 // operations is how a resume that was then refused left a placement, a log
 // line and a "last account" behind it.
 //
-// An error means the bookkeeping failed. For an ordinary launch that is never
-// a reason to stop — in auto mode every usable account is a correct answer —
-// so the decision is then made from an unlocked read and Recorded is false.
-// For a launch that must re-home it is: the caller refuses.
+// When the ledger is another home's file they are two documents, both locked
+// for the whole operation — the ledger's lock first, always, so no two
+// operations can wait on each other — and written in the order that keeps a
+// refusal clean: the write a launch depends on goes first, and a failure there
+// returns before anything else is written. A launch that must re-home writes
+// the re-home first, so a refused move leaves nothing; any other launch writes
+// its placement first, and a re-home that then fails is a note, exactly as an
+// unreadable sessions section is.
+//
+// An error means nothing was recorded. For an ordinary launch that is never a
+// reason to stop — in auto mode every usable account is a correct answer — so
+// the decision is then made from an unlocked read and Recorded is false. For a
+// launch that must re-home it is: the caller refuses.
 func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
 	now := l.Now
-	err := s.update(placeWait, func(d *doc) error {
-		if l.MustReHome && d.badSessions {
+	l.Intent.Home = s.root
+	err := s.updatePair(placeWait, func(led, home *doc, homeErr error) (commit, error) {
+		if l.MustReHome && (homeErr != nil || home.badSessions) {
 			// Re-homes are user decisions. Writing a fresh section over bytes
 			// that merely failed to decode would destroy them for good.
-			return ErrCorrupt
+			return commit{}, cmp.Or(homeErr, ErrCorrupt)
 		}
-		if d.badPlacements {
+		if led.badPlacements {
 			// Disposable, like the request ledger: set the unreadable bytes
 			// aside for `check` and start from nothing.
-			d.quarantine("placements")
-			d.badPlacements = false
-			d.placements = placement.Ledger{}
-			d.dirty = true
+			led.quarantine("placements")
+			led.badPlacements = false
+			led.placements = placement.Ledger{}
+			led.dirty = true
 		}
-		if d.placements.Prune(now, retention) {
-			d.dirty = true
+		if led.placements.Prune(now, retention) {
+			led.dirty = true
 		}
-		out.Decision = placement.Choose(l.Candidates, d.placements, l.Intent, now)
+		led.register(s.member, now)
+		out.Decision = placement.Choose(l.Candidates, led.placements, l.Intent, now)
 		chosen, ok := out.Decision.Find(out.Decision.Chosen)
 		if out.Decision.Chosen == "" || !ok {
-			return nil
+			return commit{ledger: true}, nil
 		}
-		d.placements.Record(chosen.Key, chosen.Name, l.PID, now)
-		d.dirty = true
+		led.placements.Record(chosen.Key, chosen.Name, l.PID, s.root, now)
+		led.dirty = true
 		out.Recorded = true
 		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
-			return nil
+			return commit{ledger: true}, nil
 		}
-		if d.badSessions {
-			out.SessionErr = ErrCorrupt
-			return nil
+		if homeErr != nil || home.badSessions {
+			out.SessionErr = cmp.Or(homeErr, ErrCorrupt)
+			return commit{ledger: true}, nil
 		}
 		if l.Live != nil {
 			// The sweep runs before the write, so the record this very call
 			// writes can never be swept by it.
 			if exists, ok := l.Live(); ok {
 				young := now.Add(-rehomeGrace).UnixMilli()
-				for sid, rec := range d.sessions {
+				for sid, rec := range home.sessions {
 					if !exists[sid] && rec.AtMS < young {
-						delete(d.sessions, sid)
+						delete(home.sessions, sid)
 					}
 				}
 			}
 		}
-		d.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
+		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
+		home.dirty = true
 		out.ReHomed = true
-		return nil
+		return commit{ledger: true, home: true, homeFirst: l.MustReHome}, nil
 	})
-	if err != nil {
+	var partial pairErr
+	switch {
+	case errors.As(err, &partial) && partial.homeWritten:
+		// The re-home this launch depended on is written; its load is not.
+		out.Recorded, out.RecordErr = false, partial.err
+		return out, nil
+	case errors.As(err, &partial):
+		// The placement is written; the session's routing is not.
+		out.ReHomed, out.SessionErr = false, partial.err
+		return out, nil
+	case err != nil:
 		out = Placed{Decision: placement.Choose(l.Candidates, s.Load().Placements(), l.Intent, now)}
 		return out, err
 	}
@@ -401,7 +471,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 // Forget drops a session's re-home — a deleted transcript needs no routing
 // preference. No sweep: this call knows exactly which record it means.
 func (s *Store) Forget(id string) error {
-	return s.update(claimWait, func(d *doc) error {
+	return s.update(s.root, claimWait, func(d *doc) error {
 		if d.badSessions {
 			return ErrCorrupt
 		}
@@ -414,32 +484,22 @@ func (s *Store) Forget(id string) error {
 	})
 }
 
-// update is the only writer. It is unexported on purpose: an exported
-// transaction taking a caller closure would publish the whole document (every
-// invariant this package enforces would become a caller's to remember) and
-// would make re-entry possible — flock is per open file description, so a
-// nested update opens a second descriptor and blocks against itself forever.
-func (s *Store) update(wait time.Duration, fn func(*doc) error) error {
-	lock, err := s.acquire(wait)
+// update is the only writer of one document. It is unexported on purpose: an
+// exported transaction taking a caller closure would publish the whole
+// document (every invariant this package enforces would become a caller's to
+// remember) and would make re-entry possible — flock is per open file
+// description, so a nested update opens a second descriptor and blocks
+// against itself forever.
+func (s *Store) update(root string, wait time.Duration, fn func(*doc) error) error {
+	lock, err := acquire(root, wait)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		_ = lock.Close()
-	}()
+	defer release(lock)
 
-	d := read(s.root)
-	if d.readOnly() {
-		return ErrReadOnly
-	}
-	if d.unreadable {
-		// Something is in that file and nobody could read it. Writing a fresh
-		// document here is how re-homes get destroyed by an I/O blip.
-		return ErrUnreadable
-	}
-	if d.migrationErr != nil {
-		return d.migrationErr
+	d := read(root)
+	if err := writable(d); err != nil {
+		return err
 	}
 	if err := fn(d); err != nil {
 		return err
@@ -447,14 +507,114 @@ func (s *Store) update(wait time.Duration, fn func(*doc) error) error {
 	if !d.dirty {
 		return nil
 	}
-	return s.commit(d)
+	return commitDoc(d)
 }
 
-func (s *Store) acquire(wait time.Duration) (*os.File, error) {
-	if err := os.MkdirAll(s.root, 0o755); err != nil {
+// writable is why a document must not be written, or nil.
+func writable(d *doc) error {
+	switch {
+	case d.readOnly():
+		return ErrReadOnly
+	case d.unreadable:
+		// Something is in that file and nobody could read it. Writing a fresh
+		// document here is how re-homes get destroyed by an I/O blip.
+		return ErrUnreadable
+	case d.migrationErr != nil:
+		return d.migrationErr
+	}
+	return nil
+}
+
+// commit says which of a pair's documents to write, and in which order.
+type commit struct {
+	ledger, home bool
+	homeFirst    bool
+}
+
+// pairErr is a pair's second write failing after its first landed: half of
+// the operation is on disk, and which half is the caller's to say.
+type pairErr struct {
+	err         error
+	homeWritten bool // the home's document was the one that landed
+}
+
+func (e pairErr) Error() string { return e.err.Error() }
+
+// updatePair is update over the ledger and this home's own document, for the
+// one operation that writes both. When they are one file it is update. When
+// they are two, the ledger's lock is taken first — the only operation holding
+// two locks takes them in one order, so none can wait on another — and an
+// unusable home document does not stop the ledger: fn is told why (homeErr)
+// and decides what that costs.
+func (s *Store) updatePair(wait time.Duration, fn func(led, home *doc, homeErr error) (commit, error)) error {
+	if !s.shared() {
+		return s.update(s.root, wait, func(d *doc) error {
+			_, err := fn(d, d, nil)
+			return err
+		})
+	}
+	ll, err := acquire(s.ledger, wait)
+	if err != nil {
+		return err
+	}
+	defer release(ll)
+	led := read(s.ledger)
+	if err := writable(led); err != nil {
+		return err
+	}
+	var home *doc
+	hl, homeErr := acquire(s.root, wait)
+	if homeErr == nil {
+		defer release(hl)
+		home = read(s.root)
+		homeErr = writable(home)
+	}
+	if homeErr != nil {
+		home = &doc{root: s.root, sessions: map[string]sessions.OwnerRec{}, badSessions: true}
+	}
+	c, err := fn(led, home, homeErr)
+	if err != nil {
+		return err
+	}
+	writeHome := c.home && home.dirty && homeErr == nil
+	writeLedger := c.ledger && led.dirty
+	if c.homeFirst {
+		if writeHome {
+			if err := commitDoc(home); err != nil {
+				return err
+			}
+		}
+		if writeLedger {
+			if err := commitDoc(led); err != nil {
+				if !writeHome {
+					return err
+				}
+				return pairErr{err: err, homeWritten: true}
+			}
+		}
+		return nil
+	}
+	if writeLedger {
+		if err := commitDoc(led); err != nil {
+			return err
+		}
+	}
+	if writeHome {
+		if err := commitDoc(home); err != nil {
+			if !writeLedger {
+				return err
+			}
+			return pairErr{err: err}
+		}
+	}
+	return nil
+}
+
+func acquire(root string, wait time.Duration) (*os.File, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(statePath(s.root)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(statePath(root)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -476,20 +636,25 @@ func (s *Store) acquire(wait time.Duration) (*os.File, error) {
 	}
 }
 
-// commit writes the document atomically, then retires whatever legacy file it
-// has finished absorbing.
-func (s *Store) commit(d *doc) error {
+func release(f *os.File) {
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+}
+
+// commitDoc writes the document atomically to the root it was read from, then
+// retires whatever legacy file it has finished absorbing.
+func commitDoc(d *doc) error {
 	data, err := d.marshal()
 	if err != nil {
 		return err
 	}
-	path := statePath(s.root)
+	path := statePath(d.root)
 	if d.corruptDoc {
 		// Unreadable, but not this code's to destroy: whatever is in there is
 		// the only copy, and someone may want to look at it.
 		_ = os.Rename(path, path+".unreadable")
 	}
-	tmp, err := os.CreateTemp(s.root, "state-*.json")
+	tmp, err := os.CreateTemp(d.root, "state-*.json")
 	if err != nil {
 		return err
 	}
@@ -511,6 +676,6 @@ func (s *Store) commit(d *doc) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return err
 	}
-	s.archiveLegacy(d)
+	archiveLegacy(d)
 	return nil
 }

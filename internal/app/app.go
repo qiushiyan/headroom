@@ -49,9 +49,26 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 `)
 		return 2
 	}
+	if cmd == "version" || cmd == "--version" {
+		// Before configuration, like the tombstone: what binary this is must
+		// be answerable whatever the environment or the files say.
+		if len(rest) > 0 {
+			fmt.Fprintf(os.Stderr, "headroom: unexpected argument %q\n", rest[0])
+			return 2
+		}
+		fmt.Println(versionLine())
+		return 0
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
+		if cmd == "check" || cmd == "--check" {
+			// A configuration headroom refuses is not an assertion it could
+			// not test: it is its own state, broken, and every launch is
+			// refusing on it right now.
+			fmt.Fprintln(os.Stdout, "FAIL  config: headroom refuses its configuration — every command refuses until it is fixed")
+			return check.ExitFail
+		}
 		return 2
 	}
 	// Commands without options reject any remaining arguments.
@@ -115,6 +132,12 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 					return 1
 				}
 				return runAccountsRemove(scope, rest[1:])
+			case "ledger":
+				if vendor != config.Claude {
+					fmt.Fprintln(os.Stderr, "headroom accounts ledger: only Claude Code homes share a ledger")
+					return 2
+				}
+				return runAccountsLedger(cfg, rest[1:])
 			}
 			layout, rest = boardLayout(rest)
 		}
@@ -259,6 +282,13 @@ func printUsage(w io.Writer) {
              skills, …), or every entry of <dir>. Then log in once:
              claude — launch --account <email> and /login;
              codex — launch --vendor codex --account <email> -- login
+  accounts ledger [<accounts root>]
+             with a root: this home spends against that root's ledger —
+             a second home on this machine holding logins of the same
+             subscriptions; both then ask each subscription once per
+             spacing and count each other's sessions and launches.
+             Naming this home's own root stops sharing. Either way it
+             registers this home there and lists the homes registered
   accounts remove [<email | name.lock>] [--yes]
              bare on a terminal, pick from the removable accounts; refuse
              while a session is live; delete the account's Keychain item
@@ -300,6 +330,7 @@ func printUsage(w io.Writer) {
              is required
   check      verify the reverse-engineered assumptions still hold, for
              every vendor on this machine
+  version    the commit this binary was built from, and its time
 
   --vendor <claude|codex> defaults to claude on launch, resolve, accounts
   add and accounts remove. accounts, --json, limits, launches and refresh
@@ -343,7 +374,7 @@ type prepared struct {
 }
 
 func prepare(scope config.Scope, st *state.Store) prepared {
-	return prepareVia(scope, st, queryHealthParallel)
+	return prepareVia(context.Background(), scope, st, queryHealthParallel)
 }
 
 // prepareUnprobed is prepare without the vendor's health probe: health falls
@@ -351,13 +382,16 @@ func prepare(scope config.Scope, st *state.Store) prepared {
 // It is what the detached refresh runs — a process nobody is watching has no
 // use for a `claude auth status` spawn per account, and must not lean on
 // whatever that command does as a side effect.
-func prepareUnprobed(scope config.Scope, st *state.Store) prepared {
-	return prepareVia(scope, st, func([]accounts.Account) auth.QueryFunc {
+//
+// It stops when ctx does: the detached refresh is ended with the job that
+// launched it, and its credential reads are where it can stall.
+func prepareUnprobed(ctx context.Context, scope config.Scope, st *state.Store) prepared {
+	return prepareVia(ctx, scope, st, func([]accounts.Account) auth.QueryFunc {
 		return func(string) auth.Status { return auth.Status{} }
 	})
 }
 
-func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
+func prepareVia(ctx context.Context, scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -365,7 +399,7 @@ func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Acco
 		// Only Claude Code's access costs a process and a Keychain read. The
 		// Codex reader works from the auth snapshot discovery already took.
 		src.readRaw = func(a accounts.Account) string {
-			raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
+			raw, _ := creds.ReadRawContext(ctx, a.ConfigDir, a.Dir())
 			return raw
 		}
 		src.health = health(set.Accounts)

@@ -160,10 +160,12 @@ func Start(ctx context.Context, st *state.Store, candidates []*Candidate, reread
 		indices = append(indices, i)
 	}
 	// Nothing to ask for is nothing to claim: the ledger is only ever opened
-	// for writing on behalf of a request that could leave.
+	// for writing on behalf of a request that could leave. A round already
+	// cancelled has nothing that could leave either — a claim now would only
+	// silence the account for a spacing.
 	var decisions []state.Decision
 	var err error
-	if len(keys) > 0 {
+	if len(keys) > 0 && ctx.Err() == nil {
 		decisions, err = st.Claim(keys, time.Now())
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -200,12 +202,15 @@ func Start(ctx context.Context, st *state.Store, candidates []*Candidate, reread
 					r.TokenAfter401 = TokenUnchanged
 				}
 			}
-			if ctx.Err() == nil {
-				next, err := st.Complete(c.key, generation, outcome, body, at)
-				r.StoreErr = err
-				if !next.IsZero() {
-					r.Attempt.NextEligibleAt = next.Unix()
-				}
+			// Completed whether or not the round was cancelled meanwhile: an
+			// abandoned request is recorded as what it is — a failure that
+			// says nothing about the budget, so the claim's own spacing stands
+			// — and an answer that arrived first is kept. No claim this round
+			// made is left without its completion.
+			next, err := st.Complete(c.key, generation, outcome, body, at)
+			r.StoreErr = err
+			if !next.IsZero() {
+				r.Attempt.NextEligibleAt = next.Unix()
 			}
 			updates <- r
 		}(i, c, dec.Generation)

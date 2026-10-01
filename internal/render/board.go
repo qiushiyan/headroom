@@ -229,8 +229,9 @@ func (p Palette) cellFor(r usage.Row, now int64) cell {
 // the right, so the clauses that change what the user does come first —
 // health, the mismatched dir, why there are no figures, drift, staleness,
 // how the refresh went — and the explanatory ones last: how old the figures
-// are and where they came from. The block orders the same words by
-// narrative; the row orders them by what must survive.
+// are, where they came from, and the sessions and launches on the account.
+// The block orders the same words by narrative; the row orders them by what
+// must survive.
 func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	var parts []string
 	if t := healthText(v); t != "" {
@@ -271,6 +272,9 @@ func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	}
 	if pr.source != "" {
 		parts = append(parts, p.Dim+pr.source+p.Rst)
+	}
+	if t := loadText(v.Load); t != "" {
+		parts = append(parts, p.Dim+t+p.Rst)
 	}
 	return strings.Join(parts, p.Dim+" · "+p.Rst)
 }

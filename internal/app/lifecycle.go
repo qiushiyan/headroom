@@ -65,7 +65,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		fmt.Fprintln(errw, "usage: headroom accounts add [--vendor <claude|codex>] <email> [--share-config[=<dir>]]")
 		return 2
 	}
-	dir, shared, err := accounts.Seed(cfg, name, opt)
+	dir, shared, kept, err := accounts.Seed(cfg, name, opt)
 	if err != nil {
 		fmt.Fprintf(errw, "headroom accounts add: %v\n", err)
 		return 1
@@ -78,14 +78,25 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		} else {
 			fmt.Fprintf(out, "  shared from %s: %s\n", opt.ShareFrom, strings.Join(shared, ", "))
 		}
+		if len(kept) > 0 {
+			// A login and its history are never shared, whatever the source
+			// holds: this dir gets its own at its first login.
+			fmt.Fprintf(out, "  kept per dir, not linked: %s\n", strings.Join(kept, ", "))
+		}
+	}
+	// A second home's dir is logged in from that home: the launch must run
+	// under its HOME, or it resolves the login home's accounts instead.
+	under := ""
+	if cfg.PrimaryExplicit {
+		under = "HOME=" + cfg.Home + " "
 	}
 	if cfg.Vendor == config.Codex {
 		// Codex has no in-session /login: logging in is one command, in the
 		// engine's own spelling — a wrapper's argument passing is not
 		// headroom's to know.
-		fmt.Fprintf(out, "next: headroom launch --vendor codex --account %s -- login   and log in as %s\n", name, name)
+		fmt.Fprintf(out, "next: %sheadroom launch --vendor codex --account %s -- login   and log in as %s\n", under, name, name)
 	} else {
-		fmt.Fprintf(out, "next: headroom launch --account %s   then /login as %s\n", name, name)
+		fmt.Fprintf(out, "next: %sheadroom launch --account %s   then /login as %s\n", under, name, name)
 	}
 	fmt.Fprintf(out, "      (the board warns if the login does not match the dir name; new accounts sort last until listed in %s)\n", cfg.OrderFile())
 	return 0

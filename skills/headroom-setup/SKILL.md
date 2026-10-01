@@ -62,6 +62,31 @@ reports the disagreement. Codex homes are retired by hand: `accounts remove
 --vendor codex` refuses, naming the directory to delete once no `codex`
 process runs.
 
+## A second home on this machine
+
+For a second consumer of Claude Code under the same OS user but its own
+`HOME` — an automated pipeline running headless sessions — that holds its
+own logins of the same subscriptions. Every command runs as that home
+(`HOME=<its home>` in front):
+
+1. `headroom accounts ledger <the first home's accounts root>` — both homes
+   then share each subscription's request budget, figures and load. Then,
+   as the first home (its own `HOME`), `headroom accounts ledger` once, so
+   it is registered before its next launch. Done when either listing names
+   both homes.
+2. `headroom accounts add <email> --share-config` per subscription — the
+   config comes from that home's own `~/.claude`; logins, history and
+   sessions stay per dir.
+3. Hand the user, per subscription: `HOME=<its home> headroom launch
+   --account <email>`, then `/login` as that email. Under another `HOME` no
+   login keychain is searched, so the login lands in the dir's
+   `.credentials.json`, which the home's unattended processes can read.
+4. The tool's launcher prefix: `headroom launch --auto --` (`--auto`, so the
+   home's own `.current` cannot pin it).
+
+Done when `headroom check`, run as that home, reports no FAIL and its
+`ledger:` line counts the other home.
+
 ## Sessions are machine-global
 
 `accounts add` links each account's `projects/` to `~/.claude/projects`, so

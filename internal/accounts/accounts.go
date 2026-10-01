@@ -25,7 +25,11 @@ type Account struct {
 	// account: the wrong pairing cannot be written.
 	Scope config.Scope
 
-	ConfigDir string // "" = the vendor's primary dir (selected by the home variable's absence)
+	// ConfigDir is the value the vendor's home variable takes for this
+	// account: "" = the primary, selected by the variable's absence. In a
+	// home that spells its primary out (config.Scope.PrimaryExplicit) the
+	// primary carries its dir here too, and is still the primary.
+	ConfigDir string
 	Name      string // dir basename (the email), or PrimaryName(scope, email) for the primary
 	Email     string // what the vendor's identity document reports as logged in ("" = none)
 
@@ -49,13 +53,20 @@ type Account struct {
 	Meta Meta
 }
 
-func (a Account) IsPrimary() bool { return a.ConfigDir == "" }
+// IsPrimary reports the role: the home's own default dir, which owns the
+// canonical session store, is the share source and is never removed. How it
+// is selected is ConfigDir's business — by absence, or spelled out in a home
+// that is not the user's login home.
+func (a Account) IsPrimary() bool {
+	return a.ConfigDir == "" || (a.Scope.PrimaryExplicit && a.ConfigDir == a.Scope.PrimaryDir())
+}
 
-// Dir is the account's real config dir. ConfigDir is "" for the primary —
-// the value CLAUDE_CONFIG_DIR takes — so per-account files that live inside
-// the dir (prompt history, the live-session registry) resolve through here.
+// Dir is the account's real config dir. ConfigDir is "" for a primary
+// selected by absence — the value CLAUDE_CONFIG_DIR takes — so per-account
+// files that live inside the dir (prompt history, the live-session registry)
+// resolve through here.
 func (a Account) Dir() string {
-	if a.IsPrimary() {
+	if a.ConfigDir == "" {
 		return a.Scope.PrimaryDir()
 	}
 	return a.ConfigDir
@@ -71,7 +82,7 @@ func (a Account) ResponseIdentity() (accountID, userID string) {
 
 // MetaPath is the .claude.json recording the logged-in account.
 func (a Account) MetaPath() string {
-	if a.IsPrimary() {
+	if a.ConfigDir == "" {
 		return a.Scope.PrimaryMeta()
 	}
 	return filepath.Join(a.ConfigDir, ".claude.json")
@@ -129,6 +140,11 @@ func Discover(cfg config.Scope) Set {
 	accts := make([]Account, 0, len(dirs))
 	for _, d := range dirs {
 		a := Account{Scope: cfg, ConfigDir: d}
+		if d == "" && cfg.PrimaryExplicit {
+			// A second home's primary is spelled out wherever it is used —
+			// launch, probe, credential and identity — never left to absence.
+			a.ConfigDir = cfg.PrimaryDir()
+		}
 		a.readIdentity()
 		if d == "" {
 			a.Name = PrimaryName(cfg, a.Email)
@@ -322,18 +338,20 @@ func EngineLauncher(a Account) string {
 	return "headroom launch --account " + a.Name
 }
 
-// KnownExtraDir reports whether dir is exactly some discovered non-primary
-// account's config dir — the value a managed launch on that account exports,
-// and therefore the value every shell *inside* such a session inherits.
-// That inheritance is this machine's ordinary environment, not an anomaly:
-// surfaces use this to keep their ambient-variable notices for values that
-// cannot be explained that way (relative, unknown, or the primary dir
-// spelled explicitly — present-but-primary is not the verified absent
-// state). check still reports every present value; this only quiets the
-// board and the launch line for the case that is true all day.
-func (s Set) KnownExtraDir(dir string) bool {
+// KnownDir reports whether dir is exactly some discovered account's
+// spelled-out config dir — the value a managed launch on that account
+// exports, and therefore the value every shell *inside* such a session
+// inherits. That inheritance is this machine's ordinary environment, not an
+// anomaly: surfaces use this to keep their ambient-variable notices for
+// values that cannot be explained that way (relative, unknown, or a primary
+// selected by absence spelled explicitly — present-but-primary is not the
+// verified absent state). A home that spells its primary out exports that
+// dir too, so there it is known. check still reports every present value;
+// this only quiets the board and the launch line for the case that is true
+// all day.
+func (s Set) KnownDir(dir string) bool {
 	for _, a := range s.Accounts {
-		if !a.IsPrimary() && a.ConfigDir == dir {
+		if a.ConfigDir != "" && a.ConfigDir == dir {
 			return true
 		}
 	}
@@ -503,11 +521,16 @@ func (s Set) SetAuto() error {
 }
 
 func (s Set) writeCurrent(content string) error {
-	cfg := s.Scope
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+	return writeLine(s.Scope.AccountsRoot, s.Scope.CurrentFile(), content)
+}
+
+// writeLine replaces a one-line file beside the accounts atomically (temp file
+// + rename), so a concurrent reader never observes it truncated or empty.
+func writeLine(root, path, content string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(cfg.AccountsRoot, ".current-*")
+	tmp, err := os.CreateTemp(root, "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
 	}
@@ -523,5 +546,27 @@ func (s Set) writeCurrent(content string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), cfg.CurrentFile())
+	return os.Rename(tmp.Name(), path)
+}
+
+// ShareLedger records which accounts root's ledger this Claude Code home
+// spends against: the `.ledger` file beside `.current`, validated by the rule
+// Load reads it with, so the two cannot disagree. Naming this home's own root
+// removes the file — the home keeps its own ledger again. It returns the
+// root recorded, "" for this home's own.
+func ShareLedger(claude, codex config.Scope, v string) (string, error) {
+	if claude.Vendor != config.Claude {
+		return "", fmt.Errorf("only Claude Code homes share a ledger")
+	}
+	root, err := config.LedgerRoot(claude, codex, v)
+	if err != nil {
+		return "", err
+	}
+	if root == "" {
+		if err := os.Remove(claude.LedgerFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		return "", nil
+	}
+	return root, writeLine(claude.AccountsRoot, claude.LedgerFile(), root)
 }

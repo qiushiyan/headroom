@@ -82,7 +82,7 @@ func (d *doc) importLegacy(root string) {
 // Archives are recovery copies, never inputs. A crash after commit but before
 // rename is harmless: the checkpoint prevents importing twice. Old concurrent
 // writers are outside the migration contract.
-func (s *Store) archiveLegacy(d *doc) {
+func archiveLegacy(d *doc) {
 	if d.imported == nil {
 		return
 	}
@@ -90,7 +90,7 @@ func (s *Store) archiveLegacy(d *doc) {
 		return
 	}
 	for _, name := range []string{".throttle", ".owners"} {
-		path := filepath.Join(s.root, name)
+		path := filepath.Join(d.root, name)
 		// Preserve the first recovery copy if a retired writer recreates its file.
 		if _, err := os.Stat(path + ".imported"); os.IsNotExist(err) {
 			_ = os.Rename(path, path+".imported")

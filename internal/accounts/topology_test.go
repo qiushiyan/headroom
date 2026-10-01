@@ -112,11 +112,11 @@ func TestSelectRefusesAmbiguousName(t *testing.T) {
 	}
 }
 
-// The quieting rule for ambient-variable notices: only a discovered extra's
-// exact dir is "explainable as a managed session's export". The primary's
-// dir is not — present-but-primary is unverified vendor territory — and
-// neither is anything undiscovered or relative.
-func TestKnownExtraDir(t *testing.T) {
+// The quieting rule for ambient-variable notices: only a discovered account's
+// spelled-out dir is "explainable as a managed session's export". A primary
+// selected by absence is not — present-but-primary is unverified vendor
+// territory — and neither is anything undiscovered or relative.
+func TestKnownDir(t *testing.T) {
 	accts := Set{Accounts: []Account{
 		{Name: "qiushi"}, // primary: ConfigDir ""
 		{Name: "yan@planlab.ai", ConfigDir: "/root/yan@planlab.ai"},
@@ -129,8 +129,8 @@ func TestKnownExtraDir(t *testing.T) {
 		"/Users/x/.claude":     false,
 	}
 	for dir, want := range cases {
-		if got := accts.KnownExtraDir(dir); got != want {
-			t.Errorf("KnownExtraDir(%q) = %v, want %v", dir, got, want)
+		if got := accts.KnownDir(dir); got != want {
+			t.Errorf("KnownDir(%q) = %v, want %v", dir, got, want)
 		}
 	}
 }

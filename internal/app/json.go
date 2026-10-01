@@ -65,6 +65,27 @@ type jsonAccount struct {
 	DirMismatch string      `json:"dir_mismatch,omitempty"`
 	Usage       *jsonUsage  `json:"usage"`   // null = nothing known
 	Attempt     jsonAttempt `json:"attempt"` // about the request, never the account
+
+	// Load is what an automatic launch counts on the account beyond its
+	// figures: busy sessions and recent launches, from every home sharing
+	// the ledger, split by home. null when the surface did not read it —
+	// `limits` never does, since it spawns nothing.
+	Load *jsonLoad `json:"load"`
+}
+
+type jsonLoad struct {
+	Value    int            `json:"value"`    // what an automatic launch ranks by: session usage in steps of ten, plus busy, plus launched
+	Busy     int            `json:"busy"`     // verified-live sessions the vendor reports as working
+	Launched int            `json:"launched"` // launches of the last fifteen minutes not yet among them
+	Homes    []jsonHomeLoad `json:"homes"`    // whose they are; empty when there are none
+}
+
+type jsonHomeLoad struct {
+	Home     string `json:"home"`  // the home's accounts root
+	Label    string `json:"label"` // what a person calls it
+	This     bool   `json:"this"`  // the home this document was made in
+	Busy     int    `json:"busy"`
+	Launched int    `json:"launched"`
 }
 
 type jsonUsage struct {
@@ -161,13 +182,16 @@ type vendorBoard struct {
 func jsonDocument(boards []vendorBoard, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
+		// 7: `load` on every account — busy sessions and recent launches,
+		// split by the home they came from, since a second home on the machine
+		// may hold logins of the same subscriptions and share the ledger.
 		// 6: automatic placement. `mode` is keyed by vendor, and under "auto"
 		// that vendor's `current` is "" with no account marked current — an
 		// empty current no longer means corrupt routing state on its own.
 		// (5: a second vendor — "vendor" on every account and problem,
 		// `current` keyed by vendor, feature / window_seconds / unstarted on
 		// limits, the allowance on usage.)
-		Schema:      6,
+		Schema:      7,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
 		Current:     map[string]string{},
 		Mode:        map[string]string{},
@@ -210,6 +234,13 @@ func (doc *jsonDoc) appendAccounts(b vendorBoard, now int64) {
 		if v.Attempt.State != accountstate.AttemptOK && v.Attempt.NextEligibleAt > now {
 			ts := time.Unix(v.Attempt.NextEligibleAt, 0).UTC().Format(time.RFC3339)
 			a.Attempt.NextEligibleAt = &ts
+		}
+		if v.Load != nil {
+			l := &jsonLoad{Value: v.Load.Value, Busy: v.Load.Busy, Launched: v.Load.Launched, Homes: []jsonHomeLoad{}}
+			for _, h := range v.Load.Homes {
+				l.Homes = append(l.Homes, jsonHomeLoad{Home: h.Home, Label: h.Label, This: h.This, Busy: h.Busy, Launched: h.Launched})
+			}
+			a.Load = l
 		}
 		if v.Obs != nil {
 			u := &jsonUsage{
@@ -271,7 +302,7 @@ func fetchBoards(scopes []config.Scope) []vendorBoard {
 			// `.current`: the document must say one thing about routing even
 			// if the file is rewritten while the round is in flight.
 			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.routing.Current, mode: p.routing.Mode, problems: p.snap.Problems()}
-			markNext(p.set, p.list, p.routing.Mode, st.Load().Placements(), time.Now())
+			markPlacement(p.set, p.list, p.routing.Mode, st, time.Now())
 		}(i, scope)
 	}
 	wg.Wait()

@@ -26,7 +26,7 @@ func codexLaunchFixture(t *testing.T) config.Scope {
 	}
 	scope := config.ForHome(t.TempDir()).Codex
 	scope.Present = true
-	if _, _, err := accounts.Seed(scope, "cx@x.com", accounts.SeedOptions{}); err != nil {
+	if _, _, _, err := accounts.Seed(scope, "cx@x.com", accounts.SeedOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	return scope

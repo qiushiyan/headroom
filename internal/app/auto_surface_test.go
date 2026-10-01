@@ -124,7 +124,7 @@ func TestSchema6SaysTheMode(t *testing.T) {
 			if current != "" {
 				wantMarked = 1
 			}
-			if d.Schema != 6 || d.Mode["claude"] != mode || d.Current["claude"] != current || marked != wantMarked {
+			if d.Schema != 7 || d.Mode["claude"] != mode || d.Current["claude"] != current || marked != wantMarked {
 				t.Errorf("%s under %s: schema %d mode %q current %q, %d marked current", surface, name, d.Schema, d.Mode["claude"], d.Current["claude"], marked)
 			}
 		}
@@ -426,7 +426,7 @@ func TestLaunchLineWording(t *testing.T) {
 			[]string{"a · pinned (a on the board turns auto on)"}, []string{"auto ·"}},
 	}
 	for _, c := range cases {
-		line := launchLine(c.d, c.auto, c.ref, c.owner, now)
+		line := launchLine(c.d, c.auto, c.ref, c.owner, "", now)
 		for _, w := range c.want {
 			if !strings.Contains(line, w) {
 				t.Errorf("%s: %q lacks %q", c.name, line, w)
@@ -440,13 +440,13 @@ func TestLaunchLineWording(t *testing.T) {
 	}
 	// A session nobody owned yet, named by id.
 	d := choose(placement.Intent{}, obs("a", 0, 0, time.Minute))
-	if line := launchLine(d, true, sessionRef{Route: sessA, Record: sessA}, "", now); !strings.Contains(line, "session had no known account") {
+	if line := launchLine(d, true, sessionRef{Route: sessA, Record: sessA}, "", "", now); !strings.Contains(line, "session had no known account") {
 		t.Errorf("unowned: %q", line)
 	}
 	// The other ways of deciding say which they were.
 	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
 		forced := choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: reason}, obs("a", 0, 0, time.Minute))
-		if line := launchLine(forced, false, sessionRef{}, "", now); line != want {
+		if line := launchLine(forced, false, sessionRef{}, "", "", now); line != want {
 			t.Errorf("%s: %q, want %q", reason, line, want)
 		}
 	}
