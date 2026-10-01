@@ -1,8 +1,8 @@
 #!/usr/bin/expect -f
 # `a` turns automatic placement on: one confirmation line, exit 0, and
 # .current holds the word. The second spawn opens the board under auto — the
-# header says so — and enter pins the selected row again; run.sh asserts that
-# .current names an account afterward.
+# header says so and one account's row carries the mark — and enter pins the
+# selected row again; run.sh asserts that .current names an account afterward.
 set timeout 10
 # A sizeless expect pty (0×0) makes headroom assume 80 columns and clip
 # the footer these scripts match on; declare a real geometry like every
@@ -33,6 +33,12 @@ spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts"
 expect {
     "bare launches are automatic" {}
     timeout { puts "the board under auto does not say the mode"; exit 2 }
+}
+# The header names the mark; this is the mark itself, on the one account of
+# the fixture a launch could take.
+expect {
+    -re {a@x\.com[^\r\n]*← next} {}
+    timeout { puts "the board under auto marks no account row"; exit 2 }
 }
 expect {
     "esc cancel" {}

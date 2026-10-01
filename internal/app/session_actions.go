@@ -57,7 +57,6 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		// The override moves the session, so its routing is part of the
 		// launch: written with it, or the launch does not happen.
 		req.ref.Record, req.mustReHome = s.ID, true
-		req.live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(actions.cfg.StoreDir()) }
 	}
 	facts := gatherPlacement(actions.set, actions.st, os.Environ(), intent.Kind == placement.Auto, now)
 	out, err := placeLaunch(req, facts)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -327,5 +328,99 @@ func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
 			t.Fatal("the endpoint answered and nothing recorded it: the refresh did not outlive the launch")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// What a launch owes the next one belongs to the launch, not to the surface
+// that started it: the picker's launch says where it went and what bookkeeping
+// it missed, and one the rule placed leaves a refresh behind it, exactly as
+// `headroom launch` does.
+func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com", "b@x.com")
+	f.setCurrent("auto\n")
+	f.observe("qiushi", 50, 50, 3*time.Minute)
+	f.observe("a@x.com", 0, 5, 3*time.Minute)
+	f.observe("b@x.com", 0, 30, 3*time.Minute)
+	// A log that cannot be appended to: the launch still starts, and says so.
+	if err := os.Mkdir(launchlog.Path(f.cfg.AccountsRoot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(f.cfg.Home, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	set := accounts.Discover(f.cfg)
+	resume := func(owner string, state sessions.OwnerState) string {
+		t.Helper()
+		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, cfg: f.cfg, st: f.st, set: set, auto: true}}
+		ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}}
+		ui.rows = ui.listing.Sessions
+		_, _, _, called := capturedSessionsExec(t)
+		var done bool
+		stderr := captureStderr(t, func() { done, _ = ui.commitResume(false) })
+		if !done || !*called {
+			t.Fatalf("resume: done %v, exec called %v — %s", done, *called, ui.message)
+		}
+		return stderr
+	}
+
+	stderr := resume("", sessions.OwnerNone)
+	for _, want := range []string{"headroom sessions: a@x.com · auto", "headroom sessions: launch log not written"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the picker's launch did not say %q:\n%s", want, stderr)
+		}
+	}
+	if *f.refreshes != 1 {
+		t.Errorf("%d refreshes started by a resume the rule placed, want 1", *f.refreshes)
+	}
+
+	// A resume that follows its owner chose nothing: no refresh for it.
+	if stderr := resume("b@x.com", sessions.OwnerHistory); !strings.Contains(stderr, "headroom sessions: b@x.com") {
+		t.Errorf("a resume on the owner was not announced:\n%s", stderr)
+	}
+	if *f.refreshes != 1 {
+		t.Errorf("%d refreshes after a resume on the owner, want still 1", *f.refreshes)
+	}
+}
+
+// A launch that records where a session goes also clears the records of
+// sessions whose transcripts are gone — whichever surface it came from. Left
+// to the picker's `x` alone, an agent that names a new session id every run
+// would grow the file for as long as nobody pressed `x`.
+func TestALaunchThatRecordsASessionSweepsTheGoneOnes(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com", "b@x.com")
+	f.setCurrent("auto\n")
+	f.observe("a@x.com", 0, 5, time.Minute)
+	const (
+		gone  = "aaaaaaaa-1111-4111-8111-111111111111"
+		kept  = "bbbbbbbb-2222-4222-8222-222222222222"
+		young = "cccccccc-3333-4333-8333-333333333333"
+	)
+	old := time.Now().Add(-time.Hour)
+	for id, at := range map[string]time.Time{gone: old, kept: old, young: time.Now().Add(-time.Minute)} {
+		if err := rehome(f.st, id, "b@x.com", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(f.cfg.StoreDir(), "-proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(f.cfg.StoreDir(), "-proj", kept+".jsonl"), "{}\n")
+
+	if got := f.launch("--", "-p", "--session-id", sessA); got.code != 0 {
+		t.Fatalf("launch: %s", got.stderr)
+	}
+	snap := f.st.Load()
+	if _, ok := snap.Owner(sessA); !ok {
+		t.Fatal("the launch did not record its own session")
+	}
+	if _, ok := snap.Owner(gone); ok {
+		t.Error("a re-home whose transcript is gone survived a launch that wrote one")
+	}
+	if _, ok := snap.Owner(kept); !ok {
+		t.Error("a re-home whose transcript exists was swept")
+	}
+	if _, ok := snap.Owner(young); !ok {
+		t.Error("a re-home too young to have a transcript yet was swept")
 	}
 }

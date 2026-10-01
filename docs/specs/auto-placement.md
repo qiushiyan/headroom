@@ -852,7 +852,10 @@ before.
   candidates, places, prepares, logs and announces; the store's placement
   takes the session with it, so the load and the session's re-home are
   one write. The first build gave the picker its own sequence, and a
-  refused `x` left a placement and a log line behind.
+  refused `x` left a placement and a log line behind. The same function
+  starts the refresh behind any launch the rule placed and sweeps
+  re-homes whose transcripts are gone whenever it records one, so neither
+  depends on which surface launched.
 - The board and a launch build their candidates with one function, so the
   `← next` row and the launch cannot judge an account's eligibility by
   different evidence.

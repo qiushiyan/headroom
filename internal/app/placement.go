@@ -375,7 +375,6 @@ type launchRequest struct {
 	ref        sessionRef
 	owner      string
 	mustReHome bool
-	live       state.Enumerator
 
 	cwd string
 	now time.Time
@@ -399,6 +398,12 @@ type launchOutcome struct {
 // is a refusal — nothing was recorded and nothing may start. Bookkeeping that
 // merely failed is a note on the outcome, never a refusal: in auto mode every
 // usable account is a correct answer.
+//
+// What a launch owes the next one is decided here too, not by the surface:
+// a launch that writes a re-home sweeps the ones whose transcripts are gone,
+// and a launch the rule placed leaves a refresh behind it. A surface that had
+// to remember either would be a surface that forgot one. What stays with the
+// surface is its terminal, its working directory and the exec.
 func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	out := launchOutcome{req: req}
 	scope := facts.set.Scope
@@ -409,10 +414,14 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 			return out, err
 		}
 	}
-	placed, placeErr := req.st.Place(state.Launch{
+	launch := state.Launch{
 		Candidates: facts.cands, Intent: req.intent, PID: os.Getpid(), Now: req.now,
-		Session: req.ref.Record, MustReHome: req.mustReHome, Live: req.live,
-	})
+		Session: req.ref.Record, MustReHome: req.mustReHome,
+	}
+	if req.ref.Record != "" {
+		launch.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
+	}
+	placed, placeErr := req.st.Place(launch)
 	if req.mustReHome && placeErr != nil {
 		return out, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", placeErr)
 	}
@@ -444,6 +453,10 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	}
 	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
+	}
+	if req.intent.Kind == placement.Auto && refreshWorthStarting(facts, req.now) {
+		// For the next launch, not this one: nothing here waits on a network.
+		_ = startRefresh(scope)
 	}
 	return out, nil
 }

@@ -248,10 +248,6 @@ parse:
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}
-	if automatic && refreshWorthStarting(facts, now) {
-		// For the next launch, not this one: nothing here waits on a network.
-		_ = startRefresh(cfg)
-	}
 
 	out.announce(os.Stderr, "headroom launch: ")
 	if err := execVendor(out.prepared.Path, out.prepared.Binary, rest, out.prepared.Env); err != nil {

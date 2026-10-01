@@ -810,7 +810,13 @@ that turning auto on forgets the pin.
   session's next turn — so it is refused when the re-home cannot be written,
   and a refusal leaves no placement and no log line. The picker once ran its
   own sequence of the same steps, and a refused move was still counted as
-  load and remembered as the last account.
+  load and remembered as the last account. What a launch owes the next one
+  is decided there as well: a launch the rule placed leaves the refresh
+  behind it, and a launch that records a session sweeps the re-homes whose
+  transcripts are gone. While those two belonged to one surface each, a
+  resume the picker placed refreshed nothing, and an agent naming a new
+  session id every run grew the file until somebody pressed `x`. A surface
+  keeps its terminal, its working directory and the exec.
 - **Every launch says where it went, and what its figures rest on.** One line
   on stderr before the vendor starts, on every path — automatic, pinned,
   named, `--last`, the picker — because a line that appears on some paths

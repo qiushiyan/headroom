@@ -428,50 +428,52 @@ func TestCheckRegistryStatus(t *testing.T) {
 	}
 }
 
-// The status assertion reaches the checker through the session-store check,
-// and judges only claims that are live by the definition placement uses: the
-// pid runs and started when the claim says. A stale record whose pid another
-// process has since taken is not a running session, and its missing status is
-// not vendor drift.
-func TestCheckSessionStoreJudgesOnlyVerifiedLiveClaims(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "qiushi")
-	sdir := filepath.Join(cfg.PrimaryDir(), "sessions")
-	if err := os.MkdirAll(sdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+// The status assertion is made about sessions verified live — pid and start
+// time, the evidence routing uses — and through the command itself, so the
+// probe `check` is handed is the probe that decides it. A pid that answers but
+// was started at another time is another process: it must not fail the check,
+// and without a probe nothing is known to be live.
+func TestRunJudgesRegistryStatusOverVerifiedLiveSessions(t *testing.T) {
 	const started = 1_785_700_003_000
-	write := func(pid int, extra string) {
-		body := fmt.Sprintf(`{"sessionId":"s%d","pid":%d,"startedAt":%d%s}`, pid, pid, started, extra)
-		if err := os.WriteFile(filepath.Join(sdir, fmt.Sprintf("%d.json", pid)), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	run := func(probe sessions.PIDProbe) (fails []string) {
-		chk := func(ok bool, label, hint string) {
-			if !ok && strings.HasPrefix(label, "registry: running sessions") {
-				fails = append(fails, label+" — "+hint)
-			}
-		}
-		checkSessionStore(cfg, accounts.Discover(cfg).Accounts, probe, chk, func(string, string) {})
-		return
-	}
-
-	write(7, "") // no status
-	recycled := func(int) (int64, error) { return started/1000 + 86_400, nil }
-	if fails := run(recycled); len(fails) != 0 {
-		t.Errorf("a recycled pid was judged as a running session: %v", fails)
-	}
+	const label = "registry: running sessions say what they are doing (status)"
 	live := func(int) (int64, error) { return started / 1000, nil }
-	if fails := run(live); len(fails) != 1 {
-		t.Errorf("a live session with no status must fail the check: %v", fails)
-	}
-	if fails := run(nil); len(fails) != 0 {
-		t.Errorf("without a probe nothing is known to be live: %v", fails)
-	}
-	write(7, `,"status":"busy"`)
-	if fails := run(live); len(fails) != 0 {
-		t.Errorf("a live session with a status: %v", fails)
+	recycled := func(int) (int64, error) { return started/1000 + 86_400, nil }
+	for _, tc := range []struct {
+		name   string
+		status string
+		probe  sessions.PIDProbe
+		want   int
+	}{
+		{"live with no status fails", "", live, ExitFail},
+		{"live with a status passes", `,"status":"busy"`, live, ExitPass},
+		{"a recycled pid is not a running session", "", recycled, ExitPass},
+		{"no probe, nothing known live", "", nil, ExitPass},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg, write := soundClaudeTree(t, home)
+			sdir := filepath.Join(cfg.PrimaryDir(), "sessions")
+			if err := os.MkdirAll(sdir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(filepath.Join(sdir, "7.json"), fmt.Sprintf(`{"sessionId":"s7","pid":7,"startedAt":%d%s}`, started, tc.status), 0600)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(`{"limits":[]}`))
+			}))
+			defer srv.Close()
+			cfg.UsageURL = srv.URL
+			var out strings.Builder
+			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, tc.probe)
+			failed := false
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.Contains(line, label) && strings.Contains(line, "FAIL") {
+					failed = true
+				}
+			}
+			if code != tc.want || failed != (tc.want == ExitFail) {
+				t.Fatalf("exit=%d want=%d, status line failed=%v\n%s", code, tc.want, failed, out.String())
+			}
+		})
 	}
 }
 
