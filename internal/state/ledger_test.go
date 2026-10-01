@@ -285,3 +285,110 @@ func TestLaunchesFromTwoHomesAllLand(t *testing.T) {
 		t.Error("the second home's own file holds placements")
 	}
 }
+
+// When the ledger and the home are two files, the two writes are ordered so
+// that a refusal leaves nothing, and each half-written outcome is reported as
+// what it is: the load without the routing, or the routing without the load.
+func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
+	readOnly := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	}
+	const sid = "abababab-1111-4111-8111-111111111111"
+
+	t.Run("an ordinary launch whose re-home cannot be written", func(t *testing.T) {
+		h := twoHomes(t)
+		if err := h.second.Register(time.Now()); err != nil { // creates both lock files
+			t.Fatal(err)
+		}
+		if err := h.second.Forget("nothing"); err != nil {
+			t.Fatal(err)
+		}
+		readOnly(t, h.secondRoot)
+		p, err := place(h.second, idle("a"), placement.Intent{}, 9, sid, time.Now())
+		if err != nil || !p.Recorded || p.ReHomed || p.SessionErr == nil || p.RecordErr != nil {
+			t.Fatalf("placed %+v, %v — want the load recorded and the routing reported missing", p, err)
+		}
+		if len(h.owner.Load().Placements().Recent) != 1 {
+			t.Error("the load did not land in the ledger")
+		}
+		if _, ok := h.second.Load().Owner(sid); ok {
+			t.Error("a re-home reported missing is on disk")
+		}
+	})
+
+	t.Run("a move whose load cannot be written", func(t *testing.T) {
+		h := twoHomes(t)
+		if err := h.second.Register(time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.second.Forget("nothing"); err != nil {
+			t.Fatal(err)
+		}
+		readOnly(t, h.ownerRoot)
+		p, err := h.second.Place(Launch{
+			Candidates: idle("a"), Intent: placement.Intent{Kind: placement.Forced, Account: "a", Reason: "test"},
+			Session: sid, MustReHome: true, Now: time.Now(),
+		})
+		if err != nil || p.Recorded || !p.ReHomed || p.RecordErr == nil {
+			t.Fatalf("placed %+v, %v — want the move routed and its load reported missing", p, err)
+		}
+		if rec, ok := h.second.Load().Owner(sid); !ok || rec.Account != "a" {
+			t.Error("the re-home the move depended on is not on disk")
+		}
+		if len(h.owner.Load().Placements().Recent) != 0 {
+			t.Error("a load reported missing is in the ledger")
+		}
+	})
+}
+
+// A registration follows its home: a changed home dir or primary selection is
+// written at once, a current one is renewed daily so it does not age out
+// while the home is in use, and a section that will not decode is set aside
+// and rebuilt by the next request.
+func TestARegistrationIsMaintained(t *testing.T) {
+	h := twoHomes(t)
+	now := time.Now()
+	member := func() Member {
+		t.Helper()
+		for _, m := range h.owner.Load().Members() {
+			if m.Root == h.secondRoot {
+				return m
+			}
+		}
+		t.Fatal("the second home is not registered")
+		return Member{}
+	}
+	if err := h.second.Register(now); err != nil {
+		t.Fatal(err)
+	}
+	first := member()
+
+	// Its primary selection changes.
+	h.second.member.Explicit = false
+	claimOne(t, h.second, key("a"), now.Add(time.Minute))
+	if m := member(); m.Explicit {
+		t.Error("a changed registration was not rewritten")
+	}
+	// A day later, unchanged, it is renewed.
+	claimOne(t, h.second, key("b"), now.Add(25*time.Hour))
+	if m := member(); m.SeenAtMS <= first.SeenAtMS+int64(24*time.Hour/time.Millisecond) {
+		t.Errorf("a day-old registration was not renewed: seen %d, first %d", m.SeenAtMS, first.SeenAtMS)
+	}
+
+	write(t, filepath.Join(h.ownerRoot, "state.json"), `{"version":1,"members":"garbage"}`)
+	if p := h.owner.Load().Problems(); len(p) != 1 || p[0].Section != "members" {
+		t.Fatalf("problems = %+v", p)
+	}
+	claimOne(t, h.second, key("c"), now.Add(26*time.Hour))
+	if p := h.owner.Load().Problems(); len(p) != 0 {
+		t.Errorf("the section was not rebuilt: %+v", p)
+	}
+	member()
+	if raw := readRaw(t, h.ownerRoot); raw["members_unreadable"] == nil {
+		t.Error("the unreadable section was not set aside")
+	}
+}

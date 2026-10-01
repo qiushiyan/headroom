@@ -5,6 +5,7 @@
 package creds
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/qiushiyan/headroom/internal/tag"
 )
@@ -108,9 +110,15 @@ func Parse(raw string) (Blob, bool) {
 
 // ReadKeychain fetches the raw blob from the Keychain item under the
 // predicted service name. Empty string = no item (not logged in).
-func ReadKeychain(configDir string) string {
-	out, err := exec.Command("security", "find-generic-password",
-		"-s", ServiceName(configDir), "-a", username(), "-w").Output()
+func ReadKeychain(configDir string) string { return readKeychain(context.Background(), configDir) }
+
+func readKeychain(ctx context.Context, configDir string) string {
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
+		"-s", ServiceName(configDir), "-a", username(), "-w")
+	// Killing the process does not close its output if something it started
+	// still holds it; once ctx ends, the read waits this long and no longer.
+	cmd.WaitDelay = 250 * time.Millisecond
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -158,6 +166,21 @@ const (
 // primary. A present Keychain item takes precedence over the file.
 func ReadRaw(keychainKey, dir string) (string, Source) {
 	return readRaw(keychainKey, dir, ReadKeychain, os.ReadFile)
+}
+
+// ReadRawContext is ReadRaw for a caller that must be able to stop: the
+// Keychain read is a `security` process, which can stall where the Keychain
+// does, and is killed when ctx ends. A cancelled read reads nothing.
+func ReadRawContext(ctx context.Context, keychainKey, dir string) (string, Source) {
+	if ctx.Err() != nil {
+		return "", SourceNone
+	}
+	keychain := func(key string) string { return readKeychain(ctx, key) }
+	raw, source := readRaw(keychainKey, dir, keychain, os.ReadFile)
+	if ctx.Err() != nil {
+		return "", SourceNone
+	}
+	return raw, source
 }
 
 func readRaw(keychainKey, dir string, keychain func(string) string, readFile func(string) ([]byte, error)) (string, Source) {

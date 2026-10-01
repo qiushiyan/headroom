@@ -65,7 +65,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		fmt.Fprintln(errw, "usage: headroom accounts add [--vendor <claude|codex>] <email> [--share-config[=<dir>]]")
 		return 2
 	}
-	dir, shared, kept, err := accounts.SeedKept(cfg, name, opt)
+	dir, shared, kept, err := accounts.Seed(cfg, name, opt)
 	if err != nil {
 		fmt.Fprintf(errw, "headroom accounts add: %v\n", err)
 		return 1

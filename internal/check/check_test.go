@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -544,7 +545,7 @@ func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
 				failed = append(failed, label+" — "+hint)
 			}
 		}
-		checkHomes(accounts.Discover(second), st.Load(), st.Home(), note, note)
+		checkHomes(accounts.Discover(second), st.Load(), note, note)
 		return
 	}
 	passed, failed := run()
@@ -573,5 +574,54 @@ func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
 	}
 	if !strings.Contains(got, "homes: no account dir belongs to two homes") {
 		t.Errorf("a dir shared by two homes did not fail: %v", failed)
+	}
+}
+
+// Each of a shared home's two files is audited on its own terms: one written
+// by a newer headroom is read and left alone, and must not silence a damaged
+// section in the other, which this binary understands.
+func TestEachDocumentIsAuditedOnItsOwn(t *testing.T) {
+	base := t.TempDir()
+	owner := config.ForHome(filepath.Join(base, "owner")).Claude
+	second := config.ForHome(filepath.Join(base, "second")).Claude
+	second.LedgerRoot = owner.AccountsRoot
+	for _, dir := range []string{owner.AccountsRoot, second.AccountsRoot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(root, doc string) {
+		if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	audit := func() (failed, skipped []string) {
+		checkOwnState(state.Open(second).Load(),
+			func(ok bool, label, hint string) {
+				if !ok {
+					failed = append(failed, label)
+				}
+			},
+			func(ok bool, label, hint string) {
+				if !ok {
+					failed = append(failed, label)
+				}
+			},
+			func(label, why string) { skipped = append(skipped, label) })
+		return
+	}
+
+	write(second.AccountsRoot, `{"version":999}`)
+	write(owner.AccountsRoot, `{"version":1,"accounts":"not a ledger"}`)
+	failed, skipped := audit()
+	if !slices.ContainsFunc(failed, func(l string) bool { return strings.Contains(l, "ledger accounts") }) {
+		t.Errorf("a newer home file hid the damaged ledger: failed %v, skipped %v", failed, skipped)
+	}
+
+	write(second.AccountsRoot, `{"version":1,"sessions":{"x":{}}}`)
+	write(owner.AccountsRoot, `{"version":999}`)
+	failed, skipped = audit()
+	if !slices.ContainsFunc(failed, func(l string) bool { return strings.Contains(l, "sessions") }) {
+		t.Errorf("a newer ledger hid this home's damaged re-homes: failed %v, skipped %v", failed, skipped)
 	}
 }

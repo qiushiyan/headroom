@@ -125,14 +125,10 @@ func ValidateExtraName(name string) error {
 // the error naming it: a half-seeded dir is inert (discovery lists it, the
 // board shows it as never logged in, launch refuses it on topology) and
 // deleting someone's directory to tidy up is not this function's call.
-func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared []string, err error) {
-	dir, shared, _, err = SeedKept(cfg, name, opt)
-	return dir, shared, err
-}
-
-// SeedKept is Seed, also naming what the share source held that stays per
-// dir (PerDirEntries) and was therefore not linked.
-func SeedKept(cfg config.Scope, name string, opt SeedOptions) (dir string, shared, kept []string, err error) {
+//
+// shared names what was linked; kept names what the share source held that
+// stays per dir (PerDirEntries) and was therefore not linked.
+func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared, kept []string, err error) {
 	if err := ValidateExtraName(name); err != nil {
 		return "", nil, nil, err
 	}

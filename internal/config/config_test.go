@@ -353,3 +353,35 @@ func TestTheLedgerFileIsReadStrictly(t *testing.T) {
 		t.Errorf("own root: shared %v err %v", c.Claude.SharesLedger(), err)
 	}
 }
+
+// A ledger is a place, not a pointer to follow: a root that itself spends
+// against another root's ledger is no ledger, and two homes pointing at each
+// other would each spend against the other's file while both read as shared.
+func TestALedgerRootMustNotDelegate(t *testing.T) {
+	clearOverrides(t)
+	a, b := t.TempDir(), t.TempDir()
+	t.Setenv("HEADROOM_HOME", a)
+	rootA := filepath.Join(a, ".claude-accounts")
+	rootB := filepath.Join(b, ".claude-accounts")
+	for _, r := range []string{rootA, rootB} {
+		if err := os.MkdirAll(r, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rootB, ".ledger"), []byte(rootA+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootA, ".ledger"), []byte(rootB+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "itself spends") {
+		t.Errorf("a ledger root that delegates was accepted: %v", err)
+	}
+	// A root whose .ledger names itself keeps its own: still a ledger.
+	if err := os.WriteFile(filepath.Join(rootB, ".ledger"), []byte(rootB+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Load(); err != nil || c.Claude.LedgerRoot != rootB {
+		t.Errorf("a self-naming target: %q %v", c.Claude.LedgerRoot, err)
+	}
+}

@@ -11,7 +11,7 @@ import (
 
 func TestSeedShape(t *testing.T) {
 	cfg := testConfig(t)
-	dir, shared, err := Seed(cfg, "new@x.com", SeedOptions{})
+	dir, shared, _, err := Seed(cfg, "new@x.com", SeedOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestSeedShape(t *testing.T) {
 		t.Fatalf("Select: %v", err)
 	}
 	// Seeding twice refuses.
-	if _, _, err := Seed(cfg, "new@x.com", SeedOptions{}); err == nil {
+	if _, _, _, err := Seed(cfg, "new@x.com", SeedOptions{}); err == nil {
 		t.Fatal("second seed should refuse")
 	}
 }
@@ -38,7 +38,7 @@ func TestSeedShape(t *testing.T) {
 func TestSeedRefusesBadNames(t *testing.T) {
 	cfg := testConfig(t)
 	for _, n := range []string{"", "noatsign", "a@x.com.lock", "../a@x.com", "sub/a@x.com"} {
-		if _, _, err := Seed(cfg, n, SeedOptions{}); err == nil {
+		if _, _, _, err := Seed(cfg, n, SeedOptions{}); err == nil {
 			t.Errorf("Seed(%q) accepted", n)
 		}
 	}
@@ -54,7 +54,7 @@ func TestSeedRefusesLinkedStore(t *testing.T) {
 	os.MkdirAll(real, 0o755)
 	os.MkdirAll(cfg.PrimaryDir(), 0o755)
 	os.Symlink(real, cfg.StoreDir())
-	if _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil {
+	if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil {
 		t.Fatal("a symlinked canonical store must refuse")
 	}
 	if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "a@x.com")); err == nil {
@@ -69,7 +69,7 @@ func TestSeedShareWhitelist(t *testing.T) {
 	os.MkdirAll(filepath.Join(cfg.PrimaryDir(), "sessions"), 0o755)
 	os.WriteFile(filepath.Join(cfg.PrimaryDir(), "settings.json"), []byte("{}"), 0o644)
 	os.WriteFile(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), []byte(""), 0o644)
-	dir, shared, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
+	dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestSeedShareWholeDir(t *testing.T) {
 	os.WriteFile(filepath.Join(pkg, "settings.json"), []byte("{}"), 0o644)
 	os.WriteFile(filepath.Join(pkg, "anything.md"), []byte(""), 0o644)
 	os.Mkdir(filepath.Join(pkg, "projects"), 0o755) // must never be shared over the store link
-	dir, shared, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: pkg})
+	dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: pkg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +105,10 @@ func TestSeedShareWholeDir(t *testing.T) {
 		t.Fatalf("projects link was shadowed: %v", err)
 	}
 	// Relative and missing sources refuse before anything is made.
-	if _, _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: "relative"}); err == nil {
+	if _, _, _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: "relative"}); err == nil {
 		t.Error("relative ShareFrom accepted")
 	}
-	if _, _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: filepath.Join(cfg.Home, "nope")}); err == nil {
+	if _, _, _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: filepath.Join(cfg.Home, "nope")}); err == nil {
 		t.Error("missing ShareFrom accepted")
 	}
 	if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "b@x.com")); err == nil {
@@ -118,7 +118,7 @@ func TestSeedShareWholeDir(t *testing.T) {
 
 func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	cfg := testConfig(t)
-	dir, _, err := Seed(cfg, "a@x.com", SeedOptions{})
+	dir, _, _, err := Seed(cfg, "a@x.com", SeedOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestSeedCodex(t *testing.T) {
 		if _, err := os.Stat(cfg.PrimaryDir()); err == nil {
 			t.Fatal("fixture already has a Codex home")
 		}
-		dir, _, err := Seed(cfg, "new@x.com", SeedOptions{})
+		dir, _, _, err := Seed(cfg, "new@x.com", SeedOptions{})
 		if err != nil {
 			t.Fatalf("Seed on a machine without Codex: %v", err)
 		}
@@ -221,7 +221,7 @@ func TestSeedCodex(t *testing.T) {
 		}
 		marker := filepath.Join(cfg.StoreDir(), "keep")
 		os.WriteFile(marker, []byte("x"), 0o644)
-		if _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err != nil {
+		if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(marker); err != nil {
@@ -234,7 +234,7 @@ func TestSeedCodex(t *testing.T) {
 		if err := os.Symlink(t.TempDir(), cfg.StoreDir()); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), "symlink") {
 			t.Errorf("err = %v, want a refusal naming the symlinked store", err)
 		}
 	})
@@ -242,7 +242,7 @@ func TestSeedCodex(t *testing.T) {
 		cfg := config.ForHome(t.TempDir()).Codex
 		os.MkdirAll(cfg.PrimaryDir(), 0o755)
 		os.WriteFile(cfg.StoreDir(), []byte("x"), 0o644)
-		if _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
 			t.Errorf("err = %v, want a refusal", err)
 		}
 	})
@@ -254,7 +254,7 @@ func TestSeedCodex(t *testing.T) {
 		os.MkdirAll(cfg.PrimaryDir(), 0o755)
 		os.Chmod(cfg.PrimaryDir(), 0o000)
 		t.Cleanup(func() { os.Chmod(cfg.PrimaryDir(), 0o755) })
-		_, _, err := Seed(cfg, "a@x.com", SeedOptions{})
+		_, _, _, err := Seed(cfg, "a@x.com", SeedOptions{})
 		if err == nil || !strings.Contains(err.Error(), "unreadable") {
 			t.Errorf("err = %v, want the unreadable-store refusal, not a fresh store", err)
 		}
@@ -268,7 +268,7 @@ func TestSeedCodex(t *testing.T) {
 		for _, n := range []string{"skills", "sessions", "prompts"} {
 			os.MkdirAll(filepath.Join(cfg.PrimaryDir(), n), 0o755)
 		}
-		dir, shared, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
+		dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
 		if err != nil {
 			t.Fatal(err)
 		}

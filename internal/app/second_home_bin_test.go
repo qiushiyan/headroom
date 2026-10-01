@@ -391,3 +391,48 @@ func TestJoiningLeavingAndVersion(t *testing.T) {
 		t.Errorf("an unusable .ledger: exit %d\n%s", code, out)
 	}
 }
+
+// The refresh stops when told to whatever it is doing: reading a credential
+// through `security` included, which can stall where the vendor's own
+// keychain does.
+func TestARefreshStopsDuringCredentialReads(t *testing.T) {
+	bin := headroomBinary(t)
+	h := newBinHomes(t, time.Now().Add(time.Hour))
+	reading := filepath.Join(t.TempDir(), "reading")
+	if err := os.WriteFile(filepath.Join(h.stubs, "security"), []byte("#!/bin/sh\ntouch "+reading+"\nsleep 30\nexit 44\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "refresh")
+	cmd.Env = h.env("HEADROOM_USAGE_URL=http://127.0.0.1:1/usage")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(reading); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			t.Fatal("the refresh never read a credential")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	termAt := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		t.Logf("stopped %v after SIGTERM", time.Since(termAt))
+	case <-time.After(3 * time.Second):
+		cmd.Process.Kill()
+		<-done
+		t.Fatal("a refresh asked to stop while reading a credential was still running three seconds later")
+	}
+	if snap := state.Open(h.steward).Load(); len(snap.Audit()) != 0 {
+		t.Errorf("a refresh stopped before asking anything claimed: %+v", snap.Audit())
+	}
+}

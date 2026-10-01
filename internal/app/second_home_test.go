@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -74,6 +75,7 @@ func newTwoHomes(t *testing.T) *twoHomes {
 	}
 	login(owner.PrimaryMeta(), "qiushi@x.com")
 	login(steward.PrimaryMeta(), "yan@x.com")
+	writeJSON(t, steward.LedgerFile(), owner.AccountsRoot+"\n")
 
 	f := &twoHomes{t: t, owner: owner, steward: steward, live: map[int]int64{}, refreshes: new(int)}
 	prevCreds, prevProbe, prevRefresh := placementCreds, placementProbe, startRefresh
@@ -499,4 +501,147 @@ func TestTheBoardShowsTheOtherHomesLoad(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A home that has left the ledger is no longer counted, whatever its old
+// registration says: membership is what the home's own .ledger says today.
+func TestAHomeThatLeftIsNoLongerCounted(t *testing.T) {
+	f := newTwoHomes(t)
+	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 801)
+	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 802)
+	counted := func() int {
+		t.Helper()
+		facts := gatherPlacement(accounts.Discover(f.owner), state.Open(f.owner), os.Environ(), true, time.Now())
+		for _, c := range facts.cands {
+			if c.Name == "a@x.com" {
+				return len(c.Busy)
+			}
+		}
+		t.Fatal("no a@x.com candidate")
+		return -1
+	}
+	if n := counted(); n != 2 {
+		t.Fatalf("while sharing, the owner counts %d of the second home's sessions, want 2", n)
+	}
+	if err := os.Remove(f.steward.LedgerFile()); err != nil {
+		t.Fatal(err)
+	}
+	if n := counted(); n != 0 {
+		t.Errorf("after the second home left, the owner still counts %d of its sessions", n)
+	}
+}
+
+// Two dirs of one home logged into one subscription are one quota too: a
+// session busy on either counts on both.
+func TestOneHomesTwoDirsOnOneSubscriptionShareTheirLoad(t *testing.T) {
+	f := newTwoHomes(t)
+	f.busy(f.steward.PrimaryDir(), 901) // the steward's primary is logged into yan@x.com
+	facts := gatherPlacement(accounts.Discover(f.steward), state.Open(f.steward), os.Environ(), true, time.Now())
+	for _, c := range facts.cands {
+		if (c.Name == "yan" || c.Name == "yan@x.com") && len(c.Busy) != 1 {
+			t.Errorf("%s carries %d busy sessions, want the one on its subscription", c.Name, len(c.Busy))
+		}
+		if c.Name == "a@x.com" && len(c.Busy) != 0 {
+			t.Errorf("a@x.com carries another subscription's session")
+		}
+	}
+}
+
+// The owner's own surfaces, as they run: the board printed off a terminal and
+// --json, in pinned mode, with one account the other home launched on and one
+// with no figures yet that the other home has a session on.
+func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
+	f := newTwoHomes(t)
+	f.owner = withUsageURL(f.owner, "http://127.0.0.1:1/usage")
+	if err := os.WriteFile(filepath.Join(filepath.Dir(firstPath(t, "claude")), "security"), []byte("#!/bin/sh\nexit 44\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.observe("b@x.com", 30, 10)
+	if got := f.launch(f.steward, "--account", "b@x.com"); got.code != 0 {
+		t.Fatal(got.stderr)
+	}
+	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 951)
+
+	boards := fetchBoards([]config.Scope{f.owner})
+	if boards[0].mode != "pinned" {
+		t.Fatalf("mode %q", boards[0].mode)
+	}
+	var out strings.Builder
+	writeBoards(&out, render.NewPalette(false), boards, time.Now().Unix(), render.LayoutBlocks, 0)
+	if !strings.Contains(out.String(), "sessions: 1 busy (steward-home: 1 busy)") {
+		t.Errorf("the board does not carry the other home's session on an account without figures:\n%s", out.String())
+	}
+
+	data, err := jsonDocument(boards, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Accounts []struct {
+			Name string
+			Load *struct {
+				Value, Busy, Launched int
+				Homes                 []struct {
+					Home, Label    string
+					This           bool
+					Busy, Launched int
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][3]int{"b@x.com": {4, 0, 1}, "a@x.com": {1, 1, 0}} // value, busy, launched
+	for _, a := range doc.Accounts {
+		w, ok := want[a.Name]
+		if !ok {
+			continue
+		}
+		if a.Load == nil || a.Load.Value != w[0] || a.Load.Busy != w[1] || a.Load.Launched != w[2] ||
+			len(a.Load.Homes) != 1 || a.Load.Homes[0].Home != f.steward.AccountsRoot || a.Load.Homes[0].Label != "steward-home" || a.Load.Homes[0].This {
+			t.Errorf("%s load = %+v, want value/busy/launched %v from the steward's root", a.Name, a.Load, w)
+		}
+		delete(want, a.Name)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing accounts: %v", want)
+	}
+}
+
+// --last means this home's last launch, in a dry run as in a launch, and the
+// dry run names the share another home put on each account.
+func TestDryRunsSayWhoseLoadAndWhoseLast(t *testing.T) {
+	f := newTwoHomes(t)
+	for _, email := range append(shared, "qiushi@x.com") {
+		f.observe(email, 0, 10)
+	}
+	if got := f.launch(f.steward, "--account", "b@x.com"); got.code != 0 {
+		t.Fatal(got.stderr)
+	}
+	dry := func(cfg config.Scope, args ...string) string {
+		t.Helper()
+		var out string
+		out = captureStdout(t, func() { f.launch(cfg, append(args, "--dry-run")...) })
+		return out
+	}
+	if out := dry(f.steward, "--last"); !strings.Contains(out, "would start claude on b@x.com") {
+		t.Errorf("the second home's last:\n%s", out)
+	}
+	if out := dry(f.owner, "--last"); !strings.Contains(out, "would refuse — no launch is recorded yet") {
+		t.Errorf("the other home's launch answered the owner's --last:\n%s", out)
+	}
+	if out := dry(f.owner, "--auto"); !strings.Contains(out, "steward-home: 0 busy, 1 pending") {
+		t.Errorf("the dry run does not name the other home's share:\n%s", out)
+	}
+}
+
+// firstPath is where the test's PATH finds a command.
+func firstPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

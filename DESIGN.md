@@ -213,7 +213,10 @@ reverse-engineered and perishable:
   state is an own-state failure, distinguished from vendor drift in both the
   details and closing verdict. A configuration headroom refuses — a
   relative override, a `.ledger` naming nothing usable — is an own-state
-  FAIL, never INCONCLUSIVE: every launch is refusing on it. A claim failure
+  FAIL, never INCONCLUSIVE: every launch is refusing on it. A home that
+  shares another's ledger has two files, and each is audited on its own
+  terms: one written by a newer headroom is read and left alone without
+  silencing a damaged section in the other. A claim failure
   marks the API untested; a completion failure leaves received vendor
   evidence available to check.
   FAIL takes precedence when a run also has inconclusive assertions. Every
@@ -882,7 +885,8 @@ that turning auto on forgets the pin.
   nobody recorded. The refresh lives inside whatever launched it — a
   supervisor that tears an automated job down counts it as the job's — so it
   is bounded (twelve seconds for the claim and the fetch, the completion
-  after) and stops cleanly on SIGTERM, SIGINT or SIGHUP: in-flight requests
+  after) and stops cleanly on SIGTERM, SIGINT or SIGHUP whatever it is
+  doing: a `security` read in progress is killed, in-flight requests
   are abandoned and completed as what they are, a failure that says nothing
   about the budget, an answer that already arrived is kept, and nothing is
   claimed once the signal has come. Killed outright it leaves a claim that
@@ -939,8 +943,10 @@ spend it.
   its `.current`, `.order`, launch log and session store — whose accounts root
   holds `.ledger`, one line naming the first home's accounts root. `headroom
   accounts ledger <root>` writes it, by the rule `config.Load` reads it with:
-  absolute, an existing directory, not the Codex root; naming one's own root
-  removes it. A file that says anything else refuses every command, the way a
+  absolute, an existing directory, not the Codex root, and a ledger of its
+  own — a root whose `.ledger` names somewhere else is a pointer, and two
+  roots naming each other would each spend against the other's file while
+  both read as shared; naming one's own root removes it. A file that says anything else refuses every command, the way a
   relative override does, because a home that meant to share and quietly kept
   its own ledger would ask every subscription twice and pile launches onto
   accounts the other home is filling — silently. It is a file and not a
@@ -978,7 +984,11 @@ spend it.
   busy session against the subscription its dir is logged into. Those dirs
   are never candidates, never owners and never swept; a dir whose identity
   cannot be read is not attributed at all, since its name is its home's to
-  choose. A home unseen for the retention period drops out.
+  choose. A registration says where a home lives, never that it still
+  shares: that is what the home's own `.ledger` says now
+  (`accounts.OtherHomes`, the one resolver placement and `check` both use),
+  so a home that leaves stops counting at once, and its record drops out
+  when nobody has seen it for the retention period.
 - **A second home spells its primary out.** When `HOME` is not the user's
   login home (from the user database, never from `HOME` itself), the primary
   is launched, probed and read with `CLAUDE_CONFIG_DIR` set to its dir, like an

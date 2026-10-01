@@ -321,10 +321,10 @@ func TestAnotherHomesSessionsAndLaunchesCountOnTheSubscription(t *testing.T) {
 	shared.Busy = []Proc{{PID: 10, StartedMS: started, Home: there}, {PID: 11, StartedMS: started, Home: here}}
 	var ledger Ledger
 	ledger.Record("uuid:shared", "shared", 20, there, now.Add(-time.Minute))
-	// A launch the other home made that has since become one of its busy
-	// sessions is counted once, as the session.
-	ledger.Record("uuid:shared", "shared", 10, there, now.Add(-2*time.Hour))
-	shared.Busy[0].StartedMS = now.Add(-2 * time.Hour).UnixMilli()
+	// A launch the other home made two minutes ago that has since become one
+	// of its busy sessions is counted once, as the session: one pid space.
+	ledger.Record("uuid:shared", "shared", 10, there, now.Add(-2*time.Minute))
+	shared.Busy[0].StartedMS = now.Add(-2 * time.Minute).UnixMilli()
 
 	d := chosen(t, []Candidate{shared, spare}, ledger, Intent{Home: here})
 	if d.Chosen != "spare" {

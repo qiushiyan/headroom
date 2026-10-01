@@ -374,7 +374,7 @@ type prepared struct {
 }
 
 func prepare(scope config.Scope, st *state.Store) prepared {
-	return prepareVia(scope, st, queryHealthParallel)
+	return prepareVia(context.Background(), scope, st, queryHealthParallel)
 }
 
 // prepareUnprobed is prepare without the vendor's health probe: health falls
@@ -382,13 +382,16 @@ func prepare(scope config.Scope, st *state.Store) prepared {
 // It is what the detached refresh runs — a process nobody is watching has no
 // use for a `claude auth status` spawn per account, and must not lean on
 // whatever that command does as a side effect.
-func prepareUnprobed(scope config.Scope, st *state.Store) prepared {
-	return prepareVia(scope, st, func([]accounts.Account) auth.QueryFunc {
+//
+// It stops when ctx does: the detached refresh is ended with the job that
+// launched it, and its credential reads are where it can stall.
+func prepareUnprobed(ctx context.Context, scope config.Scope, st *state.Store) prepared {
+	return prepareVia(ctx, scope, st, func([]accounts.Account) auth.QueryFunc {
 		return func(string) auth.Status { return auth.Status{} }
 	})
 }
 
-func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
+func prepareVia(ctx context.Context, scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -396,7 +399,7 @@ func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Acco
 		// Only Claude Code's access costs a process and a Keychain read. The
 		// Codex reader works from the auth snapshot discovery already took.
 		src.readRaw = func(a accounts.Account) string {
-			raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
+			raw, _ := creds.ReadRawContext(ctx, a.ConfigDir, a.Dir())
 			return raw
 		}
 		src.health = health(set.Accounts)

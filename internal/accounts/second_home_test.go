@@ -82,7 +82,7 @@ func TestNoLoginIsLinkedBetweenDirs(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			dir, shared, kept, err := SeedKept(cfg, "a@x.com", opt(cfg))
+			dir, shared, kept, err := Seed(cfg, "a@x.com", opt(cfg))
 			if err != nil {
 				t.Fatal(err)
 			}

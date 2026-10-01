@@ -228,7 +228,7 @@ func Run(cfg config.Config, out io.Writer, color bool, probe sessions.PIDProbe) 
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
 	checkRouting(set, os.Environ(), chk, own)
-	checkHomes(set, st.Load(), st.Home(), chk, own)
+	checkHomes(set, st.Load(), chk, own)
 	checkSessionStore(scope, accts, probe, chk, skip)
 
 	// Codex's group runs after Claude Code's, through the same reporters.
@@ -442,28 +442,45 @@ var knownStatus = map[string]bool{sessions.StatusBusy: true, "idle": true, "shel
 func checkOwnState(snap state.Snapshot,
 	chk, own func(bool, string, string), skip func(string, string)) {
 
-	if snap.ReadOnly() {
-		// Not a failure: a newer headroom wrote it, and this binary correctly
-		// refuses to rewrite what it cannot fully understand.
-		skip(fmt.Sprintf("state: schema %d understood", snap.Version()),
-			fmt.Sprintf("written by a newer headroom (this one writes %d) — it is being read, never written",
-				state.Version))
-		return
+	for _, doc := range snap.Documents() {
+		name := "state"
+		if doc.Name != "" {
+			name = "state(" + doc.Name + ")"
+		}
+		if doc.ReadOnly {
+			// Not a failure: a newer headroom wrote it, and this binary
+			// correctly refuses to rewrite what it cannot fully understand.
+			// The other document, if there is one, is still this binary's
+			// to judge.
+			skip(fmt.Sprintf("%s: schema %d understood", name, doc.Version),
+				fmt.Sprintf("written by a newer headroom (this one writes %d) — it is being read, never written",
+					state.Version))
+			continue
+		}
+		for _, p := range doc.Problems {
+			own(false, fmt.Sprintf("state[%s]: section readable", p.Section), p.Detail)
+		}
+		if len(doc.Problems) == 0 {
+			own(true, name+": every section readable", "")
+		}
+		if doc.ReHomes {
+			own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
+				"explicit re-homes are being ignored and cannot be rewritten")
+		}
+		if doc.Ledger {
+			auditResponses(snap, chk, own)
+		}
 	}
-	for _, p := range snap.Problems() {
-		own(false, fmt.Sprintf("state[%s]: section readable", p.Section), p.Detail)
-	}
-	if len(snap.Problems()) == 0 {
-		own(true, "state: every section readable", "")
-	}
-	own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
-		"explicit re-homes are being ignored and cannot be rewritten")
+}
 
-	// Deliberately not asserted: records naming an account the filesystem no
-	// longer has. They are how the ledger looks between an account being
-	// removed and the record ageing out, they make headroom more conservative
-	// rather than less, and FAIL is reserved for an assumption that was tested
-	// and contradicted.
+// auditResponses re-reads every stored usage response.
+//
+// Deliberately not asserted: records naming an account the filesystem no
+// longer has. They are how the ledger looks between an account being removed
+// and the record ageing out, they make headroom more conservative rather than
+// less, and FAIL is reserved for an assumption that was tested and
+// contradicted.
+func auditResponses(snap state.Snapshot, chk, own func(bool, string, string)) {
 	now := time.Now()
 	for _, r := range snap.Audit() {
 		if r.FetchedAtMS > now.Add(2*time.Minute).UnixMilli() {
@@ -600,7 +617,7 @@ func checkRouting(set accounts.Set, environ []string,
 // this home spends against, and that no account dir belongs to two homes.
 // Every failure here is headroom's own state — a dir it seeded, a file it
 // reads — never the vendor's.
-func checkHomes(set accounts.Set, snap state.Snapshot, self string, chk, own func(bool, string, string)) {
+func checkHomes(set accounts.Set, snap state.Snapshot, chk, own func(bool, string, string)) {
 	scope := set.Scope
 	if scope.PrimaryExplicit {
 		chk(true, fmt.Sprintf("home: HOME is not this user's login home — the primary is launched by its dir (%s), never by absence", scope.PrimaryDir()), "")
@@ -624,7 +641,6 @@ func checkHomes(set accounts.Set, snap state.Snapshot, self string, chk, own fun
 	own(len(linked) == 0, "logins: every account dir keeps its own login, history and session registry",
 		fmt.Sprintf("%s is a link — a login shared between dirs is one login under two names; remove the link and log that dir in again", strings.Join(linked, ", ")))
 
-	others := 0
 	var shared []string
 	mine := map[string]os.FileInfo{}
 	for _, a := range set.Accounts {
@@ -632,19 +648,21 @@ func checkHomes(set accounts.Set, snap state.Snapshot, self string, chk, own fun
 			mine[a.Dir()] = fi
 		}
 	}
+	var registered []config.Scope
 	for _, m := range snap.Members() {
-		if m.Root == self {
-			continue
-		}
-		others++
-		for _, a := range accounts.Discover(config.HomeScope(scope.Vendor, m.Home, m.Root, m.Explicit)).Accounts {
+		registered = append(registered, config.HomeScope(scope.Vendor, m.Home, m.Root, m.Explicit))
+	}
+	homes := accounts.OtherHomes(scope, registered)
+	others := len(homes)
+	for _, h := range homes {
+		for _, a := range h.Set.Accounts {
 			fi, err := os.Stat(a.Dir())
 			if err != nil {
 				continue
 			}
 			for dir, ofi := range mine {
 				if os.SameFile(fi, ofi) {
-					shared = append(shared, fmt.Sprintf("%s (also %s's)", dir, m.Home))
+					shared = append(shared, fmt.Sprintf("%s (also %s's)", dir, h.Root))
 				}
 			}
 		}

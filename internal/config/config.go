@@ -304,7 +304,7 @@ func Load() (Config, error) {
 
 	// A home that is not this user's login home spells its primary out; see
 	// Scope.PrimaryExplicit. Unknown login home: today's behavior.
-	if login := loginHome(); login != "" && !sameDir(realHome, login) {
+	if login := loginHome(); login != "" && !SameDir(realHome, login) {
 		c.Claude.PrimaryExplicit = true
 	}
 	root, err := readLedger(c.Claude, c.Codex)
@@ -326,9 +326,9 @@ var loginHome = func() string {
 	return u.HomeDir
 }
 
-// sameDir reports whether two paths name one directory, by file identity
+// SameDir reports whether two paths name one directory, by file identity
 // when both exist and by spelling otherwise.
-func sameDir(a, b string) bool {
+func SameDir(a, b string) bool {
 	ai, errA := os.Stat(a)
 	bi, errB := os.Stat(b)
 	if errA != nil || errB != nil {
@@ -380,7 +380,26 @@ func LedgerRoot(claude, codex Scope, v string) (string, error) {
 	case sameLocation(v, claude.AccountsRoot):
 		return "", nil
 	}
+	// A ledger is a place, not a pointer to follow: a root that spends
+	// against another root's ledger holds no ledger of its own for this home
+	// to share, and two roots naming each other would each spend against the
+	// other's file while both read as shared.
+	if target := LedgerOf(v); !SameDir(target, v) {
+		return "", fmt.Errorf("%s itself spends against %s's ledger — name that root instead", v, target)
+	}
 	return filepath.Clean(v), nil
+}
+
+// LedgerOf is the accounts root whose ledger the home at accountsRoot spends
+// against today: what its `.ledger` names, or the root itself when it has
+// none. It reads the file and judges nothing — Load is where a home's own
+// file is held to the rules; this is how one home asks about another.
+func LedgerOf(accountsRoot string) string {
+	data, err := os.ReadFile(filepath.Join(accountsRoot, ".ledger"))
+	if v := strings.TrimSpace(string(data)); err == nil && v != "" {
+		return filepath.Clean(v)
+	}
+	return filepath.Clean(accountsRoot)
 }
 
 func relativeErr(name, v string) error {

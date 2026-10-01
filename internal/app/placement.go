@@ -104,34 +104,29 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 	for i, fa := range facts {
 		src[i] = placeSource{acct: fa.Acct, key: fa.Key, obs: fa.View.Obs}
 	}
-	f := buildCandidates(set, src, env, automatic, now, st.Home(), otherHomes(st, snap, set.Scope.Vendor))
+	f := buildCandidates(set, src, env, automatic, now, st.Home(), otherHomes(set.Scope, snap))
 	f.snap = snap
 	return f
 }
 
-// otherHome is another home that spends against this home's ledger, as its
-// registration locates it: the account dirs whose registries say what is
-// running there.
-type otherHome struct {
-	root string
-	set  accounts.Set
-}
-
-// otherHomes discovers every other home registered in the ledger. Their
-// accounts are read for one thing — the sessions running on them, counted
-// against the same subscriptions — and are never candidates and never owners:
-// a launch only ever runs in its own home, on its own dirs.
-func otherHomes(st *state.Store, snap state.Snapshot, vendor config.Vendor) []otherHome {
-	if vendor != config.Claude {
+// otherHomes is the other homes spending against this home's ledger today,
+// located by their registrations there. Their accounts are read for one
+// thing — the sessions running on them, counted against the same
+// subscriptions — and are never candidates and never owners.
+func otherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
+	if scope.Vendor != config.Claude {
 		// Codex has no registry headroom can read.
 		return nil
 	}
-	var out []otherHome
+	return accounts.OtherHomes(scope, registered(scope.Vendor, snap))
+}
+
+// registered is every home the ledger has a registration for, as a scope to
+// discover it under.
+func registered(vendor config.Vendor, snap state.Snapshot) []config.Scope {
+	var out []config.Scope
 	for _, m := range snap.Members() {
-		if m.Root == st.Home() {
-			continue
-		}
-		out = append(out, otherHome{root: m.Root, set: accounts.Discover(config.HomeScope(vendor, m.Home, m.Root, m.Explicit))})
+		out = append(out, config.HomeScope(vendor, m.Home, m.Root, m.Explicit))
 	}
 	return out
 }
@@ -181,7 +176,7 @@ func homeLabel(labels map[string]string, root string) string {
 // account, in this home or in another home sharing the ledger, spend one
 // quota, so every verified-live busy session on that account counts on each
 // candidate that spends it.
-func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time, home string, others []otherHome) placeFacts {
+func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time, home string, others []accounts.Home) placeFacts {
 	scope := set.Scope
 	f := placeFacts{set: set, home: home, prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{}}
 
@@ -250,7 +245,7 @@ type sessionLoad struct {
 // only when its identity says which subscription it is, since its dir name is
 // that home's to choose. Codex has no registry headroom can read: its accounts
 // carry no busy sessions, and an empty read there is not evidence of idleness.
-func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []otherHome) sessionLoad {
+func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []accounts.Home) sessionLoad {
 	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
 	if set.Scope.Vendor != config.Claude {
 		return out
@@ -265,14 +260,14 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 	}
 	all := append([]sessions.RegistryEntry(nil), own...)
 	for _, o := range others {
-		for _, a := range o.set.Accounts {
+		for _, a := range o.Set.Accounts {
 			if a.AccountID == "" {
 				continue
 			}
 			// A label no account of this home can carry: the registry reader
 			// stamps it on every entry, and it is mapped back here.
-			label := o.root + "\x00" + a.Name
-			who[label] = claimant{state.Key{UUID: a.AccountID, Name: a.Name}.ID(), o.root}
+			label := o.Root + "\x00" + a.Name
+			who[label] = claimant{state.Key{UUID: a.AccountID, Name: a.Name}.ID(), o.Root}
 			all = append(all, sessions.ReadRegistry(label, a.Dir()).Entries...)
 		}
 	}
@@ -353,7 +348,7 @@ func markPlacement(set accounts.Set, list []*accountData, mode string, st *state
 		src[i] = placeSource{acct: d.Acct, key: d.Key, obs: d.View.Obs}
 	}
 	auto := mode == "auto"
-	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(st, snap, set.Scope.Vendor))
+	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(set.Scope, snap))
 	decision := placement.Choose(f.cands, snap.Placements(), placement.Intent{Home: st.Home()}, now)
 	labels := homeLabels(snap, st.Home())
 	for _, d := range list {
@@ -474,9 +469,10 @@ const refreshDeadline = 12 * time.Second
 // claim permits, record the answers, print nothing. It is what an automatic
 // launch leaves running behind it.
 //
-// SIGTERM, SIGINT and SIGHUP end it early and cleanly: requests in flight are
-// abandoned and recorded as abandoned, an answer that already arrived is kept,
-// and nothing is claimed once the signal has come. It is then gone within
+// SIGTERM, SIGINT and SIGHUP end it early and cleanly, whatever it is doing:
+// a credential read in progress is killed, requests in flight are abandoned
+// and recorded as abandoned, an answer that already arrived is kept, and
+// nothing is claimed once the signal has come. It is then gone within
 // about a second — the lock a completion takes is held for milliseconds — so
 // a supervisor's TERM-then-KILL never has to reach the KILL. Killed outright
 // mid-request, it leaves a claim that simply expires at its spacing: a claim
@@ -493,7 +489,7 @@ func runRefresh(scopes []config.Scope) int {
 		go func(scope config.Scope) {
 			defer wg.Done()
 			st := state.Open(scope)
-			p := prepareUnprobed(scope, st)
+			p := prepareUnprobed(ctx, scope, st)
 			for range launchFetches(ctx, p.list, st) {
 			}
 		}(scope)

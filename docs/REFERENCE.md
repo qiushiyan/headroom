@@ -219,7 +219,15 @@ subscriptions in its own dirs and still share one picture of their load:
 # as that home (HOME=/path/to/second-home)
 headroom accounts ledger /Users/you/.claude-accounts    # spend against the first home's ledger
 headroom accounts add alice@example.com --share-config  # its own dirs, its own primary's config
+
+# as the first home, once
+headroom accounts ledger                                # register it, so the second home can find its dirs
 ```
+
+The ledger named must be a home's own: a root that itself spends against
+another's ledger is refused. Membership is what each home's `.ledger` says
+now — a home that leaves (naming its own root) stops counting at once, and
+the listing marks its old registration `left — not counted`.
 
 From then on a claim from either home is the claim the other is denied by —
 each subscription is asked once per spacing, by whichever home asks first —

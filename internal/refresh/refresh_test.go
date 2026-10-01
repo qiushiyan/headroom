@@ -204,3 +204,22 @@ func TestReceivedObservationSurvivesCompletionFailure(t *testing.T) {
 		}
 	}
 }
+
+// A round already cancelled has nothing that could leave, so it claims
+// nothing: a claim then would only silence the account for a spacing.
+func TestACancelledRoundClaimsNothing(t *testing.T) {
+	var asked int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { asked++ }))
+	defer srv.Close()
+	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range Start(ctx, st, []*Candidate{requestCandidate(t, srv.URL, "a", "t")}, nil) {
+	}
+	if asked != 0 {
+		t.Errorf("a cancelled round asked %d times", asked)
+	}
+	if next := st.Load().NextEligible(state.Key{Name: "a"}, time.Now()); !next.IsZero() {
+		t.Errorf("a cancelled round claimed: next eligible %v", next)
+	}
+}

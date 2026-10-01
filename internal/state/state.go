@@ -410,34 +410,52 @@ func (d *doc) register(m Member, now time.Time) {
 	d.dirty = true
 }
 
-// Problems lists what could not be read. Empty is the ordinary case. When the
-// ledger is another home's file its problems are named as the ledger's, and of
-// this home's own file only what this home still reads from it is reported.
-func (s Snapshot) Problems() []Problem {
+// Document is one of a snapshot's files as an audit sees it. A home that
+// keeps its own ledger has one, holding everything; a home that shares
+// another's has two — the ledger and its own re-homes — and each is judged on
+// its own terms: a file written by a newer headroom is read and left alone
+// without silencing what is wrong in the other.
+type Document struct {
+	// Name is "" for a home's one file, else "ledger" or "home".
+	Name     string
+	Version  int
+	ReadOnly bool // written by a newer headroom: read, never written
+	Problems []Problem
+
+	Ledger  bool // holds the request ledger, the responses and the placements
+	ReHomes bool // holds this home's re-homes
+}
+
+// Documents are the snapshot's files, the ledger first.
+func (s Snapshot) Documents() []Document {
 	if s.h == s.d {
-		return s.d.problems
+		return []Document{{Version: s.d.version, ReadOnly: s.d.readOnly(), Problems: s.d.problems, Ledger: true, ReHomes: true}}
 	}
-	var out []Problem
+	led := Document{Name: "ledger", Version: s.d.version, ReadOnly: s.d.readOnly(), Ledger: true}
 	for _, p := range s.d.problems {
-		out = append(out, Problem{"ledger " + p.Section, p.Detail})
+		led.Problems = append(led.Problems, Problem{"ledger " + p.Section, p.Detail})
 	}
+	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true}
 	for _, p := range s.h.problems {
 		switch p.Section {
 		case "accounts", "placements", "members":
 			// Left from before this home shared a ledger; nothing reads them.
 		default:
-			out = append(out, p)
+			home.Problems = append(home.Problems, p)
 		}
+	}
+	return []Document{led, home}
+}
+
+// Problems lists what could not be read, in every document. Empty is the
+// ordinary case.
+func (s Snapshot) Problems() []Problem {
+	var out []Problem
+	for _, d := range s.Documents() {
+		out = append(out, d.Problems...)
 	}
 	return out
 }
-
-// ReadOnly reports that a document came from a newer headroom, so no surface
-// may write and none should issue traffic on its ledger's say-so.
-func (s Snapshot) ReadOnly() bool { return s.d.readOnly() || s.h.readOnly() }
-
-// Version is the schema found on disk: the higher of the two documents'.
-func (s Snapshot) Version() int { return max(s.d.version, s.h.version) }
 
 // Shared reports that the subscription ledger is another home's file.
 func (s Snapshot) Shared() bool { return s.h != s.d }

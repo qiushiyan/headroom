@@ -58,6 +58,10 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 	fmt.Fprintf(out, "ledger  %s — %s\n", filepath.Join(st.Ledger(), "state.json"), whose)
 	members := snap.Members()
 	labels := homeLabels(snap, st.Home())
+	counted := map[string]bool{st.Home(): true}
+	for _, h := range otherHomes(scope, snap) {
+		counted[h.Root] = true
+	}
 	fmt.Fprintf(out, "homes   %d registered\n", len(members))
 	nameW, rootW := 0, 0
 	for _, m := range members {
@@ -68,6 +72,11 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 		note := ""
 		if m.Root == st.Home() {
 			note = "this home · "
+		}
+		if !counted[m.Root] {
+			// Registered here once, spending elsewhere now: its record ages
+			// out, and nothing counts it meanwhile.
+			note += "left — not counted · "
 		}
 		if m.Explicit {
 			note += "primary by its dir · "
