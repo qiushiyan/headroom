@@ -306,6 +306,52 @@ func TestRunVerdicts(t *testing.T) {
 	}
 }
 
+func TestRunPrimaryCredentialSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, credential string
+		wantCode         int
+		wantLine         string
+	}{
+		{"file only", `{"claudeAiOauth":{"accessToken":"fixture"}}`, ExitPass, "credential[primary]: .credentials.json (no keychain item)"},
+		{"neither", "", ExitFail, "credential[primary]: no credential source — not logged in"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg, write := soundClaudeTree(t, home)
+			write(filepath.Join(os.Getenv("PATH"), "security"), "#!/bin/sh\nexit 1\n", 0755)
+			if tc.credential != "" {
+				write(filepath.Join(cfg.PrimaryDir(), ".credentials.json"), tc.credential, 0600)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(`{"limits":[]}`))
+			}))
+			defer srv.Close()
+			cfg.UsageURL = srv.URL
+			var out strings.Builder
+			code := Run(config.Config{Home: home, Claude: cfg}, &out, false)
+			if code != tc.wantCode || !strings.Contains(out.String(), tc.wantLine) {
+				t.Fatalf("exit=%d want=%d, missing %q:\n%s", code, tc.wantCode, tc.wantLine, out.String())
+			}
+		})
+	}
+}
+
+func TestRereadCredentialFilePrimary(t *testing.T) {
+	primaryDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(primaryDir, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"refreshed"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if token, ok := rereadCredential(primaryDir)(""); !ok || token != "refreshed" {
+		t.Errorf("401 re-check got %q, %v", token, ok)
+	}
+}
+
 // soundClaudeTree builds a Claude Code fixture every assertion passes on —
 // stub claude and security on PATH, a logged-in primary, a registry, history
 // and one transcript — and hands back its scope and a file writer. The usage

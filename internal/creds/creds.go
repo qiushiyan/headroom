@@ -144,18 +144,30 @@ func DeleteKeychainItem(configDir string) (deleted bool, err error) {
 	return true, nil
 }
 
-// ReadRaw is the rendering path's blob source: Keychain first, then the
-// .credentials.json file Claude Code writes where no keychain exists.
-func ReadRaw(configDir string) string {
-	if blob := ReadKeychain(configDir); blob != "" {
-		return blob
+// Source identifies where Claude Code's credential blob was found.
+type Source int
+
+const (
+	SourceNone Source = iota
+	SourceKeychain
+	SourceFile
+)
+
+// ReadRaw resolves the credential for an account. keychainKey is ConfigDir
+// (empty for the primary); dir is the real directory, including for the
+// primary. A present Keychain item takes precedence over the file.
+func ReadRaw(keychainKey, dir string) (string, Source) {
+	return readRaw(keychainKey, dir, ReadKeychain, os.ReadFile)
+}
+
+func readRaw(keychainKey, dir string, keychain func(string) string, readFile func(string) ([]byte, error)) (string, Source) {
+	if blob := keychain(keychainKey); blob != "" {
+		return blob, SourceKeychain
 	}
-	if configDir != "" {
-		if data, err := os.ReadFile(filepath.Join(configDir, ".credentials.json")); err == nil {
-			return string(data)
-		}
+	if data, err := readFile(filepath.Join(dir, ".credentials.json")); err == nil {
+		return string(data), SourceFile
 	}
-	return ""
+	return "", SourceNone
 }
 
 func username() string {

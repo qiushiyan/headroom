@@ -108,13 +108,9 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 	chk(bin != "" && len(missing) == 0,
 		fmt.Sprintf("binary (%s): endpoint + config-dir + credential seams present", binName), hint)
 
-	// Keychain items exist under the predicted service names, and every
-	// credential blob parses through the same contract the dashboard uses.
-	// (Items were written by past logins — this proves the naming
-	// derivation matches what Claude Code created; the seam greps above
-	// cover the binary side.) Fetches run in parallel and are validated
-	// after the join, so a dead network costs one timeout, not one per
-	// account.
+	// Resolve credentials exactly as the board does, and parse the selected
+	// blob through its shared contract. Fetches run in parallel and are
+	// validated after the join, so a dead network costs one timeout.
 	set := accounts.Discover(scope)
 	accts := set.Accounts
 	now := time.Now()
@@ -127,9 +123,14 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		} else if _, err := os.Stat(a.MetaPath()); err != nil {
 			continue
 		}
-		chk(creds.HasKeychainItem(a.ConfigDir), fmt.Sprintf("keychain[%s]: item under predicted name", name), "not logged in, or naming scheme changed")
-		blob, ok := creds.Parse(creds.ReadKeychain(a.ConfigDir))
-		chk(ok, fmt.Sprintf("blob[%s]: parses via shared contract (accessToken present)", name), "")
+		raw, source := creds.ReadRaw(a.ConfigDir, a.Dir())
+		blob, ok := creds.Parse(raw)
+		label := fmt.Sprintf("credential[%s]: %s", name, credentialSourceLabel(source))
+		hint := "credential blob did not parse (accessToken missing or format changed)"
+		if source == creds.SourceNone {
+			hint = "not logged in — no Keychain item or .credentials.json"
+		}
+		chk(ok, label, hint)
 		candidate, eligibility := refresh.Prepare(a, blob, ok, now)
 		requests[i] = candidate
 		if candidate == nil {
@@ -144,7 +145,7 @@ func Run(cfg config.Config, out io.Writer, color bool) int {
 		}
 	}
 	results := make([]refresh.Result, len(accts))
-	for r := range refresh.Start(context.Background(), st, requests, rereadKeychain) {
+	for r := range refresh.Start(context.Background(), st, requests, rereadCredential(scope.PrimaryDir())) {
 		results[r.Index] = r
 	}
 	for i, candidate := range requests {
@@ -523,10 +524,28 @@ func checkRouting(set accounts.Set, environ []string,
 	}
 }
 
-// rereadKeychain is Claude Code's credential reader for the 401 re-check.
-func rereadKeychain(configDir string) (string, bool) {
-	blob, ok := creds.Parse(creds.ReadKeychain(configDir))
-	return blob.Token, ok
+func credentialSourceLabel(source creds.Source) string {
+	switch source {
+	case creds.SourceKeychain:
+		return "keychain item under predicted name"
+	case creds.SourceFile:
+		return ".credentials.json (no keychain item)"
+	default:
+		return "no credential source"
+	}
+}
+
+// rereadCredential samples the same source the board and initial check read.
+func rereadCredential(primaryDir string) refresh.Reread {
+	return func(keychainKey string) (string, bool) {
+		dir := keychainKey
+		if dir == "" {
+			dir = primaryDir
+		}
+		raw, _ := creds.ReadRaw(keychainKey, dir)
+		blob, ok := creds.Parse(raw)
+		return blob.Token, ok
+	}
 }
 
 func claudeBinary() string {

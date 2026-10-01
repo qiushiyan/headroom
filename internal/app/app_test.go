@@ -156,7 +156,7 @@ func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, _ := prepareWith(accounts.Discover(cfg), state.Open(cfg).Load(), sources{
-		readRaw: func(string) string { return `not json` },
+		readRaw: func(accounts.Account) string { return `not json` },
 		health:  func(string) auth.Status { return auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK} },
 		now:     time.Now(),
 	})
@@ -202,7 +202,7 @@ func oneRound(t *testing.T, cfg config.Scope, blobs map[string]string, now time.
 	t.Helper()
 	st := state.Open(cfg)
 	list, _ := prepareWith(accounts.Discover(cfg), st.Load(), sources{
-		readRaw: func(dir string) string { return blobs[dir] },
+		readRaw: func(a accounts.Account) string { return blobs[a.ConfigDir] },
 		health:  func(string) auth.Status { return auth.Status{} },
 		now:     now,
 	})

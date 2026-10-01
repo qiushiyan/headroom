@@ -30,7 +30,7 @@ func (f prepareFixture) run(now time.Time) map[string]*accountData {
 
 func (f prepareFixture) prepare(now time.Time) []*accountData {
 	list, _ := prepareWith(accounts.Discover(f.cfg), f.store.Load(), sources{
-		readRaw: func(dir string) string { return f.blobs[dir] },
+		readRaw: func(a accounts.Account) string { return f.blobs[a.ConfigDir] },
 		health:  func(dir string) auth.Status { return f.auth[dir] },
 		now:     now,
 	})
@@ -61,6 +61,28 @@ func writeJSON(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPrepareFileBackedPrimary(t *testing.T) {
+	home := t.TempDir()
+	cfg := claudeScope(home, "primary")
+	if err := os.MkdirAll(cfg.PrimaryDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com","accountUuid":"primary-id"}}`)
+	credential := filepath.Join(cfg.PrimaryDir(), ".credentials.json")
+	if err := os.WriteFile(credential, []byte(`{"claudeAiOauth":{"accessToken":"file-token","rateLimitTier":"default_claude_max_20x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	list := prepare(cfg, state.Open(cfg)).list
+	if len(list) == 0 || list[0].View.Plan != "max 20x" || list[0].Request == nil {
+		t.Fatalf("primary did not get a usable file-backed credential: %+v", list)
 	}
 }
 

@@ -78,20 +78,22 @@ naming a vendor this machine does not have fails saying so, except
   running on a home — and the refusal names the directory to delete by hand.
 - **`headroom check`:** verifies vendor contracts and headroom's own state,
   for every vendor present (run after a Claude Code or Codex update, or when
-  the board looks wrong).
+  the board looks wrong). Its `credential[...]` line names the Keychain or
+  `.credentials.json` source and fails when no parseable login exists.
 
 ## How it works
 
 There is no account list: Claude Code's default `~/.claude` plus every
 directory under `~/.claude-accounts` (one per extra login, named by its
 email) *is* the account set — and `~/.codex` plus `~/.codex-accounts` is
-Codex's, with its own `.current`, `.order` and `state.json`. Claude Code keys its macOS Keychain credentials
-per config dir, so every dir is an independent login and all tokens coexist.
-headroom reads each account's credentials, calls the same usage endpoint
-Claude Code's own `/usage` screen calls, and renders the result. That endpoint
-budgets roughly one request per minute *per account*, so headroom keeps a
-record of both what it asked and what came back: a refresh that is too soon to
-send replays its own newest answer instead of showing you something older.
+Codex's, with its own `.current`, `.order` and `state.json`. Each Claude Code
+account, including the primary, uses the Keychain item for its config dir
+when readable; otherwise headroom reads `.credentials.json` inside the real
+config dir. Headroom calls the same usage endpoint Claude Code's own `/usage`
+screen calls and renders the result. That endpoint budgets roughly one
+request per minute *per account*, so headroom records its requests and
+responses. An early refresh replays headroom's newest answer instead of
+showing an older one.
 Bars and percentages keep their severity colours when observations become
 stale; the stale caption and dim time fields communicate age separately.
 The current response contract requires `limits[]`; historical usage envelopes

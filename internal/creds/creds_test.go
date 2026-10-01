@@ -1,11 +1,61 @@
 package creds
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/tag"
 )
+
+func TestReadRaw(t *testing.T) {
+	const keychainBlob = `{"claudeAiOauth":{"accessToken":"keychain"}}`
+	const fileBlob = `{"claudeAiOauth":{"accessToken":"file"}}`
+	for _, account := range []struct {
+		name, key string
+	}{
+		{"primary", ""},
+		{"extra", "/some/other/config"},
+	} {
+		for _, tc := range []struct {
+			name           string
+			keychain, file bool
+			wantRaw        string
+			wantSource     Source
+		}{
+			{"keychain present", true, false, keychainBlob, SourceKeychain},
+			{"file only", false, true, fileBlob, SourceFile},
+			{"both", true, true, keychainBlob, SourceKeychain},
+			{"neither", false, false, "", SourceNone},
+		} {
+			t.Run(account.name+"/"+tc.name, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), ".claude")
+				if tc.file {
+					if err := os.MkdirAll(dir, 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(fileBlob), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				keychain := func(key string) string {
+					if key != account.key {
+						t.Errorf("keychain key = %q, want %q", key, account.key)
+					}
+					if tc.keychain {
+						return keychainBlob
+					}
+					return ""
+				}
+				raw, source := readRaw(account.key, dir, keychain, os.ReadFile)
+				if raw != tc.wantRaw || source != tc.wantSource {
+					t.Errorf("got %q, %v; want %q, %v", raw, source, tc.wantRaw, tc.wantSource)
+				}
+			})
+		}
+	}
+}
 
 func TestServiceName(t *testing.T) {
 	if got := ServiceName(""); got != "Claude Code-credentials" {

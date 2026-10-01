@@ -287,7 +287,7 @@ type accountData struct {
 // the pipeline can be table-tested without a Keychain, a Claude Code install,
 // or a network.
 type sources struct {
-	readRaw func(configDir string) string
+	readRaw func(accounts.Account) string
 	health  auth.QueryFunc
 	now     time.Time
 }
@@ -316,7 +316,11 @@ func prepare(scope config.Scope, st *state.Store) prepared {
 	if scope.Vendor == config.Claude {
 		// Only Claude Code's access costs a process and a Keychain read. The
 		// Codex reader works from the auth snapshot discovery already took.
-		src.readRaw, src.health = creds.ReadRaw, queryHealthParallel(set.Accounts)
+		src.readRaw = func(a accounts.Account) string {
+			raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
+			return raw
+		}
+		src.health = queryHealthParallel(set.Accounts)
 	}
 	list, current := prepareWith(set, snap, src)
 	return prepared{set, list, current, snap}
@@ -361,7 +365,7 @@ func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*account
 }
 
 func claudeAccess(d *accountData, src sources) {
-	raw := src.readRaw(d.Acct.ConfigDir)
+	raw := src.readRaw(d.Acct)
 	blob, ok := creds.Parse(raw)
 	if ok {
 		d.View.Plan = blob.PlanLabel()

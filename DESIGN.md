@@ -115,7 +115,8 @@ verifier's error messages name something that exists on every install:
   which holds config and nothing else). Whitelist and not blacklist because
   a config dir also holds what must stay per account: `history.jsonl` is
   session-ownership evidence, `sessions/` the live registry,
-  `.credentials.json` a login on machines without a Keychain. The list is
+  `.credentials.json` a file-backed login, including when an SSH session
+  cannot use the login Keychain. The list is
   vendor-perishable, but nothing load-bearing rides on it, which is why
   `check` does not verify it. Seeding never writes `.current` or `.order`.
   A dir that fails half-way is left in place and named: it is inert
@@ -142,7 +143,8 @@ verifier's error messages name something that exists on every install:
   without either; a picker choice arrives
   already confirmed and takes `--yes`'s path — and the gate once more
   after the reply, since the prompt may have stayed open while a session
-  started. Then the Keychain item, then the dir (`os.RemoveAll` does not
+  started. Then the Keychain item, then the dir (including any file-backed
+  `.credentials.json`; `os.RemoveAll` does not
   follow symlinks, so the `projects/` link goes and the store behind it
   stays — pinned by test), then the `.order` line. `.current` is never
   rewritten: a removed current account makes launch refuse until the board
@@ -158,13 +160,22 @@ mistake as reading `expiresAt` as account health.
 ## The data source, and drift as a design input
 
 The board calls the endpoint Claude Code's own `/usage` screen calls —
-`GET https://api.anthropic.com/api/oauth/usage` with a Bearer token from the
-Keychain (falling back to a `.credentials.json` file where no keychain
-exists). The endpoint is undocumented. `usage.ParseLimits` requires a
-`limits` array: an empty array means no limits, while missing, null or
-malformed arrays mean an unreadable response. Historical `five_hour` bodies
-are unsupported, including stored copies; `check` reports them as vendor
-format drift. Every vendor contract here is reverse-engineered and perishable:
+`GET https://api.anthropic.com/api/oauth/usage`. Every Claude Code account,
+including the primary, resolves its credential from the Keychain item under
+`ServiceName(Account.ConfigDir)` first, then from
+`Account.Dir()/.credentials.json` if the Keychain read returns no blob. The
+primary's `ConfigDir` is empty for the base service name, while `Dir()` is
+the real `~/.claude` path. A readable Keychain item wins when both stores
+hold credentials. File-backed logins occur in SSH sessions with a locked
+login Keychain and on Linux. The board, `check` and its 401 re-check use this
+same resolution rule and `creds.Parse`.
+
+The selected blob supplies the Bearer token. The endpoint is undocumented.
+`usage.ParseLimits` requires a `limits` array: an empty array means no
+limits, while missing, null or malformed arrays mean an unreadable response.
+Historical `five_hour` bodies are unsupported, including stored copies;
+`check` reports them as vendor format drift. Every vendor contract here is
+reverse-engineered and perishable:
 
 - **One parser per vendor document type, and no duplicate parse paths.**
   `creds.Parse` (credential blob), `usage.ParseLimits` (usage response, live
@@ -190,7 +201,9 @@ format drift. Every vendor contract here is reverse-engineered and perishable:
   details and closing verdict. A claim failure marks the API untested; a
   completion failure leaves received vendor evidence available to check.
   FAIL takes precedence when a run also has inconclusive assertions. Every
-  request uses the board's budget and storage operation.
+  request uses the board's budget and storage operation. Its per-account
+  `credential[...]` assertion names the selected source and requires a
+  parseable blob; no credential is FAIL (not logged in).
 
 Two deliberate tolerances beyond strict inherited behavior: numeric-epoch
 `resets_at` values are accepted, and timestamps may carry offsets or

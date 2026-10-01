@@ -89,10 +89,11 @@ go install github.com/qiushiyan/headroom/cmd/headroom@latest
 headroom check      # PASS or INCONCLUSIVE on a fresh machine
 ```
 
-macOS is the primary target (Claude Code keeps its credentials in the
-Keychain); on machines without one, headroom reads the `.credentials.json`
-Claude Code writes instead. Codex's login is read from its `auth.json`; a
-Codex login kept in the keyring store shows as not logged in. Go and `golang.org/x/term` only.
+macOS is the primary target. Headroom reads Claude Code's Keychain credential
+first, then its `.credentials.json` file when the Keychain cannot supply one
+(including SSH sessions with a locked login Keychain and Linux). Codex's
+login is read from its `auth.json`; a Codex login kept in the keyring store
+shows as not logged in. Go and `golang.org/x/term` only.
 
 ## Set up your accounts
 
