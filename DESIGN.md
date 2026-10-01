@@ -942,18 +942,18 @@ spend it.
   second home is an ordinary home — its `HOME`, its primary, its accounts root,
   its `.current`, `.order`, launch log and session store — whose accounts root
   holds `.ledger`, one line naming the first home's accounts root. `headroom
-  accounts ledger <root>` writes it, by the rule `config.Load` reads it with:
+  accounts ledger <root>` writes it by the rule `config.Load` reads it with:
   absolute, an existing directory, not the Codex root, and a ledger of its
-  own — a root whose `.ledger` names somewhere else is a pointer, and two
-  roots naming each other would each spend against the other's file while
-  both read as shared; naming one's own root removes it. A file that says anything else refuses every command, the way a
-  relative override does, because a home that meant to share and quietly kept
-  its own ledger would ask every subscription twice and pile launches onto
-  accounts the other home is filling — silently. It is a file and not a
-  variable because the second home's processes are started from several
-  places (plists, ssh, sessions dispatching sessions), and a variable lost on
-  one path forks the ledger on that path alone; a file beside `.current`
-  travels with `HOME`. Two other shapes lose on the re-homes: a profile kept
+  own — a root whose `.ledger` names somewhere else is a pointer, and roots
+  naming each other would each spend against the other's file while both
+  read as shared. Naming one's own root removes the file. A file that breaks
+  the rule refuses every command, the way a relative override does: a home
+  that meant to share and quietly kept its own ledger would ask every
+  subscription twice and pile launches onto accounts the other home is
+  filling, silently. It is a file and not a variable because the second
+  home's processes start from several places (plists, ssh, sessions
+  dispatching sessions), and a variable lost on one path forks the ledger on
+  that path alone; a file beside `.current` travels with `HOME`. Two other shapes lose on the re-homes: a profile kept
   in the owner's configuration is unreachable from a process that has only
   its own `HOME`, and one shared file holding both homes' re-homes would mix
   records named by account names that both homes spell alike — and each
@@ -1010,7 +1010,7 @@ spend it.
   `homes`, the board's `sessions:` clause, and `load.homes` in `--json`.
 - **Bounds.** Only Claude Code homes share a ledger: Codex placement for a
   second home is not built, and Codex has no registry to read. Both homes
-  should run a binary from this change on — an older one rewriting the ledger
+  run a binary that knows homes: one that does not, rewriting the ledger,
   carries the member homes through as an unknown section but drops the
   per-home tags inside the placements, which costs `--last` and the
   attribution of those launches, never their load. A dir without an identity
@@ -1199,22 +1199,26 @@ Checker tests use fixture processes and HTTP to verify the final exit verdict.
 Store tests own locking, generations, migration preservation and cooldowns;
 launch tests own routing, refusal-before-persistence and failure-after-write.
 
-A second home is tested at each tier. The store's own tests drive two
-handles on two roots: a claim from either denies the other, a launch's load
-lands in the shared ledger and its re-home in its own home, each home's sweep
-leaves the other's records, a refused move leaves the ledger untouched, and
-twelve launches from both homes started together spread four to an account.
-The launch operation's tests build two homes logged into the same
-subscriptions: each counts the other's busy sessions and recent launches,
-each subscription is asked once across both homes' refresh rounds, no launch
-resolves the other home's dir whatever it inherits, each picker lists its own
-store, and the owner's board and `--json` name the other home's load. Through
-the built binary, a launch with `HOME` at the second home, no terminal on any
-stream and a launchd-sized environment runs both of a session's turns on one
-of that home's dirs, records its load in the owner's ledger and its routing
-in its own file; and a refresh killed mid-request leaves the shared store
-readable, unlocked and askable after one spacing, while one sent SIGTERM
-stops within a second and records the request it abandoned.
+A second home is tested at each tier. The store's tests drive a handle on
+each home's root over the real lock: a claim from either denies the other, a
+launch's load lands in the shared ledger and its re-home in its own home,
+each home's sweep leaves the other's records, a refused move leaves the
+ledger untouched, each half-written outcome is reported as the half that
+landed, and launches from both homes started together spread evenly. The
+launch operation's tests build two homes logged into the same subscriptions:
+each counts the other's busy sessions and recent launches, a home that left
+stops counting at once, each subscription is asked once across both homes'
+refresh rounds, no launch resolves the other home's dir whatever it
+inherits, each picker lists its own store, and the owner's board and
+`--json` name the other home's load. `check` audits each of a sharing home's
+files on its own and judges only current members. Through the built binary,
+a launch with `HOME` at the second home, no terminal on any stream and a
+launchd-sized environment runs both of a session's turns on one of that
+home's dirs, records its load in the owner's ledger and its routing in its
+own file; a refresh killed mid-request leaves the shared store readable,
+unlocked and askable after one spacing; and one sent SIGTERM — mid-request
+or mid credential read — stops within a second, having claimed nothing it
+could not complete.
 
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
 interaction, selection, refresh scheduling, scrollback and terminal lifetime.
