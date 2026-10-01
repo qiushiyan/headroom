@@ -1258,8 +1258,9 @@ signals must restore it before exit. The harness uses fixture `claude` and
 `security` commands and redirects account and transcript state into a temporary
 home. Signal cases address the recorded fixture child PID. An outer shell
 checks terminal state after exit; the tmux scrollback case skips when tmux is
-absent. The dotfiles repo's separate sandbox harness tests shell wrappers
-against this checkout's binary and a recording `claude` stub.
+absent. The dotfiles repo's `zsh/.config/zsh/tests/claude-launch.test.zsh`
+tests its shell wrappers against this checkout's binary and a recording
+`claude` stub.
 
 ## Status
 
