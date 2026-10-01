@@ -378,6 +378,21 @@ func TestJoiningLeavingAndVersion(t *testing.T) {
 	if _, err := os.Stat(h.steward.LedgerFile()); err == nil {
 		t.Error("leaving left .ledger behind")
 	}
+	// The ledger it left still holds its registration, marked as not counted.
+	owner := exec.Command(bin, "accounts", "ledger")
+	owner.Env = []string{"HOME=" + filepath.Dir(h.ownerRoot), "USER=" + os.Getenv("USER"), "PATH=" + h.stubs + ":/usr/bin:/bin"}
+	listing, err := owner.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the owner's listing: %v\n%s", err, listing)
+	}
+	for _, line := range strings.Split(string(listing), "\n") {
+		if strings.Contains(line, h.steward.AccountsRoot) && !strings.Contains(line, "left — not counted") {
+			t.Errorf("the departed home is listed as a member:\n%s", listing)
+		}
+	}
+	if !strings.Contains(string(listing), h.steward.AccountsRoot) {
+		t.Errorf("the departed home's registration is missing from the listing:\n%s", listing)
+	}
 	if _, code = run("accounts", "ledger", "--vendor", "codex"); code != 2 {
 		t.Errorf("a Codex ledger was accepted: exit %d", code)
 	}

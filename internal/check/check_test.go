@@ -625,3 +625,49 @@ func TestEachDocumentIsAuditedOnItsOwn(t *testing.T) {
 		t.Errorf("a newer ledger hid this home's damaged re-homes: failed %v, skipped %v", failed, skipped)
 	}
 }
+
+// Only a home that spends against this ledger today can share a dir with this
+// one: a registration whose home has since left is no longer judged.
+func TestCheckHomesJudgesOnlyCurrentMembers(t *testing.T) {
+	base := t.TempDir()
+	owner := config.ForHome(filepath.Join(base, "owner")).Claude
+	second := config.ForHome(filepath.Join(base, "second")).Claude
+	third := config.ForHome(filepath.Join(base, "third")).Claude
+	second.LedgerRoot, third.LedgerRoot = owner.AccountsRoot, owner.AccountsRoot
+	for _, dir := range []string{owner.AccountsRoot, filepath.Join(second.AccountsRoot, "b@x.com"), third.AccountsRoot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The third home has adopted one of the second home's dirs.
+	if err := os.Symlink(filepath.Join(second.AccountsRoot, "b@x.com"), filepath.Join(third.AccountsRoot, "b@x.com")); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []config.Scope{second, third} {
+		if err := state.Open(s).Register(time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shareDirs := func() bool {
+		var failed bool
+		note := func(ok bool, label, hint string) {
+			if !ok && strings.Contains(label, "belongs to two homes") {
+				failed = true
+			}
+		}
+		checkHomes(accounts.Discover(second), state.Open(second).Load(), note, note)
+		return failed
+	}
+	if err := os.WriteFile(third.LedgerFile(), []byte(owner.AccountsRoot+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !shareDirs() {
+		t.Fatal("a dir shared with a home on this ledger did not fail")
+	}
+	if err := os.Remove(third.LedgerFile()); err != nil {
+		t.Fatal(err)
+	}
+	if shareDirs() {
+		t.Error("a home that left the ledger is still judged")
+	}
+}
