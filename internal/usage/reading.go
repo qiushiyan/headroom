@@ -80,6 +80,33 @@ func (r Reading) Drifted() int {
 	return n
 }
 
+// SessionWindow is the index of the vendor's shortest limit among rows: Claude
+// Code's `session` row, and the shortest window of Codex's main rate limit. -1
+// when the reading holds none it can identify. Which row is the short window is
+// the vendor's vocabulary, so it is decided here, beside the parsers, and
+// nowhere else. A row whose identity failed the contract is never it.
+func SessionWindow(vendor config.Vendor, rows []Row) int {
+	best := -1
+	for i, r := range rows {
+		if r.IdentityState == StateBad {
+			continue
+		}
+		if vendor == config.Codex {
+			if r.Group != CodexGroupMain || r.WindowSeconds <= 0 {
+				continue
+			}
+			if best < 0 || r.WindowSeconds < rows[best].WindowSeconds {
+				best = i
+			}
+			continue
+		}
+		if r.Kind == "session" {
+			return i
+		}
+	}
+	return best
+}
+
 // Parse is the one dispatch from a vendor to the parser of its usage body.
 // Live interpretation, replay from the store and `check` all come through
 // here: the store a body was read from, or the endpoint it was fetched from,

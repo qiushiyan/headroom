@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 type LiveState int
@@ -18,12 +20,30 @@ const (
 )
 
 // RegistryEntry is a vendor claim; only a matching process start proves life.
+//
+// Status is the vendor's own word for what the session is doing, carried
+// verbatim ("busy" and "idle" observed on 2.1.286, "shell" seen once): only
+// StatusBusy is given a meaning here, and every other value is passed through
+// as it was read. StatusState says whether there was a word at all — absent,
+// or present under a type it has never had, is not "idle".
 type RegistryEntry struct {
 	Account     string
 	SessionID   string
 	PID         int
 	StartedAtMS int64
 	OK          bool
+	Status      string
+	StatusState tag.State
+}
+
+// StatusBusy is the one registry status headroom acts on: the session is
+// working a turn right now.
+const StatusBusy = "busy"
+
+// Busy reports a session the vendor says is working. Any other status,
+// including none, is not busy and is not thereby idle.
+func (e RegistryEntry) Busy() bool {
+	return e.StatusState == tag.OK && e.Status == StatusBusy
 }
 
 // Registry preserves every identifiable claim and reports unreadable evidence.
@@ -53,9 +73,10 @@ func ReadRegistry(accountName, dir string) Registry {
 		path := filepath.Join(sdir, e.Name())
 		data, err := os.ReadFile(path)
 		var rec struct {
-			SessionID   string `json:"sessionId"`
-			PID         int    `json:"pid"`
-			StartedAtMS int64  `json:"startedAt"`
+			SessionID   string          `json:"sessionId"`
+			PID         int             `json:"pid"`
+			StartedAtMS int64           `json:"startedAt"`
+			Status      json.RawMessage `json:"status"`
 		}
 		if err == nil {
 			err = json.Unmarshal(data, &rec)
@@ -65,10 +86,25 @@ func ReadRegistry(accountName, dir string) Registry {
 			out.Problems = append(out.Problems, fmt.Errorf("%s: unreadable session claim", path))
 		}
 		if rec.SessionID != "" {
-			out.Entries = append(out.Entries, RegistryEntry{accountName, rec.SessionID, rec.PID, rec.StartedAtMS, ok})
+			status, statusState := decodeStatus(rec.Status)
+			out.Entries = append(out.Entries, RegistryEntry{Account: accountName, SessionID: rec.SessionID,
+				PID: rec.PID, StartedAtMS: rec.StartedAtMS, OK: ok, Status: status, StatusState: statusState})
 		}
 	}
 	return out
+}
+
+// decodeStatus reads the status field as a non-empty string. Absent or null
+// is tag.None; anything else that is not a non-empty string is tag.Bad.
+func decodeStatus(raw json.RawMessage) (string, tag.State) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", tag.None
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil || s == "" {
+		return "", tag.Bad
+	}
+	return s, tag.OK
 }
 
 // PIDProbe returns a start instant, os.ErrNotExist for a proven absent process,
@@ -99,12 +135,23 @@ func liveRank(s LiveState) int {
 
 // Inspect samples each PID once. Ownership and liveness consume the same facts.
 func Inspect(entries []RegistryEntry, probe PIDProbe) map[string]ProcessEvidence {
+	evidence, _ := InspectClaims(entries, probe)
+	return evidence
+}
+
+// InspectClaims is Inspect plus the claims it verified as live — the pid runs
+// and its kernel start matches the registry's — from the same one sample per
+// pid, so a session's liveness and an account's live sessions cannot be
+// decided two ways. A claim whose pid was recycled, or whose record is
+// damaged, is not among them.
+func InspectClaims(entries []RegistryEntry, probe PIDProbe) (map[string]ProcessEvidence, []RegistryEntry) {
 	type sample struct {
 		start int64
 		err   error
 	}
 	samples := map[int]sample{}
 	out := map[string]ProcessEvidence{}
+	var live []RegistryEntry
 	for _, e := range entries {
 		evidence := ProcessEvidence{State: LiveUnknown}
 		if e.OK && probe != nil {
@@ -119,6 +166,7 @@ func Inspect(entries []RegistryEntry, probe PIDProbe) map[string]ProcessEvidence
 			case p.err != nil:
 			case startMatches(e, p.start):
 				evidence = ProcessEvidence{Live, e.Account}
+				live = append(live, e)
 			default:
 				evidence.State = NotLive
 			}
@@ -127,7 +175,7 @@ func Inspect(entries []RegistryEntry, probe PIDProbe) map[string]ProcessEvidence
 			out[e.SessionID] = evidence
 		}
 	}
-	return out
+	return out, live
 }
 
 // LiveNow re-reads claims immediately before an action; collection can age.

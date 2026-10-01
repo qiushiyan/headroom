@@ -278,3 +278,39 @@ func TestCodexUnstartedTestsTheDecodedPercentNotTheRoundedOne(t *testing.T) {
 		t.Errorf("display percent = %d", row.Percent)
 	}
 }
+
+func TestSessionWindow(t *testing.T) {
+	claude := []Row{
+		{Kind: "weekly_all", Group: "weekly"},
+		{Kind: "session", Group: "session"},
+		{Kind: "weekly_scoped", Group: "weekly", Model: "Fable"},
+	}
+	if got := SessionWindow(config.Claude, claude); got != 1 {
+		t.Errorf("claude session window = %d, want 1", got)
+	}
+	if got := SessionWindow(config.Claude, claude[:1]); got != -1 {
+		t.Errorf("no session row = %d, want -1", got)
+	}
+	bad := []Row{{Kind: "session", IdentityState: StateBad}}
+	if got := SessionWindow(config.Claude, bad); got != -1 {
+		t.Errorf("a row that cannot say which limit it is = %d, want -1", got)
+	}
+
+	// Codex: the shortest window of the main rate limit, whatever its slot,
+	// and never a code-review or additional limit however short.
+	codex := []Row{
+		{Kind: "primary", Group: CodexGroupMain, WindowSeconds: 604800},
+		{Kind: "secondary", Group: CodexGroupMain, WindowSeconds: 18000},
+		{Kind: "primary", Group: CodexGroupCodeReview, WindowSeconds: 3600},
+		{Kind: "primary", Group: CodexGroupAdditional, Feature: "x", WindowSeconds: 60},
+	}
+	if got := SessionWindow(config.Codex, codex); got != 1 {
+		t.Errorf("codex session window = %d, want 1", got)
+	}
+	if got := SessionWindow(config.Codex, codex[:1]); got != 0 {
+		t.Errorf("a lone weekly window is the shortest there is: %d", got)
+	}
+	if got := SessionWindow(config.Codex, codex[2:]); got != -1 {
+		t.Errorf("no main-limit window = %d, want -1", got)
+	}
+}
