@@ -71,7 +71,7 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 	var vendor config.Vendor
 	vendorSet := false
 	switch cmd {
-	case "", "accounts", "select", "--json", "limits", "resolve", "launch":
+	case "", "accounts", "select", "--json", "limits", "resolve", "launch", "launches", "refresh":
 		vendor, vendorSet, rest, err = takeVendor(rest)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
@@ -160,6 +160,21 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 			return 1
 		}
 		return runLaunch(scope, rest)
+	case "launches":
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runLaunches(scopes, rest)
+	case "refresh":
+		if !noArgs() {
+			return 2
+		}
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runRefresh(scopes)
 	case "-h", "--help", "help":
 		if !noArgs() {
 			return 2
@@ -310,13 +325,28 @@ type prepared struct {
 }
 
 func prepare(scope config.Scope, st *state.Store) prepared {
+	return prepareVia(scope, st, queryHealthParallel)
+}
+
+// prepareUnprobed is prepare without the vendor's health probe: health falls
+// back to credential evidence, as it does whenever the probe has no answer.
+// It is what the detached refresh runs — a process nobody is watching has no
+// use for a `claude auth status` spawn per account, and must not lean on
+// whatever that command does as a side effect.
+func prepareUnprobed(scope config.Scope, st *state.Store) prepared {
+	return prepareVia(scope, st, func([]accounts.Account) auth.QueryFunc {
+		return func(string) auth.Status { return auth.Status{} }
+	})
+}
+
+func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
 	if scope.Vendor == config.Claude {
 		// Only Claude Code's access costs a process and a Keychain read. The
 		// Codex reader works from the auth snapshot discovery already took.
-		src.readRaw, src.health = creds.ReadRaw, queryHealthParallel(set.Accounts)
+		src.readRaw, src.health = creds.ReadRaw, health(set.Accounts)
 	}
 	list, current := prepareWith(set, snap, src)
 	return prepared{set, list, current, snap}

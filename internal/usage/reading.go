@@ -107,6 +107,15 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 	return best
 }
 
+// General reports whether a row bounds ordinary work on the account, as
+// opposed to one feature of it. Every Claude Code row does. Of Codex's, only
+// the main rate limit's windows do: a code-review or additional limit that is
+// spent, or that no longer parses, blocks that feature and leaves the account
+// usable, so it must not decide where a session goes.
+func General(vendor config.Vendor, r Row) bool {
+	return vendor != config.Codex || r.Group == CodexGroupMain
+}
+
 // Parse is the one dispatch from a vendor to the parser of its usage body.
 // Live interpretation, replay from the store and `check` all come through
 // here: the store a body was read from, or the endpoint it was fetched from,

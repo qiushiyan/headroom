@@ -12,13 +12,18 @@ package app
 // personal preflight and flags.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 // execVendor is the one impure edge of the launch surface, injected so tests
@@ -51,6 +56,13 @@ func runResolve(cfg config.Scope, args []string) int {
 		return 2
 	}
 	a, err := accounts.Discover(cfg).Select(selector)
+	if errors.Is(err, accounts.ErrAuto) {
+		// There is no one account to print. An answer here would be a guess
+		// the next launch need not agree with, and a caller launching on it
+		// by name would bypass the placement it stood in for.
+		fmt.Fprintln(os.Stderr, "headroom resolve: bare launches are automatic — name an account, or `headroom launch --dry-run` shows the one a launch would take")
+		return 1
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom resolve: %v\n", err)
 		return 1
@@ -68,12 +80,23 @@ func runResolve(cfg config.Scope, args []string) int {
 	return 0
 }
 
-// runLaunch validates the target, optionally records it as where bare `x`
-// goes next, constructs the child environment from the decision alone, and
-// replaces this process with claude. Everything after `--` goes to claude
-// verbatim.
+// runLaunch decides the account, records the decision, and replaces this
+// process with the vendor. Everything after `--` goes to the vendor verbatim.
+//
+// The account is decided one of four ways: named (`--account`), the last one
+// used (`--last`), pinned (`.current` names it) or automatic (`.current` says
+// auto, or `--auto`). Every one of them takes the same path from there —
+// prepare, place, log, exec — so a named launch is recorded as load the
+// automatic ones can see, and the child environment is built by launch.Prepare
+// from the validated account whichever way it was chosen.
+//
+// In auto mode every usable account is a correct answer, so nothing about the
+// bookkeeping can refuse the launch: a lock that will not come, a section that
+// will not decode, a log that will not append each cost a line on stderr.
+// Corrupt routing state still refuses, exactly as before — an unreadable
+// `.current` says nothing about what the person chose.
 func runLaunch(cfg config.Scope, args []string) int {
-	remember := false
+	var remember, auto, last, dryRun bool
 	account, accountSet := "", false
 	rest := []string(nil)
 parse:
@@ -81,6 +104,12 @@ parse:
 		switch args[i] {
 		case "--remember":
 			remember = true
+		case "--auto":
+			auto = true
+		case "--last":
+			last = true
+		case "--dry-run":
+			dryRun = true
 		case "--account":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "headroom launch: --account needs a value")
@@ -104,36 +133,155 @@ parse:
 		fmt.Fprintln(os.Stderr, "headroom launch: --account needs a non-empty name")
 		return 2
 	}
+	ways := 0
+	for _, set := range []bool{auto, last, accountSet} {
+		if set {
+			ways++
+		}
+	}
+	switch {
+	case ways > 1:
+		fmt.Fprintln(os.Stderr, "headroom launch: --auto, --last and --account each decide the account — give one")
+		return 2
+	case dryRun && remember:
+		fmt.Fprintln(os.Stderr, "headroom launch: --dry-run records nothing — it cannot be combined with --remember")
+		return 2
+	case last && remember:
+		fmt.Fprintln(os.Stderr, "headroom launch: --last is one launch — to pin an account, --account <name> --remember")
+		return 2
+	}
 
 	set := accounts.Discover(cfg)
-	a, err := set.Select(account)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
-		return 1
+	now := time.Now()
+	var intent placement.Intent
+	mode := "auto"
+	switch {
+	case accountSet:
+		a, err := set.Select(account)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+			return 1
+		}
+		intent, mode = placement.Intent{Kind: placement.Forced, Account: a.Name, Reason: "named"}, "named"
+	case last:
+		intent, mode = placement.Intent{Kind: placement.LastUsed}, "last"
+	case auto:
+	default:
+		bare, err := set.Bare()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+			return 1
+		}
+		if !bare.Auto {
+			intent, mode = placement.Intent{Kind: placement.Forced, Account: bare.Account.Name, Reason: "pinned"}, "pinned"
+		}
 	}
-	prepared, err := launch.Prepare(a, set, os.Environ())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
-		return 1
+	automatic := intent.Kind == placement.Auto
+
+	st := state.Open(cfg)
+	facts := gatherPlacement(set, st, os.Environ(), automatic, now)
+	if intent.Kind == placement.Forced {
+		// The account was named, by flag or by pin: its own preparation error
+		// is the answer, said the way it always was.
+		if err := facts.prepareErr[intent.Account]; err != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+			return 1
+		}
 	}
+
+	// A launch that names a session follows the account that last drove it,
+	// so its prompt cache and its checkpoints stay usable. Only an automatic
+	// launch asks: a named or pinned one was told where to go. Only Claude
+	// Code has an owner to ask about.
+	var ref sessionRef
+	owner := ""
+	if automatic && cfg.Vendor == config.Claude {
+		ref = sessionIntent(rest)
+		if ref.Route != "" {
+			owner = facts.owner(ref.Route)
+			intent.Owner = owner
+		}
+	}
+
+	if dryRun {
+		d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now)
+		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now)
+		if d.Chosen == "" {
+			return 1
+		}
+		return 0
+	}
+
 	if remember {
-		// Before the exec, necessarily — and a failure refuses the launch:
-		// "chosen and recorded" is one step to the user, and launching on a
-		// choice that could not be recorded would have the next bare `x` go
-		// somewhere else.
-		if err := set.SetCurrent(a); err != nil {
+		// Before the placement and before the exec, necessarily — and a
+		// failure refuses the launch: "chosen and recorded" is one step to
+		// the user, and launching on a choice that could not be recorded
+		// would have the next bare `x` go somewhere else. An automatic
+		// launch that no account can take records nothing either.
+		var err error
+		if automatic {
+			if d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now); d.Chosen == "" {
+				fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
+				return 1
+			}
+			err = set.SetAuto()
+		} else if a, ok := facts.account(intent.Account); ok {
+			err = set.SetCurrent(a)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom launch: could not record .current (%v) — not launching\n", err)
 			return 1
 		}
 	}
 
+	placed, placeErr := st.Place(facts.cands, intent, os.Getpid(), ref.Record, now)
+	d := placed.Decision
+	if d.Chosen == "" {
+		fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
+		return 1
+	}
+	prepared, ok := facts.prepared[d.Chosen]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", facts.prepareErr[d.Chosen])
+		return 1
+	}
+
+	rec := launchlog.New(d, now)
+	rec.Vendor, rec.PID, rec.Mode, rec.Session, rec.Recorded = string(cfg.Vendor), os.Getpid(), mode, ref.Route, placed.Recorded
+	rec.CWD, _ = os.Getwd()
+	if placeErr != nil {
+		rec.Problem = placeErr.Error()
+	}
+	if err := launchlog.Append(cfg.AccountsRoot, rec); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: launch log not written (%v)\n", err)
+	}
+	if automatic && refreshWorthStarting(facts, now) {
+		// For the next launch, not this one: nothing here waits on a network.
+		_ = startRefresh(cfg)
+	}
+
 	for _, notice := range prepared.Notices {
 		fmt.Fprintln(os.Stderr, "headroom launch: "+notice)
+	}
+	if mode != "named" {
+		// A named launch says nothing, as it never did: the person typed the
+		// account. Every other way of deciding says which account it was.
+		fmt.Fprintln(os.Stderr, "headroom launch: "+launchLine(d, mode, ref, owner, now))
+		if placeErr != nil && mode != "pinned" {
+			fmt.Fprintf(os.Stderr, "headroom launch: placement not recorded (%v) — the next launch will not count this one\n", placeErr)
+		}
+		if placed.SessionErr != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: session routing not recorded (%v) — run headroom check\n", placed.SessionErr)
+		}
 	}
 	if err := execVendor(prepared.Path, prepared.Binary, rest, prepared.Env); err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: exec %s: %v\n", prepared.Binary, err)
 		if remember {
-			fmt.Fprintf(os.Stderr, "headroom launch: .current remains %s\n", a.Name)
+			current := d.Chosen
+			if automatic {
+				current = accounts.AutoWord
+			}
+			fmt.Fprintf(os.Stderr, "headroom launch: .current remains %s\n", current)
 		}
 		return 1
 	}
