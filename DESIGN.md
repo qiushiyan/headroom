@@ -69,11 +69,12 @@ Everything derives from that tree:
   dir, from local state: ~170ms, no network, no usage budget. headroom infers
   account health from credential timestamps only when that command can't
   answer.
-- **Two one-line files beside the accounts.** `.current` names the account
-  bare `x` targets next — written atomically by headroom alone (the board's
-  enter, `launch --remember`) and read strictly by headroom alone
-  (the discovered set's `Select`; see The launch surface for why corrupt state refuses
-  rather than defaulting). `.order` (optional; one email per line, `#`
+- **Two one-line files beside the accounts.** `.current` says what a bare
+  `x` does next — the name of the account it targets, or the word `auto`
+  (see Automatic placement) — written atomically by headroom alone (the
+  board's enter and `a`, `launch --remember`) and read strictly by headroom
+  alone (the discovered set's `Bare`; see The launch surface for why corrupt
+  state refuses rather than defaulting). `.order` (optional; one email per line, `#`
   comments) sets display order after the primary; unlisted accounts follow
   alphabetically — configuration a human edits. Both stay outside
   `state.json` on purpose; see The one file headroom writes.
@@ -81,8 +82,9 @@ Everything derives from that tree:
 Read-only means read-only *against Claude Code*: headroom never writes the
 Keychain, never refreshes a token, and never touches vendor login or quota
 state — Claude Code owns all of it. What it writes is its own: `.current`,
-and one `state.json` holding non-secret request timestamps, the usage
-responses it fetched itself, and explicit session re-homes. Three documented
+one `state.json` holding non-secret request timestamps, the usage
+responses it fetched itself, session re-homes and the record of recent
+launches, and `launches.jsonl`, the launch log nothing routes by. Three documented
 exceptions, every one an explicit user command naming its object and refused
 while a session is live or liveness is unverifiable: the session picker's `r`
 appends one vendor-format `custom-title` record (exactly what the native
@@ -340,6 +342,14 @@ ledger, the responses, and the session re-homes.
   promise one: an account's key comes from a vendor file Claude Code rewrites
   constantly, so a torn read moves the key and the sweep deletes the live
   cooldown and stored answer of an account sitting right there.
+- **Launches are recorded beside the ledger, and are as disposable.** The
+  `placements` section holds the launches of the last fifteen minutes — the
+  load a new launch must count — and the newest launch per account, which
+  breaks ties and answers `--last`. It is keyed like the ledger, by the
+  account's identity, because two dirs on one account spend one quota. A
+  section that will not decode is set aside and the record starts empty: that
+  costs a few launches their view of each other and nothing else. A binary
+  from before the section existed carries it through its writes untouched.
 - **`.current` and `.order` stay out of it.** `.current` is one human-legible
   routing fact with its own failure policy — corrupt refuses the launch,
   visibly — while this document's ledger section is disposable and
@@ -519,7 +529,12 @@ engineered from the 2.1.220 store and all perishable:
   `enter` resumes on the owner and writes nothing — the launch itself
   becomes vendor evidence. The override key re-homes: it records the one
   fact the vendor never will ("the user pointed this session here before
-  prompting") and is superseded by any newer evidence. Degradation is
+  prompting") and is superseded by any newer evidence. An automatic launch
+  that places a session it was given by id writes the same record, for the
+  same reason: a print-mode session leaves no prompt history at all, so
+  without it each later turn would be placed afresh. The sweep that retires
+  re-homes of deleted transcripts leaves a record younger than ten minutes
+  alone — a first turn's id is known before the vendor has written a line. Degradation is
   visible: no evidence, a re-home to a deleted account, or a same-instant
   conflict each fall back to the current account under their own tag.
 - **Liveness is pid + start instant, and it gates the mutations.** Each
@@ -527,7 +542,10 @@ engineered from the 2.1.220 store and all perishable:
   counts only when the pid is alive *and* its kernel start time matches the
   registry's `startedAt` within tolerance — pids recycle. (Epoch ms, not
   the `procStart` string: that one is UTC-rendered while `ps` speaks local
-  time, so string equality fails everywhere but UTC.) Live and
+  time, so string equality fails everywhere but UTC.) The same record
+  carries `status` — `busy` or `idle` on 2.1.286, `shell` seen once — which
+  the reader passes through verbatim; only `busy` is given a meaning, by
+  placement, and no other word is thereby "idle". Live and
   unverifiable sessions refuse `dd` and `r`; deleting an open transcript
   loses the conversation to an unlinked inode. Registry decoding returns
   claims plus read problems. Each PID is sampled once per collection, so
@@ -596,8 +614,10 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   their environments through the same constructor, so a polluted shell can
   neither re-route a launch nor make every health answer come from one
   login.
-- **`headroom launch [--remember] [--account <name>] [-- args]`** resolves
-  the account (omitted `--account` means the recorded choice), optionally
+- **`headroom launch [--auto | --last | --account <name>] [--remember]
+  [--dry-run] [-- args]`** decides the account (bare means the recorded
+  choice: the pinned account, or under auto the rule's — see Automatic
+  placement), optionally
   records it as where bare `x` goes next — before the exec, and a failed
   record refuses the launch — then execs `claude`, preserving stdio,
   signals and exit status by replacement rather than proxying. `--remember`
@@ -632,8 +652,9 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   one. Resolve is advice, not a capability: launch revalidates whatever
   comes back.
 - **Selection fails closed.** An absent `.current` is the documented
-  fresh-start default (the primary); an empty, unreadable one, or one
-  naming a deleted account, refuses with an actionable message — on the
+  fresh-start default (the primary, pinned); the reserved word is auto mode;
+  an empty, unreadable one, or one naming a deleted account, refuses with an
+  actionable message — on the
   launch, in `check` (an own-state FAIL), and as an unset `← current` marker on
   the board. The old shell fallback turned all of those into "launch the
   primary with permissions bypassed", which made corruption
@@ -688,6 +709,108 @@ check it, so a breaking change to a wrapper-facing surface ships as a
 stale caller and refuse it, actionably. (An unchanged surface may keep an
 old spelling — `select` still aliases the board — but a surface whose
 contract changed must never reuse its name.)
+
+## Automatic placement
+
+A person with several subscriptions spreads sessions by hand: a named launcher
+per session, or a trip to the board. Under auto mode a bare launch chooses the
+account itself. The mode lives where the pin lives — `.current` holds an
+account name or the word `auto` — because it is the same routing fact, and one
+strict read with one failure policy cannot disagree with itself. It is not a
+flag the shell wrapper passes: shell functions are frozen at shell init, and
+panes would disagree about what `x` does for weeks. The costs are a reserved
+word (an account so named makes the file ambiguous, and ambiguity refuses) and
+that turning auto on forgets the pin.
+
+- **Placement is launch-time and nothing else.** A session runs where it was
+  started; no request is proxied and no running session is moved. The promise
+  is that new sessions spread. A session can still exhaust the account it was
+  placed on.
+- **Each limit does one job.** `internal/placement` is one pure function. The
+  session window — the vendor's shortest limit, five hours for Claude Code —
+  ranks accounts as *load*: its usage in steps of ten points, plus one step
+  per busy session and one per launch of the last fifteen minutes. Any limit
+  at 80% or above sets an account aside while another has room. Weekly room
+  breaks ties, then the least recently placed account. The first draft of
+  this rule folded both windows into one figure ("the most room on the
+  tightest limit"), and with session usage near zero the weekly figure
+  absorbed every increment a launch added: four launches in a row went to one
+  account. Counting usage in steps, and busy sessions in the same unit, keeps
+  a one-point difference from outranking forty points of weekly room, and an
+  account at 9% with five busy sessions from beating one at 11% with none.
+  The constants are policy, not measurement, and the rule's name travels in
+  every log line.
+- **Weekly room matters as much as the five-hour window.** Over thirty days of
+  transcripts on the author's machine, the model-scoped weekly limit stopped
+  work on four days and the five-hour limit on one. So a weekly limit can take
+  an account out of the running, and decides every tie — but it never hides a
+  five-hour difference between two others.
+- **A figure counts only for the window it describes.** An observation older
+  than fifteen minutes is stale and its rows are lower bounds; a row whose
+  reset has passed counts as zero, because that window has ended. The board
+  shows the same row as unknown, and both are right: a display must not print
+  a low percent for a window that is over, while a placement may use it as a
+  bound because it says so and counts its own launch against it.
+- **An account that cannot be asked is tried, not avoided.** Only the vendor
+  refreshes an access token, so an account nothing has used for about eight
+  hours cannot be asked — and those are the idle accounts, the ones new
+  sessions should go to. Its last figures order it like any other account,
+  the launch line says how old they are, and its own placement keeps the next
+  launch from following on the same unverified figures. If the account was in
+  fact exhausted from another machine, that one session meets the limit at its
+  first prompt; starting it refreshes the token, and the next launch can ask.
+  Rationing unknown accounts instead would have sent five launches in six to
+  the two accounts already in use.
+- **Exclusion needs positive evidence.** An automatic choice leaves an account
+  out when its identity document parsed and names nobody, its refresh token is
+  demonstrably expired, the vendor says it is blocked, or it cannot be
+  launched at all. A credential that could not be read excludes nothing: with
+  a locked Keychain every account reads that way, and in auto mode every
+  usable account is a correct answer. For the same reason missing bookkeeping
+  never refuses a launch — a busy lock, an undecodable section or a newer
+  schema costs the launch its record and a line on stderr — while corrupt
+  routing state still does, since an unreadable `.current` says nothing about
+  what the person chose.
+- **Choosing and recording are one store operation.** `state.Place` reads the
+  recent launches, calls the rule and records the result inside one locked
+  section, which is `Claim`'s shape applied to launches: two launches started
+  together cannot both see an account as empty. The rule is imported and
+  called by the store, so no caller hands a function into the lock. Every
+  launch goes through it — a pinned or named one with its account forced —
+  because a session started by name is load an automatic one must count.
+- **A launch counts for a fixed span.** Fifteen minutes, whether or not its
+  process is still alive and whatever was observed since: a short job that has
+  exited still spent what the figures have not caught up with, and an
+  observation taken a second after a launch reflects none of it. Once the
+  vendor's registry reports that same process as busy it is counted once.
+- **The launch asks no network.** It reads discovery, the stored observations,
+  the session registry and credentials, in a few tens of milliseconds. Figures
+  are kept fresh for the *next* launch by a detached `headroom refresh` it
+  leaves behind: the ordinary round, through the claim, recorded by a process
+  that lives to record it. Waiting on the endpoint inside the launch would
+  have needed a deadline across the claim, the fetch and the completion, and
+  an answer still in flight at the exec would have been a spent request
+  nobody recorded.
+- **A named session keeps its account.** When the arguments carry an explicit
+  id — `--resume <uuid>`, `--session-id <uuid>` — the launch follows the
+  session's owner while that account is not near a limit, so its prompt cache
+  and its checkpoints stay usable. `--continue` and a bare `--resume` name a
+  session only the vendor can identify; headroom infers nothing and records
+  nothing about them, because a guessed id written down as routing would
+  misattribute a session for as long as the record lived. Three facts stay
+  apart: where a session is routed (the re-home), which account drove it (the
+  registry and prompt history), and how much load is on its way (the
+  placements).
+- **The log explains; it is never an input.** `launches.jsonl` holds one line
+  per launch with every candidate as counted. No routing code reads it, it
+  has its own lock, and it is bounded by age once it grows. Replaying another
+  rule over it shows what that rule would have decided on the recorded inputs,
+  not what the usage would then have been.
+
+Codex follows the same mode through its own `.current`, with what it has:
+the shortest window of its main rate limit as the session window, its
+allowance as the block, and launches as the only load. It has no registry to
+read and no session ownership, so `resume` is placed like a new session.
 
 ## A second vendor: Codex
 
@@ -856,7 +979,10 @@ keypress only after a pause.
 ## Verification
 
 `make check` runs vet and the race-enabled Go suite. Parser tables pin vendor
-contracts and visible drift. Operation tests exercise request preparation,
+contracts and visible drift. The placement rule is a table over candidates;
+the store's place operation is tested for the same property as the claim —
+contending handles on the real lock — and the launch path through the exec
+seam with credentials, the process table and the detached refresh injected. Operation tests exercise request preparation,
 local HTTP and the real store together, so sent credentials, received facts,
 refusal backoff and persistence are tested through the callers' interface.
 Checker tests use fixture processes and HTTP to verify the final exit verdict.
@@ -865,7 +991,9 @@ launch tests own routing, refusal-before-persistence and failure-after-write.
 
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
 interaction, selection, refresh scheduling, scrollback and terminal lifetime.
-Both vendors' accounts roots and usage URLs are fixture values from the
+Automatic placement is exercised there through the real binary: five launches
+started together reach five accounts, and a session named on its first turn
+resumes on the same account. Both vendors' accounts roots and usage URLs are fixture values from the
 harness's first command, because `HEADROOM_HOME` does not override an accounts
 root a caller's shell exports. Codex's fixture root does not exist until its
 block creates it — so every frame before that is the single-vendor one — and

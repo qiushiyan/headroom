@@ -1,10 +1,13 @@
 # Automatic placement — a bare launch chooses the least-loaded account
 
-Status: proposed 2026-10-01, not built; revised the same day after one
-consult round (envoy job `consult-r1`, Codex). Written against `main` at
-81c3045 with an uncommitted working tree, Claude Code 2.1.286, codex-cli
-0.155.1, macOS. Every measurement below was taken on the owner's laptop on
-that date.
+Status: built on the `auto-placement` branch, 2026-10-01, after one consult
+round (envoy job `consult-r1`, Codex); kept as the dated record of the
+decision. The design as it stands lives in `DESIGN.md` § Automatic placement —
+read that, not this, for what is true today. Written against `main` at
+81c3045, Claude Code 2.1.286, codex-cli 0.155.1, macOS. Every measurement
+below was taken on the owner's laptop on that date. Obligation 16 — a day of
+real use — is not yet met; § Delivery — What the build changed lists where
+the build departed from the first text.
 
 ## Summary
 
@@ -18,7 +21,7 @@ Goal: an account near a weekly limit is set aside, and among equally loaded acco
 Goal: every launch leaves one line in a log that holds the inputs the choice was made from.
 
 Change: `.current` records either an account (pinned, today's meaning) or the word `auto`; a bare launch follows it.
-Change: `launch` gains `--auto`, `--last` and `--dry-run`; a new `launches` command reads the log.
+Change: `launch` gains `--auto`, `--last` and `--dry-run`; a new `launches` command reads the log, and a new `refresh` command runs one unattended round.
 Change: choosing an account and recording the choice are one operation of the state store, so launches that start together see each other.
 Change: every launch, in any mode, records its placement, so a named launch counts as load for the automatic ones.
 Change: in auto mode a launch that names a session by id goes to that session's account while it is not near a limit; a first placement of a named session is recorded as a re-home.
@@ -95,7 +98,7 @@ and its rows are lower bounds. The **session window** is the vendor's
 shortest limit: Claude Code's `session` row (five hours), and the shortest
 window of Codex's main rate limit. A **busy session** is a live session
 whose registry status is `busy`. A **pending placement** is a launch made
-on the account that its newest observation cannot yet reflect. **Load** is
+on the account in the last fifteen minutes. **Load** is
 a count of steps: one per ten points of session-window usage, one per busy
 session, one per pending placement. An account is **near a limit** when
 any of its rows is at 80% or above.
@@ -203,9 +206,9 @@ first. When it is chosen, the line says its figures are old:
 headroom launch: yan@planlab.ai · auto · figures 40 h old · load 0
 ```
 
-The placement adds one step of load to the account until a newer
-observation arrives, so a second launch does not follow it there on the
-same unverified figures. Starting the session refreshes the token, and the
+The placement adds one step of load to the account for fifteen minutes,
+so a second launch does not follow it there on the same unverified
+figures. Starting the session refreshes the token, and the
 next launch's refresh can then ask.
 
 If the account was in fact used elsewhere and is exhausted, that session
@@ -466,12 +469,17 @@ a limit.
 **Load**, in whole steps: the session window's counted percent divided by
 ten, rounded down; plus one per busy session; plus one per pending
 placement. A session that is both busy and pending counts once. A pending
-placement is one recorded on the account after its newest observation was
-taken, and less than fifteen minutes ago.
+placement is one recorded on the account less than fifteen minutes ago,
+whether or not its process still runs and whatever was observed since: an
+observation taken a second after a launch reflects none of what that
+session will spend.
 
-**The choice.** Candidates are the accounts that pass launch preparation,
-show a login in their credential evidence and are not blocked by the
-vendor. The vendor's `auth status` probe is not run at launch.
+**The choice.** Candidates are the accounts that pass launch preparation
+and that no positive evidence rules out: an identity document that parsed
+and names nobody, a refresh token demonstrably expired, or a block the
+vendor reported. A credential that could not be read rules nothing out.
+The vendor's `auth status` probe is not run at launch, and credentials are
+read only when the rule will choose.
 
 1. Forced (`--account`, a pin, `--last`): that account, if it is a
    candidate; otherwise refuse, as today.
@@ -492,17 +500,16 @@ near a limit; fifteen minutes for staleness and for a pending placement.
 
 ```json
 "placements": {
-  "recent": [{"account": "uuid:…", "name": "cliushi@planlab.ai",
-              "pid": 4242, "started_ms": 1790848000000, "at_ms": 1790848000100}]
+  "recent": [{"account": "uuid:…", "name": "cliushi@planlab.ai", "pid": 4242, "at_ms": 1790848000100}],
+  "last":   {"uuid:…": {"name": "cliushi@planlab.ai", "at_ms": 1790848000100}}
 }
 ```
 
-`recent` holds placements younger than fifteen minutes; the newest entry
-is what `--last` reads, and the newest per account is the tie-break. Load
-is keyed by the ledger key, because two directories on one account share
-one quota. The pid and its start instant identify the process for
-matching against the registry, the way registry inspection already
-matches. The section is disposable: when it does not decode it is set
+`recent` holds placements younger than fifteen minutes. `last` holds the
+newest placement per account for thirty days: its newest entry is what
+`--last` reads, and each account's is the tie-break. Load is keyed by the
+ledger key, because two directories on one account share one quota. The
+pid matches a placement to the registry record of the session it became. The section is disposable: when it does not decode it is set
 aside and treated as empty. A binary from before this change carries it
 through its writes untouched.
 
@@ -511,15 +518,18 @@ through its writes untouched.
 ```json
 {"v":1,"at":"2026-10-01T10:02:11Z","vendor":"claude","pid":4242,"cwd":"/Users/…",
  "mode":"auto","reason":"least-load","rule":"load-1","chosen":"cliushi@planlab.ai",
- "session":"","recorded":true,
- "candidates":[{"name":"qiushi","eligible":true,"excluded":"","near_limit":false,
+ "runner_up":"qiushi.yann@gmail.com","session":"","recorded":true,
+ "candidates":[{"name":"qiushi","eligible":true,"near_limit":false,
    "observed_at":"2026-10-01T09:56:40Z","source":"headroom_cache",
-   "limits":[{"kind":"session","percent":5,"resets_at":"…","counted":5,"basis":"observed"}],
+   "limits":[{"kind":"session","label":"5h session","percent":5,"resets_at":"…","session":true,"counted":5,"basis":"observed"}],
    "statuses":["idle"],"busy":0,"pending":0,"load":0,"weekly":40,"last_placed_at":"…"}]}
 ```
 
-`reason` is one of `pinned`, `named`, `last`, `least-load`, `near-limit`,
-`owner`, `moved`, `rotation`, `picker`. An append is one write. When the
+`mode` is how the account came to be decided: `auto`, `pinned`, `named`,
+`last` or `picker`. `reason` is the rule's word: `pinned`, `named`,
+`picker`, `last`, `least-load`, `near-limit`, `owner`, `moved`,
+`rotation`. A record that did not reach the placements section carries
+`recorded: false` and a `problem`. An append is one write. When the
 file exceeds 8 MB, the appender takes the log's own lock without waiting
 and, if it gets it, rewrites the file without lines older than 180 days.
 The state lock is never held for the log.
@@ -675,9 +685,10 @@ in flight.
 and refuses (`internal/accounts/accounts.go`). An older binary on a
 machine with an account actually named `auto` launches that account.
 
-**P13. Cost at launch.** Measured: the disk read (`headroom limits`)
-returns in about 10 ms. The launch adds credential reads and one process
-sample per live session; neither was timed.
+**P13. Cost at launch.** Measured on the built binary against the owner's
+six accounts and seven live sessions, warm: about 20 ms up to the choice
+for a named launch, and 40 to 50 ms for an automatic one, which also reads
+six credentials.
 
 **P14. Which limit has stopped work.** Measured, roughly: among transcripts
 modified in the last thirty days, vendor limit messages appear on five
@@ -751,11 +762,13 @@ Runners: `make check` and `make test-pty`. The pty harness already stubs
     print and `--compact` carry the same marker.
 11. Obligation: schema 6. Observe: the document under pinned, auto and an
     unresolvable `.current`, from `--json` and from `limits`.
-12. Obligation: `check` covers the new facts. Observe: FAIL on a live
-    registry record with no string `status`; INCONCLUSIVE, naming the
-    value, on one outside `busy`, `idle` and `shell`; an own-state FAIL,
-    never vendor drift, on a `.current` that cannot be resolved and on a
-    placements section that does not decode.
+12. Obligation: `check` covers the new facts. Observe: FAIL when no
+    running session's registry record carries a string `status`;
+    INCONCLUSIVE when only some lack one (a stale record under a recycled
+    pid is likelier than drift) and, naming the value, on one outside
+    `busy`, `idle` and `shell`; an own-state FAIL, never vendor drift, on
+    a `.current` that cannot be resolved and on a placements section that
+    does not decode.
 13. Obligation: Codex follows its own mode. Observe: a Codex `.current` of
     `auto` places by Codex's session window and pending placements; a
     blocked allowance excludes; Claude Code's files are untouched.
@@ -789,6 +802,32 @@ before.
 5. **Words.** `docs/REFERENCE.md`, `README.md`, `DESIGN.md` (the launch
    surface gains the mode and the third file), `CLAUDE.md` and both
    shipped skills, in the same PR. Then obligation 16.
+
+### What the build changed
+
+- A pending placement counts for a fixed fifteen minutes. The first text
+  ended it at the next observation, and an observation taken a second after
+  a launch — the detached refresh of the very next launch — would then have
+  erased the load before the session had spent anything.
+- The record keeps the newest launch per account for thirty days beside
+  the recent ones, so `--last` and the tie-break outlive the fifteen
+  minutes.
+- An automatic choice excludes an account only on positive evidence. The
+  first text asked for a login "shown in credential evidence", which on a
+  machine whose Keychain is locked would have excluded every account and
+  refused the launch — against the first tenet.
+- A pinned or named launch reads no credentials: they are evidence for a
+  choice the rule makes, not for one the person made.
+- `refresh` is an ordinary command, because the detached round has to be
+  something the binary can run.
+- The session picker records every resume as load and logs it, not only
+  the ones the rule placed.
+- `check` fails on the registry status only when no running session
+  carries one.
+
+Not done: obligation 16. The branch's binary has not been installed, so
+no bare launch has yet run in auto mode on the owner's machine; P3 is
+therefore still open.
 
 Outside this repository, and therefore separate: the owner's dotfiles
 (`docs/claude-accounts.md`, the comments in `claude.zsh`, and launcher
