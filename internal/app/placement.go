@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,6 +49,10 @@ type placeFacts struct {
 	snap  state.Snapshot
 	cands []placement.Candidate
 	keys  []state.Key // the ledger key of each candidate, in order
+
+	// askable marks the candidates whose stored token could carry a usage
+	// request right now. Known only when credentials were read.
+	askable []bool
 
 	// prepared holds the launch each launchable account would run; prepareErr
 	// holds why the others cannot be launched at all.
@@ -120,6 +125,16 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, fa.View.Obs)
 		f.cands = append(f.cands, c)
 		f.keys = append(f.keys, fa.Key)
+		askable := false
+		switch {
+		case !automatic:
+		case scope.Vendor == config.Codex:
+			askable = a.Auth.State == codexauth.OK && !a.Auth.TokenStale(now.Unix())
+		default:
+			blob, ok := creds.Parse(blobs[i])
+			askable = ok && a.Readable && blob.TokenUsable(now.UnixMilli())
+		}
+		f.askable = append(f.askable, askable)
 	}
 	return f
 }
@@ -286,6 +301,12 @@ var startRefresh = func(scope config.Scope) error {
 	if err != nil {
 		return err
 	}
+	if strings.HasSuffix(filepath.Base(exe), ".test") {
+		// A test binary re-executed with these arguments would run the suite
+		// again, which would launch again. The tests that mean to observe this
+		// edge replace it; one that forgot must not be able to fork.
+		return nil
+	}
 	cmd := exec.Command(exe, "refresh", "--vendor", string(scope.Vendor))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -294,12 +315,14 @@ var startRefresh = func(scope config.Scope) error {
 	return cmd.Process.Release()
 }
 
-// refreshWorthStarting reports whether any account may be asked right now.
-// The claim still decides; this only keeps a launch from spawning a process
-// that would be refused on every account.
+// refreshWorthStarting reports whether any account could be asked right now:
+// its quiet period has passed and its stored token is usable. The claim still
+// decides; this only keeps a launch from spawning a process that could ask
+// nobody — which, on a machine whose idle accounts' tokens have aged out,
+// would otherwise be every launch.
 func refreshWorthStarting(f placeFacts, now time.Time) bool {
-	for _, k := range f.keys {
-		if !f.snap.NextEligible(k, now).After(now) {
+	for i, k := range f.keys {
+		if i < len(f.askable) && f.askable[i] && !f.snap.NextEligible(k, now).After(now) {
 			return true
 		}
 	}

@@ -207,6 +207,25 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	if *f.refreshes != 0 {
 		t.Errorf("%d refreshes started with every account inside its quiet period", *f.refreshes)
 	}
+
+	// Past the quiet period but with every stored token aged out, nobody can
+	// be asked either: an idle machine must not spawn a process per launch to
+	// learn that again.
+	stale := newAutoFixture(t, "a@x.com")
+	stale.setCurrent("auto\n")
+	stale.observe("qiushi", 0, 0, time.Hour)
+	stale.observe("a@x.com", 0, 0, time.Hour)
+	past := time.Now().Add(-time.Hour).UnixMilli()
+	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
+	placementCreds = func(accounts.Account) string {
+		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, past, far)
+	}
+	if got := stale.launch(); got.code != 0 {
+		t.Fatal(got.stderr)
+	}
+	if *stale.refreshes != 0 {
+		t.Errorf("%d refreshes started with no askable account", *stale.refreshes)
+	}
 }
 
 func TestAutoLaunchesSpreadAcrossAccounts(t *testing.T) {
