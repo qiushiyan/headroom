@@ -25,7 +25,7 @@ naming a vendor this machine does not have fails saying so, except
   heading when there are two — and exits.
 - **`headroom accounts --compact`:** the same board, one row per account: the
   email, then one cell per limit window in priority order (Claude Code:
-  model-scoped 7d, 5h session, all models; Codex: the main limit, then code
+  all models, 5h session, model-scoped 7d; Codex: the main limit, then code
   review, then additional limits, longer window first) — the percent in the
   bar's colour with the time to reset dim beside it (`52% 4.8d`; tenths of an
   hour under a day, `2.1h`; `not started` for a Codex window nobody has spent

@@ -254,8 +254,9 @@ one rule — a row may not collapse what the block keeps apart:
   that explain (how old, from where).
 - **Columns are decoded identity, never heading prose.** They key on
   `kind`/`group`/`model`, the way machine consumers select rows, and run in
-  the order that decides the choice: the model-scoped weekly windows (the
-  one that runs out), then the 5h session, then all models. A row whose
+  the order that decides the choice: all models (the window that strands an
+  account for days), then the 5h session, then the model-scoped weekly
+  windows, which bind only for work on that one model. A row whose
   identity failed the contract forms no column and captions its account
   with drift.
 - **A cell is a percent with its clock beside it, not beside it as an

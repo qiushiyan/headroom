@@ -55,8 +55,8 @@ func TestBoardBlocksIsAccountBlock(t *testing.T) {
 }
 
 // Columns are the union of decoded identities across accounts, ordered by
-// how much they decide the choice — model-scoped weekly windows, then the
-// 5h session, then all models — however the rows arrived, keyed by identity
+// how much they decide the choice — all models, then the 5h session, then
+// the model-scoped weekly windows — however the rows arrived, keyed by identity
 // and never by heading: two rows spelling the same label under different
 // identities are two columns, an unknown kind is carried after the known
 // ones, and a row whose identity failed the contract forms no column at all.
@@ -80,7 +80,7 @@ func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 	for _, c := range cols {
 		got = append(got, c.kind+"/"+c.model)
 	}
-	want := []string{"weekly_scoped/Fable", "weekly_scoped/Fable ", "weekly_scoped/Opus", "session/", "weekly_all/", "mystery/"}
+	want := []string{"weekly_all/", "session/", "weekly_scoped/Fable", "weekly_scoped/Fable ", "weekly_scoped/Opus", "mystery/"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("columns = %v, want %v", got, want)
 	}
@@ -325,10 +325,10 @@ func TestCompactRowsAreOnePhysicalRowEach(t *testing.T) {
 			t.Errorf("line carries a control byte: %q", line)
 		}
 	}
-	// The wide label pads by cells, so the session cell — the last figure
+	// The wide label pads by cells, so the session cell — the first figure
 	// on both rows — starts in the same column.
 	a, c := bare(b.Groups[0][0]), bare(b.Groups[1][0])
-	if Cells(a[:strings.LastIndex(a, "1% 1.0h")]) != Cells(c[:strings.LastIndex(c, "1% 1.0h")]) {
+	if Cells(a[:strings.Index(a, "1% 1.0h")]) != Cells(c[:strings.Index(c, "1% 1.0h")]) {
 		t.Errorf("cells misaligned across a wide label:\n%q\n%q", a, c)
 	}
 }

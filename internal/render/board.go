@@ -79,8 +79,9 @@ const (
 // A column is one limit window across every account, identified by the
 // vendor's decoded vocabulary — kind, group and the scoped model — and never
 // by the heading derived from it. Known kinds sort by how much they decide
-// the choice: the model-scoped weekly windows first (the one that runs out),
-// then the 5h session, then all models; unknown vocabulary follows
+// the choice: the all-models weekly first (the window that strands an account
+// for days), then the 5h session, then the model-scoped weekly windows, which
+// bind only for work on that one model; unknown vocabulary follows
 // deterministically. A row whose identity failed the contract forms no
 // column, because a limit that cannot say which limit it is has no place to
 // be compared in.
@@ -121,11 +122,11 @@ func codexGroupRank(group string) int {
 
 func columnRank(kind string) int {
 	switch kind {
-	case "weekly_scoped":
+	case "weekly_all":
 		return 0
 	case "session":
 		return 1
-	case "weekly_all":
+	case "weekly_scoped":
 		return 2
 	default:
 		return 3
