@@ -71,7 +71,7 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 	var vendor config.Vendor
 	vendorSet := false
 	switch cmd {
-	case "", "accounts", "select", "--json", "limits", "resolve", "launch":
+	case "", "accounts", "select", "--json", "limits", "resolve", "launch", "launches", "refresh":
 		vendor, vendorSet, rest, err = takeVendor(rest)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
@@ -160,6 +160,21 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 			return 1
 		}
 		return runLaunch(scope, rest)
+	case "launches":
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runLaunches(scopes, rest)
+	case "refresh":
+		if !noArgs() {
+			return 2
+		}
+		scopes, ok := reported()
+		if !ok {
+			return 1
+		}
+		return runRefresh(scopes)
 	case "-h", "--help", "help":
 		if !noArgs() {
 			return 2
@@ -228,9 +243,11 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: headroom [command]
 
   (none)     the account board: live usage for every account, refreshing
-  accounts   while it is open; enter picks the account a bare launch targets.
+  accounts   while it is open; enter pins the account a bare launch targets,
+             and a turns automatic placement on instead: each bare launch
+             then chooses the least-loaded account, marked "next" here.
              With Codex on this machine the board has a page per vendor —
-             tab switches, enter records that vendor's account.
+             tab switches, enter and a record that vendor's routing.
              Off a terminal, prints the board once and exits.
   accounts --compact
              the same board, one row per account: percent and time-to-reset
@@ -249,7 +266,7 @@ func printUsage(w io.Writer) {
              Codex accounts are never removed: headroom cannot tell whether
              a codex session is running on a home
   --json     the board as JSON (schema versioned; every account carries its
-             vendor, "current" is keyed by vendor)
+             vendor, "current" and "mode" are keyed by vendor)
   limits     [--account <name>] what is already known about limits, as the
              same JSON document, read from disk alone: no health probe, no
              network — never spends a request. health reads "unprobed"
@@ -258,19 +275,35 @@ func printUsage(w io.Writer) {
              claude in this terminal. --cd-file <abs path> records the
              entered dir for the shell's own cd; claude args go after "--";
              --json lists the sessions instead (no terminal needed)
-  launch     [--vendor <v>] [--remember] [--account <name>] [-- <args>]
-             exec claude (or codex) on the resolved account; the child
+  launch     [--vendor <v>] [--auto | --last | --account <name>]
+             [--remember] [--dry-run] [-- <args>]
+             exec claude (or codex) on the decided account; the child
              environment is built from the decision alone, never inherited.
+             Bare, it follows the board: the pinned account, or under auto
+             the least-loaded one — said on stderr before the vendor starts.
+             --auto places this one launch automatically, --last reuses the
+             last account used, --account names one. --remember records the
+             account (or, with --auto, the mode) for later bare launches.
+             --dry-run prints the choice and every account's figures, and
+             records, logs and starts nothing.
+             Under auto, --resume <id> and --session-id <id> follow the
+             session's account while it is not near a limit.
              Codex sessions are shared across its accounts:
              launch --vendor codex --account <other> -- resume [--all]
+  launches   [-n <count>] [--json] the newest launches, one line each: when,
+             which account, how it was decided, and the runner-up
+  refresh    ask the usage endpoint about every account that may be asked
+             and store the answers; prints nothing. An automatic launch
+             leaves one running for the next launch
   resolve    [--vendor <v>] [<name>] print canonical-name<TAB>dir<TAB>kind
-             (kind: primary|extra) for shell preflight
+             (kind: primary|extra) for shell preflight; under auto a name
+             is required
   check      verify the reverse-engineered assumptions still hold, for
              every vendor on this machine
 
   --vendor <claude|codex> defaults to claude on launch, resolve, accounts
-  add and accounts remove. accounts, --json and limits show every vendor
-  present and take --vendor to show one.
+  add and accounts remove. accounts, --json, limits, launches and refresh
+  cover every vendor present and take --vendor for one.
 `)
 }
 
@@ -310,6 +343,21 @@ type prepared struct {
 }
 
 func prepare(scope config.Scope, st *state.Store) prepared {
+	return prepareVia(scope, st, queryHealthParallel)
+}
+
+// prepareUnprobed is prepare without the vendor's health probe: health falls
+// back to credential evidence, as it does whenever the probe has no answer.
+// It is what the detached refresh runs — a process nobody is watching has no
+// use for a `claude auth status` spawn per account, and must not lean on
+// whatever that command does as a side effect.
+func prepareUnprobed(scope config.Scope, st *state.Store) prepared {
+	return prepareVia(scope, st, func([]accounts.Account) auth.QueryFunc {
+		return func(string) auth.Status { return auth.Status{} }
+	})
+}
+
+func prepareVia(scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -320,7 +368,7 @@ func prepare(scope config.Scope, st *state.Store) prepared {
 			raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
 			return raw
 		}
-		src.health = queryHealthParallel(set.Accounts)
+		src.health = health(set.Accounts)
 	}
 	list, current := prepareWith(set, snap, src)
 	return prepared{set, list, current, snap}

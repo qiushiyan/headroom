@@ -26,7 +26,13 @@ type jsonDoc struct {
 	// the account name a bare launch of that vendor targets ("" = none
 	// resolvable). The same email can be an account of both vendors, so one
 	// string could not say which.
-	Current  map[string]string `json:"current"`
+	Current map[string]string `json:"current"`
+	// Mode is keyed by vendor like Current: what a bare launch of that vendor
+	// does — "pinned" to current's account, "auto" (it chooses the
+	// least-loaded account, and current is then ""), or "" when `.current`
+	// cannot be resolved. A consumer that read an empty current as corrupt
+	// routing state must read mode first.
+	Mode     map[string]string `json:"mode"`
 	Accounts []jsonAccount     `json:"accounts"` // one flat list; select by "vendor"
 
 	// Problems are defects in headroom's own state file, never statements
@@ -148,22 +154,28 @@ type vendorBoard struct {
 	st       *state.Store
 	list     []*accountData
 	current  string
+	mode     string // "pinned" | "auto" | "" (unresolvable)
 	problems []state.Problem
 }
 
 func jsonDocument(boards []vendorBoard, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
-		// 5: a second vendor. Every account and problem carries "vendor",
-		// `current` is an object keyed by vendor, limits gain feature /
-		// window_seconds / unstarted, and usage gains the allowance.
-		Schema:      5,
+		// 6: automatic placement. `mode` is keyed by vendor, and under "auto"
+		// that vendor's `current` is "" with no account marked current — an
+		// empty current no longer means corrupt routing state on its own.
+		// (5: a second vendor — "vendor" on every account and problem,
+		// `current` keyed by vendor, feature / window_seconds / unstarted on
+		// limits, the allowance on usage.)
+		Schema:      6,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
 		Current:     map[string]string{},
+		Mode:        map[string]string{},
 		Accounts:    []jsonAccount{},
 	}
 	for _, b := range boards {
 		doc.Current[string(b.scope.Vendor)] = b.current
+		doc.Mode[string(b.scope.Vendor)] = b.mode
 		for _, p := range b.problems {
 			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.scope.Vendor), Section: p.Section, Detail: p.Detail})
 		}
@@ -255,7 +267,8 @@ func fetchBoards(scopes []config.Scope) []vendorBoard {
 			for u := range launchFetches(context.Background(), p.list, st) {
 				resolve(p.list[u.Index], u)
 			}
-			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.current, problems: p.snap.Problems()}
+			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.current, mode: p.set.Mode(), problems: p.snap.Problems()}
+			markNext(p.set, p.list, st.Load().Placements(), time.Now())
 		}(i, scope)
 	}
 	wg.Wait()

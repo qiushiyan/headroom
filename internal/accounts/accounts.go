@@ -340,32 +340,103 @@ func (s Set) KnownExtraDir(dir string) bool {
 	return false
 }
 
-// Select resolves a selector to a discovered account, strictly. selector ""
-// means the recorded choice: an absent .current is the documented fresh-start
-// default (the primary), but an empty, unreadable or unmatched one is an
-// error — never a silent primary. This is the one resolver of `.current`,
-// and it fails closed on purpose: the old shell fallback turned a torn
-// `.current` or a deleted account into "launch the primary with permissions
-// bypassed", which makes corruption indistinguishable from a valid choice.
-// Display surfaces treat the error as "no current account" and mark nothing.
-func (s Set) Select(selector string) (Account, error) {
-	accts := s.Accounts
-	name := selector
+// AutoWord is what `.current` says when a bare launch chooses its own account
+// instead of naming one. It is reserved: no account can be the target of a
+// pin and the word at once (see Bare).
+const AutoWord = "auto"
+
+// ErrAuto is Select("")'s answer under auto mode: there is no one account a
+// bare launch targets. Display surfaces already treat any error here as "no
+// current account" and mark nothing, which is exactly right for this one.
+var ErrAuto = errors.New("bare launches are automatic — no one account is current")
+
+// Bare is what a bare launch does: go to one account (pinned), or choose
+// (auto). Exactly one of the two is set.
+type Bare struct {
+	Auto    bool
+	Account Account
+}
+
+// Bare reads `.current`, strictly, and is its one reader. An absent file is
+// the documented fresh-start default (pinned to the primary); the reserved
+// word is auto mode; anything else must name exactly one discovered account.
+// Empty, unreadable or unmatched is an error — never a silent primary, and
+// never a silent auto: corrupt routing state says nothing about what the
+// person chose, so it refuses, which keeps corruption distinguishable from a
+// choice. A discovered account that is itself named with the reserved word
+// makes the file ambiguous, and ambiguity refuses like any other.
+func (s Set) Bare() (Bare, error) {
+	data, err := os.ReadFile(s.Scope.CurrentFile())
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		a, err := primaryOf(s.Accounts)
+		return Bare{Account: a}, err
+	case err != nil:
+		return Bare{}, fmt.Errorf(".current could not be read (%v)", err)
+	}
+	name := strings.TrimRight(string(data), "\n")
 	if name == "" {
-		data, err := os.ReadFile(s.Scope.CurrentFile())
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return primaryOf(accts)
-		case err != nil:
-			return Account{}, fmt.Errorf(".current could not be read (%v)", err)
+		return Bare{}, errors.New(".current is empty — run headroom accounts")
+	}
+	if name == AutoWord {
+		if a, clash := s.namedAuto(); clash {
+			return Bare{}, fmt.Errorf(".current says %q, which is also the name of an account (%s) — that word is reserved for automatic placement; rename the account", AutoWord, a.Dir())
 		}
-		name = strings.TrimRight(string(data), "\n")
-		if name == "" {
-			return Account{}, errors.New(".current is empty — run headroom accounts")
+		return Bare{Auto: true}, nil
+	}
+	a, err := s.byName(name)
+	return Bare{Account: a}, err
+}
+
+// Mode is Bare for a surface that only reports it: "pinned", "auto", or ""
+// when `.current` cannot be resolved.
+func (s Set) Mode() string {
+	b, err := s.Bare()
+	switch {
+	case err != nil:
+		return ""
+	case b.Auto:
+		return "auto"
+	default:
+		return "pinned"
+	}
+}
+
+func (s Set) namedAuto() (Account, bool) {
+	for _, a := range s.Accounts {
+		if a.Name == AutoWord {
+			return a, true
 		}
 	}
+	return Account{}, false
+}
+
+// Select resolves a selector to a discovered account, strictly. selector ""
+// means the pinned account: an absent .current is the documented fresh-start
+// default (the primary), but an empty, unreadable or unmatched one is an
+// error — never a silent primary — and under auto mode there is no pinned
+// account at all (ErrAuto). It fails closed on purpose: the old shell
+// fallback turned a torn `.current` or a deleted account into "launch the
+// primary with permissions bypassed", which makes corruption
+// indistinguishable from a valid choice. Display surfaces treat the error as
+// "no current account" and mark nothing.
+func (s Set) Select(selector string) (Account, error) {
+	if selector == "" {
+		b, err := s.Bare()
+		switch {
+		case err != nil:
+			return Account{}, err
+		case b.Auto:
+			return Account{}, ErrAuto
+		}
+		return b.Account, nil
+	}
+	return s.byName(selector)
+}
+
+func (s Set) byName(name string) (Account, error) {
 	var matches []Account
-	for _, a := range accts {
+	for _, a := range s.Accounts {
 		if a.Name == name {
 			matches = append(matches, a)
 		}
@@ -405,6 +476,25 @@ func (s Set) SetCurrent(a Account) error {
 	if a.Scope.Vendor != cfg.Vendor || a.Scope.AccountsRoot != cfg.AccountsRoot {
 		return fmt.Errorf("%s account %q cannot be recorded as the %s current account", a.Scope.Vendor.Title(), name, cfg.Vendor.Title())
 	}
+	if name == AutoWord {
+		// Written as a pin it would be read back as the mode.
+		return fmt.Errorf("an account named %q cannot be pinned — that word is reserved for automatic placement; rename %s", AutoWord, a.Dir())
+	}
+	return s.writeCurrent(name)
+}
+
+// SetAuto records that a bare launch chooses its own account from now on. It
+// replaces the pin: one file holds one routing fact. Refused while an account
+// bears the reserved word, since the file could not then say which was meant.
+func (s Set) SetAuto() error {
+	if a, clash := s.namedAuto(); clash {
+		return fmt.Errorf("an account is named %q (%s) — that word is reserved for automatic placement; rename the account first", AutoWord, a.Dir())
+	}
+	return s.writeCurrent(AutoWord)
+}
+
+func (s Set) writeCurrent(content string) error {
+	cfg := s.Scope
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
 		return err
 	}
@@ -413,7 +503,7 @@ func (s Set) SetCurrent(a Account) error {
 		return err
 	}
 	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.WriteString(name + "\n"); err != nil {
+	if _, err := tmp.WriteString(content + "\n"); err != nil {
 		tmp.Close()
 		return err
 	}

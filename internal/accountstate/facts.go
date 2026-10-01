@@ -116,7 +116,12 @@ type Facts struct {
 	// "run Launcher and /login".
 	LoginCommand string
 	Current      bool // a bare launch (no --account) targets this account
-	Health       Health
+	// Next marks the account an automatic launch would take from the figures
+	// this surface holds. It is advice, set only by a surface that showed the
+	// figures it was computed from: the launch itself reads the disk again and
+	// counts whatever was placed since.
+	Next   bool
+	Health Health
 	// AuthMode names a login headroom does not read usage for (a Codex API
 	// key, agent identity or Bedrock login); health is then unknown and the
 	// caption says why. "" otherwise.

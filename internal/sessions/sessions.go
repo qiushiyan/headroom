@@ -202,6 +202,27 @@ func readSession(storeDir, storeDirName, name string) *Session {
 	}
 }
 
+// OwnerOf resolves one session's owner from the same evidence, under the same
+// precedence, as Collect does for every session — for a launch that names a
+// session by id and must decide where it runs without walking the store.
+// evidence is that session's process evidence from the caller's one registry
+// inspection; owners are the explicit re-homes.
+func OwnerOf(id string, accts []AccountRef, evidence ProcessEvidence, owners map[string]OwnerRec) (string, OwnerState) {
+	names := map[string]bool{}
+	hists := map[string]History{}
+	for _, a := range accts {
+		names[a.Name] = true
+		if evidence.State == Live {
+			continue // a verified live claim outranks every history
+		}
+		if f, err := os.Open(filepath.Join(a.Dir, "history.jsonl")); err == nil {
+			hists[a.Name] = ParseHistory(f)
+			f.Close()
+		}
+	}
+	return resolveOwner(id, evidence, owners, hists, names)
+}
+
 // resolveOwner is the affinity contract: the owner is the newest account
 // claim headroom can observe or was explicitly given — not unobservable
 // ground truth. A verified live registry entry outranks everything (that

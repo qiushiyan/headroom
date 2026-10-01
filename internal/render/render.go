@@ -43,8 +43,11 @@ func (p Palette) HeaderLine(v accountstate.Facts) string {
 		label = fmt.Sprintf("%s %s(dir says %s!)%s", v.Label, p.Red, v.DirMismatch, p.Rst)
 	}
 	mark := ""
-	if v.Current {
+	switch {
+	case v.Current:
 		mark = "  " + p.Bold + "← current" + p.Rst
+	case v.Next:
+		mark = "  " + p.Bold + "← next" + p.Rst
 	}
 	if v.Plan != "" {
 		return fmt.Sprintf("%s%s%s %s(%s · %s)%s%s", p.Bold, label, p.Rst, p.Dim, v.Plan, v.Launcher, p.Rst, mark)

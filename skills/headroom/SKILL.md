@@ -1,6 +1,6 @@
 ---
 name: headroom
-description: Day-to-day use of the headroom CLI — quota per Claude Code or Codex account, launching on another account, changing the default, continuing a rate-limited session on another account, checking the board after a vendor update.
+description: Day-to-day use of the headroom CLI — quota per Claude Code or Codex account, launching on another account, changing the default, letting headroom place each session on the least-loaded account, continuing a rate-limited session on another account, checking the board after a vendor update.
 disable-model-invocation: true
 ---
 
@@ -17,7 +17,9 @@ shell's `x-<name>`) — quote that spelling.
 ## Read
 
 - **Quota**: `headroom` — one frame off a terminal; every account's 5-hour
-  and weekly bars, its launcher, `← current` on the default. `headroom
+  and weekly bars, its launcher, `← current` on the default. When the frame
+  opens with "bare launches are automatic" there is no default: `← next`
+  marks the account a bare launch would take from those figures. `headroom
   limits` reads from disk and spends no request — the pick for a quick
   answer or a script; it always emits JSON. `headroom --json` refreshes
   and emits the board document.
@@ -29,6 +31,12 @@ shell's `x-<name>`) — quote that spelling.
 - **Stale figures** keep their severity colours; their caption states the age.
 - **Drift markers** → the vendor response changed shape; `headroom check`
   names what. A rolled-over window reads unknown until refreshed.
+- **Where a bare launch would go, and why**: `headroom launch --dry-run` —
+  one row per account with its figures, their age, busy sessions, load, and
+  why an account is left out. It starts nothing and records nothing.
+- **Where launches went**: `headroom launches` — newest launches, one line
+  each: account, how it was decided, the runner-up. `--json` for the full
+  records.
 
 ## Act
 
@@ -38,14 +46,22 @@ shell's `x-<name>`) — quote that spelling.
   exits); or `headroom launch --remember --account <name>`. `headroom
   accounts --compact` is the same board, one row per account: percent and
   time-to-reset per window, every warning at the row's end, same keys.
+- **Let headroom choose the account**: `headroom accounts`, press **`a`**
+  (or `headroom launch --auto --remember`). Each bare launch then goes to
+  the least-loaded account — five-hour usage plus busy sessions and recent
+  launches, an account near any limit set aside, weekly room breaking ties —
+  and prints which on stderr before `claude` starts. Enter on a row pins one
+  account again. `headroom launch --auto` places a single launch that way
+  without changing the default; `headroom launch --last` reuses the account
+  of the last launch.
 - **Out of quota mid-session — continue it on another account**. Changing
   the default steers new sessions only; the old one moves by re-home:
   1. Quit the session.
   2. `headroom accounts`, enter on an account with headroom left (skip if
-     the default has some).
+     the default has some, or if bare launches are automatic).
   3. `headroom sessions`, find the row, press **`x`** — continues on the
-     current account, re-homed there. (Enter would return it to the
-     exhausted account.)
+     current account (under auto: the least-loaded of the others), re-homed
+     there. (Enter would return it to the exhausted account.)
   Without the picker: `headroom launch --account <name> -- --resume <id>`
   (`headroom sessions --json` lists ids), or `-- --continue` for the newest
   session in the cwd. Done when the session is running and its row shows
@@ -65,12 +81,13 @@ shell's `x-<name>`) — quote that spelling.
 its own default. Everything above applies with `--vendor codex` on `launch`,
 `resolve` and `accounts add`; the board, `headroom --json` and `headroom
 limits` already show both vendors (`--vendor codex` for one), and every JSON
-account carries `"vendor"`, with `current` keyed by vendor.
+account carries `"vendor"`, with `current` and `mode` keyed by vendor
+(`mode` is `pinned` or `auto`; under `auto`, `current` is empty).
 
 - **One session on another account**: `headroom launch --vendor codex
   --account <name> [-- <codex args>]`.
 - **Change the default**: `headroom accounts`, **tab** to the Codex page,
-  enter on a row.
+  enter on a row — or `a` there for automatic placement of Codex launches.
 - **Out of quota mid-session**: Codex sessions are shared across its
   accounts and `headroom sessions` does not list them — `headroom launch
   --vendor codex --account <other> -- resume` opens Codex's own picker for
@@ -84,6 +101,7 @@ account carries `"vendor"`, with `current` keyed by vendor.
   refuses and names the directory.
 
 Routing lives in `headroom launch` — it owns `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME` and `.current`; the board's enter is what moves the default. The unmanaged
+`CODEX_HOME` and `.current`; the board's enter and `a` are what move the
+default. The unmanaged
 escape hatch, when the user asks for one, is `env -u CLAUDE_CONFIG_DIR
 claude`. Flags beyond the ones above: `headroom -h`.

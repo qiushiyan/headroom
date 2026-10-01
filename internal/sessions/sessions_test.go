@@ -1,12 +1,15 @@
 package sessions
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 func TestMunge(t *testing.T) {
@@ -622,5 +625,78 @@ func TestRegistryProblemsKeepTheirScope(t *testing.T) {
 	defer os.Chmod(dir, 0755)
 	if got := LiveNow("unrelated", refs, nil); got != LiveUnknown {
 		t.Fatalf("unreadable directory cleared liveness: %v", got)
+	}
+}
+
+func TestRegistryCarriesTheVendorsStatus(t *testing.T) {
+	dir := t.TempDir()
+	sdir := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := func(pid int, status string) {
+		body := fmt.Sprintf(`{"pid":%d,"sessionId":"s%d","startedAt":1785700003000%s}`, pid, pid, status)
+		if err := os.WriteFile(filepath.Join(sdir, fmt.Sprintf("%d.json", pid)), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec(1, `,"status":"busy"`)
+	rec(2, `,"status":"idle"`)
+	rec(3, `,"status":"shell"`)
+	rec(4, ``)
+	rec(5, `,"status":7`)
+	rec(6, `,"status":null`)
+	rec(7, `,"status":""`)
+
+	want := map[int]struct {
+		status string
+		state  tag.State
+		busy   bool
+	}{
+		1: {"busy", tag.OK, true},
+		2: {"idle", tag.OK, false},
+		3: {"shell", tag.OK, false}, // carried as read, never equated with idle
+		4: {"", tag.None, false},
+		5: {"", tag.Bad, false},
+		6: {"", tag.None, false},
+		7: {"", tag.Bad, false},
+	}
+	reg := ReadRegistry("a", dir)
+	if len(reg.Entries) != len(want) || len(reg.Problems) != 0 {
+		t.Fatalf("entries %d problems %v", len(reg.Entries), reg.Problems)
+	}
+	for _, e := range reg.Entries {
+		w := want[e.PID]
+		if e.Status != w.status || e.StatusState != w.state || e.Busy() != w.busy {
+			t.Errorf("pid %d: %q/%v busy=%v, want %q/%v busy=%v", e.PID, e.Status, e.StatusState, e.Busy(), w.status, w.state, w.busy)
+		}
+	}
+}
+
+func TestInspectClaimsVerifiesEachClaimByItsOwnProcess(t *testing.T) {
+	entries := []RegistryEntry{
+		{Account: "a", SessionID: "live", PID: 1, StartedAtMS: 1_785_700_003_000, OK: true, Status: "busy"},
+		// The same session under a pid that has since been recycled.
+		{Account: "a", SessionID: "live", PID: 2, StartedAtMS: 1_785_700_003_000, OK: true, Status: "busy"},
+		{Account: "b", SessionID: "gone", PID: 3, StartedAtMS: 1_785_700_003_000, OK: true, Status: "busy"},
+		{Account: "b", SessionID: "torn", PID: 4, OK: false},
+	}
+	probe := func(pid int) (int64, error) {
+		switch pid {
+		case 1:
+			return 1_785_700_000, nil
+		case 2:
+			return 1_785_900_000, nil // another process now holds this pid
+		case 3:
+			return 0, os.ErrNotExist
+		}
+		return 0, errors.New("unexpected probe")
+	}
+	evidence, live := InspectClaims(entries, probe)
+	if len(live) != 1 || live[0].PID != 1 {
+		t.Fatalf("live claims = %+v, want pid 1 alone", live)
+	}
+	if evidence["live"].State != Live || evidence["gone"].State != NotLive || evidence["torn"].State != LiveUnknown {
+		t.Fatalf("evidence = %+v", evidence)
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
@@ -150,6 +151,14 @@ type doc struct {
 	version  int
 	accounts map[string]accountRec
 	sessions map[string]sessions.OwnerRec
+
+	// placements is the record of launches the placement rule reads: the
+	// recent ones, which are load, and the newest per account. Disposable like
+	// the request ledger — a section that will not decode is set aside and the
+	// record starts empty, which costs a few launches their view of each other
+	// and nothing else.
+	placements    placement.Ledger
+	badPlacements bool
 
 	// A section that failed to decode is nil above and true here. The two
 	// failures are handled differently on purpose: the ledger is disposable,
@@ -277,6 +286,13 @@ func read(accountsRoot string) *doc {
 			d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
 		}
 	}
+	if b, ok := d.raw["placements"]; ok {
+		if err := json.Unmarshal(b, &d.placements); err != nil {
+			d.placements = placement.Ledger{}
+			d.badPlacements = true
+			d.problems = append(d.problems, Problem{"placements", "unreadable — set aside at the next launch; placement starts from an empty record"})
+		}
+	}
 	// A JSON null decodes into a map without error and leaves it nil. Nothing
 	// here writes one, but a foreign or hand-edited document may, and a nil map
 	// panics on the first assignment rather than failing any check above.
@@ -366,6 +382,18 @@ func (s Snapshot) Owners() map[string]sessions.OwnerRec {
 	return out
 }
 
+// Placements is the record of launches as it stood when the document was read.
+// It is the caller's to read, never to keep: a choice made on it is advice, and
+// only Place — under the lock — may record one.
+func (s Snapshot) Placements() placement.Ledger {
+	out := placement.Ledger{Recent: append([]placement.Pending(nil), s.d.placements.Recent...)}
+	if len(s.d.placements.Last) > 0 {
+		out.Last = make(map[string]placement.Last, len(s.d.placements.Last))
+		maps.Copy(out.Last, s.d.placements.Last)
+	}
+	return out
+}
+
 // OwnersReadable reports whether the sessions section decoded. False means
 // routing falls back to derived evidence, which the resume picker says out
 // loud on open and `check` reports — rather than silently behaving as though
@@ -452,6 +480,17 @@ func (d *doc) marshal() ([]byte, error) {
 			return nil, err
 		}
 		out["sessions"] = b
+	}
+	if !d.badPlacements {
+		if len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 {
+			delete(out, "placements")
+		} else {
+			b, err := json.Marshal(d.placements)
+			if err != nil {
+				return nil, err
+			}
+			out["placements"] = b
+		}
 	}
 	return json.MarshalIndent(out, "", "  ")
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
@@ -21,6 +22,18 @@ const (
 	claimWait    = 2 * time.Second
 	completeWait = 10 * time.Second
 	lockPoll     = 20 * time.Millisecond
+
+	// A placement waits less than a claim: it sits on the path of the command
+	// typed most, and failing to take the lock costs only the record — the
+	// launch still chooses, from what it could read, and starts.
+	placeWait = time.Second
+
+	// rehomeGrace keeps the sweep away from a re-home whose transcript does not
+	// exist *yet*. A first turn's session id is known before the vendor has
+	// written a line of it, so a record that young is not an orphan; without
+	// the grace, the second of two launches a moment apart would sweep the
+	// first's routing before its transcript appeared.
+	rehomeGrace = 10 * time.Minute
 
 	// retention bounds the ledger by age. Sweeping by absence instead would
 	// need a complete account registry, which no caller can promise: an
@@ -282,8 +295,9 @@ func (s *Store) ReHome(id, account string, at time.Time, live Enumerator) error 
 		}
 		if live != nil {
 			if exists, ok := live(); ok {
-				for sid := range d.sessions {
-					if !exists[sid] {
+				young := at.Add(-rehomeGrace).UnixMilli()
+				for sid, rec := range d.sessions {
+					if !exists[sid] && rec.AtMS < young {
 						delete(d.sessions, sid)
 					}
 				}
@@ -293,6 +307,79 @@ func (s *Store) ReHome(id, account string, at time.Time, live Enumerator) error 
 		d.dirty = true
 		return nil
 	})
+}
+
+// Placed is Place's answer. The decision is always there; the two flags say
+// what reached disk.
+type Placed struct {
+	Decision placement.Decision
+	Recorded bool // the launch is in the record the next placement reads
+
+	// ReHomed reports that the named session's routing was recorded. SessionErr
+	// says why it was not when it should have been: an unreadable sessions
+	// section is never written over, here as everywhere.
+	ReHomed    bool
+	SessionErr error
+}
+
+// Place chooses the account for one launch and records the choice, in one
+// locked section.
+//
+// This is Claim's shape applied to launches. Choosing in one place and
+// recording in another leaves the window where two launches started together
+// both read an account as empty and both go there; here whoever loses the lock
+// race reads the winner's placement and counts it. The rule itself is
+// placement.Choose — pure, imported, and called by this package, so no caller
+// hands a function into the lock and the document is published to nobody.
+//
+// pid is the launching process's own, which the exec keeps, so a later read can
+// tell that a recorded launch became a session the vendor's registry reports.
+// session, when not empty, is an explicit session id this launch names: if the
+// rule put it anywhere but its owner, that routing is recorded as a re-home —
+// the record the session picker's override writes — so the session's next
+// turn follows it. A launch that follows the owner writes no re-home.
+//
+// An error means the bookkeeping failed, never that the launch may not
+// proceed: the decision is then made from an unlocked read and Recorded is
+// false. In auto mode every usable account is a correct answer, and a missing
+// record costs a launch its view of the ones beside it — nothing more.
+func (s *Store) Place(cands []placement.Candidate, intent placement.Intent, pid int, session string, now time.Time) (Placed, error) {
+	var out Placed
+	err := s.update(placeWait, func(d *doc) error {
+		if d.badPlacements {
+			// Disposable, like the request ledger: set the unreadable bytes
+			// aside for `check` and start from nothing.
+			d.quarantine("placements")
+			d.badPlacements = false
+			d.placements = placement.Ledger{}
+			d.dirty = true
+		}
+		if d.placements.Prune(now, retention) {
+			d.dirty = true
+		}
+		out.Decision = placement.Choose(cands, d.placements, intent, now)
+		chosen, ok := out.Decision.Find(out.Decision.Chosen)
+		if out.Decision.Chosen == "" || !ok {
+			return nil
+		}
+		d.placements.Record(chosen.Key, chosen.Name, pid, now)
+		d.dirty = true
+		out.Recorded = true
+		if session != "" && chosen.Name != intent.Owner {
+			if d.badSessions {
+				out.SessionErr = ErrCorrupt
+			} else {
+				d.sessions[session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
+				out.ReHomed = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		out = Placed{Decision: placement.Choose(cands, s.Load().Placements(), intent, now)}
+		return out, err
+	}
+	return out, nil
 }
 
 // Forget drops a session's re-home — a deleted transcript needs no routing

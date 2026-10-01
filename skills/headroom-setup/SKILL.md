@@ -34,7 +34,9 @@ named failure.
 
 Done when the new row shows a plan and bars with no red `(dir says …!)` —
 that warning means the wrong account was chosen at `/login`; `/login` there
-again. Repeat per subscription. The primary needs nothing; its board name is
+again. Repeat per subscription. With two or more logged in, `a` on the board
+makes bare launches choose the least-loaded account from then on; an account
+not yet logged in is left out of that choice until it is. The primary needs nothing; its board name is
 its login's local part (`alice`), or `export HEADROOM_PRIMARY_NAME=<name>`.
 Board order after the primary: `~/.claude-accounts/.order`, one email per
 line.
@@ -100,8 +102,8 @@ the routing. A wrapper passes names and flags and nothing else:
 re-resolved from PATH at each keystroke, while a shell function is frozen
 at shell init. Codex gets the same pair over `headroom launch --vendor
 codex` and `HEADROOM_CODEX_LAUNCHER_FORMAT`. The starter set (`x`, `xa`, `xacc` — the board, passed
-`--compact` for one row per account — and `xs` with the cd that outlives
-the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the board
+`--compact` for one row per account — `xl` for the last account used, and
+`xs` with the cd that outlives the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the board
 advertise those names, are in the repo's docs/REFERENCE.md § Shell integration
 (github.com/qiushiyan/headroom/blob/main/docs/REFERENCE.md#shell-integration);
 copy them into the

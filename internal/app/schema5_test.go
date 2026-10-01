@@ -16,6 +16,7 @@ import (
 type doc5 struct {
 	Schema   int               `json:"schema"`
 	Current  map[string]string `json:"current"`
+	Mode     map[string]string `json:"mode"`
 	Accounts []struct {
 		Vendor  string `json:"vendor"`
 		Name    string `json:"name"`
@@ -94,7 +95,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := decode5(t, data)
-	if d.Schema != 5 {
+	if d.Schema != 6 {
 		t.Errorf("schema = %d", d.Schema)
 	}
 	if d.Current["claude"] != "primary" || d.Current["codex"] != "u1@x.com" || len(d.Current) != 2 {
@@ -211,7 +212,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	}
 }
 
-// Obligation 13: a machine without Codex gets schema 5 with Claude Code only.
+// A machine without Codex gets the same schema with Claude Code only.
 func TestSchema5WithoutCodex(t *testing.T) {
 	cfg := config.ForHome(t.TempDir())
 	t.Setenv("PATH", t.TempDir())
@@ -223,7 +224,7 @@ func TestSchema5WithoutCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := decode5(t, data)
-	if d.Schema != 5 || len(d.Current) != 1 || len(d.Accounts) != 1 || d.Accounts[0].Vendor != "claude" {
+	if d.Schema != 6 || len(d.Current) != 1 || len(d.Accounts) != 1 || d.Accounts[0].Vendor != "claude" {
 		t.Errorf("doc = %+v", d)
 	}
 	if _, ok := d.Current["codex"]; ok {

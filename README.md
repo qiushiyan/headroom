@@ -45,6 +45,20 @@ room and leave the others to recover:
 - `headroom launch --account <email>` — one session on another account, the
   default untouched. Anything after `--` goes to `claude`.
 
+Or let headroom choose. Press `a` on the board and each bare launch goes to
+the least-loaded account, saying which before `claude` starts:
+
+```
+headroom launch: alice@example.com · auto · 5h 1% · week 3% · load 0 (next: bob@example.com)
+```
+
+Load is five-hour usage plus the sessions busy on that account and the
+launches just made there; an account near any limit is set aside, and weekly
+room breaks ties. Launches started together land on different accounts.
+`headroom launch --dry-run` shows the whole table without starting anything,
+`headroom launches` what was chosen before, and enter on a board row pins one
+account again.
+
 Every session, whichever account started it, shows up in one picker:
 `headroom sessions` lists every conversation on the machine and resumes each
 in its own project directory, on the account that last drove it.
@@ -56,10 +70,11 @@ belongs to the machine, not the account, so any account can pick it up:
 
 1. Quit the session.
 2. `headroom accounts` — enter on an account with headroom left (skip if
-   the default already has some).
+   the default already has some, or if bare launches are automatic).
 3. `headroom sessions` — find the row, press **`x`**: the session continues
-   on the current account, in its own project dir, and is re-homed there.
-   (Enter would send it back to A.)
+   on the current account — under auto, on the least-loaded of the others —
+   in its own project dir, and is re-homed there. (Enter would send it back
+   to A.)
 
 Without the picker: `headroom launch --account <email> -- --resume <id>`
 (`headroom sessions --json` lists ids), or `-- --continue` for the newest

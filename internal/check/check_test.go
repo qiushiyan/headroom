@@ -17,6 +17,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 // The overlap carry is the subtle part: a needle split across a chunk
@@ -376,7 +377,7 @@ func soundClaudeTree(t *testing.T, home string) (config.Scope, func(path, body s
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
 	write(cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"}}`, 0600)
-	write(filepath.Join(cfg.PrimaryDir(), "sessions", "1.json"), `{"sessionId":"session","pid":1,"startedAt":1}`, 0600)
+	write(filepath.Join(cfg.PrimaryDir(), "sessions", "1.json"), `{"sessionId":"session","pid":1,"startedAt":1,"status":"idle"}`, 0600)
 	write(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), `{"sessionId":"session","timestamp":1}`+"\n", 0600)
 	project := filepath.Join(home, "project")
 	if err := os.MkdirAll(project, 0755); err != nil {
@@ -384,4 +385,93 @@ func soundClaudeTree(t *testing.T, home string) (config.Scope, func(path, body s
 	}
 	write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
 	return cfg, write
+}
+
+// The registry status is the one field automatic placement reads beyond
+// liveness. A running session without one is drift and fails; a word this
+// binary has not met is not drift, and is reported as untested.
+func TestCheckRegistryStatus(t *testing.T) {
+	run := func(entries ...sessions.RegistryEntry) (fails, oks, skips []string) {
+		chk := func(ok bool, label, hint string) {
+			if ok {
+				oks = append(oks, label)
+			} else {
+				fails = append(fails, label+" — "+hint)
+			}
+		}
+		skip := func(label, why string) { skips = append(skips, label+" — "+why) }
+		checkRegistryStatus(entries, chk, skip)
+		return
+	}
+	entry := func(status string, state tag.State) sessions.RegistryEntry {
+		return sessions.RegistryEntry{Account: "a", SessionID: "s", PID: 1, OK: true, Status: status, StatusState: state}
+	}
+
+	if fails, oks, skips := run(); len(fails)+len(oks)+len(skips) != 0 {
+		t.Errorf("no running sessions is nothing to assert: %v %v %v", fails, oks, skips)
+	}
+	if fails, oks, skips := run(entry("busy", tag.OK), entry("idle", tag.OK), entry("shell", tag.OK)); len(fails) != 0 || len(oks) != 1 || len(skips) != 0 {
+		t.Errorf("the known vocabulary: fails %v oks %v skips %v", fails, oks, skips)
+	}
+	// The field gone from every running session is drift.
+	if fails, _, _ := run(entry("", tag.None), entry("", tag.Bad)); len(fails) != 1 {
+		t.Errorf("no running session carries a status: %v", fails)
+	}
+	// Gone from some is more likely a stale record under a recycled pid.
+	if fails, _, skips := run(entry("busy", tag.OK), entry("", tag.None), entry("", tag.Bad)); len(fails) != 0 || len(skips) != 1 || !strings.Contains(skips[0], "2 of 3") {
+		t.Errorf("some without a status: fails %v skips %v", fails, skips)
+	}
+	fails, oks, skips := run(entry("busy", tag.OK), entry("thinking", tag.OK), entry("compacting", tag.OK))
+	if len(fails) != 0 || len(oks) != 1 || len(skips) != 1 ||
+		!strings.Contains(skips[0], `"compacting", "thinking"`) {
+		t.Errorf("an unfamiliar status is untested, not drift: fails %v skips %v", fails, skips)
+	}
+}
+
+func TestPidRuns(t *testing.T) {
+	if !pidRuns(os.Getpid()) {
+		t.Error("this process does not run")
+	}
+	if pidRuns(0) || pidRuns(-1) {
+		t.Error("a non-positive pid runs")
+	}
+}
+
+// Automatic placement is a routing state, not a missing one: check passes it,
+// and still fails the file when the word is ambiguous.
+func TestCheckRoutingUnderAuto(t *testing.T) {
+	home := t.TempDir()
+	cfg := claudeScope(home, "qiushi")
+	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.CurrentFile(), []byte("auto\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func() (passed, failed []string) {
+		own := func(ok bool, label, hint string) {
+			if ok {
+				passed = append(passed, label)
+			} else {
+				failed = append(failed, label+" — "+hint)
+			}
+		}
+		checkRouting(accounts.Discover(cfg), []string{"HOME=" + home}, func(bool, string, string) {}, own)
+		return
+	}
+	passed, failed := run()
+	if len(failed) != 0 || len(passed) == 0 || !strings.Contains(passed[0], ".current says auto") {
+		t.Fatalf("auto: passed %v failed %v", passed, failed)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "auto"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, failed = run()
+	reserved := false
+	for _, f := range failed {
+		reserved = reserved || (strings.Contains(f, "current:") && strings.Contains(f, "reserved"))
+	}
+	if !reserved {
+		t.Fatalf("auto beside an account named auto: %v", failed)
+	}
 }

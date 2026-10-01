@@ -11,18 +11,21 @@ the rest. The mental model and the reverse-engineered vendor contracts are in
 `--vendor <claude|codex>` defaults to `claude` on the commands that act on
 one account — `launch`, `resolve`, `accounts add`, `accounts remove` — so an
 invocation without it means Claude Code. The commands that report — the
-board, `--json`, `limits` — show every vendor present on the machine and take
-`--vendor` to show one. `check` and `sessions` take no `--vendor`. A command
+board, `--json`, `limits`, `launches` — and `refresh` cover every vendor
+present on the machine and take `--vendor` for one. `check` and `sessions` take no `--vendor`. A command
 naming a vendor this machine does not have fails saying so, except
 `accounts add`.
 
 - **`headroom` / `headroom accounts`:** the board. Live limit bars for every
-  account, refreshing itself while it is open; enter picks the account a bare
-  `headroom launch` targets. With Codex present the board has a page per
+  account, refreshing itself while it is open; enter pins the account a bare
+  `headroom launch` targets, and `a` turns automatic placement on instead
+  (below). Under auto no row is `← current`: a header line says bare launches
+  are automatic, and `← next` marks the account one would take from the
+  figures on screen. With Codex present the board has a page per
   vendor: tab switches, each page keeps its own selection and refresh
-  schedule, only the visible page fetches, and enter records that vendor's
-  account alone. Off a terminal it prints one frame — each vendor under a
-  heading when there are two — and exits.
+  schedule, only the visible page fetches, and enter and `a` record that
+  vendor's routing alone. Off a terminal it prints one frame — each vendor
+  under a heading when there are two — and exits.
 - **`headroom accounts --compact`:** the same board, one row per account: the
   email, then one cell per limit window in priority order (Claude Code:
   all models, 5h session, model-scoped 7d; Codex: the main limit, then code
@@ -31,14 +34,16 @@ naming a vendor this machine does not have fails saying so, except
   hour under a day, `2.1h`; `not started` for a Codex window nobody has spent
   against) — then every warning the block would have shown (health, a vendor
   block, `stale`, provenance, drift) at the end of the row. `●` marks the
-  current account, a red `!` (and a `dir says …` clause) a dir/login
+  current account (`→` the next one, under auto), a red `!` (and a `dir says …` clause) a dir/login
   mismatch, a red name an account that cannot be used. On a narrow terminal
   headings shorten first, then the email; warnings lead the caption so the
   clip takes explanations before signals. Same keys, same refresh, same enter.
-- **`headroom --json`:** the board as a versioned JSON document (schema 5) —
+- **`headroom --json`:** the board as a versioned JSON document (schema 6) —
   probes and, budget permitting, fetches, for scripts that want a refresh.
-  `accounts[]` is one flat list with a `vendor` on every account; `current` is
-  an object keyed by vendor. Limits carry decoded identity (`kind`, `group`,
+  `accounts[]` is one flat list with a `vendor` on every account; `current`
+  and `mode` are objects keyed by vendor. `mode` is `"pinned"`, `"auto"`, or
+  `""` when `.current` cannot be resolved; under `"auto"` that vendor's
+  `current` is `""` and no account carries `current: true`. Limits carry decoded identity (`kind`, `group`,
   `model`, and for Codex `feature`, `window_seconds`) and `unstarted`; `usage`
   carries `allowance` (`unknown` | `allowed` | `blocked` | `bad`) with
   `allowance_reason` and `blocked_features` when present.
@@ -48,20 +53,42 @@ naming a vendor this machine does not have fails saying so, except
   the selected vendors.
 - **`headroom sessions`:** interactive picker over every Claude Code session
   on the machine; enter resumes in its own project dir on the account that
-  last drove it, `x` resumes on the current account and re-homes it there
+  last drove it, `x` resumes on the current account and re-homes it there —
+  under auto, on the least-loaded of the other accounts
   (`--json` lists instead; `--cd-file <path>` writes the entered dir for the
   shell). Codex sessions are reached through Codex's own `resume`, below.
 - **`headroom launch`:** exec `claude` — or `codex` under `--vendor codex` —
-  on the chosen account (`--account <name>`, or the recorded choice), with the
-  child environment built from that decision: an inherited
-  `CLAUDE_CONFIG_DIR`, or for Codex `CODEX_HOME`, `CODEX_SQLITE_HOME`,
-  `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`, is stripped, never obeyed.
-  `--remember` also records the choice. Everything after `--` goes to the
-  vendor's binary: Codex's sessions are shared across its accounts, so
-  `headroom launch --vendor codex --account <other> -- resume` continues one
-  on another account (`-- resume --all` lists every project's).
+  on the decided account, with the child environment built from that
+  decision: an inherited `CLAUDE_CONFIG_DIR`, or for Codex `CODEX_HOME`,
+  `CODEX_SQLITE_HOME`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`, is stripped,
+  never obeyed. Everything after `--` goes to the vendor's binary unchanged.
+  The account is decided one of four ways:
+  - bare — what the board recorded: the pinned account, or under auto the
+    least-loaded one;
+  - `--account <name>` — that account, whatever the mode;
+  - `--auto` — this one launch placed automatically, the pin untouched;
+  - `--last` — the account of the newest recorded launch.
+
+  A bare, `--auto` or `--last` launch says on stderr which account it took and
+  why, before the vendor starts; a named one says nothing, as before.
+  `--remember` records the account for later bare launches, or with `--auto`
+  the mode. `--dry-run` prints the choice and one row per account — figures,
+  their age, busy sessions, pending launches, load, why an account was left
+  out — and records, logs and starts nothing. Codex's sessions are shared
+  across its accounts, so `headroom launch --vendor codex --account <other>
+  -- resume` continues one on another account (`-- resume --all` lists every
+  project's).
+- **`headroom launches [-n <count>] [--json]`:** the newest launches from the
+  log, one line each: when, which account, how it was decided, the load it was
+  decided on and the runner-up. `--json` emits the records unchanged, one per
+  line, with every account's figures as they were counted.
+- **`headroom refresh`:** asks the usage endpoint about every account that may
+  be asked, stores the answers and prints nothing — the round `--json` runs,
+  without the health probes or the document. An automatic launch leaves one
+  running in the background for the next launch.
 - **`headroom resolve [<name>]`:** prints the account's
-  name/dir/kind for shell preflight.
+  name/dir/kind for shell preflight. Under auto a name is required: there is
+  no one account to print.
 - **`headroom accounts add <email> [--share-config[=<dir>]]`:** seed the dir
   for a new subscription, its session store linked to the machine-global one
   (`projects/` for Claude Code, `sessions/` for Codex); `--share-config`
@@ -99,6 +126,55 @@ stale; the stale caption and dim time fields communicate age separately.
 The current response contract requires `limits[]`; historical usage envelopes
 are reported as unreadable by `check`.
 
+### Automatic placement
+
+`a` on the board (or `headroom launch --auto --remember`) writes the word
+`auto` into `.current` in place of an account name. From then on a bare launch
+chooses for itself, and says what it chose:
+
+```
+headroom launch: alice@example.com · auto · 5h 1% · week 3% · load 0 (next: bob@example.com)
+```
+
+The rule gives each limit one job:
+
+- **The five-hour window ranks accounts**, as *load*: one step per ten points
+  of its usage, one per session the vendor reports as busy on that account,
+  and one per launch made there in the last fifteen minutes. The least-loaded
+  account wins.
+- **Any limit at 80% or above sets an account aside** while another has room.
+  When every account is near a limit, the one whose tightest limit is lowest
+  takes the launch, and the line says so.
+- **Weekly room breaks ties**, then the account launched least recently.
+
+Usage figures come from disk: the launch itself asks no network, so it adds a
+few tens of milliseconds. Figures older than fifteen minutes are *lower
+bounds* — a window whose reset has passed counts as empty — and an account
+that cannot be asked (its token aged out because nothing has used it) is tried
+rather than avoided, with the line saying how old its figures are. Its own
+launch then counts against it, so a second one does not follow blindly. An
+account is left out only on positive evidence: not logged in, login expired,
+blocked by the vendor, or a broken sessions link.
+
+Choosing and recording happen in one locked step in `state.json`, so launches
+started together — an agent fanning out several sessions — see each other.
+Every launch is recorded, pinned and named ones included: they are load too.
+
+A launch that names a session by id (`--resume <id>`, `--session-id <id>`)
+follows the account that last drove it while that account is not near a limit,
+so the session keeps its prompt cache; otherwise it is placed like a new one
+and its new account is recorded, the way `x` in the picker records a move.
+`--continue` and a bare `--resume` are placed like new sessions.
+
+What placement does not do: it places once, at launch. A running session is
+never moved, and a session started on an account can still exhaust it later.
+The step, the 80% threshold and the fifteen minutes are policy, not
+measurements.
+
+Each launch appends one line to `launches.jsonl` beside `state.json`, with
+every account's figures as counted. Nothing that routes reads that file:
+deleting it changes no launch.
+
 Codex logins are plain files: each home's `auth.json` names the account, the
 plan and the access token, and headroom reads the usage endpoint Codex's own
 client reads. Before headroom's first fetch a Codex account's usage is
@@ -128,7 +204,8 @@ it — changing the default steers new sessions; an old one moves to another acc
 
 headroom is **read-only** toward that system: it never refreshes a token and
 no observation path writes anything of Claude Code's — Claude Code owns login
-state. It keeps two files of its own (`state.json` and `.current`); the only
+state. It keeps three files of its own (`state.json`, `.current` and
+`launches.jsonl`); the only
 vendor-state mutations are explicit user commands naming their object — the
 session picker's `rename`/`delete`, and `accounts remove` deleting the
 removed account's own Keychain item — all refused while liveness is active
@@ -146,9 +223,10 @@ patterns below are what the author runs, reduced to the engine calls:
 
 ```sh
 # the two daily verbs
-x()   { headroom launch -- "$@"; }                   # a session on the default account
+x()   { headroom launch -- "$@"; }                   # a session where the board says: the pinned account, or under auto the least-loaded
 xa()  { headroom launch --account "$1" -- "${@:2}"; } # one session on <account>; the default stays
-xacc(){ headroom accounts --compact; }               # the board, one row per account; enter moves the default, then type x
+xacc(){ headroom accounts --compact; }               # the board, one row per account; enter pins, a turns auto on, then type x
+xl()  { headroom launch --last -- "$@"; }            # one more session on the account the last launch used
 
 # the session picker, with the cd that outlives the session
 xs() {
@@ -167,7 +245,10 @@ cxa() { headroom launch --vendor codex --account "$1" -- "${@:2}"; }   # cxa <ac
 export HEADROOM_CODEX_LAUNCHER_FORMAT="cxa %s"
 ```
 
-The out-of-quota flow in the README becomes `xacc`, then `xs` and `x` on the row.
+The out-of-quota flow in the README becomes `xacc`, then `xs` and `x` on the row
+(under auto, just `xs` and `x`). A flag for headroom itself — `--auto`,
+`--last`, `--dry-run` — needs a function of its own, because everything typed
+after `x` goes to the vendor.
 Flags every session should carry — `--dangerously-skip-permissions`, say —
 go after the `--` inside the wrapper. Per-account names (`x-alice`) are a
 loop over `~/.claude-accounts/*` at shell init; the author's version also
@@ -183,7 +264,9 @@ than falling back to bare `claude` or `codex`.
 A tool that spawns `claude` or `codex` headlessly joins the same door by
 running `headroom launch [--vendor codex] --` in front of its arguments:
 launch execs the binary, so stdio, signals and the exit status are the
-child's.
+child's. Under auto its sessions are placed like any other, and one that
+passes `--session-id <uuid>` on its first turn and `--resume <uuid>` after
+keeps one account across turns. The launch line goes to stderr.
 
 ## Configuration
 

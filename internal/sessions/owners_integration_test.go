@@ -31,7 +31,12 @@ func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
 	write("-tmp-p", "s-old.jsonl", "", now)
 
 	// A re-home for a session that has since lost its transcript…
-	if err := st.ReHome("s-gone", "a@x.com", now, live); err != nil {
+	if err := st.ReHome("s-gone", "a@x.com", now.Add(-time.Hour), live); err != nil {
+		t.Fatal(err)
+	}
+	// …and one for a session whose transcript does not exist *yet*: a first
+	// turn's id is known before the vendor has written a line of it.
+	if err := st.ReHome("s-starting", "d@x.com", now.Add(-time.Minute), live); err != nil {
 		t.Fatal(err)
 	}
 	// …then s-new appears (created after any earlier listing), is re-homed…
@@ -49,6 +54,9 @@ func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
 	}
 	if m["s-new"].Account != "b@x.com" || m["s-old"].Account != "c@x.com" {
 		t.Errorf("live records must survive every write: %v", m)
+	}
+	if m["s-starting"].Account != "d@x.com" {
+		t.Errorf("a record younger than its transcript must not be swept as an orphan: %v", m)
 	}
 }
 
