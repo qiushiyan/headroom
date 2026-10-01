@@ -100,29 +100,12 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 		blobs = readCredsParallel(set.Accounts)
 	}
 
-	busy := map[string][]placement.Proc{}
-	statuses := map[string][]string{}
-	if scope.Vendor == config.Claude {
-		// Codex has no registry headroom can read; its accounts carry no busy
-		// sessions, and an empty read there is not evidence of idleness.
-		var entries []sessions.RegistryEntry
-		for _, a := range set.Accounts {
-			f.refs = append(f.refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
-			entries = append(entries, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
-		}
-		var live []sessions.RegistryEntry
-		f.evidence, live = sessions.InspectClaims(entries, placementProbe)
-		for _, e := range live {
-			statuses[e.Account] = append(statuses[e.Account], statusWord(e))
-			if e.Busy() {
-				busy[e.Account] = append(busy[e.Account], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS})
-			}
-		}
-	}
+	load := readSessionLoad(set)
+	f.refs, f.evidence = load.refs, load.evidence
 
 	for i, fa := range facts {
 		a := fa.Acct
-		c := placement.Candidate{Name: a.Name, Key: fa.Key.ID(), Busy: busy[a.Name], Statuses: statuses[a.Name]}
+		c := placement.Candidate{Name: a.Name, Key: fa.Key.ID(), Busy: load.busy[a.Name], Statuses: load.statuses[a.Name]}
 		if p, err := launch.Prepare(a, set, env); err != nil {
 			f.prepareErr[a.Name] = err
 			c.Excluded, c.Unlaunchable = err.Error(), true
@@ -134,23 +117,112 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 			}
 			c.Excluded = avoidReason(fa, raw, now)
 		}
-		if obs := fa.View.Obs; obs != nil {
-			c.ObservedAt, c.Source = obs.ObservedAt, sourceNames[obs.Source]
-			session := usage.SessionWindow(scope.Vendor, obs.Rows)
-			for j, r := range obs.Rows {
-				if !usage.General(scope.Vendor, r) {
-					continue
-				}
-				c.Limits = append(c.Limits, placement.Limit{
-					Kind: r.Kind, Label: r.Label, Percent: r.Percent,
-					Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Session: j == session,
-				})
-			}
-		}
+		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, fa.View.Obs)
 		f.cands = append(f.cands, c)
 		f.keys = append(f.keys, fa.Key)
 	}
 	return f
+}
+
+// sessionLoad is what the vendor's registry says is running right now: per
+// account, the sessions it reports as working and every live session's status
+// word, each from a claim verified by its own process.
+type sessionLoad struct {
+	busy     map[string][]placement.Proc
+	statuses map[string][]string
+	refs     []sessions.AccountRef
+	evidence map[string]sessions.ProcessEvidence
+}
+
+// readSessionLoad reads every account's registry and samples each pid once.
+// Codex has no registry headroom can read: its accounts carry no busy
+// sessions, and an empty read there is not evidence of idleness.
+func readSessionLoad(set accounts.Set) sessionLoad {
+	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
+	if set.Scope.Vendor != config.Claude {
+		return out
+	}
+	var entries []sessions.RegistryEntry
+	for _, a := range set.Accounts {
+		out.refs = append(out.refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
+		entries = append(entries, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
+	}
+	var live []sessions.RegistryEntry
+	out.evidence, live = sessions.InspectClaims(entries, placementProbe)
+	for _, e := range live {
+		out.statuses[e.Account] = append(out.statuses[e.Account], statusWord(e))
+		if e.Busy() {
+			out.busy[e.Account] = append(out.busy[e.Account], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS})
+		}
+	}
+	return out
+}
+
+// limitsOf turns an observation into the rows the rule counts: the ones that
+// bound ordinary work on the account, with the session window marked. Which
+// rows those are is the usage package's to say.
+func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt int64, source string, limits []placement.Limit) {
+	if obs == nil {
+		return 0, "", nil
+	}
+	session := usage.SessionWindow(vendor, obs.Rows)
+	for j, r := range obs.Rows {
+		if !usage.General(vendor, r) {
+			continue
+		}
+		limits = append(limits, placement.Limit{
+			Kind: r.Kind, Label: r.Label, Percent: r.Percent,
+			Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Session: j == session,
+		})
+	}
+	return obs.ObservedAt, sourceNames[obs.Source], limits
+}
+
+// markNext sets Next on the row an automatic launch would take from the
+// figures a board is showing, and clears it everywhere else. Outside auto
+// mode nothing is marked. The mark is advice: it is computed from this
+// surface's own facts and the record as it stood, and a launch decides again
+// from the disk — counting whatever was placed in between.
+func markNext(set accounts.Set, list []*accountData, ledger placement.Ledger, now time.Time) {
+	for _, d := range list {
+		d.View.Next = false
+	}
+	if set.Mode() != "auto" || len(list) == 0 {
+		return
+	}
+	load := readSessionLoad(set)
+	env := os.Environ()
+	cands := make([]placement.Candidate, len(list))
+	for i, d := range list {
+		c := placement.Candidate{Name: d.Acct.Name, Key: d.Key.ID(), Busy: load.busy[d.Acct.Name], Statuses: load.statuses[d.Acct.Name]}
+		if _, err := launch.Prepare(d.Acct, set, env); err != nil {
+			c.Excluded, c.Unlaunchable = err.Error(), true
+		} else {
+			c.Excluded = boardAvoid(d.View)
+		}
+		c.ObservedAt, c.Source, c.Limits = limitsOf(set.Scope.Vendor, d.View.Obs)
+		cands[i] = c
+	}
+	chosen := placement.Choose(cands, ledger, placement.Intent{}, now).Chosen
+	for _, d := range list {
+		d.View.Next = chosen != "" && d.Acct.Name == chosen
+	}
+}
+
+// boardAvoid is avoidReason for a surface that has probed health: the vendor's
+// own verdict, where the launch path has only credential evidence.
+func boardAvoid(v accountstate.Facts) string {
+	switch {
+	case v.Health == accountstate.HealthNoLogin:
+		return "not logged in"
+	case v.Health == accountstate.HealthReloginRequired:
+		return "login expired"
+	case v.Health == accountstate.HealthBadBlob && v.Vendor == config.Codex:
+		return "login unreadable"
+	case v.Blocked():
+		return "blocked by the vendor"
+	}
+	return ""
 }
 
 // statusWord is a live session's status as the vendor wrote it. Absent and

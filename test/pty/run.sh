@@ -192,6 +192,91 @@ if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
     fail=1
 fi
 
+# `a` records auto for the visible vendor, and the board then says so.
+run accounts_auto
+if [ "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "auto" ]; then
+    echo "FAIL accounts_auto: .current not written with auto"
+    fail=1
+fi
+
+# Automatic placement through the real binary. Four more accounts with a valid
+# topology join a@x.com; the primary cannot be launched under a re-pointed
+# HEADROOM_HOME and b@x.com has no sessions link, so both must be left out by
+# name rather than chosen. The stub claude prints the config dir it was given.
+for n in c d e f; do
+    mkdir -p "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"
+    printf '{"oauthAccount":{"emailAddress":"%s@x.com","accountUuid":"2222222%s-aaaa-4bbb-8ccc-dddddddddddd"}}' "$n" "$n" \
+        >"$HEADROOM_ACCOUNTS_ROOT/$n@x.com/.claude.json"
+    ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/$n@x.com/projects"
+done
+rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+printf 'auto\n' >"$HEADROOM_ACCOUNTS_ROOT/.current"
+
+# A dry run changes nothing: no state file, no log, the mode untouched.
+dry_out=$("$HEADROOM_BIN" launch --dry-run 2>&1) && dry_code=0 || dry_code=$?
+if [ "$dry_code" != 0 ] || ! printf '%s\n' "$dry_out" | grep -q 'would start claude on a@x.com' ||
+    ! printf '%s\n' "$dry_out" | grep -q 'b@x.com.*excluded' ||
+    [ -e "$HEADROOM_ACCOUNTS_ROOT/state.json" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl" ] ||
+    [ "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current")" != "auto" ]; then
+    echo "FAIL launch-dry-run: exit $dry_code, or it left something behind"
+    printf '%s\n' "$dry_out" | sed 's/^/     /'
+    fail=1
+else
+    echo "ok   launch-dry-run"
+fi
+
+# Five launches started together land on the five launchable accounts: each
+# takes the lock in turn and counts the ones before it.
+i=0
+while [ "$i" -lt 5 ]; do
+    "$HEADROOM_BIN" launch -- -p "turn $i" >"$work/auto.$i.out" 2>"$work/auto.$i.err" &
+    i=$((i + 1))
+done
+wait
+spread=$(cat "$work"/auto.*.out | sed -n 's/^STUB-CLAUDE cfg=\([^ ]*\) .*/\1/p' | sort -u | wc -l | tr -d ' ')
+if [ "$spread" != 5 ] || ! grep -q 'auto' "$work/auto.0.err"; then
+    echo "FAIL launch-auto-spread: five launches started together reached $spread account(s)"
+    cat "$work"/auto.*.out "$work"/auto.*.err | sed 's/^/     /'
+    fail=1
+else
+    echo "ok   launch-auto-spread"
+fi
+# Every launch is in the log, and the log reads back.
+if [ "$("$HEADROOM_BIN" launches | grep -c 'auto/')" != 5 ] ||
+    [ "$("$HEADROOM_BIN" launches --json -n 0 | grep -c '"recorded":true')" != 5 ]; then
+    echo "FAIL launches: the log does not hold the five launches"
+    "$HEADROOM_BIN" launches | sed 's/^/     /'
+    fail=1
+else
+    echo "ok   launches"
+fi
+# A named session keeps its account across turns: the first turn's id is
+# placed and recorded, and the second turn follows it wherever the load is.
+auto_sid="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+first=$("$HEADROOM_BIN" launch -- -p --session-id "$auto_sid" 2>/dev/null | sed -n 's/^STUB-CLAUDE cfg=\([^ ]*\) .*/\1/p')
+second=$("$HEADROOM_BIN" launch -- -p --resume "$auto_sid" 2>"$work/auto.resume.err" | sed -n 's/^STUB-CLAUDE cfg=\([^ ]*\) .*/\1/p')
+if [ -z "$first" ] || [ "$first" != "$second" ] || ! grep -q "this session's account" "$work/auto.resume.err"; then
+    echo "FAIL launch-auto-session: first turn on '$first', second on '$second'"
+    sed 's/^/     /' "$work/auto.resume.err"
+    fail=1
+else
+    echo "ok   launch-auto-session"
+fi
+# The one-shot board says the mode and marks one row; --json says it too.
+auto_board=$("$HEADROOM_BIN" 2>/dev/null)
+if ! printf '%s\n' "$auto_board" | grep -q 'bare launches are automatic' ||
+    [ "$(printf '%s\n' "$auto_board" | grep -c '← next')" != 1 ] ||
+    ! "$HEADROOM_BIN" --json 2>/dev/null | grep -q '"claude": "auto"'; then
+    echo "FAIL board-auto: the board under auto must say the mode and mark one row"
+    printf '%s\n' "$auto_board" | sed 's/^/     /'
+    fail=1
+else
+    echo "ok   board-auto"
+fi
+# Back to the fixture every other case expects.
+for n in c d e f; do rm -rf "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"; done
+rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+
 # Two vendors. Codex is absent from every other case — its directories do not
 # exist under the fixture home, so those frames are what they always were —
 # and present for this block alone, once its fixture root exists. The tokens
@@ -217,9 +302,9 @@ else
     echo "ok   two-vendor-print"
 fi
 two_json=$("$HEADROOM_BIN" --json 2>/dev/null)
-if ! printf '%s' "$two_json" | grep -q '"schema": 5' || ! printf '%s' "$two_json" | grep -q '"codex": "' ||
+if ! printf '%s' "$two_json" | grep -q '"schema": 6' || ! printf '%s' "$two_json" | grep -q '"codex": "' ||
     ! printf '%s' "$two_json" | grep -q '"vendor": "codex"'; then
-    echo "FAIL two-vendor-json: want schema 5, a vendor per account and current keyed by vendor"
+    echo "FAIL two-vendor-json: want schema 6, a vendor per account and current keyed by vendor"
     fail=1
 else
     echo "ok   two-vendor-json"

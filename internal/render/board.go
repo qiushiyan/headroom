@@ -71,7 +71,8 @@ const (
 	// selectionPrefix is the picker's mark column ("▶ "), reserved in the
 	// width arithmetic whether or not the caller draws one.
 	selectionPrefix = 2
-	// marksWidth holds the current mark and the dir-mismatch mark.
+	// marksWidth holds the current mark (or, under automatic placement, the
+	// next mark) and the dir-mismatch mark.
 	marksWidth = 2
 	colGap     = "  "
 )
@@ -392,9 +393,12 @@ func (p Palette) compactLine(v accountstate.Facts, row compactRow, cols []column
 	}
 	var b strings.Builder
 	b.WriteString(nameColor + PadCell(Sanitize(v.Label), nameW) + p.Rst + " ")
-	if v.Current {
+	switch {
+	case v.Current:
 		b.WriteString(p.Bold + "●" + p.Rst)
-	} else {
+	case v.Next:
+		b.WriteString(p.Bold + "→" + p.Rst)
+	default:
 		b.WriteString(" ")
 	}
 	if v.DirMismatch != "" {

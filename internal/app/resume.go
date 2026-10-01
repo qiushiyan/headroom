@@ -48,6 +48,15 @@ func psProbe(pid int) (int64, error) {
 	return t.Unix(), nil
 }
 
+// shown is the name the picker prints for where new sessions go: the current
+// account, or the word for there being none because launches choose.
+func (actions *sessionActions) shown() string {
+	if actions.auto {
+		return accounts.AutoWord
+	}
+	return actions.current
+}
+
 func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []sessions.AccountRef, accounts.Set, string) {
 	set := accounts.Discover(cfg)
 	refs := make([]sessions.AccountRef, 0, len(set.Accounts))
@@ -180,7 +189,7 @@ parse:
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, set: set, current: current, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
+		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, set: set, current: current, auto: set.Mode() == "auto", cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment
@@ -301,7 +310,8 @@ func (ui *resumeUI) handle(k tui.Key) (bool, int) {
 		return ui.commitResume(false)
 	case k == tui.Key{Kind: tui.KeyRune, Rune: 'x'}:
 		// Resume on the current account instead of the owner — and re-home:
-		// from now on this session runs where the user just pointed it.
+		// from now on this session runs where the user just pointed it. Under
+		// automatic placement, on the least-loaded of the other accounts.
 		return ui.commitResume(true)
 	}
 	return false, 0
@@ -480,7 +490,7 @@ func (ui *resumeUI) draw() {
 	var lines []string
 	title := ui.selectedTitleForHeader()
 	lines = append(lines, p.Bold+"resume"+p.Rst+p.Dim+
-		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), render.ShortAccount(ui.current), title)+p.Rst)
+		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), render.ShortAccount(ui.shown()), title)+p.Rst)
 
 	rowLines, selLine, selSpan := ui.rowLines(w, now)
 	body := max(h-3, 3) // header + footer + input/message line
@@ -529,9 +539,9 @@ func (ui *resumeUI) selectedTitleForHeader() string {
 	}
 	target := s.Owner
 	if target == "" {
-		target = ui.current
+		target = ui.shown()
 	}
-	if target == ui.current {
+	if target == ui.shown() {
 		return ""
 	}
 	return " · this session → " + render.ShortAccount(target)
@@ -564,7 +574,7 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int, int) {
 		if i == ui.sel {
 			selLine = len(lines)
 		}
-		lines = append(lines, ui.p.SessionLines(s, ui.current, i == ui.sel, w, now)...)
+		lines = append(lines, ui.p.SessionLines(s, ui.shown(), i == ui.sel, w, now)...)
 		if i == ui.sel {
 			if ui.preview {
 				lines = append(lines, ui.p.SessionPreview(s, w)...)

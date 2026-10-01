@@ -956,3 +956,12 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 		t.Errorf("empty log: exit %d, %q", code, out.String())
 	}
 }
+
+func readLog(t *testing.T, scope config.Scope) ([]launchlog.Record, int, error) {
+	t.Helper()
+	recs, skipped, err := launchlog.Read(scope.AccountsRoot, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs, skipped, err
+}

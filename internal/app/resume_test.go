@@ -13,7 +13,7 @@ import (
 // launch decision no evidence had chosen.
 func TestResumeAccountFailsClosedOnInvalidCurrent(t *testing.T) {
 	ui := &sessionActions{current: "", set: accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}}}}
-	if a, ok := ui.resumeAccount(&sessions.Session{}, false); ok {
+	if a, ok, _ := ui.resumeAccount(&sessions.Session{}, false); ok {
 		t.Errorf("ownerless session with no valid current resumed on %q — a decision minted from corrupt routing state", a.Name)
 	}
 }
@@ -23,7 +23,7 @@ func TestResumeAccountDeletedOwnerFallsToCurrentNeverPrimary(t *testing.T) {
 		current: "b@x.com",
 		set:     accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}}},
 	}
-	a, ok := ui.resumeAccount(&sessions.Session{Owner: "gone@x.com"}, false)
+	a, ok, _ := ui.resumeAccount(&sessions.Session{Owner: "gone@x.com"}, false)
 	if !ok || a.Name != "b@x.com" {
 		t.Errorf("deleted owner resumed on (%q, %v) — degraded attribution falls back to current, never primary", a.Name, ok)
 	}

@@ -125,6 +125,12 @@ func writeBoards(out io.Writer, p render.Palette, boards []vendorBoard, now int6
 			}
 		}
 		b := p.Board(views(vb.list), now, layout, width)
+		if vb.mode == "auto" {
+			fmt.Fprintln(out, p.Dim+autoHeader(layout)+p.Rst)
+			if layout == render.LayoutBlocks {
+				fmt.Fprintln(out)
+			}
+		}
 		for _, line := range b.Header {
 			fmt.Fprintln(out, line)
 		}
@@ -163,6 +169,10 @@ type page struct {
 	ackUntil  time.Time
 	wanted    int // accounts the last round had anything to ask about
 	top       int // first body line in view when the board outgrows the terminal
+
+	// mode is what a bare launch of this page's vendor does, re-read with
+	// every round: "pinned", "auto", or "" when `.current` will not resolve.
+	mode string
 
 	// begin starts a round: the local half, then the claim and whatever
 	// fetches it permits. nil means the real thing; tests inject channels.
@@ -225,6 +235,17 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 		case stepCancel:
 			t.Close()
 			return 1
+		case stepAuto:
+			pg := ui.page()
+			t.Close()
+			// Like enter, this records the visible page's vendor's routing and
+			// nothing else, and starts no session.
+			if err := pg.set.SetAuto(); err != nil {
+				fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
+				return 1
+			}
+			fmt.Println(autoLine(pg.scope))
+			return 0
 		case stepChoose:
 			pg := ui.page()
 			chosen := pg.list[pg.sel]
@@ -249,6 +270,7 @@ const (
 	stepContinue stepOutcome = iota
 	stepCancel
 	stepChoose // enter on a row of the visible page
+	stepAuto   // a: bare launches of the visible page's vendor choose for themselves
 )
 
 // step is one turn of the board's loop: one refresh result, one tick or one
@@ -286,6 +308,8 @@ func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan t
 			ui.show(ctx, (ui.visible+1)%len(ui.pages))
 		case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
 			pg.refresh(ctx)
+		case k == tui.Key{Kind: tui.KeyRune, Rune: 'a'}:
+			return stepAuto
 		case isCancelKey(k):
 			return stepCancel
 		case k.Kind == tui.KeyEnter:
@@ -306,6 +330,24 @@ func chosenLine(scope config.Scope, label string) string {
 	return fmt.Sprintf("→ %s — bare launches (no --account) now target it", label)
 }
 
+// autoLine says what `a` just did, in the words chosenLine uses for enter.
+func autoLine(scope config.Scope) string {
+	if scope.Vendor == config.Codex {
+		return "→ auto — bare Codex launches (headroom launch --vendor codex, no --account) now choose the least-loaded account"
+	}
+	return "→ auto — bare launches (no --account) now choose the least-loaded account"
+}
+
+// autoHeader is the one line a board in auto mode puts above its accounts: no
+// row is the current one, and the marked row is where a launch would go now.
+func autoHeader(layout render.Layout) string {
+	mark := "← next"
+	if layout == render.LayoutCompact {
+		mark = "→"
+	}
+	return "bare launches are automatic — " + mark + " marks the account one would take now"
+}
+
 // show makes a page visible. A page seen for the first time has nothing to
 // draw, so its first round starts now; one whose deadline passed while it was
 // hidden is simply due at the next tick. The first draw of a page shows the
@@ -319,7 +361,9 @@ func (ui *picker) show(ctx context.Context, i int) {
 	if !pg.opened {
 		pg.opened = true
 		for j, d := range pg.list {
-			if d.View.Current {
+			// Under auto there is no current account; the row a launch would
+			// take is the one worth opening on.
+			if d.View.Current || d.View.Next {
 				pg.sel, pg.selName = j, d.Acct.Name
 			}
 		}
@@ -334,6 +378,7 @@ func (pg *page) receive(u refresh.Result, open bool, now time.Time) {
 		return
 	}
 	pg.updates = nil
+	pg.mark(now)
 	pg.schedule()
 	if pg.manual {
 		// The user asked; the answer is what changed, said once and briefly —
@@ -365,6 +410,7 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	}
 	set, list, updates := begin(ctx, ui)
 	ui.set, ui.list = set, list
+	ui.mark(time.Now())
 	ui.restoreSelection()
 	ui.lastLocal = time.Now()
 	ui.armed = false
@@ -377,6 +423,17 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 		}
 	}
 	ui.updates = updates
+}
+
+// mark re-reads the mode and, under auto, marks the row a launch would take
+// from the figures this page holds. It runs when a round starts — the stored
+// figures are already worth a mark — and again when its results have landed.
+func (ui *page) mark(now time.Time) {
+	ui.mode = ui.set.Mode()
+	if ui.st == nil {
+		return
+	}
+	markNext(ui.set, ui.list, ui.st.Load().Placements(), now)
 }
 
 // ackString is the one-line answer to a manual refresh, composed after the
@@ -531,6 +588,12 @@ func (ui *picker) draw() {
 	var header []string
 	if bar := ui.tabBar(); bar != "" {
 		header = append(header, "  "+bar)
+		if ui.layout == render.LayoutBlocks {
+			header = append(header, "")
+		}
+	}
+	if pg.mode == "auto" {
+		header = append(header, "  "+ui.p.Dim+autoHeader(ui.layout)+ui.p.Rst)
 		if ui.layout == render.LayoutBlocks {
 			header = append(header, "")
 		}
@@ -705,7 +768,7 @@ func (ui *picker) status(now time.Time) string {
 		// are current, and no window has rolled over since they were taken.
 		parts = append(parts, fmt.Sprintf("%d too old to pick on", stale))
 	}
-	hints := "↑/↓ move · enter select · r refresh · esc cancel"
+	hints := "↑/↓ move · enter select · a auto · r refresh · esc cancel"
 	if len(ui.pages) > 1 {
 		hints = "tab switch · " + hints
 	}

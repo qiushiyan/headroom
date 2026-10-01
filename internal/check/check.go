@@ -14,7 +14,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -296,10 +299,16 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account,
 	// The live-session registry: when claim files exist, they must parse,
 	// or every open session silently reads as deletable.
 	regFiles, regProblems := 0, 0
+	var running []sessions.RegistryEntry
 	for _, a := range accts {
 		reg := sessions.ReadRegistry(a.Name, a.Dir())
 		regFiles += len(reg.Entries)
 		regProblems += len(reg.Problems)
+		for _, e := range reg.Entries {
+			if e.OK && pidRuns(e.PID) {
+				running = append(running, e)
+			}
+		}
 	}
 	if regFiles == 0 && regProblems == 0 {
 		skip("registry: not tested", "no live-session records right now")
@@ -307,6 +316,7 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account,
 		chk(regProblems == 0, "registry: live-session records carry sessionId + pid + startedAt",
 			fmt.Sprintf("%d registry read problems — liveness is incomplete", regProblems))
 	}
+	checkRegistryStatus(running, chk, skip)
 
 	// Transcripts, through the same collector the picker uses. Per-file
 	// absence of a title is ordinary (print-mode sessions); a store where
@@ -362,6 +372,69 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account,
 			fmt.Sprintf("%d transcript(s) resolve differently — a record drifted out of the reader's reach", over))
 	}
 
+}
+
+// checkRegistryStatus verifies the one registry field automatic placement
+// reads beyond liveness: the vendor's word for what a session is doing. Only
+// records whose process runs are judged — a record left by an older build, or
+// by a crash, says nothing about what the vendor writes today.
+//
+// When no running session carries a status string the field is gone, and that
+// fails: busy sessions would silently stop counting as load. When only some
+// lack one, the likelier story is a stale record whose pid another process has
+// since taken — "runs" here is a signal-0 probe, not a start-time match — so
+// that is reported as untested rather than as drift. A status this binary has
+// not seen is not drift either: the vocabulary is the vendor's and open, the
+// assumption could not be tested for that record, and such a session counts
+// as not busy.
+func checkRegistryStatus(running []sessions.RegistryEntry, chk func(bool, string, string), skip func(string, string)) {
+	if len(running) == 0 {
+		return
+	}
+	missing := 0
+	unknown := map[string]bool{}
+	for _, e := range running {
+		switch {
+		case e.StatusState != tag.OK:
+			missing++
+		case !knownStatus[e.Status]:
+			unknown[e.Status] = true
+		}
+	}
+	label := "registry: running sessions say what they are doing (status)"
+	switch {
+	case missing == len(running):
+		chk(false, label, "none carries a status string — busy sessions are no longer counted as load")
+	case missing > 0:
+		skip(label, fmt.Sprintf("%d of %d carry no status string — stale records, or the field is going away", missing, len(running)))
+	default:
+		chk(true, label, "")
+	}
+	if len(unknown) > 0 {
+		words := make([]string, 0, len(unknown))
+		for w := range unknown {
+			words = append(words, strconv.Quote(w))
+		}
+		sort.Strings(words)
+		skip("registry: every status is one this binary knows",
+			"unfamiliar status "+strings.Join(words, ", ")+" — such a session counts as not busy")
+	}
+}
+
+// knownStatus is the registry status vocabulary observed so far (2.1.286).
+// Only "busy" is given a meaning; the others are listed so a new word is
+// noticed.
+var knownStatus = map[string]bool{sessions.StatusBusy: true, "idle": true, "shell": true}
+
+// pidRuns reports whether a process with this pid exists, without spawning
+// anything: signal 0 delivers nothing and fails only when there is no such
+// process (EPERM means there is one, owned by someone else).
+func pidRuns(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // checkOwnState audits state.json — the one file headroom writes for itself.
@@ -430,10 +503,16 @@ func checkRouting(set accounts.Set, environ []string,
 	// unreadable or naming a deleted account is corrupt routing state — launch
 	// refuses on it, so the board is where the user hears about it first only
 	// if this line is missing.
-	sel, err := set.Select("")
+	bare, err := set.Bare()
 	label := "current: .current resolves to a launchable account"
-	if err == nil {
-		label = fmt.Sprintf("%s (%s)", label, sel.Name)
+	switch {
+	case err != nil:
+	case bare.Auto:
+		// Automatic placement is a valid routing state, not a missing one:
+		// there is no single account, and a bare launch chooses.
+		label = "current: .current says auto — a bare launch chooses the least-loaded account"
+	default:
+		label = fmt.Sprintf("%s (%s)", label, bare.Account.Name)
 	}
 	own(err == nil, label, fmt.Sprintf("%v — headroom launch refuses until it is fixed", err))
 

@@ -9,6 +9,8 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -16,11 +18,15 @@ import (
 // sessionActions owns routing and launch effects. The picker supplies terminal
 // restoration as the commit boundary; action tests need no terminal object.
 type sessionActions struct {
-	cfg          config.Scope
-	st           *state.Store
-	refs         []sessions.AccountRef
-	set          accounts.Set
-	current      string
+	cfg     config.Scope
+	st      *state.Store
+	refs    []sessions.AccountRef
+	set     accounts.Set
+	current string
+	// auto says bare launches choose for themselves: there is then no current
+	// account, and wherever this surface would fall back to one it asks the
+	// placement rule instead.
+	auto         bool
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
@@ -39,9 +45,12 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
-	acct, ok := actions.resumeAccount(s, override)
+	acct, ok, why := actions.resumeAccount(s, override)
 	if !ok {
-		return false, fmt.Errorf("no account to resume on — run headroom accounts")
+		if why == "" {
+			why = "no account to resume on — run headroom accounts"
+		}
+		return false, fmt.Errorf("%s", why)
 	}
 	prepared, err := launch.Prepare(acct, actions.set, os.Environ())
 	if err != nil {
@@ -78,30 +87,61 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 
 // resumeAccount chooses the owner, then valid current. An override chooses
 // current directly; an unresolved current leaves the action without a target.
-func (actions *sessionActions) resumeAccount(s *sessions.Session, override bool) (accounts.Account, bool) {
-	name := s.Owner
-	if override || name == "" {
-		name = actions.current
-	}
-	if name == "" {
-		return accounts.Account{}, false
-	}
-	for _, a := range actions.set.Accounts {
-		if a.Name == name {
-			return a, true
-		}
-	}
-	// The owner names an account the filesystem no longer has: degraded
-	// attribution falls back to the *current* account — the row's owner tag
-	// already says so — never to the primary, which no evidence chose.
-	if name != actions.current && actions.current != "" {
+//
+// Under automatic placement there is no current account, and each place this
+// would have fallen back to one asks the rule instead: a session with no
+// evidence, or whose owner is gone, is placed like a new one, and the override
+// moves the session to the least-loaded of the *other* accounts — moving means
+// somewhere other than where it is. why says what refused, when the rule did.
+func (actions *sessionActions) resumeAccount(s *sessions.Session, override bool) (acct accounts.Account, ok bool, why string) {
+	find := func(name string) (accounts.Account, bool) {
 		for _, a := range actions.set.Accounts {
-			if a.Name == actions.current {
-				return a, true
+			if a.Name == name {
+				return a, name != ""
 			}
 		}
+		return accounts.Account{}, false
 	}
-	return accounts.Account{}, false
+	if !override {
+		if a, found := find(s.Owner); found {
+			return a, true, ""
+		}
+	}
+	if actions.auto {
+		exclude := ""
+		if override {
+			exclude = s.Owner
+		}
+		return actions.place(s, exclude)
+	}
+	// The owner names an account the filesystem no longer has, or there is no
+	// evidence at all: degraded attribution falls back to the *current*
+	// account — the row's owner tag already says so — never to the primary,
+	// which no evidence chose.
+	a, found := find(actions.current)
+	return a, found, ""
+}
+
+// place asks the placement rule where a resumed session goes, records the
+// answer the way a launch does, and logs it. A bookkeeping failure costs the
+// record and nothing else, as on the launch path.
+func (actions *sessionActions) place(s *sessions.Session, exclude string) (accounts.Account, bool, string) {
+	now := time.Now()
+	facts := gatherPlacement(actions.set, actions.st, os.Environ(), true, now)
+	placed, placeErr := actions.st.Place(facts.cands, placement.Intent{Exclude: exclude}, os.Getpid(), "", now)
+	d := placed.Decision
+	if d.Chosen == "" {
+		return accounts.Account{}, false, d.Refusal
+	}
+	rec := launchlog.New(d, now)
+	rec.Vendor, rec.PID, rec.Mode, rec.Session, rec.Recorded = string(actions.cfg.Vendor), os.Getpid(), "picker", s.ID, placed.Recorded
+	rec.CWD = s.CWD
+	if placeErr != nil {
+		rec.Problem = placeErr.Error()
+	}
+	_ = launchlog.Append(actions.cfg.AccountsRoot, rec)
+	a, ok := facts.account(d.Chosen)
+	return a, ok, ""
 }
 
 // liveNow re-establishes the selected session's liveness at action time —

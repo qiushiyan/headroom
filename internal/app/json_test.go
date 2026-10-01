@@ -53,7 +53,7 @@ func TestJSONDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
-	if doc["schema"] != float64(5) || doc["current"].(map[string]any)["claude"] != "primary" {
+	if doc["schema"] != float64(6) || doc["current"].(map[string]any)["claude"] != "primary" {
 		t.Errorf("envelope: %v %v", doc["schema"], doc["current"])
 	}
 	if doc["generated_at"] != "2025-08-02T07:50:00Z" {
