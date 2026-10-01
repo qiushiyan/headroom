@@ -46,6 +46,9 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
+	// One resume, one record: a refused attempt earlier in this picker session
+	// must not make this one look already recorded.
+	actions.placed = false
 	acct, ok, why := actions.resumeAccount(s, override)
 	if !ok {
 		if why == "" {
