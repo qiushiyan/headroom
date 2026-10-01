@@ -307,9 +307,9 @@ else
     echo "ok   two-vendor-print"
 fi
 two_json=$("$HEADROOM_BIN" --json 2>/dev/null)
-if ! printf '%s' "$two_json" | grep -q '"schema": 6' || ! printf '%s' "$two_json" | grep -q '"codex": "' ||
+if ! printf '%s' "$two_json" | grep -q '"schema": 7' || ! printf '%s' "$two_json" | grep -q '"codex": "' ||
     ! printf '%s' "$two_json" | grep -q '"vendor": "codex"'; then
-    echo "FAIL two-vendor-json: want schema 6, a vendor per account and current keyed by vendor"
+    echo "FAIL two-vendor-json: want schema 7, a vendor per account and current keyed by vendor"
     fail=1
 else
     echo "ok   two-vendor-json"

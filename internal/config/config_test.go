@@ -256,3 +256,100 @@ func TestCodexPresentFromItsPrimaryHomeAlone(t *testing.T) {
 		t.Errorf("~/.codex alone: present=%v err=%v", c.Codex.Present, err)
 	}
 }
+
+// A home that is not this user's login home spells its primary out: absent,
+// CLAUDE_CONFIG_DIR would take config from $HOME/.claude and the credential
+// from the base Keychain item, which belongs to the login home's primary.
+func TestASecondHomeSpellsItsPrimaryOut(t *testing.T) {
+	clearOverrides(t)
+	login, second := t.TempDir(), t.TempDir()
+	prev := loginHome
+	loginHome = func() string { return login }
+	t.Cleanup(func() { loginHome = prev })
+
+	t.Setenv("HOME", second)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Claude.PrimaryExplicit || c.Claude.PrimaryRelocated {
+		t.Errorf("second home: explicit %v relocated %v, want explicit and not relocated", c.Claude.PrimaryExplicit, c.Claude.PrimaryRelocated)
+	}
+	if c.Claude.PrimaryDir() != filepath.Join(second, ".claude") || c.Claude.PrimaryMeta() != filepath.Join(second, ".claude", ".claude.json") {
+		t.Errorf("second home's primary: dir %s meta %s — spelled out, its .claude.json lives inside it", c.Claude.PrimaryDir(), c.Claude.PrimaryMeta())
+	}
+	if c.Codex.PrimaryExplicit {
+		t.Error("Codex keeps its login in the home: nothing about it is spelled out")
+	}
+
+	t.Setenv("HOME", login)
+	if c, err = Load(); err != nil || c.Claude.PrimaryExplicit {
+		t.Errorf("login home: explicit %v (%v), want selection by absence as always", c.Claude.PrimaryExplicit, err)
+	}
+	if c.Claude.PrimaryMeta() != filepath.Join(login, ".claude.json") {
+		t.Errorf("login home's primary meta = %s", c.Claude.PrimaryMeta())
+	}
+
+	// No user database to ask: today's behavior.
+	loginHome = func() string { return "" }
+	t.Setenv("HOME", second)
+	if c, _ = Load(); c.Claude.PrimaryExplicit {
+		t.Error("an unknown login home made the primary explicit")
+	}
+}
+
+// `.ledger` is read strictly: a home that meant to share a ledger and quietly
+// kept its own would ask every subscription twice and pile launches onto
+// accounts the other home is filling.
+func TestTheLedgerFileIsReadStrictly(t *testing.T) {
+	clearOverrides(t)
+	home, other := t.TempDir(), t.TempDir()
+	t.Setenv("HEADROOM_HOME", home)
+	root := filepath.Join(home, ".claude-accounts")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledger := filepath.Join(root, ".ledger")
+
+	c, err := Load()
+	if err != nil || c.Claude.LedgerRoot != "" || c.Claude.Ledger() != root || c.Claude.SharesLedger() {
+		t.Fatalf("absent: %+v %v", c.Claude, err)
+	}
+	if err := os.WriteFile(ledger, []byte(other+"/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err = Load(); err != nil || c.Claude.LedgerRoot != other || !c.Claude.SharesLedger() {
+		t.Fatalf("another root: ledger %q shared %v err %v", c.Claude.LedgerRoot, c.Claude.SharesLedger(), err)
+	}
+	if c.Codex.LedgerRoot != "" {
+		t.Error("Codex was given the Claude Code ledger")
+	}
+
+	for name, content := range map[string]string{
+		"empty":      "\n",
+		"relative":   "accounts\n",
+		"missing":    filepath.Join(other, "gone") + "\n",
+		"codex root": filepath.Join(home, ".codex-accounts") + "\n",
+		"two lines":  other + "\n" + other + "\n",
+	} {
+		if name == "codex root" {
+			if err := os.MkdirAll(filepath.Join(home, ".codex-accounts"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(ledger, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), ".ledger") {
+			t.Errorf("%s: err = %v, want a refusal naming the file", name, err)
+		}
+	}
+
+	// Naming one's own root is having one's own ledger.
+	if err := os.WriteFile(ledger, []byte(root+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err = Load(); err != nil || c.Claude.SharesLedger() {
+		t.Errorf("own root: shared %v err %v", c.Claude.SharesLedger(), err)
+	}
+}

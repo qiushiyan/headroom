@@ -429,15 +429,16 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	ui.updates = updates
 }
 
-// mark marks, under auto, the row a launch would take from the figures this
-// page holds. It runs when a round starts — the stored figures are already
-// worth a mark — and again when its results have landed. The mode is the
-// round's own reading of `.current`, never a second one.
+// mark sets every row's load and marks, under auto, the row a launch would
+// take from the figures this page holds. It runs when a round starts — the
+// stored figures are already worth a mark — and again when its results have
+// landed. The mode is the round's own reading of `.current`, never a second
+// one.
 func (ui *page) mark(now time.Time) {
 	if ui.st == nil {
 		return
 	}
-	markNext(ui.set, ui.list, ui.mode, ui.st.Load().Placements(), now)
+	markPlacement(ui.set, ui.list, ui.mode, ui.st, now)
 }
 
 // ackString is the one-line answer to a manual refresh, composed after the
@@ -735,7 +736,7 @@ func (ui *picker) status(now time.Time) string {
 	default:
 		parts = append(parts, "next refresh in "+until(pg.nextAt, now))
 	}
-	if pg.scope.PrimaryRelocated {
+	if pg.scope.PrimaryLaunchRefused() {
 		// launch refuses the primary under a relocated home (the board is
 		// describing a tree a bare launch would not use); the board must say
 		// so before someone picks it.
@@ -754,7 +755,7 @@ func (ui *picker) status(now time.Time) string {
 		// machine's ordinary environment — check reports it, the board does
 		// not caption the normal case.
 		if tgt, err := launch.For(pg.scope.Vendor, d.Acct.ConfigDir); err == nil {
-			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !pg.set.KnownExtraDir(v) {
+			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !pg.set.KnownDir(v) {
 				parts = append(parts, "ambient "+pg.scope.Env().HomeVar+" neutralized")
 			}
 		}

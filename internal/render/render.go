@@ -347,7 +347,7 @@ func (p Palette) AccountBlock(v accountstate.Facts, now int64, labelWidth int) [
 		if v.Health == accountstate.HealthOK {
 			lines = append(lines, p.StatusLine(v, now))
 		}
-		return lines
+		return append(lines, p.loadLine(v)...)
 	}
 	if len(v.Obs.Rows) == 0 {
 		// A contractual answer, not a failure: this account reports no limit
@@ -369,7 +369,50 @@ func (p Palette) AccountBlock(v accountstate.Facts, now int64, labelWidth int) [
 	if prov := p.ProvenanceLine(v, now); prov != "" {
 		lines = append(lines, prov)
 	}
-	return lines
+	return append(lines, p.loadLine(v)...)
+}
+
+// loadLine is the block's load line, or nothing: an account's sessions and
+// launches are worth a line whether or not its figures are known.
+func (p Palette) loadLine(v accountstate.Facts) []string {
+	if t := loadText(v.Load); t != "" {
+		return []string{"  " + p.Dim + "sessions: " + t + p.Rst}
+	}
+	return nil
+}
+
+// loadText is the load clause: the account's busy sessions and recent
+// launches, from every home that shares the ledger, with another home's share
+// named — "3 busy, 1 launched (steward-home: 2 busy, 1 launched)". "" when
+// there are none, or the surface did not read them: an idle account says
+// nothing, as it always has. It explains a mark rather than changing a
+// choice, so it is the last clause of a caption.
+func loadText(l *accountstate.Load) string {
+	if l == nil || l.Busy+l.Launched == 0 {
+		return ""
+	}
+	t := loadCounts(l.Busy, l.Launched)
+	var others []string
+	for _, h := range l.Elsewhere() {
+		if c := loadCounts(h.Busy, h.Launched); c != "" {
+			others = append(others, Sanitize(h.Label)+": "+c)
+		}
+	}
+	if len(others) > 0 {
+		t += " (" + strings.Join(others, "; ") + ")"
+	}
+	return t
+}
+
+func loadCounts(busy, launched int) string {
+	var parts []string
+	if busy > 0 {
+		parts = append(parts, fmt.Sprintf("%d busy", busy))
+	}
+	if launched > 0 {
+		parts = append(parts, fmt.Sprintf("%d launched", launched))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // LimitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4.8d)`

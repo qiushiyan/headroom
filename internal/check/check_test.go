@@ -515,3 +515,63 @@ func TestCheckRoutingUnderAuto(t *testing.T) {
 		t.Fatalf("auto beside an account named auto: %v", failed)
 	}
 }
+
+// A login, history or registry linked between dirs makes two dirs one login,
+// and an account dir that belongs to two homes would run one home's sessions
+// on the other's: both are headroom's own state, and both fail.
+func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
+	base := t.TempDir()
+	owner := config.ForHome(filepath.Join(base, "owner")).Claude
+	second := config.ForHome(filepath.Join(base, "second")).Claude
+	second.PrimaryExplicit, second.LedgerRoot = true, owner.AccountsRoot
+	for _, dir := range []string{filepath.Join(owner.AccountsRoot, "a@x.com"), filepath.Join(second.AccountsRoot, "b@x.com"), second.PrimaryDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func() (passed, failed []string) {
+		st := state.Open(second)
+		if err := st.Register(time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Open(owner).Register(time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		note := func(ok bool, label, hint string) {
+			if ok {
+				passed = append(passed, label)
+			} else {
+				failed = append(failed, label+" — "+hint)
+			}
+		}
+		checkHomes(accounts.Discover(second), st.Load(), st.Home(), note, note)
+		return
+	}
+	passed, failed := run()
+	if len(failed) != 0 {
+		t.Fatalf("a clean second home failed: %v", failed)
+	}
+	joined := strings.Join(passed, "\n")
+	for _, want := range []string{"never by absence", "ledger: 1 other home(s)", "another home's", "logins:", "homes: no account dir belongs to two homes"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("no %q line in:\n%s", want, joined)
+		}
+	}
+
+	// A login linked from another dir.
+	if err := os.Symlink(filepath.Join(owner.AccountsRoot, "a@x.com", ".credentials.json"), filepath.Join(second.AccountsRoot, "b@x.com", ".credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	// And one of the other home's account dirs adopted as this home's.
+	if err := os.Symlink(filepath.Join(owner.AccountsRoot, "a@x.com"), filepath.Join(second.AccountsRoot, "a@x.com")); err != nil {
+		t.Fatal(err)
+	}
+	_, failed = run()
+	got := strings.Join(failed, "\n")
+	if !strings.Contains(got, "logins:") || !strings.Contains(got, ".credentials.json is a link") {
+		t.Errorf("a linked login did not fail: %v", failed)
+	}
+	if !strings.Contains(got, "homes: no account dir belongs to two homes") {
+		t.Errorf("a dir shared by two homes did not fail: %v", failed)
+	}
+}

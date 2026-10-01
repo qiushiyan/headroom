@@ -228,6 +228,7 @@ func Run(cfg config.Config, out io.Writer, color bool, probe sessions.PIDProbe) 
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
 	checkRouting(set, os.Environ(), chk, own)
+	checkHomes(set, st.Load(), st.Home(), chk, own)
 	checkSessionStore(scope, accts, probe, chk, skip)
 
 	// Codex's group runs after Claude Code's, through the same reporters.
@@ -544,7 +545,7 @@ func checkRouting(set accounts.Set, environ []string,
 	// bug in it.
 	badDir := ""
 	for _, a := range accts {
-		if !a.IsPrimary() && !filepath.IsAbs(a.ConfigDir) {
+		if a.ConfigDir != "" && !filepath.IsAbs(a.ConfigDir) {
 			badDir = a.ConfigDir
 			break
 		}
@@ -556,7 +557,7 @@ func checkRouting(set accounts.Set, environ []string,
 	// not what a primary launch would use — the primary is selected by the
 	// variable being absent, resolved by the vendor against the real home.
 	// Own-state, not drift: launch refuses the primary until it is unset.
-	if cfg.PrimaryRelocated && cfg.Vendor == config.Claude {
+	if cfg.PrimaryLaunchRefused() && cfg.Vendor == config.Claude {
 		own(false, "home: HEADROOM_HOME re-points the primary headroom describes",
 			"primary launches refuse; the board describes a tree bare `claude` would not use")
 	}
@@ -591,6 +592,71 @@ func checkRouting(set accounts.Set, environ []string,
 			hint = err.Error() + " — launches on this account refuse until it is fixed"
 		}
 		own(err == nil, fmt.Sprintf("topology[%s]: %s/ resolves to the canonical store", a.Name, cfg.StoreLink()), hint)
+	}
+}
+
+// checkHomes audits what a second home on this machine rests on: how this
+// home's primary is selected, that no dir shares another's login, which ledger
+// this home spends against, and that no account dir belongs to two homes.
+// Every failure here is headroom's own state — a dir it seeded, a file it
+// reads — never the vendor's.
+func checkHomes(set accounts.Set, snap state.Snapshot, self string, chk, own func(bool, string, string)) {
+	scope := set.Scope
+	if scope.PrimaryExplicit {
+		chk(true, fmt.Sprintf("home: HOME is not this user's login home — the primary is launched by its dir (%s), never by absence", scope.PrimaryDir()), "")
+	}
+
+	// A login file linked between two dirs makes them one login, and a linked
+	// history or registry puts one account's sessions under another's name.
+	// Only dirs headroom launches by their dir are judged: the login home's
+	// primary keeps ~/.claude.json outside its dir, where it is the vendor's.
+	var linked []string
+	for _, a := range set.Accounts {
+		if a.ConfigDir == "" {
+			continue
+		}
+		for _, path := range []string{a.MetaPath(), filepath.Join(a.Dir(), ".credentials.json"), filepath.Join(a.Dir(), "history.jsonl"), filepath.Join(a.Dir(), "sessions")} {
+			if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				linked = append(linked, path)
+			}
+		}
+	}
+	own(len(linked) == 0, "logins: every account dir keeps its own login, history and session registry",
+		fmt.Sprintf("%s is a link — a login shared between dirs is one login under two names; remove the link and log that dir in again", strings.Join(linked, ", ")))
+
+	others := 0
+	var shared []string
+	mine := map[string]os.FileInfo{}
+	for _, a := range set.Accounts {
+		if fi, err := os.Stat(a.Dir()); err == nil {
+			mine[a.Dir()] = fi
+		}
+	}
+	for _, m := range snap.Members() {
+		if m.Root == self {
+			continue
+		}
+		others++
+		for _, a := range accounts.Discover(config.HomeScope(scope.Vendor, m.Home, m.Root, m.Explicit)).Accounts {
+			fi, err := os.Stat(a.Dir())
+			if err != nil {
+				continue
+			}
+			for dir, ofi := range mine {
+				if os.SameFile(fi, ofi) {
+					shared = append(shared, fmt.Sprintf("%s (also %s's)", dir, m.Home))
+				}
+			}
+		}
+	}
+	if snap.Shared() || others > 0 {
+		whose := "this home's own"
+		if snap.Shared() {
+			whose = "another home's"
+		}
+		chk(true, fmt.Sprintf("ledger: %d other home(s) spend against this ledger (%s) — their sessions and launches count here", others, whose), "")
+		own(len(shared) == 0, "homes: no account dir belongs to two homes",
+			strings.Join(shared, ", ")+" — a launch in one home would run on the other's dir")
 	}
 }
 

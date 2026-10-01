@@ -8,12 +8,14 @@ package app
 // most never waits on an endpoint.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -52,6 +54,7 @@ var (
 type placeFacts struct {
 	set   accounts.Set
 	snap  state.Snapshot
+	home  string // this home's accounts root, as the ledger names it
 	cands []placement.Candidate
 	keys  []state.Key // the ledger key of each candidate, in order
 
@@ -101,9 +104,57 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 	for i, fa := range facts {
 		src[i] = placeSource{acct: fa.Acct, key: fa.Key, obs: fa.View.Obs}
 	}
-	f := buildCandidates(set, src, env, automatic, now)
+	f := buildCandidates(set, src, env, automatic, now, st.Home(), otherHomes(st, snap, set.Scope.Vendor))
 	f.snap = snap
 	return f
+}
+
+// otherHome is another home that spends against this home's ledger, as its
+// registration locates it: the account dirs whose registries say what is
+// running there.
+type otherHome struct {
+	root string
+	set  accounts.Set
+}
+
+// otherHomes discovers every other home registered in the ledger. Their
+// accounts are read for one thing — the sessions running on them, counted
+// against the same subscriptions — and are never candidates and never owners:
+// a launch only ever runs in its own home, on its own dirs.
+func otherHomes(st *state.Store, snap state.Snapshot, vendor config.Vendor) []otherHome {
+	if vendor != config.Claude {
+		// Codex has no registry headroom can read.
+		return nil
+	}
+	var out []otherHome
+	for _, m := range snap.Members() {
+		if m.Root == st.Home() {
+			continue
+		}
+		out = append(out, otherHome{root: m.Root, set: accounts.Discover(config.HomeScope(vendor, m.Home, m.Root, m.Explicit))})
+	}
+	return out
+}
+
+// homeLabels names every home a surface may mention, by accounts root: the
+// home dir's last element ("steward-home" for ~/.steward-home), which is what
+// a person calls it.
+func homeLabels(snap state.Snapshot, self string) map[string]string {
+	out := map[string]string{}
+	for _, m := range snap.Members() {
+		out[m.Root] = strings.TrimPrefix(filepath.Base(m.Home), ".")
+	}
+	if _, ok := out[self]; !ok {
+		out[self] = strings.TrimPrefix(filepath.Base(filepath.Dir(self)), ".")
+	}
+	return out
+}
+
+func homeLabel(labels map[string]string, root string) string {
+	if l, ok := labels[root]; ok && l != "" {
+		return l
+	}
+	return strings.TrimPrefix(filepath.Base(filepath.Dir(root)), ".")
 }
 
 // buildCandidates is the one place an account becomes a placement candidate,
@@ -125,9 +176,14 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 // want of bookkeeping. The vendor's health probe is not consulted: it can say
 // "logged in" over a refresh token that has expired, and a launch has only
 // the credential to go by.
-func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time) placeFacts {
+//
+// Busy sessions are the subscription's, not the dir's: two dirs on one
+// account, in this home or in another home sharing the ledger, spend one
+// quota, so every verified-live busy session on that account counts on each
+// candidate that spends it.
+func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time, home string, others []otherHome) placeFacts {
 	scope := set.Scope
-	f := placeFacts{set: set, prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{}}
+	f := placeFacts{set: set, home: home, prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{}}
 
 	var blobs []string
 	if automatic && scope.Vendor == config.Claude {
@@ -137,12 +193,16 @@ func buildCandidates(set accounts.Set, src []placeSource, env []string, automati
 		}
 		blobs = readCredsParallel(accts)
 	}
-	load := readSessionLoad(set)
+	keys := make(map[string]string, len(src))
+	for _, s := range src {
+		keys[s.acct.Name] = s.key.ID()
+	}
+	load := readSessionLoad(set, keys, home, others)
 	f.refs, f.evidence = load.refs, load.evidence
 
 	for i, s := range src {
 		a := s.acct
-		c := placement.Candidate{Name: a.Name, Key: s.key.ID(), Busy: load.busy[a.Name], Statuses: load.statuses[a.Name]}
+		c := placement.Candidate{Name: a.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
 		raw := ""
 		if blobs != nil {
 			raw = blobs[i]
@@ -171,9 +231,12 @@ func buildCandidates(set accounts.Set, src []placeSource, env []string, automati
 	return f
 }
 
-// sessionLoad is what the vendor's registry says is running right now: per
-// account, the sessions it reports as working and every live session's status
-// word, each from a claim verified by its own process.
+// sessionLoad is what the vendors' registries say is running right now: per
+// subscription key, the sessions reported as working and every live session's
+// status word, each from a claim verified by its own process — in this home
+// and in every other home that shares the ledger. The refs and the evidence
+// are this home's alone: they decide a session's owner, and another home's
+// sessions are never this home's to route.
 type sessionLoad struct {
 	busy     map[string][]placement.Proc
 	statuses map[string][]string
@@ -181,28 +244,70 @@ type sessionLoad struct {
 	evidence map[string]sessions.ProcessEvidence
 }
 
-// readSessionLoad reads every account's registry and samples each pid once.
-// Codex has no registry headroom can read: its accounts carry no busy
-// sessions, and an empty read there is not evidence of idleness.
-func readSessionLoad(set accounts.Set) sessionLoad {
+// readSessionLoad reads every account's registry, this home's and the other
+// homes', and samples each pid once for all of them. keys maps this home's
+// account names to their subscription keys; another home's account counts
+// only when its identity says which subscription it is, since its dir name is
+// that home's to choose. Codex has no registry headroom can read: its accounts
+// carry no busy sessions, and an empty read there is not evidence of idleness.
+func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []otherHome) sessionLoad {
 	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
 	if set.Scope.Vendor != config.Claude {
 		return out
 	}
-	var entries []sessions.RegistryEntry
+	type claimant struct{ key, home string }
+	who := map[string]claimant{}
+	var own []sessions.RegistryEntry
 	for _, a := range set.Accounts {
 		out.refs = append(out.refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
-		entries = append(entries, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
+		who[a.Name] = claimant{keys[a.Name], home}
+		own = append(own, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
 	}
-	var live []sessions.RegistryEntry
-	out.evidence, live = sessions.InspectClaims(entries, placementProbe)
+	all := append([]sessions.RegistryEntry(nil), own...)
+	for _, o := range others {
+		for _, a := range o.set.Accounts {
+			if a.AccountID == "" {
+				continue
+			}
+			// A label no account of this home can carry: the registry reader
+			// stamps it on every entry, and it is mapped back here.
+			label := o.root + "\x00" + a.Name
+			who[label] = claimant{state.Key{UUID: a.AccountID, Name: a.Name}.ID(), o.root}
+			all = append(all, sessions.ReadRegistry(label, a.Dir()).Entries...)
+		}
+	}
+	probe := sampleOnce(placementProbe)
+	out.evidence, _ = sessions.InspectClaims(own, probe)
+	_, live := sessions.InspectClaims(all, probe)
 	for _, e := range live {
-		out.statuses[e.Account] = append(out.statuses[e.Account], statusWord(e))
+		c := who[e.Account]
+		if c.key == "" {
+			continue
+		}
+		out.statuses[c.key] = append(out.statuses[c.key], statusWord(e))
 		if e.Busy() {
-			out.busy[e.Account] = append(out.busy[e.Account], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS})
+			out.busy[c.key] = append(out.busy[c.key], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS, Home: c.home})
 		}
 	}
 	return out
+}
+
+// sampleOnce answers each pid from one sample, however many times it is
+// asked: liveness and ownership read the same process table.
+func sampleOnce(probe sessions.PIDProbe) sessions.PIDProbe {
+	type sample struct {
+		start int64
+		err   error
+	}
+	seen := map[int]sample{}
+	return func(pid int) (int64, error) {
+		if s, ok := seen[pid]; ok {
+			return s.start, s.err
+		}
+		start, err := probe(pid)
+		seen[pid] = sample{start, err}
+		return start, err
+	}
 }
 
 // limitsOf turns an observation into the rows the rule counts: the ones that
@@ -225,30 +330,49 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 	return obs.ObservedAt, sourceNames[obs.Source], limits
 }
 
-// markNext sets Next on the row an automatic launch would take from the
-// figures a board is showing, and clears it everywhere else. mode is the
-// board's own reading of `.current`, taken once with its facts; outside auto
-// nothing is marked. The mark is advice: it is computed from this surface's
-// observations and the record as it stood, and a launch decides again from
-// the disk — counting whatever was placed in between. What it is not allowed
-// to be is a second opinion: the candidates come from buildCandidates, the
-// builder a launch uses.
-func markNext(set accounts.Set, list []*accountData, mode string, ledger placement.Ledger, now time.Time) {
+// markPlacement sets, on every row, the load an automatic launch would count
+// on that account — its busy sessions and recent launches, from every home
+// sharing the ledger — and, under auto, Next on the row such a launch would
+// take from the figures the board is showing. mode is the board's own reading
+// of `.current`, taken once with its facts; outside auto nothing is marked.
+// The mark is advice: it is computed from this surface's observations and the
+// record as it stood, and a launch decides again from the disk — counting
+// whatever was placed in between. What it is not allowed to be is a second
+// opinion: the candidates come from buildCandidates, the builder a launch
+// uses.
+func markPlacement(set accounts.Set, list []*accountData, mode string, st *state.Store, now time.Time) {
 	for _, d := range list {
-		d.View.Next = false
+		d.View.Next, d.View.Load = false, nil
 	}
-	if mode != "auto" || len(list) == 0 {
+	if len(list) == 0 || st == nil {
 		return
 	}
+	snap := st.Load()
 	src := make([]placeSource, len(list))
 	for i, d := range list {
 		src[i] = placeSource{acct: d.Acct, key: d.Key, obs: d.View.Obs}
 	}
-	f := buildCandidates(set, src, os.Environ(), true, now)
-	chosen := placement.Choose(f.cands, ledger, placement.Intent{}, now).Chosen
+	auto := mode == "auto"
+	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(st, snap, set.Scope.Vendor))
+	decision := placement.Choose(f.cands, snap.Placements(), placement.Intent{Home: st.Home()}, now)
+	labels := homeLabels(snap, st.Home())
 	for _, d := range list {
-		d.View.Next = chosen != "" && d.Acct.Name == chosen
+		if c, ok := decision.Find(d.Acct.Name); ok {
+			d.View.Load = loadFacts(c, st.Home(), labels)
+		}
+		d.View.Next = auto && decision.Chosen != "" && d.Acct.Name == decision.Chosen
 	}
+}
+
+// loadFacts is a counted candidate's load as a surface reports it.
+func loadFacts(c placement.Counted, self string, labels map[string]string) *accountstate.Load {
+	l := &accountstate.Load{Value: c.Load, Busy: c.Busy, Launched: c.Pending}
+	for _, sh := range c.Shares {
+		l.Homes = append(l.Homes, accountstate.HomeLoad{
+			Home: sh.Home, Label: homeLabel(labels, sh.Home), This: sh.Home == self, Busy: sh.Busy, Launched: sh.Pending,
+		})
+	}
+	return l
 }
 
 // statusWord is a live session's status as the vendor wrote it. Absent and
@@ -339,10 +463,30 @@ func refreshWorthStarting(f placeFacts, now time.Time) bool {
 	return false
 }
 
+// refreshDeadline bounds the round a launch leaves behind: the claim, and a
+// fetch the HTTP client already gives up on after ten seconds. Completion
+// follows it either way. The round lives inside whatever launched it — an
+// automated job that is torn down when it ends counts it as its own process —
+// so it must be short, and must stop cleanly when told to.
+const refreshDeadline = 12 * time.Second
+
 // runRefresh is the round with nobody watching: ask about every account the
 // claim permits, record the answers, print nothing. It is what an automatic
 // launch leaves running behind it.
+//
+// SIGTERM, SIGINT and SIGHUP end it early and cleanly: requests in flight are
+// abandoned and recorded as abandoned, an answer that already arrived is kept,
+// and nothing is claimed once the signal has come. It is then gone within
+// about a second — the lock a completion takes is held for milliseconds — so
+// a supervisor's TERM-then-KILL never has to reach the KILL. Killed outright
+// mid-request, it leaves a claim that simply expires at its spacing: a claim
+// is a reservation with a deadline, which no reader waits on, and the lock
+// dies with the process.
 func runRefresh(scopes []config.Scope) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, refreshDeadline)
+	defer cancel()
 	var wg sync.WaitGroup
 	for _, scope := range scopes {
 		wg.Add(1)
@@ -350,7 +494,7 @@ func runRefresh(scopes []config.Scope) int {
 			defer wg.Done()
 			st := state.Open(scope)
 			p := prepareUnprobed(scope, st)
-			for range launchFetches(context.Background(), p.list, st) {
+			for range launchFetches(ctx, p.list, st) {
 			}
 		}(scope)
 	}
@@ -391,6 +535,11 @@ type launchOutcome struct {
 	// notes are the bookkeeping that did not happen, worded for the person:
 	// the launch proceeds regardless, and says so.
 	notes []string
+
+	// home and labels say whose load is whose: this home's accounts root,
+	// and every home's name.
+	home   string
+	labels map[string]string
 }
 
 // placeLaunch decides the account, records the launch and whatever it means
@@ -438,9 +587,15 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 		return out, fmt.Errorf("%s cannot be launched", out.decision.Chosen)
 	}
 	out.prepared, out.account = prepared, acct
+	out.home, out.labels = facts.home, homeLabels(facts.snap, facts.home)
 
-	if placeErr != nil {
+	switch {
+	case placeErr != nil:
 		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", placeErr))
+	case placed.RecordErr != nil:
+		// The re-home this launch depended on is written; the shared ledger's
+		// write failed after it.
+		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", placed.RecordErr))
 	}
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
@@ -448,8 +603,8 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	rec := launchlog.New(out.decision, req.now)
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.cwd, req.mode, placed.Recorded
 	rec.Session = req.ref.Route
-	if placeErr != nil {
-		rec.Problem = placeErr.Error()
+	if err := cmp.Or(placeErr, placed.RecordErr); err != nil {
+		rec.Problem = err.Error()
 	}
 	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
@@ -469,7 +624,8 @@ func (o launchOutcome) announce(w io.Writer, prefix string) {
 	for _, notice := range o.prepared.Notices {
 		fmt.Fprintln(w, prefix+notice)
 	}
-	fmt.Fprintln(w, prefix+launchLine(o.decision, o.req.intent.Kind == placement.Auto, o.req.ref, o.req.owner, o.req.now))
+	c, _ := o.decision.Find(o.decision.Chosen)
+	fmt.Fprintln(w, prefix+launchLine(o.decision, o.req.intent.Kind == placement.Auto, o.req.ref, o.req.owner, elsewhere(c, o.home, o.labels), o.req.now))
 	for _, note := range o.notes {
 		fmt.Fprintln(w, prefix+note)
 	}
@@ -480,8 +636,9 @@ func (o launchOutcome) announce(w io.Writer, prefix string) {
 // launchLine is the one line a launch prints before the vendor starts: the
 // account, how it was decided, and — when the rule decided — the figures it
 // decided on, each said as what it is. automatic says the rule chose; ref and
-// owner are the session the launch is for and the account that last drove it.
-func launchLine(d placement.Decision, automatic bool, ref sessionRef, owner string, now time.Time) string {
+// owner are the session the launch is for and the account that last drove it;
+// others is how much of the chosen account's load other homes put there.
+func launchLine(d placement.Decision, automatic bool, ref sessionRef, owner, others string, now time.Time) string {
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
@@ -520,13 +677,30 @@ func launchLine(d placement.Decision, automatic bool, ref sessionRef, owner stri
 		}
 	} else {
 		parts = append(parts, figures(c, now)...)
-		parts = append(parts, fmt.Sprintf("load %d", c.Load))
+		load := fmt.Sprintf("load %d", c.Load)
+		if others != "" {
+			load += " (" + others + ")"
+		}
+		parts = append(parts, load)
 	}
 	line := strings.Join(parts, " · ")
 	if d.RunnerUp != "" {
 		line += " (next: " + d.RunnerUp + ")"
 	}
 	return line
+}
+
+// elsewhere says how much of a counted account's busy sessions and recent
+// launches came from homes other than this one, by name: "2 from
+// steward-home". "" when none did.
+func elsewhere(c placement.Counted, home string, labels map[string]string) string {
+	var parts []string
+	for _, sh := range c.Elsewhere(home) {
+		if n := sh.Busy + sh.Pending; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d from %s", n, render.Sanitize(homeLabel(labels, sh.Home))))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // figure is one counted percentage said as what it rests on: measured, a lower
@@ -577,8 +751,10 @@ func shortLabel(label string) string {
 }
 
 // writeDryRun prints the whole table a launch would choose from: one row per
-// account, with what was counted and why an account was left out.
-func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode string, now time.Time) {
+// account, with what was counted and why an account was left out. busy and
+// pending count every home sharing the ledger; a note says whose were not
+// this home's.
+func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode string, now time.Time, home string, labels map[string]string) {
 	if d.Chosen == "" {
 		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
 	} else {
@@ -611,7 +787,7 @@ func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode s
 			week = cell(c.Weekly, c.WeeklyBasis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, c.Busy, c.Pending, c.Load, dryRunNote(c, now))
+			session, week, c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
 	}
 }
 
@@ -623,10 +799,13 @@ func cell(counted int, basis placement.Basis) string {
 	return figure(counted, basis)
 }
 
-func dryRunNote(c placement.Counted, now time.Time) string {
+func dryRunNote(c placement.Counted, now time.Time, home string, labels map[string]string) string {
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
+	}
+	for _, sh := range c.Elsewhere(home) {
+		notes = append(notes, fmt.Sprintf("%s: %d busy, %d pending", render.Sanitize(homeLabel(labels, sh.Home)), sh.Busy, sh.Pending))
 	}
 	if c.NearLimit {
 		notes = append(notes, fmt.Sprintf("near a limit (%s %d%%)", shortLabel(c.HighestLabel), c.Highest))

@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +103,7 @@ func TestAWeeklyFigureNeverHidesALaunch(t *testing.T) {
 	for i := range cands {
 		d := chosen(t, cands, ledger, Intent{})
 		got = append(got, d.Chosen)
-		ledger.Record("uuid:"+d.Chosen, d.Chosen, 100+i, now)
+		ledger.Record("uuid:"+d.Chosen, d.Chosen, 100+i, here, now)
 	}
 	if strings.Join(got, ",") != "a,b,c,d" {
 		t.Fatalf("four launches went to %v, want four accounts", got)
@@ -151,7 +152,7 @@ func TestAPendingLaunchCountsForItsSpanAndOnce(t *testing.T) {
 	a, b := acct("a", 0, 0), acct("b", 0, 5)
 	recent := now.Add(-5 * time.Minute)
 	ledger := Ledger{}
-	ledger.Record("uuid:a", "a", 77, recent)
+	ledger.Record("uuid:a", "a", 77, here, recent)
 
 	// The process has exited and the figures were refreshed since: it still
 	// counts until its span has passed.
@@ -243,7 +244,7 @@ func TestRotationWhenNothingWasEverObserved(t *testing.T) {
 			t.Fatalf("reason = %q", d.Reason)
 		}
 		got = append(got, d.Chosen)
-		ledger.Record(d.Chosen, d.Chosen, i, clock)
+		ledger.Record(d.Chosen, d.Chosen, i, here, clock)
 		clock = clock.Add(20 * time.Minute)
 	}
 	if strings.Join(got, "") != "abcabc" {
@@ -270,26 +271,26 @@ func TestForcedAndLast(t *testing.T) {
 		t.Fatalf("forced unknown: %+v", d)
 	}
 
-	if d := chosen(t, cands, Ledger{}, Intent{Kind: LastUsed}); d.Chosen != "" || !strings.Contains(d.Refusal, "no launch is recorded") {
+	if d := chosen(t, cands, Ledger{}, Intent{Kind: LastUsed, Home: here}); d.Chosen != "" || !strings.Contains(d.Refusal, "no launch is recorded") {
 		t.Fatalf("last with nothing recorded: %+v", d)
 	}
 	var ledger Ledger
-	ledger.Record("uuid:ok", "ok", 1, now.Add(-3*time.Hour))
-	ledger.Record("uuid:soft", "soft", 2, now.Add(-2*time.Hour))
-	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed}); d.Chosen != "soft" || d.Reason != ReasonLast {
+	ledger.Record("uuid:ok", "ok", 1, here, now.Add(-3*time.Hour))
+	ledger.Record("uuid:soft", "soft", 2, here, now.Add(-2*time.Hour))
+	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "soft" || d.Reason != ReasonLast {
 		t.Fatalf("last: %+v", d)
 	}
-	ledger.Record("uuid:gone", "gone", 3, now.Add(-time.Hour))
-	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed}); d.Chosen != "" || !strings.Contains(d.Refusal, "gone") {
+	ledger.Record("uuid:gone", "gone", 3, here, now.Add(-time.Hour))
+	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "" || !strings.Contains(d.Refusal, "gone") {
 		t.Fatalf("last names a removed account: %+v", d)
 	}
 }
 
 func TestPruneKeepsWhatStillCounts(t *testing.T) {
 	var l Ledger
-	l.Record("a", "a", 1, now.Add(-20*time.Minute))
-	l.Record("b", "b", 2, now.Add(-5*time.Minute))
-	l.Record("c", "c", 3, now.Add(-40*24*time.Hour))
+	l.Record("a", "a", 1, here, now.Add(-20*time.Minute))
+	l.Record("b", "b", 2, here, now.Add(-5*time.Minute))
+	l.Record("c", "c", 3, here, now.Add(-40*24*time.Hour))
 	if !l.Prune(now, 30*24*time.Hour) {
 		t.Fatal("nothing pruned")
 	}
@@ -299,10 +300,65 @@ func TestPruneKeepsWhatStillCounts(t *testing.T) {
 	if _, ok := l.Last["c"]; ok || len(l.Last) != 2 {
 		t.Fatalf("last = %+v", l.Last)
 	}
-	if last, ok := l.Newest(); !ok || last.Name != "b" {
+	if last, ok := l.Newest(here); !ok || last.Name != "b" {
 		t.Fatalf("newest = %+v", last)
 	}
 	if l.Prune(now, 30*24*time.Hour) {
 		t.Fatal("a second prune changed something")
+	}
+}
+
+// here is the home a test's launches are made from.
+const here = "/home/owner/.claude-accounts"
+
+// Two homes holding logins of one subscription spend one quota: a session busy
+// in the other home and a launch the other home made both count on the
+// subscription, once each, and the count says whose they are.
+func TestAnotherHomesSessionsAndLaunchesCountOnTheSubscription(t *testing.T) {
+	const there = "/home/steward/.claude-accounts"
+	shared, spare := acct("shared", 0, 0), acct("spare", 0, 5)
+	started := now.Add(-time.Hour).UnixMilli()
+	shared.Busy = []Proc{{PID: 10, StartedMS: started, Home: there}, {PID: 11, StartedMS: started, Home: here}}
+	var ledger Ledger
+	ledger.Record("uuid:shared", "shared", 20, there, now.Add(-time.Minute))
+	// A launch the other home made that has since become one of its busy
+	// sessions is counted once, as the session.
+	ledger.Record("uuid:shared", "shared", 10, there, now.Add(-2*time.Hour))
+	shared.Busy[0].StartedMS = now.Add(-2 * time.Hour).UnixMilli()
+
+	d := chosen(t, []Candidate{shared, spare}, ledger, Intent{Home: here})
+	if d.Chosen != "spare" {
+		t.Fatalf("chose %q: the other home's load is on that subscription", d.Chosen)
+	}
+	c, _ := d.Find("shared")
+	if c.Busy != 2 || c.Pending != 1 || c.Load != 3 {
+		t.Errorf("busy %d pending %d load %d, want 2, 1, 3", c.Busy, c.Pending, c.Load)
+	}
+	want := []Share{{Home: here, Busy: 1}, {Home: there, Busy: 1, Pending: 1}}
+	if !slices.Equal(c.Shares, want) {
+		t.Errorf("shares = %+v, want %+v", c.Shares, want)
+	}
+	if got := c.Elsewhere(here); !slices.Equal(got, want[1:]) {
+		t.Errorf("elsewhere = %+v", got)
+	}
+}
+
+// An account name is one home's: the last account another home used is never
+// this home's last, even when both homes name a dir alike.
+func TestTheLastAccountUsedIsPerHome(t *testing.T) {
+	const there = "/home/steward/.claude-accounts"
+	cands := []Candidate{acct("a", 0, 0), acct("b", 0, 0)}
+	var ledger Ledger
+	ledger.Record("uuid:a", "a", 1, here, now.Add(-time.Hour))
+	ledger.Record("uuid:b", "b", 2, there, now.Add(-time.Minute))
+	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "a" {
+		t.Fatalf("this home's last = %q, want a", d.Chosen)
+	}
+	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: "/elsewhere"}); d.Chosen != "" {
+		t.Fatalf("a home that never launched has a last account: %+v", d)
+	}
+	// The tie-break is the subscription's, whichever home placed it.
+	if ledger.Last["uuid:b"].Name != "b" {
+		t.Errorf("last per subscription = %+v", ledger.Last)
 	}
 }

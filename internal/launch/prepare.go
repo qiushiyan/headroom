@@ -25,7 +25,7 @@ func Prepare(account accounts.Account, discovered accounts.Set, base []string) (
 	if discovered.Scope.Vendor != scope.Vendor {
 		return p, fmt.Errorf("%s account %q was not selected from the %s accounts", scope.Vendor.Title(), account.Name, discovered.Scope.Vendor.Title())
 	}
-	if account.IsPrimary() && scope.PrimaryRelocated {
+	if account.ConfigDir == "" && scope.PrimaryRelocated {
 		return p, fmt.Errorf("HEADROOM_HOME re-points the primary — cannot launch it here (extras are unaffected)")
 	}
 	if err := accounts.VerifyTopology(account); err != nil {
@@ -47,7 +47,7 @@ func Prepare(account accounts.Account, discovered accounts.Set, base []string) (
 		return p, err
 	}
 	p.Env = target.Env(base)
-	if value, conflict := target.Conflicts(base); conflict && !discovered.KnownExtraDir(value) {
+	if value, conflict := target.Conflicts(base); conflict && !discovered.KnownDir(value) {
 		p.Notices = append(p.Notices, fmt.Sprintf("ignoring inherited %s=%s; launching %s (%s)", scope.Env().HomeVar, value, account.Name, account.Dir()))
 	}
 	for _, in := range Redirects(scope.Vendor, base) {

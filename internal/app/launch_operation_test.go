@@ -171,7 +171,7 @@ func TestTheLaunchLineSaysWhatAFigureRestsOn(t *testing.T) {
 	}
 	choose := func(c placement.Candidate) string {
 		d := placement.Choose([]placement.Candidate{c}, placement.Ledger{}, placement.Intent{}, now)
-		return launchLine(d, true, sessionRef{}, "", now)
+		return launchLine(d, true, sessionRef{}, "", "", now)
 	}
 
 	ended := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-time.Minute).Unix(), Limits: []placement.Limit{
@@ -239,13 +239,7 @@ func TestPlacementReadsThePrimarysFileBackedCredential(t *testing.T) {
 // launch returns while the usage endpoint has not answered, and the answer is
 // recorded afterwards by a process that outlived it.
 func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds the binary")
-	}
-	bin := filepath.Join(t.TempDir(), "headroom")
-	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/headroom").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := headroomBinary(t)
 
 	asked := make(chan string, 4)
 	release := make(chan struct{})

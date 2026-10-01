@@ -261,3 +261,24 @@ func TestExecFailureKeepsRememberedChoice(t *testing.T) {
 		t.Fatalf("choice after failed exec: %+v %v", a, err)
 	}
 }
+
+// A primary spelled out by its dir names the tree the board describes, so a
+// re-pointed home does not refuse it: the refusal exists for selection by
+// absence, which the vendor resolves against the real home.
+func TestASpelledOutPrimaryLaunchesByItsDir(t *testing.T) {
+	cfg := launchConfig(t)
+	cfg.PrimaryExplicit, cfg.PrimaryRelocated = true, true
+	_, env, called := capturedExec(t)
+	if code := runLaunch(cfg, []string{"--account", "qiushi"}); code != 0 || !*called {
+		t.Fatalf("spelled-out primary: exit %d, exec %v", code, *called)
+	}
+	var dirs []string
+	for _, kv := range *env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			dirs = append(dirs, v)
+		}
+	}
+	if len(dirs) != 1 || dirs[0] != cfg.PrimaryDir() {
+		t.Errorf("CLAUDE_CONFIG_DIR = %v, want exactly the primary's dir", dirs)
+	}
+}

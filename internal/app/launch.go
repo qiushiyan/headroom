@@ -183,6 +183,7 @@ parse:
 	automatic := intent.Kind == placement.Auto
 
 	st := state.Open(cfg)
+	intent.Home = st.Home()
 	facts := gatherPlacement(set, st, os.Environ(), automatic, now)
 
 	// A launch that names a session follows the account that last drove it,
@@ -207,7 +208,7 @@ parse:
 			}
 		}
 		d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now)
-		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now)
+		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now, facts.home, homeLabels(facts.snap, facts.home))
 		if d.Chosen == "" {
 			return 1
 		}

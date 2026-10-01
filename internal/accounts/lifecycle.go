@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/config"
@@ -68,6 +69,23 @@ func SharedConfigEntries(v config.Vendor) []string {
 	return claudeSharedConfig
 }
 
+// PerDirEntries are what a dir holds that is never configuration, whatever a
+// share source contains: the login, the session-ownership evidence, the live
+// registry — and the store link, which seeding makes itself. Linking one of
+// these between two dirs makes them one login, or one account's history in
+// another's name, so no share mode links them; a config package that happens
+// to hold one has it skipped and named.
+func PerDirEntries(v config.Vendor) []string {
+	if v == config.Codex {
+		return []string{"auth.json", "history.jsonl", "sessions"}
+	}
+	return []string{".credentials.json", ".claude.json", "history.jsonl", "sessions", "projects"}
+}
+
+func perDir(v config.Vendor, name string) bool {
+	return slices.Contains(PerDirEntries(v), name)
+}
+
 // SeedOptions selects what a fresh account dir shares. ShareFrom "" shares
 // nothing — the account starts on Claude Code's defaults. Otherwise every
 // entry named in ShareNames is symlinked from ShareFrom into the account
@@ -108,41 +126,48 @@ func ValidateExtraName(name string) error {
 // board shows it as never logged in, launch refuses it on topology) and
 // deleting someone's directory to tidy up is not this function's call.
 func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared []string, err error) {
+	dir, shared, _, err = SeedKept(cfg, name, opt)
+	return dir, shared, err
+}
+
+// SeedKept is Seed, also naming what the share source held that stays per
+// dir (PerDirEntries) and was therefore not linked.
+func SeedKept(cfg config.Scope, name string, opt SeedOptions) (dir string, shared, kept []string, err error) {
 	if err := ValidateExtraName(name); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	dir = filepath.Join(cfg.AccountsRoot, name)
 	if _, err := os.Lstat(dir); err == nil {
-		return dir, nil, fmt.Errorf("%s already exists", dir)
+		return dir, nil, nil, fmt.Errorf("%s already exists", dir)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return dir, nil, fmt.Errorf("%s: %v", dir, err)
+		return dir, nil, nil, fmt.Errorf("%s: %v", dir, err)
 	}
 	if err := ensureCanonicalStore(cfg); err != nil {
-		return dir, nil, err
+		return dir, nil, nil, err
 	}
 	if opt.ShareFrom != "" {
 		if !filepath.IsAbs(opt.ShareFrom) {
-			return dir, nil, fmt.Errorf("share source %q is not absolute", opt.ShareFrom)
+			return dir, nil, nil, fmt.Errorf("share source %q is not absolute", opt.ShareFrom)
 		}
 		if fi, err := os.Stat(opt.ShareFrom); err != nil || !fi.IsDir() {
-			return dir, nil, fmt.Errorf("share source %s is not a directory", opt.ShareFrom)
+			return dir, nil, nil, fmt.Errorf("share source %s is not a directory", opt.ShareFrom)
 		}
 	}
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		return dir, nil, err
+		return dir, nil, nil, err
 	}
 	if err := os.Mkdir(dir, 0o755); err != nil {
-		return dir, nil, err
+		return dir, nil, nil, err
 	}
 	if err := os.Symlink(cfg.StoreDir(), filepath.Join(dir, cfg.StoreLink())); err != nil {
-		return dir, nil, fmt.Errorf("linking %s: %v (partial dir left at %s)", cfg.StoreLink(), err, dir)
+		return dir, nil, nil, fmt.Errorf("linking %s: %v (partial dir left at %s)", cfg.StoreLink(), err, dir)
 	}
 	if opt.ShareFrom != "" {
 		names := opt.ShareNames
 		if names == nil {
 			entries, err := os.ReadDir(opt.ShareFrom)
 			if err != nil {
-				return dir, nil, fmt.Errorf("reading %s: %v (partial dir left at %s)", opt.ShareFrom, err, dir)
+				return dir, nil, nil, fmt.Errorf("reading %s: %v (partial dir left at %s)", opt.ShareFrom, err, dir)
 			}
 			for _, e := range entries {
 				names = append(names, e.Name())
@@ -156,17 +181,21 @@ func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared []
 			if _, err := os.Lstat(src); err != nil {
 				continue // a whitelist entry the source does not have: nothing to share
 			}
+			if perDir(cfg.Vendor, n) {
+				kept = append(kept, n)
+				continue
+			}
 			if err := os.Symlink(src, filepath.Join(dir, n)); err != nil {
-				return dir, shared, fmt.Errorf("linking %s: %v (partial dir left at %s)", n, err, dir)
+				return dir, shared, kept, fmt.Errorf("linking %s: %v (partial dir left at %s)", n, err, dir)
 			}
 			shared = append(shared, n)
 		}
 	}
 	a := Account{Scope: cfg, ConfigDir: dir, Name: name}
 	if err := VerifyTopology(a); err != nil {
-		return dir, shared, fmt.Errorf("seeded dir failed the topology check it was built to pass: %v", err)
+		return dir, shared, kept, fmt.Errorf("seeded dir failed the topology check it was built to pass: %v", err)
 	}
-	return dir, shared, nil
+	return dir, shared, kept, nil
 }
 
 // ensureCanonicalStore makes ~/.claude/projects exist as a real directory —
