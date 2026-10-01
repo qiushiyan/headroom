@@ -60,7 +60,11 @@ func runResolve(cfg config.Scope, args []string) int {
 		// There is no one account to print. An answer here would be a guess
 		// the next launch need not agree with, and a caller launching on it
 		// by name would bypass the placement it stood in for.
-		fmt.Fprintln(os.Stderr, "headroom resolve: bare launches are automatic — name an account, or `headroom launch --dry-run` shows the one a launch would take")
+		dry := "headroom launch --dry-run"
+		if cfg.Vendor == config.Codex {
+			dry = "headroom launch --vendor codex --dry-run"
+		}
+		fmt.Fprintf(os.Stderr, "headroom resolve: bare launches are automatic — name an account, or `%s` shows the one a launch would take\n", dry)
 		return 1
 	}
 	if err != nil {

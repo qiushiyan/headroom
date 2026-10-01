@@ -27,6 +27,7 @@ type sessionActions struct {
 	// account, and wherever this surface would fall back to one it asks the
 	// placement rule instead.
 	auto         bool
+	placed       bool // this resume was placed by the rule, and so already recorded
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
@@ -62,6 +63,7 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 			return false, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", err)
 		}
 	}
+	actions.recordResume(s, acct)
 	actions.beforeLaunch()
 	for _, notice := range prepared.Notices {
 		fmt.Fprintln(os.Stderr, "headroom sessions: "+notice)
@@ -122,6 +124,34 @@ func (actions *sessionActions) resumeAccount(s *sessions.Session, override bool)
 	return a, found, ""
 }
 
+// recordResume records a resume the rule did not place — the owner's, or the
+// pinned account's — so that it is load the next automatic launch counts and
+// a line in the log, like every other session headroom starts. A resume the
+// rule placed was recorded when it was placed. Nothing here can refuse: the
+// account is already decided, and a record that fails is a record lost.
+func (actions *sessionActions) recordResume(s *sessions.Session, acct accounts.Account) {
+	if actions.placed || actions.st == nil {
+		return
+	}
+	now := time.Now()
+	facts := gatherPlacement(actions.set, actions.st, os.Environ(), false, now)
+	placed, placeErr := actions.st.Place(facts.cands, placement.Intent{Kind: placement.Forced, Account: acct.Name, Reason: "picker"}, os.Getpid(), "", now)
+	actions.log(s, placed, placeErr, now)
+}
+
+func (actions *sessionActions) log(s *sessions.Session, placed state.Placed, placeErr error, now time.Time) {
+	if placed.Decision.Chosen == "" {
+		return
+	}
+	rec := launchlog.New(placed.Decision, now)
+	rec.Vendor, rec.PID, rec.Mode, rec.Session, rec.Recorded = string(actions.cfg.Vendor), os.Getpid(), "picker", s.ID, placed.Recorded
+	rec.CWD = s.CWD
+	if placeErr != nil {
+		rec.Problem = placeErr.Error()
+	}
+	_ = launchlog.Append(actions.cfg.AccountsRoot, rec)
+}
+
 // place asks the placement rule where a resumed session goes, records the
 // answer the way a launch does, and logs it. A bookkeeping failure costs the
 // record and nothing else, as on the launch path.
@@ -133,13 +163,8 @@ func (actions *sessionActions) place(s *sessions.Session, exclude string) (accou
 	if d.Chosen == "" {
 		return accounts.Account{}, false, d.Refusal
 	}
-	rec := launchlog.New(d, now)
-	rec.Vendor, rec.PID, rec.Mode, rec.Session, rec.Recorded = string(actions.cfg.Vendor), os.Getpid(), "picker", s.ID, placed.Recorded
-	rec.CWD = s.CWD
-	if placeErr != nil {
-		rec.Problem = placeErr.Error()
-	}
-	_ = launchlog.Append(actions.cfg.AccountsRoot, rec)
+	actions.placed = true
+	actions.log(s, placed, placeErr, now)
 	a, ok := facts.account(d.Chosen)
 	return a, ok, ""
 }

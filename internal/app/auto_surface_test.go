@@ -240,6 +240,14 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	if done, _ := ui.commitResume(false); !done || account(*env) != "b@x.com" {
 		t.Fatalf("enter on an owned session went to %s", account(*env))
 	}
+	// Every session headroom starts is a line in the log and load on its
+	// account, a resume on its owner included — once each.
+	if recs := f.log(); len(recs) != 2 || recs[1].Mode != "picker" || recs[1].Reason != "picker" || recs[1].Chosen != "b@x.com" {
+		t.Fatalf("log after two resumes = %+v", recs)
+	}
+	if n := len(f.st.Load().Placements().Recent); n != 2 {
+		t.Fatalf("%d placements recorded after two resumes", n)
+	}
 
 	// The override: the least-loaded of the *other* accounts, re-homed, logged.
 	ui, s := newUI("a@x.com", sessions.OwnerHistory)
@@ -256,7 +264,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 	recs := f.log()
 	last := recs[len(recs)-1]
-	if last.Mode != "picker" || last.Session != sessA || last.Chosen != moved {
+	if len(recs) != 3 || last.Mode != "picker" || last.Session != sessA || last.Chosen != moved {
 		t.Errorf("log = %+v", last)
 	}
 
