@@ -1009,6 +1009,30 @@ func TestRefreshAsksThroughTheClaimAndRecords(t *testing.T) {
 	}
 }
 
+// A week's time left is said as what it rests on, and a record written before
+// it was kept says nothing rather than something invented.
+func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
+	record := func(w launchlog.Week) launchlog.Record {
+		return launchlog.Record{At: "2026-10-05T14:39:35Z", Mode: "auto", Reason: "least-load", Chosen: "a", Recorded: true,
+			Candidates: []launchlog.Candidate{{Name: "a", Weekly: 7, Week: w}}}
+	}
+	for _, c := range []struct {
+		name string
+		week launchlog.Week
+		want string
+	}{
+		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "week   7%, 1.9d left"},
+		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "week   7%, ≈6.5d left"},
+		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, "week   7%"},
+		{"written before the field", launchlog.Week{}, "week   7%"},
+	} {
+		line := launchesLine(record(c.week), 1, false)
+		if !strings.HasSuffix(strings.TrimRight(line, " "), c.want) {
+			t.Errorf("%s: %q does not end in %q", c.name, line, c.want)
+		}
+	}
+}
+
 func TestLaunchesPrintsTheLog(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
@@ -1028,6 +1052,11 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "a@x.com") || !strings.Contains(lines[0], "auto/least-load") || !strings.Contains(lines[0], "next qiushi") {
 		t.Errorf("first line: %s", lines[0])
+	}
+	// How long the deciding week had left is part of why the launch went
+	// where it did.
+	if !strings.Contains(lines[0], "week  10%, 3.0d left") {
+		t.Errorf("first line does not say how long its week had left: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "qiushi") || !strings.Contains(lines[1], "named") || strings.Contains(lines[1], "named/named") {
 		t.Errorf("second line: %s", lines[1])
