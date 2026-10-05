@@ -93,6 +93,41 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	}
 }
 
+// A board left open marks what a launch would take at the moment it draws, not
+// at its last round: with nothing re-read, a weekly window ending soon catches
+// up with room that lasts longer, and the mark moves with it.
+func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
+	f := boardFixture(t, "a@x.com", "b@x.com")
+	f.setCurrent("auto\n")
+	f.observe("qiushi", 30, 0, time.Minute)
+	f.observeWeek("a@x.com", 0, 70, time.Hour, time.Minute)
+	f.observeWeek("b@x.com", 0, 0, 7*time.Hour, time.Minute)
+
+	pg := newPage(f.cfg)
+	var out strings.Builder
+	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now(),
+		fp: &framePrinter{out: &out, size: func() (int, int, error) { return 120, 60, nil }}}
+	ui.show(context.Background(), 0)
+	next := func() string {
+		_, n := marks(pg.list)
+		if len(n) != 1 {
+			t.Fatalf("%d rows marked next", len(n))
+		}
+		return n[0]
+	}
+	if got := next(); got != "b@x.com" {
+		t.Fatalf("now: marked %s; 80 points over seven hours beat 10 over one", got)
+	}
+	pg.markAt(time.Now().Add(10 * time.Minute))
+	if got := next(); got != "a@x.com" {
+		t.Fatalf("ten minutes on: marked %s; a's 10 points now end within the hour", got)
+	}
+	ui.draw()
+	if got := next(); got != "b@x.com" {
+		t.Errorf("the frame drawn now marked %s, not what a launch now takes", got)
+	}
+}
+
 func TestSchema6SaysTheMode(t *testing.T) {
 	f := boardFixture(t, "a@x.com")
 	doc := func() doc5 {

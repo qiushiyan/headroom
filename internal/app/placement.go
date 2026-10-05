@@ -336,12 +336,15 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 // whatever was placed in between. What it is not allowed to be is a second
 // opinion: the candidates come from buildCandidates, the builder a launch
 // uses.
-func markPlacement(set accounts.Set, list []*accountData, mode string, st *state.Store, now time.Time) {
+//
+// It returns what it gathered, so a surface that stays open can mark again
+// as time passes without gathering again; nil when there was nothing to mark.
+func markPlacement(set accounts.Set, list []*accountData, mode string, st *state.Store, now time.Time) *placeMark {
 	for _, d := range list {
 		d.View.Next, d.View.Load = false, nil
 	}
 	if len(list) == 0 || st == nil {
-		return
+		return nil
 	}
 	snap := st.Load()
 	src := make([]placeSource, len(list))
@@ -350,13 +353,36 @@ func markPlacement(set accounts.Set, list []*accountData, mode string, st *state
 	}
 	auto := mode == "auto"
 	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(set.Scope, snap))
-	decision := placement.Choose(f.cands, snap.Placements(), placement.Intent{Home: st.Home()}, now)
-	labels := homeLabels(snap, st.Home())
+	m := &placeMark{cands: f.cands, ledger: snap.Placements(), home: st.Home(), labels: homeLabels(snap, st.Home()), auto: auto}
+	m.mark(list, now)
+	return m
+}
+
+// placeMark is what one gathering for a board's marks read: the candidates
+// and the record of launches. The choice they decide moves with the clock
+// alone — a window ends, a launch stops counting as load, a weekly reset comes
+// nearer and reorders a tie — so a page that stays open marks again from them
+// at every frame's time. What they were read from — credentials, live
+// sessions, the record — is as fresh as the last round, and a launch made from
+// another terminal since then shows at the next.
+type placeMark struct {
+	cands  []placement.Candidate
+	ledger placement.Ledger
+	home   string
+	labels map[string]string
+	auto   bool
+}
+
+// mark sets every row's load and, under auto, Next on the row a launch would
+// take at now.
+func (m *placeMark) mark(list []*accountData, now time.Time) {
+	decision := placement.Choose(m.cands, m.ledger, placement.Intent{Home: m.home}, now)
 	for _, d := range list {
+		d.View.Next, d.View.Load = false, nil
 		if c, ok := decision.Find(d.Acct.Name); ok {
-			d.View.Load = loadFacts(c, st.Home(), labels)
+			d.View.Load = loadFacts(c, m.home, m.labels)
 		}
-		d.View.Next = auto && decision.Chosen != "" && d.Acct.Name == decision.Chosen
+		d.View.Next = m.auto && decision.Chosen != "" && d.Acct.Name == decision.Chosen
 	}
 }
 
