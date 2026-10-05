@@ -112,6 +112,7 @@ type Limit struct {
 	Percent  int     `json:"percent"`
 	ResetsAt *string `json:"resets_at"`
 	WindowS  int64   `json:"window_s,omitempty"`
+	PeriodS  int64   `json:"period_s,omitempty"`
 	Session  bool    `json:"session,omitempty"`
 	Counted  int     `json:"counted"`
 	Basis    string  `json:"basis"`
@@ -149,7 +150,7 @@ func New(d placement.Decision, at time.Time) Record {
 			lc.Homes = append(lc.Homes, Share{Home: sh.Home, Busy: sh.Busy, Pending: sh.Pending})
 		}
 		for _, l := range c.Limits {
-			ll := Limit{Kind: l.Kind, Label: l.Label, Percent: l.Percent, WindowS: l.Window, Session: l.Session, Counted: l.Counted, Basis: string(l.Basis)}
+			ll := Limit{Kind: l.Kind, Label: l.Label, Percent: l.Percent, WindowS: l.Window, PeriodS: l.Period, Session: l.Session, Counted: l.Counted, Basis: string(l.Basis)}
 			if l.ResetAt > 0 {
 				ll.ResetsAt = stamp(time.Unix(l.ResetAt, 0))
 			}

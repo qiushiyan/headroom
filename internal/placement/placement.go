@@ -52,9 +52,9 @@ const (
 	PendingFor = 15 * time.Minute
 
 	// AssumedWindow is the time a weekly window is counted to have left when
-	// neither its reset nor its length is known — its reset has passed or was
-	// not given, and the vendor states no duration — and for an account with
-	// no weekly row at all. A whole week is the most a weekly window can have
+	// nothing dates its next renewal — no reset ahead, no schedule to name
+	// the next one, no stated duration — and for an account with no weekly
+	// row at all. A whole week is the most a weekly window can have
 	// left, so an assumed figure is never more pressing than a measured one.
 	AssumedWindow = 7 * 24 * time.Hour
 
@@ -77,9 +77,10 @@ const (
 type TimeBasis string
 
 const (
-	TimeReset   TimeBasis = "reset"   // the vendor's reset instant, still ahead
-	TimeWindow  TimeBasis = "window"  // the reset has passed or was not given: a whole stated window
-	TimeAssumed TimeBasis = "assumed" // nothing says: AssumedWindow
+	TimeReset     TimeBasis = "reset"     // the vendor's reset instant, still ahead
+	TimeProjected TimeBasis = "projected" // the reset has passed: the next one its schedule names
+	TimeWindow    TimeBasis = "window"    // the reset has passed or was not given: a whole stated window
+	TimeAssumed   TimeBasis = "assumed"   // nothing says: AssumedWindow
 )
 
 // Limit is one limit row of an account's newest observation.
@@ -90,6 +91,7 @@ type Limit struct {
 	Bad     bool  // the percent did not parse
 	ResetAt int64 // unix seconds; 0 = none
 	Window  int64 // the window's length in seconds, as the vendor states it; 0 = not stated
+	Period  int64 // seconds between the window's renewals, when it keeps a fixed schedule; 0 = it does not
 	Session bool  // the session window
 }
 
@@ -316,13 +318,18 @@ func (a Week) Pressing(b Week) int {
 	return cmp.Or(cmp.Compare(ah, bh), cmp.Compare(al, bl))
 }
 
-// week counts one row's room and the time its window has left.
+// week counts one row's room and the time its window has left. A reset that
+// has passed names the next one when the window keeps a schedule: an idle
+// account's figures can be days old, and counting its renewed window as a
+// whole week from now would rank it behind room that in fact lasts longer.
 func week(l Limit, counted int, basis Basis, nowS int64) Week {
 	w := Week{Kind: l.Kind, Label: l.Label, Counted: counted, Basis: basis, ResetAt: l.ResetAt,
 		Room: min(max(NearLimitPercent-counted, 0), NearLimitPercent)}
 	switch {
 	case l.ResetAt > nowS:
 		w.Left, w.LeftBasis = l.ResetAt-nowS, TimeReset
+	case l.ResetAt > 0 && l.Period > 0:
+		w.Left, w.LeftBasis = l.Period-(nowS-l.ResetAt)%l.Period, TimeProjected
 	case l.Window > 0:
 		w.Left, w.LeftBasis = l.Window, TimeWindow
 	default:

@@ -248,6 +248,13 @@ func TestTheTimeAWeekHasLeft(t *testing.T) {
 			{Kind: "weekly", Percent: 20, ResetAt: reset, Window: window},
 		}}
 	}
+	// A weekly window on Claude Code's fixed seven-day schedule, 20% spent
+	// while its figures were taken.
+	sched := func(reset int64) Candidate {
+		c := row(reset, 0)
+		c.Limits[0].Period = 604_800
+		return c
+	}
 	cases := []struct {
 		name  string
 		c     Candidate
@@ -258,6 +265,11 @@ func TestTheTimeAWeekHasLeft(t *testing.T) {
 		{"reset ahead", row(at(30*time.Hour), 604_800), 30 * 3600, TimeReset, 60},
 		{"reset one second ahead", row(at(time.Second), 0), 1, TimeReset, 60},
 		{"reset at this instant has passed", row(at(0), 0), assumed, TimeAssumed, 80},
+		{"passed on a schedule, this instant", sched(at(0)), 604_800, TimeProjected, 80},
+		{"passed on a schedule, 13 h ago", sched(at(-13 * time.Hour)), 155 * 3600, TimeProjected, 80},
+		{"passed on a schedule, 8 days ago", sched(at(-8 * 24 * time.Hour)), 6 * 86_400, TimeProjected, 80},
+		{"ahead on a schedule", sched(at(30 * time.Hour)), 30 * 3600, TimeReset, 60},
+		{"no reset on a schedule", sched(0), assumed, TimeAssumed, 60},
 		{"passed, window stated", row(at(-time.Hour), 2*86_400), 2 * 86_400, TimeWindow, 80},
 		{"unstarted, window stated", row(0, 604_800), 604_800, TimeWindow, 60},
 		{"no reset, no window", row(0, 0), assumed, TimeAssumed, 60},
@@ -274,6 +286,23 @@ func TestTheTimeAWeekHasLeft(t *testing.T) {
 	d := chosen(t, []Candidate{{Name: "unknown", Key: "u"}, weekly("known", 0, 6*24*time.Hour+23*time.Hour)}, Ledger{}, Intent{})
 	if d.Chosen != "known" {
 		t.Errorf("chose %q, want the account whose room ends", d.Chosen)
+	}
+}
+
+// An idle account's figures can be days old. Its weekly window ended 13 h ago
+// and, on its seven-day schedule, renews again in 155 h: sooner than b's 166 h,
+// so it takes the tie — a whole week from now would have put it behind b.
+func TestAPassedResetNamesTheNextOnItsSchedule(t *testing.T) {
+	a := Candidate{Name: "a", Key: "a", ObservedAt: at(-14 * time.Hour), Limits: []Limit{
+		{Kind: "session", Percent: 0, Session: true},
+		{Kind: "weekly_all", Percent: 60, ResetAt: at(-13 * time.Hour), Period: 604_800},
+	}}
+	d := chosen(t, []Candidate{a, weekly("b", 0, 166*time.Hour)}, Ledger{}, Intent{})
+	if d.Chosen != "a" {
+		t.Fatalf("chose %q; a renews in 155 h, b in 166 h", d.Chosen)
+	}
+	if c, _ := d.Find("a"); c.Week.Counted != 0 || c.Week.Basis != BasisEnded || c.Week.LeftBasis != TimeProjected {
+		t.Errorf("a's week = %+v", c.Week)
 	}
 }
 

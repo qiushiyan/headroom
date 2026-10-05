@@ -319,7 +319,8 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 		}
 		limits = append(limits, placement.Limit{
 			Kind: r.Kind, Label: r.Label, Percent: r.Percent,
-			Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Window: r.WindowSeconds, Session: j == session,
+			Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Window: r.WindowSeconds,
+			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
 		})
 	}
 	return obs.ObservedAt, sourceNames[obs.Source], limits
@@ -779,20 +780,30 @@ func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode s
 		case d.RunnerUp:
 			mark = "· "
 		}
-		session, week, resets := "—", "—", "—"
+		session, week := "—", "—"
 		if s, ok := c.Session(); ok {
 			session = cell(s.Counted, s.Basis)
 		}
 		if c.Week.Basis != "" {
 			week = cell(c.Week.Counted, c.Week.Basis)
 		}
-		// Only a reset the vendor gave is a countdown: a window counted whole
-		// because its reset passed or was never given has no instant to print.
-		if c.Week.LeftBasis == placement.TimeReset {
-			resets = render.Remaining(c.Week.Left)
-		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, resets, c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
+			session, week, weekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
+	}
+}
+
+// weekLeft is how long a counted week has left, said as what it rests on: the
+// vendor's reset as a countdown, a renewal its schedule projects as an
+// approximate one, and "—" for a window counted whole because nothing dates
+// it — there is no instant to print.
+func weekLeft(w placement.Week) string {
+	switch w.LeftBasis {
+	case placement.TimeReset:
+		return render.Remaining(w.Left)
+	case placement.TimeProjected:
+		return "≈" + render.Remaining(w.Left)
+	default:
+		return "—"
 	}
 }
 

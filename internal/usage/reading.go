@@ -1,6 +1,10 @@
 package usage
 
-import "github.com/qiushiyan/headroom/internal/config"
+import (
+	"time"
+
+	"github.com/qiushiyan/headroom/internal/config"
+)
 
 // AllowanceState is the account-level answer a usage response gives to "may
 // this account be used at all", beside whatever its windows say. The zero
@@ -105,6 +109,24 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 		}
 	}
 	return best
+}
+
+// Period is how often a row's window renews on a fixed schedule, for a window
+// the vendor is known to renew so; 0 for every other. Claude Code's weekly
+// windows renew every seven days at the same instant whether or not anything
+// was spent since, so a reset that has passed still names the next one
+// (observed on four accounts in October 2026: each reset advanced by exactly
+// seven days, unused accounts included). Its five-hour window starts with
+// the first request after one ends, and so does every Codex window: none of
+// those keeps a schedule a passed reset could name.
+func Period(vendor config.Vendor, r Row) time.Duration {
+	if vendor == config.Codex || r.IdentityState == StateBad {
+		return 0
+	}
+	if r.Kind == "weekly_all" || r.Kind == "weekly_scoped" {
+		return 7 * 24 * time.Hour
+	}
+	return 0
 }
 
 // General reports whether a row bounds ordinary work on the account, as

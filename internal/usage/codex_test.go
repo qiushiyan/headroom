@@ -3,6 +3,7 @@ package usage
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
 )
@@ -276,6 +277,29 @@ func TestCodexUnstartedTestsTheDecodedPercentNotTheRoundedOne(t *testing.T) {
 	}
 	if row.Percent != 0 {
 		t.Errorf("display percent = %d", row.Percent)
+	}
+}
+
+// Only a window the vendor renews on a fixed schedule has a period: a passed
+// reset names the next one only there.
+func TestPeriod(t *testing.T) {
+	week := 7 * 24 * time.Hour
+	cases := []struct {
+		vendor config.Vendor
+		row    Row
+		want   time.Duration
+	}{
+		{config.Claude, Row{Kind: "weekly_all", Group: "weekly"}, week},
+		{config.Claude, Row{Kind: "weekly_scoped", Group: "weekly", Model: "Fable"}, week},
+		{config.Claude, Row{Kind: "session", Group: "session"}, 0},
+		{config.Claude, Row{Kind: "weekly_all", IdentityState: StateBad}, 0},
+		{config.Claude, Row{Kind: "monthly_all", Group: "monthly"}, 0},
+		{config.Codex, Row{Kind: "secondary", Group: CodexGroupMain, WindowSeconds: 604800}, 0},
+	}
+	for _, c := range cases {
+		if got := Period(c.vendor, c.row); got != c.want {
+			t.Errorf("%s %s/%s: period %v, want %v", c.vendor, c.row.Kind, c.row.Group, got, c.want)
+		}
 	}
 }
 

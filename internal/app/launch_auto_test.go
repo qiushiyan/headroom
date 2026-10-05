@@ -722,6 +722,44 @@ func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 	}
 }
 
+// An idle account's stored weekly reset has passed since its figures were
+// taken. Claude Code renews that window every seven days, so it renews again
+// in 155 h — sooner than a@x.com's 166 h — and the launch goes there, with the
+// table saying the renewal is projected rather than reported.
+func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.setCurrent("auto\n")
+	f.observeWeek("qiushi", 0, 60, -13*time.Hour, 14*time.Hour)
+	f.observeWeek("a@x.com", 0, 0, 166*time.Hour, time.Minute)
+
+	table := captureStdout(t, func() { f.launch("--dry-run") })
+	for _, want := range []string{"→ qiushi", "ended", "≈6.5d"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("table lacks %q:\n%s", want, table)
+		}
+	}
+	if got := f.launch(); got.code != 0 || !strings.Contains(got.stderr, "qiushi · auto") || strings.Contains(got.stderr, "resets in") {
+		t.Fatalf("exit %d: %s", got.code, got.stderr)
+	}
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	if len(recs) != 1 {
+		t.Fatalf("%d records", len(recs))
+	}
+	for _, c := range recs[0].Candidates {
+		if c.Name != "qiushi" {
+			continue
+		}
+		if c.Week.LeftBasis != "projected" || c.Week.LeftS < 154*3600 || c.Week.LeftS > 156*3600 {
+			t.Errorf("logged week = %+v", c.Week)
+		}
+		for _, l := range c.Limits {
+			if !l.Session && l.PeriodS != 604800 {
+				t.Errorf("weekly row %s logged without its schedule: %+v", l.Kind, l)
+			}
+		}
+	}
+}
+
 func TestDryRunHasNoEffects(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
