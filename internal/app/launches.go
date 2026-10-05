@@ -14,6 +14,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 )
 
@@ -111,6 +112,14 @@ func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
 	for _, c := range r.Candidates {
 		if c.Name == r.Chosen {
 			line += fmt.Sprintf("  load %d  week %3d%%", c.Load, c.Weekly)
+			// How long that week had left at the launch: what decides
+			// between equally loaded accounts, so a choice of the fuller one
+			// reads as what it was. A record from before the field, or a
+			// window nothing dated, says nothing.
+			week := placement.Week{Left: c.Week.LeftS, LeftBasis: placement.TimeBasis(c.Week.LeftBasis)}
+			if left := weekLeft(week); left != "—" {
+				line += ", " + left + " left"
+			}
 			break
 		}
 	}

@@ -175,6 +175,10 @@ type page struct {
 	// will not resolve.
 	mode string
 
+	// placed is what the last round gathered for the marks, from which every
+	// frame marks again at its own time; nil until a round has marked.
+	placed *placeMark
+
 	// begin starts a round: the local half, then the claim and whatever
 	// fetches it permits. nil means the real thing; tests inject channels.
 	begin func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result)
@@ -429,16 +433,25 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	ui.updates = updates
 }
 
-// mark sets every row's load and marks, under auto, the row a launch would
-// take from the figures this page holds. It runs when a round starts — the
-// stored figures are already worth a mark — and again when its results have
-// landed. The mode is the round's own reading of `.current`, never a second
-// one.
+// mark gathers what the marks are decided from and sets every row's load and,
+// under auto, the row a launch would take from the figures this page holds.
+// It runs when a round starts — the stored figures are already worth a mark —
+// and again when its results have landed. The mode is the round's own reading
+// of `.current`, never a second one.
 func (ui *page) mark(now time.Time) {
 	if ui.st == nil {
 		return
 	}
-	markPlacement(ui.set, ui.list, ui.mode, ui.st, now)
+	ui.placed = markPlacement(ui.set, ui.list, ui.mode, ui.st, now)
+}
+
+// markAt marks the rows again from what the last round gathered, at now. A
+// board left open stops refreshing once nobody is at the keys, and the clock
+// alone can change the choice; the frame that shows a mark decides it.
+func (ui *page) markAt(now time.Time) {
+	if ui.placed != nil {
+		ui.placed.mark(ui.list, now)
+	}
 }
 
 // ackString is the one-line answer to a manual refresh, composed after the
@@ -582,6 +595,7 @@ func (ui *page) restoreSelection() {
 func (ui *picker) draw() {
 	now := time.Now()
 	pg := ui.page()
+	pg.markAt(now)
 	// One geometry reading builds and prints the frame: a resize landing
 	// mid-draw hits the next tick, never a frame windowed to one screen and
 	// printed to another.

@@ -18,7 +18,7 @@ Current: nothing records which account a launch used, so the spread cannot be ex
 
 Goal: with automatic placement on, each new session starts on the account with the least five-hour load among the accounts that are not near any limit, and says which before the vendor starts.
 Goal: current five-hour usage is the main measure; busy sessions and launches too recent to show in the figures are added to it as load on its way.
-Goal: an account near a weekly limit is set aside, and among equally loaded accounts the one with the most weekly room is chosen.
+Goal: an account near a weekly limit is set aside, and among equally loaded accounts the one with the most weekly room per hour its window has left is chosen, so room that ends sooner is spent first (revised 2026-10-05, § Delivery — Decisions).
 Goal: every launch leaves one line in a log that holds the inputs the choice was made from.
 
 Change: `.current` records either an account (pinned, today's meaning) or the word `auto`; a bare launch follows it.
@@ -72,9 +72,11 @@ Where: § Behaviour describes eleven situations; § Design carries the rule, the
   mid-flight stays the session picker's `x`.
 - **Forecasting consumption.** The rule orders accounts by what is known
   now. It holds no model of how fast a session spends.
-- **Spending the weekly quota that resets soonest first.** Several tools
-  rank on it (P11). It concentrates sessions on one account, and its gain
-  appears only when total demand nears total capacity.
+- **Ranking by the weekly reset.** Several tools rank on the reset that
+  comes soonest (P11). As the first key it concentrates sessions on one
+  account, and its gain appears only when total demand nears total
+  capacity. The reset enters the rule only where the five-hour load ties
+  (revised 2026-10-05; the first text excluded it altogether).
 - **Choosing by the model a session will use.** The launcher does not know
   it, so every weekly row counts, including a model-scoped one the session
   may not spend against.
@@ -157,7 +159,7 @@ prints one line and replaces itself with the vendor. It makes no network
 request of its own.
 
 ```
-headroom launch: cliushi@planlab.ai · auto · 5h 1% · week 3% · load 0 (next: qiushi.yann@gmail.com)
+headroom launch: cliushi@planlab.ai · auto · 5h 1% · week 3%, resets in 6.1d · load 0 (next: qiushi.yann@gmail.com)
 ```
 
 Mechanism: the rule in § Design — API; the order of steps in § Design —
@@ -175,7 +177,9 @@ With the owner's figures at 09:56 UTC on 2026-10-01 (P10):
 | yan@planlab.ai | 3% | 2 | 2 | 22% |
 
 Three accounts have load 0. The launch goes to cliushi, which has the most
-weekly room of the three.
+weekly room of the three. Since load-2 the tie is decided by weekly room per
+second its window has left (§ Design — API); this table predates that and
+carries no resets.
 
 ### 3. Several launches at the same moment
 
@@ -292,16 +296,23 @@ After: in auto mode the board shows no `← current`. The header says bare
 launches are automatic, and the row the rule would choose from the page's
 snapshot carries `← next`, in both layouts and in the one-shot print. The
 marker is advice: a launch reads the disk again and counts placements made
-since.
+since. An open board marks again at every frame's time from what its last
+round gathered, so a choice the clock alone changes — a window ending, a
+launch ageing out of the load, a weekly reset coming nearer — moves the
+mark without a round; a launch from another terminal shows at the next
+round.
 
 `headroom launch --dry-run [--auto | --last | --account <name>]` reads the
 disk, runs the rule and prints one row per account (figures, their age,
-busy sessions, pending placements, load, tightest weekly, and why an
-account was excluded). It records no placement, writes no log line,
+busy sessions, pending placements, load, tightest weekly and how long it
+has left — a countdown for the vendor's reset, `≈` for a renewal its
+schedule projects, `—` when nothing dates it — and why an account was
+excluded). It records no placement, writes no log line,
 starts no refresh and does not exec.
 
 `headroom launches` prints the newest log records, one line each: time,
-account, mode and reason, load, and the runner-up. `--json` emits the
+account, mode and reason, load, weekly figure and how long that week had
+left at the launch, and the runner-up. `--json` emits the
 records unchanged.
 
 `headroom resolve` without a name refuses in auto mode and points to
@@ -429,8 +440,10 @@ The existing code is a base this extends. Nothing is reshaped first.
 - *Constraint: each limit does one job.* Five-hour load ranks, a weekly
   threshold sets accounts aside, weekly room breaks ties. **Chosen.** A
   placement always raises the chosen account's rank key, so launches
-  spread. Weekly usage evens out across accounts because it decides every
-  tie. The cost is three constants (P8).
+  spread. The cost is three constants (P8). The first build broke ties on
+  the lowest weekly percent, which evens out current usage and ignores how
+  long each window has left; since 2026-10-05 a tie goes to the most weekly
+  room per second left, which spends first the room that ends first.
 
 Load counts session usage in steps of ten points so that a one-point
 difference in a figure does not outrank a forty-point difference in weekly
@@ -496,15 +509,26 @@ read only when the rule will choose.
 2. A launch that names a session whose owner is a candidate not near a
    limit: the owner.
 3. Among candidates not near a limit: the least load. Ties go to the
-   lowest tightest weekly row, then to the least recently placed, then to
-   board order.
+   most weekly room per second left, then to the least recently placed,
+   then to board order. A weekly row's room is 80 minus its counted
+   figure, never below zero; its time left is the seconds to its reset
+   while that is ahead; past it, the next renewal on the window's schedule
+   when it keeps one (Claude Code's weekly windows renew every seven days
+   at a fixed instant, spent or not); otherwise a whole window — the
+   length the vendor states, else seven days. An account is judged by its tightest weekly
+   row (the least room per second), so spending more on any row never
+   makes it more attractive; with no weekly row it counts 80 over seven
+   days. The comparison is exact, in 128-bit products.
 4. If every candidate is near a limit: the lowest highest row, then the
    soonest reset of that row.
 5. No candidates: refuse.
 
 **The constants**, in one place and named in the rule's version: a step of
 ten points; one step per busy session and per pending placement; 80% as
-near a limit; fifteen minutes for staleness and for a pending placement.
+near a limit; fifteen minutes for staleness and for a pending placement;
+seven days as the time left of a weekly window nothing dates. The rule is
+`load-2` since the tie-break measured time left; `load-1` was the first
+build.
 
 **The `placements` section of `state.json`** (names are sketches):
 
@@ -527,18 +551,25 @@ through its writes untouched.
 
 ```json
 {"v":1,"at":"2026-10-01T10:02:11Z","vendor":"claude","pid":4242,"cwd":"/Users/…",
- "mode":"auto","reason":"least-load","rule":"load-1","chosen":"cliushi@planlab.ai",
+ "mode":"auto","reason":"least-load","rule":"load-2","chosen":"cliushi@planlab.ai",
  "runner_up":"qiushi.yann@gmail.com","session":"","recorded":true,
  "candidates":[{"name":"qiushi","eligible":true,"near_limit":false,
    "observed_at":"2026-10-01T09:56:40Z","source":"headroom_cache",
    "limits":[{"kind":"session","label":"5h session","percent":5,"resets_at":"…","session":true,"counted":5,"basis":"observed"}],
-   "statuses":["idle"],"busy":0,"pending":0,"load":0,"weekly":40,"last_placed_at":"…"}]}
+   "statuses":["idle"],"busy":0,"pending":0,"load":0,"weekly":40,
+   "week":{"kind":"weekly_all","label":"All models (7d)","counted":40,"room":40,"left_s":367200,"left_basis":"reset"},
+   "last_placed_at":"…"}]}
 ```
 
 `mode` is how the account came to be decided: `auto`, `pinned`, `named`,
 `last` or `picker`. `reason` is the rule's word: `pinned`, `named`,
 `picker`, `last`, `least-load`, `near-limit`, `owner`, `moved`,
-`rotation`. A record that did not reach the placements section carries
+`rotation`. `week` is the weekly row that broke ties as the rule counted
+it: room below 80%, the seconds its window was counted to have left, and
+`left_basis` — `reset` (the vendor's instant), `projected` (the next
+renewal on the row's schedule, `period_s` on the row), `window` (a whole
+stated window, `window_s` on the row) or `assumed` (seven days). A record that
+did not reach the placements section carries
 `recorded: false` and a `problem`. An append is one write. When the
 file exceeds 8 MB, the appender takes the log's own lock without waiting
 and, if it gets it, rewrites the file without lines older than 180 days.
@@ -724,11 +755,28 @@ Runners: `make check` and `make test-pty`. The pty harness already stubs
    Observe: the rule's result over a table of candidates, at least one per
    row of each table: an ended row, a stale row, an unparseable percent,
    no observation, no limit rows, a blocked account, a busy and pending
-   session counted once, ties broken by weekly, then last placement, then
-   order, every candidate near a limit with different resets, no
+   session counted once, ties broken by weekly room per second left, then
+   last placement, then order, every candidate near a limit with different resets, no
    candidates. Session usage 0 with weekly 40, 50, 60 and 70 and four
    successive placements yields four different accounts. An account at 9%
    with five busy sessions loses to one at 11% with none. Real: the rule.
+   Since load-2 (2026-10-05), at equal load: room that ends sooner goes
+   first (the owner's six accounts on 2026-10-05, in order, and a burst of
+   six at one instant lands on six accounts); spending more on a weekly row
+   never makes its account more attractive (rows at 60% over six days and
+   59%, 61% or 75% over one day all lose to 40% over four days); a step of
+   load outranks any weekly figure; one session at a time returns to the
+   sooner reset once the last launch has stopped counting, and not before;
+   time left is the reset while ahead, else the next renewal on a
+   schedule (a reset passed 13 h or eight days ago on a seven-day schedule
+   leaves 155 h or six days, and an account renewing in 155 h that way
+   beats one renewing in 166 h), else the stated window, else seven
+   days, with a reset at this very second counted as passed, and an
+   account with no weekly row or no observation counting 80 over seven
+   days; figures and windows at the int64 limits compare without
+   overflow. The launch line gives a countdown only for a reset the vendor
+   gave, and the dry-run table marks a projected renewal `≈`; the log
+   records the deciding week and each row's stated window and period.
 2. Obligation: the registry reader carries the status. Observe: `busy`,
    `idle`, `shell`, absent and a wrong type through `ReadRegistry`; only
    `busy` adds load; a record whose pid is alive under another start
@@ -778,7 +826,12 @@ Runners: `make check` and `make test-pty`. The pty harness already stubs
     harness, `a` writes `auto` to the visible vendor's `.current` alone
     and enter pins again; with inputs frozen and no placement in between,
     the `← next` row is the account a launch then chooses. The one-shot
-    print and `--compact` carry the same marker.
+    print and `--compact` carry the same marker. An open board whose tie
+    the clock alone reorders (10 points ending in one hour against 80 over
+    seven, ten minutes on) marks the account a launch takes at the frame's
+    time, with nothing re-read. `headroom launches` says how long each
+    launch's week had left, `≈` for a projected renewal, and nothing for a
+    record written before the field.
 11. Obligation: schema 6. Observe: the document under pinned, auto and an
     unresolvable `.current`, from `--json` and from `limits`.
 12. Obligation: `check` covers the new facts. Observe: FAIL when no
@@ -890,6 +943,35 @@ out to be exhausted, and it leaves idle accounts mostly unused until each
 has been tried: on the 09:30 figures, five launches in six would have gone
 to the two accounts already in use.
 
+**Whether the time a weekly window has left weighs on the choice.**
+Decided by the owner on 2026-10-05, reopening the first text's non-goal:
+it weighs on ties. The owner asked whether an account whose weekly quota
+resets first should count for more; the first build's tie-break preferred
+the lowest weekly percent, which holds back room that ends tomorrow behind
+room that lasts the week. Settled in one consult round
+(`consult-r1/codex-gpt-6.1-sol`), which confirmed the tie-break is
+expiry-blind and left the size of the gain unmeasured: the launch log
+samples only at launches, so it bounds what each window spent from below
+and cannot say what was left at a reset. The round changed two things.
+An account is judged by its tightest weekly row rather than its highest
+percent, because judging the highest percent first let one more point on
+a row resetting tomorrow make an account more attractive. And the claim
+that launches still spread holds for a burst, through the pending step,
+not for one session at a time: serial use returns to the sooner reset
+once a launch stops counting, which is the preference, and the rule makes
+no promise that room ends proportional to time left.
+
+A goal review of the build (`review-r1`, codex gpt-6.1-sol) found it
+partly landed, and the owner had all three of its points built. A weekly
+reset that has passed now names the next renewal on Claude Code's
+seven-day schedule: counted as a whole week from now, an idle account
+whose figures predate its reset ranked behind room that in fact lasts
+longer. An open board marks at each frame's time: it marked only when a
+round ran, rounds stop once nobody is at the keys, and the clock alone
+now reorders a tie. And `headroom launches` says how long each launch's
+week had left, without which a launch that went to the fuller account
+read as unexplained.
+
 Open decisions: none.
 
 ## Owed
@@ -901,3 +983,11 @@ with more load than another candidate in the same record; launches started
 together landed on different accounts when their loads were equal; and a
 print-mode session's record shows whether it registered as live, which
 settles P3.
+
+**Closing read owed** (no PR: the `weekly-expiry` merge) — ready when: a
+day of ordinary use under `auto`, during which some account's weekly reset
+passed. Read: in `headroom launches --json`, every automatic launch among
+equally loaded candidates went to the one whose `week` had the most `room`
+per `left_s`; and the first observation after that reset names the next
+one exactly seven days on, which confirms the schedule `usage.Period`
+projects (until then it rests on the launch log of 2026-10-01 to 10-05).

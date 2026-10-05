@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -54,8 +55,13 @@ func TestRowsCountOnlyForTheWindowTheyDescribe(t *testing.T) {
 			t.Errorf("row %d = %d/%s, want %d/%s", i, got.Limits[i].Counted, got.Limits[i].Basis, w.counted, w.basis)
 		}
 	}
-	if got.Load != 0 || got.Weekly != 18 || got.NearLimit {
-		t.Errorf("load %d weekly %d near %v", got.Load, got.Weekly, got.NearLimit)
+	if got.Load != 0 || got.NearLimit {
+		t.Errorf("load %d near %v", got.Load, got.NearLimit)
+	}
+	// 62 points of room ending tomorrow is a looser bound than 76 points over
+	// a whole week nobody gave a reset for: the scoped row is the week.
+	if w := got.Week; w.Kind != "weekly_scoped" || w.Counted != 4 || w.Basis != BasisStale || w.LeftBasis != TimeAssumed {
+		t.Errorf("week = %+v", w)
 	}
 
 	fresh := acct("b", 34, 10)
@@ -145,6 +151,178 @@ func TestTiesGoToWeeklyThenLeastRecentlyPlacedThenOrder(t *testing.T) {
 	}
 	if d := chosen(t, cands, Ledger{}, Intent{}); d.Chosen != "a" {
 		t.Fatalf("with nothing placed, order decides: chose %q", d.Chosen)
+	}
+}
+
+// weekly builds a candidate observed just now, its session window empty and
+// its one weekly row ending after left.
+func weekly(name string, percent int, left time.Duration) Candidate {
+	return Candidate{
+		Name: name, Key: "uuid:" + name, ObservedAt: at(-time.Minute),
+		Limits: []Limit{
+			{Kind: "session", Label: "5h session", Percent: 0, Session: true},
+			{Kind: "weekly_all", Label: "All models (7d)", Percent: percent, ResetAt: at(left)},
+		},
+	}
+}
+
+// The owner's accounts on 2026-10-05: weekly room that ends sooner is spent
+// first, and a burst still spreads, because each placement is load.
+func TestWeeklyRoomThatEndsSoonerGoesFirst(t *testing.T) {
+	cands := []Candidate{
+		weekly("qiushiyan", 10, 92*time.Hour),
+		weekly("yqs", 0, 151*time.Hour),
+		weekly("yan", 0, 94*time.Hour),
+		weekly("qiushi", 32, 80*time.Minute),
+		weekly("cliushi", 7, 45*time.Hour),
+		weekly("qiushi@", 0, 74*time.Hour),
+	}
+	var ledger Ledger
+	var got []string
+	for i := range cands {
+		d := chosen(t, cands, ledger, Intent{})
+		got = append(got, d.Chosen)
+		ledger.Record("uuid:"+d.Chosen, d.Chosen, 100+i, here, now)
+	}
+	if want := "qiushi,cliushi,qiushi@,yan,qiushiyan,yqs"; strings.Join(got, ",") != want {
+		t.Fatalf("six launches went to %v, want %s", got, want)
+	}
+}
+
+// A weekly row is judged against its own window. Judged by its highest
+// percent first, A would lose to B, then spend one more point on the row that
+// resets tomorrow and win — more spending making an account more attractive.
+func TestSpendingMoreNeverMakesAnAccountMoreAttractive(t *testing.T) {
+	a := func(tomorrow int) Candidate {
+		return Candidate{
+			Name: "a", Key: "uuid:a", ObservedAt: at(-time.Minute),
+			Limits: []Limit{
+				{Kind: "session", Percent: 0, Session: true},
+				{Kind: "weekly_all", Percent: 60, ResetAt: at(6 * 24 * time.Hour)},
+				{Kind: "weekly_scoped", Percent: tomorrow, ResetAt: at(24 * time.Hour)},
+			},
+		}
+	}
+	b := weekly("b", 40, 4*24*time.Hour)
+	for _, tomorrow := range []int{59, 61, 75} {
+		d := chosen(t, []Candidate{a(tomorrow), b}, Ledger{}, Intent{})
+		if d.Chosen != "b" {
+			t.Errorf("tomorrow's row at %d%%: chose %q, want b", tomorrow, d.Chosen)
+		}
+		if c, _ := d.Find("a"); c.Week.Kind != "weekly_all" || c.Week.Room != 20 {
+			t.Errorf("tomorrow's row at %d%%: a's week = %+v, want the six-day row", tomorrow, c.Week)
+		}
+	}
+}
+
+func TestLoadStillRanksBeforeTheWeek(t *testing.T) {
+	ending := weekly("ending", 0, time.Hour)
+	ending.Limits[0].Percent = 10
+	d := chosen(t, []Candidate{ending, weekly("fresh", 70, 6*24*time.Hour)}, Ledger{}, Intent{})
+	if d.Chosen != "fresh" {
+		t.Fatalf("chose %q: a step of five-hour load outranks any weekly figure", d.Chosen)
+	}
+}
+
+// One session at a time returns to the room that ends sooner once the last
+// launch has stopped counting: that is the preference, not a pile-up. Inside
+// the span the launch is load, and the next goes elsewhere.
+func TestSerialUseReturnsToTheSoonerReset(t *testing.T) {
+	cands := []Candidate{weekly("later", 0, 6*24*time.Hour), weekly("sooner", 0, 24*time.Hour)}
+	var ledger Ledger
+	ledger.Record("uuid:sooner", "sooner", 1, here, now)
+	if d := Choose(cands, ledger, Intent{}, now.Add(5*time.Minute)); d.Chosen != "later" {
+		t.Errorf("five minutes on: chose %q, want later", d.Chosen)
+	}
+	if d := Choose(cands, ledger, Intent{}, now.Add(20*time.Minute)); d.Chosen != "sooner" {
+		t.Errorf("twenty minutes on: chose %q, want sooner", d.Chosen)
+	}
+}
+
+// Time left is the vendor's reset while it is ahead; past it, or without one,
+// a whole window — the stated one, else AssumedWindow — and it says which.
+func TestTheTimeAWeekHasLeft(t *testing.T) {
+	assumed := int64(AssumedWindow / time.Second)
+	row := func(reset int64, window int64) Candidate {
+		return Candidate{Name: "a", Key: "a", ObservedAt: at(-time.Minute), Limits: []Limit{
+			{Kind: "weekly", Percent: 20, ResetAt: reset, Window: window},
+		}}
+	}
+	// A weekly window on Claude Code's fixed seven-day schedule, 20% spent
+	// while its figures were taken.
+	sched := func(reset int64) Candidate {
+		c := row(reset, 0)
+		c.Limits[0].Period = 604_800
+		return c
+	}
+	cases := []struct {
+		name  string
+		c     Candidate
+		left  int64
+		basis TimeBasis
+		room  int
+	}{
+		{"reset ahead", row(at(30*time.Hour), 604_800), 30 * 3600, TimeReset, 60},
+		{"reset one second ahead", row(at(time.Second), 0), 1, TimeReset, 60},
+		{"reset at this instant has passed", row(at(0), 0), assumed, TimeAssumed, 80},
+		{"passed on a schedule, this instant", sched(at(0)), 604_800, TimeProjected, 80},
+		{"passed on a schedule, 13 h ago", sched(at(-13 * time.Hour)), 155 * 3600, TimeProjected, 80},
+		{"passed on a schedule, 8 days ago", sched(at(-8 * 24 * time.Hour)), 6 * 86_400, TimeProjected, 80},
+		{"ahead on a schedule", sched(at(30 * time.Hour)), 30 * 3600, TimeReset, 60},
+		{"no reset on a schedule", sched(0), assumed, TimeAssumed, 60},
+		{"passed, window stated", row(at(-time.Hour), 2*86_400), 2 * 86_400, TimeWindow, 80},
+		{"unstarted, window stated", row(0, 604_800), 604_800, TimeWindow, 60},
+		{"no reset, no window", row(0, 0), assumed, TimeAssumed, 60},
+		{"no weekly row", Candidate{Name: "a", Key: "a", ObservedAt: at(-time.Minute)}, assumed, TimeAssumed, 80},
+		{"never observed", Candidate{Name: "a", Key: "a"}, assumed, TimeAssumed, 80},
+	}
+	for _, c := range cases {
+		w := chosen(t, []Candidate{c.c}, Ledger{}, Intent{}).Candidates[0].Week
+		if w.Left != c.left || w.LeftBasis != c.basis || w.Room != c.room {
+			t.Errorf("%s: left %d/%s room %d, want %d/%s room %d", c.name, w.Left, w.LeftBasis, w.Room, c.left, c.basis, c.room)
+		}
+	}
+	// Knowing nothing is never more pressing than room the vendor says ends.
+	d := chosen(t, []Candidate{{Name: "unknown", Key: "u"}, weekly("known", 0, 6*24*time.Hour+23*time.Hour)}, Ledger{}, Intent{})
+	if d.Chosen != "known" {
+		t.Errorf("chose %q, want the account whose room ends", d.Chosen)
+	}
+}
+
+// An idle account's figures can be days old. Its weekly window ended 13 h ago
+// and, on its seven-day schedule, renews again in 155 h: sooner than b's 166 h,
+// so it takes the tie — a whole week from now would have put it behind b.
+func TestAPassedResetNamesTheNextOnItsSchedule(t *testing.T) {
+	a := Candidate{Name: "a", Key: "a", ObservedAt: at(-14 * time.Hour), Limits: []Limit{
+		{Kind: "session", Percent: 0, Session: true},
+		{Kind: "weekly_all", Percent: 60, ResetAt: at(-13 * time.Hour), Period: 604_800},
+	}}
+	d := chosen(t, []Candidate{a, weekly("b", 0, 166*time.Hour)}, Ledger{}, Intent{})
+	if d.Chosen != "a" {
+		t.Fatalf("chose %q; a renews in 155 h, b in 166 h", d.Chosen)
+	}
+	if c, _ := d.Find("a"); c.Week.Counted != 0 || c.Week.Basis != BasisEnded || c.Week.LeftBasis != TimeProjected {
+		t.Errorf("a's week = %+v", c.Week)
+	}
+}
+
+func TestFiguresAtTheirLimitsCompareExactly(t *testing.T) {
+	huge := Candidate{Name: "huge", Key: "h", ObservedAt: at(-time.Minute), Limits: []Limit{
+		{Kind: "weekly", Percent: -50, ResetAt: math.MaxInt64},
+		{Kind: "weekly", Percent: 0, Window: math.MaxInt64},
+	}}
+	tight := weekly("tight", 79, 24*time.Hour)
+	d := chosen(t, []Candidate{huge, tight}, Ledger{}, Intent{})
+	if d.Chosen != "tight" {
+		t.Fatalf("chose %q: one point over a day is more pressing than any room over forever", d.Chosen)
+	}
+	if c, _ := d.Find("huge"); c.Week.Room != NearLimitPercent {
+		t.Errorf("room = %d, want it held to %d", c.Week.Room, NearLimitPercent)
+	}
+	x := Week{Room: 80, Left: math.MaxInt64}
+	y := Week{Room: 79, Left: math.MaxInt64 - 1}
+	if x.Pressing(y) != -y.Pressing(x) || x.Pressing(x) != 0 {
+		t.Error("Pressing is not antisymmetric at the extremes")
 	}
 }
 

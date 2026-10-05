@@ -182,6 +182,16 @@ func TestTheLaunchLineSaysWhatAFigureRestsOn(t *testing.T) {
 		t.Errorf("an ended window: %q", ended)
 	}
 
+	// A weekly window that has ended is counted whole from now: there is no
+	// reset instant to count down to, and none is printed.
+	weekEnded := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-time.Minute).Unix(), Limits: []placement.Limit{
+		limit(true, "session", "5h session", 3, time.Hour),
+		limit(false, "weekly_all", "All models (7d)", 64, -time.Minute),
+	}})
+	if !strings.Contains(weekEnded, "week window ended") || strings.Contains(weekEnded, "resets in") {
+		t.Errorf("an ended week: %q", weekEnded)
+	}
+
 	stale := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-40 * time.Hour).Unix(), Limits: []placement.Limit{
 		limit(true, "session", "5h session", 12, time.Hour),
 		limit(false, "weekly_all", "All models (7d)", 30, 48*time.Hour),

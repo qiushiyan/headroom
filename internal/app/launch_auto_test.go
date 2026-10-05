@@ -93,10 +93,16 @@ func (f autoFixture) key(name string) state.Key {
 // claim and completion, as taken `age` ago.
 func (f autoFixture) observe(name string, session, weekly int, age time.Duration) {
 	f.t.Helper()
+	f.observeWeek(name, session, weekly, 72*time.Hour, age)
+}
+
+// observeWeek is observe with the weekly window ending `left` from now.
+func (f autoFixture) observeWeek(name string, session, weekly int, left, age time.Duration) {
+	f.t.Helper()
 	at := time.Now().Add(-age)
 	reset := func(d time.Duration) string { return time.Now().Add(d).UTC().Format(time.RFC3339) }
 	body := fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":%d,"resets_at":%q},`+
-		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(72*time.Hour))
+		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(left))
 	k := f.key(name)
 	dec, err := f.st.Claim([]state.Key{k}, at)
 	if err != nil || !dec[0].Permit {
@@ -686,6 +692,74 @@ func TestTheLogIsInert(t *testing.T) {
 	}
 }
 
+// What the vendor stored is what the rule weighs: an account whose weekly room
+// ends tomorrow takes the launch from one with less used and a week to run,
+// and the line, the table and the log each say when that room ends.
+func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.setCurrent("auto\n")
+	f.observeWeek("qiushi", 0, 5, 6*24*time.Hour, time.Minute)
+	f.observeWeek("a@x.com", 0, 30, 20*time.Hour, time.Minute)
+
+	table := captureStdout(t, func() { f.launch("--dry-run") })
+	for _, want := range []string{"resets", "→ a@x.com", "20.0h"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("table lacks %q:\n%s", want, table)
+		}
+	}
+	got := f.launch()
+	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto · 5h 0% · week 30%, resets in 20.0h") {
+		t.Fatalf("exit %d: %s", got.code, got.stderr)
+	}
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	if len(recs) != 1 {
+		t.Fatalf("%d records", len(recs))
+	}
+	for _, c := range recs[0].Candidates {
+		if c.Name == "a@x.com" && (c.Week.Kind != "weekly_all" || c.Week.Room != 50 || c.Week.LeftBasis != "reset" || c.Week.LeftS <= 19*3600) {
+			t.Errorf("logged week = %+v", c.Week)
+		}
+	}
+}
+
+// An idle account's stored weekly reset has passed since its figures were
+// taken. Claude Code renews that window every seven days, so it renews again
+// in 155 h — sooner than a@x.com's 166 h — and the launch goes there, with the
+// table saying the renewal is projected rather than reported.
+func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.setCurrent("auto\n")
+	f.observeWeek("qiushi", 0, 60, -13*time.Hour, 14*time.Hour)
+	f.observeWeek("a@x.com", 0, 0, 166*time.Hour, time.Minute)
+
+	table := captureStdout(t, func() { f.launch("--dry-run") })
+	for _, want := range []string{"→ qiushi", "ended", "≈6.5d"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("table lacks %q:\n%s", want, table)
+		}
+	}
+	if got := f.launch(); got.code != 0 || !strings.Contains(got.stderr, "qiushi · auto") || strings.Contains(got.stderr, "resets in") {
+		t.Fatalf("exit %d: %s", got.code, got.stderr)
+	}
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	if len(recs) != 1 {
+		t.Fatalf("%d records", len(recs))
+	}
+	for _, c := range recs[0].Candidates {
+		if c.Name != "qiushi" {
+			continue
+		}
+		if c.Week.LeftBasis != "projected" || c.Week.LeftS < 154*3600 || c.Week.LeftS > 156*3600 {
+			t.Errorf("logged week = %+v", c.Week)
+		}
+		for _, l := range c.Limits {
+			if !l.Session && l.PeriodS != 604800 {
+				t.Errorf("weekly row %s logged without its schedule: %+v", l.Kind, l)
+			}
+		}
+	}
+}
+
 func TestDryRunHasNoEffects(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
@@ -935,6 +1009,30 @@ func TestRefreshAsksThroughTheClaimAndRecords(t *testing.T) {
 	}
 }
 
+// A week's time left is said as what it rests on, and a record written before
+// it was kept says nothing rather than something invented.
+func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
+	record := func(w launchlog.Week) launchlog.Record {
+		return launchlog.Record{At: "2026-10-05T14:39:35Z", Mode: "auto", Reason: "least-load", Chosen: "a", Recorded: true,
+			Candidates: []launchlog.Candidate{{Name: "a", Weekly: 7, Week: w}}}
+	}
+	for _, c := range []struct {
+		name string
+		week launchlog.Week
+		want string
+	}{
+		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "week   7%, 1.9d left"},
+		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "week   7%, ≈6.5d left"},
+		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, "week   7%"},
+		{"written before the field", launchlog.Week{}, "week   7%"},
+	} {
+		line := launchesLine(record(c.week), 1, false)
+		if !strings.HasSuffix(strings.TrimRight(line, " "), c.want) {
+			t.Errorf("%s: %q does not end in %q", c.name, line, c.want)
+		}
+	}
+}
+
 func TestLaunchesPrintsTheLog(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
@@ -954,6 +1052,11 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "a@x.com") || !strings.Contains(lines[0], "auto/least-load") || !strings.Contains(lines[0], "next qiushi") {
 		t.Errorf("first line: %s", lines[0])
+	}
+	// How long the deciding week had left is part of why the launch went
+	// where it did.
+	if !strings.Contains(lines[0], "week  10%, 3.0d left") {
+		t.Errorf("first line does not say how long its week had left: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "qiushi") || !strings.Contains(lines[1], "named") || strings.Contains(lines[1], "named/named") {
 		t.Errorf("second line: %s", lines[1])

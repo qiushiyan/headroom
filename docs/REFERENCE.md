@@ -20,8 +20,8 @@ naming a vendor this machine does not have fails saying so, except
   account, refreshing itself while it is open; enter pins the account a bare
   `headroom launch` targets, and `a` turns automatic placement on instead
   (below). Under auto no row is `← current`: a header line says bare launches
-  are automatic, and `← next` marks the account one would take from the
-  figures on screen. With Codex present the board has a page per
+  are automatic, and `← next` marks the account one would take now from
+  the figures on screen, kept current as time passes. With Codex present the board has a page per
   vendor: tab switches, each page keeps its own selection and refresh
   schedule, only the visible page fetches, and enter and `a` record that
   vendor's routing alone. An account with sessions busy on it or launches
@@ -79,7 +79,7 @@ naming a vendor this machine does not have fails saying so, except
   - `--last` — the account of the newest recorded launch.
 
   Every launch says on stderr which account it took and why, before the
-  vendor starts: `<account> · auto · 5h 12% · week 33% · load 2 (next: …)`,
+  vendor starts: `<account> · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: …)`,
   `· pinned`, `· named`, `· last`; `load 3 (2 from steward-home)` says how
   much of it another home put there. A figure that is not a fresh measurement
   says so: `≥12%` is a lower bound from an observation older than fifteen
@@ -88,14 +88,16 @@ naming a vendor this machine does not have fails saying so, except
   written still starts, and says so on a second line.
   `--remember` records the account for later bare launches, or with `--auto`
   the mode. `--dry-run` prints the choice and one row per account — figures,
-  their age, busy sessions, pending launches, load, why an account was left
-  out — and records, logs and starts nothing. Codex's sessions are shared
+  their age, how long the weekly window has left (`≈` for a renewal
+  projected from its schedule), busy sessions, pending launches, load, why
+  an account was left out — and records, logs and starts nothing. Codex's sessions are shared
   across its accounts, so `headroom launch --vendor codex --account <other>
   -- resume` continues one on another account (`-- resume --all` lists every
   project's).
 - **`headroom launches [-n <count>] [--json]`:** the newest launches from the
-  log, one line each: when, which account, how it was decided, the load it was
-  decided on and the runner-up. `--json` emits the records unchanged, one per
+  log, one line each: when, which account, how it was decided, the load and
+  weekly figure it was decided on, how long that week had left, and the
+  runner-up. `--json` emits the records unchanged, one per
   line, with every account's figures as they were counted.
 - **`headroom refresh`:** asks the usage endpoint about every account that may
   be asked, stores the answers and prints nothing — the round `--json` runs,
@@ -173,7 +175,7 @@ are reported as unreadable by `check`.
 chooses for itself, and says what it chose:
 
 ```
-headroom launch: alice@example.com · auto · 5h 1% · week 3% · load 0 (next: bob@example.com)
+headroom launch: alice@example.com · auto · 5h 1% · week 3%, resets in 4.2d · load 0 (next: bob@example.com)
 ```
 
 The rule gives each limit one job:
@@ -185,11 +187,15 @@ The rule gives each limit one job:
 - **Any limit at 80% or above sets an account aside** while another has room.
   When every account is near a limit, the one whose tightest limit is lowest
   takes the launch, and the line says so.
-- **Weekly room breaks ties**, then the account launched least recently.
+- **Weekly room that lapses first breaks ties**: what is unspent at a reset
+  is gone, so among equally loaded accounts the most room below 80% per hour
+  its window has left goes first, judged on each account's tightest weekly
+  limit. Then the account launched least recently.
 
 Usage figures come from disk: the launch itself asks no network, so it adds a
 few tens of milliseconds. Figures older than fifteen minutes are *lower
-bounds* — a window whose reset has passed counts as empty — and an account
+bounds* — a window whose reset has passed counts as empty, and a Claude Code
+weekly window as renewing seven days after the reset that passed — and an account
 that cannot be asked (its token aged out because nothing has used it) is tried
 rather than avoided, with the line saying how old its figures are. Its own
 launch then counts against it, so a second one does not follow blindly. An

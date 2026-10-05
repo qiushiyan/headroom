@@ -823,12 +823,33 @@ that turning auto on forgets the pin.
   limit is not the rare case. So a weekly limit can take an account out of
   the running, and decides every tie — but it never hides a five-hour
   difference between two others.
+- **Weekly room is spent in the order it lapses.** What is unspent at a
+  reset is gone, so a tie goes to the most room per second its window has
+  left: room that ends tomorrow before room that lasts the week. Lowest
+  percent first evens out current usage and holds expiring room back behind
+  room with days to run; ranking by the reset first piles sessions onto one
+  account, so the reset orders ties and nothing else. An account is judged
+  by its tightest weekly row, the least room per second: judging its highest
+  percent first lets one more point spent on a row about to reset make the
+  account more attractive. Launches started together still spread, each one
+  load on its account, while one session at a time returns to the room that
+  lapses first once the last launch stops counting — the preference, not a
+  pile-up. The gain shows only where weekly demand nears what is left; with
+  room to spare, which account takes a tie changes nothing.
 - **A figure counts only for the window it describes.** An observation older
   than fifteen minutes is stale and its rows are lower bounds; a row whose
   reset has passed counts as zero, because that window has ended. The board
   shows the same row as unknown, and both are right: a display must not print
   a low percent for a window that is over, while a placement may use it as a
-  bound because it says so and counts its own launch against it.
+  bound because it says so and counts its own launch against it. The time
+  such a weekly window has left is the next renewal its schedule names:
+  Claude Code renews weekly windows every seven days at a fixed instant,
+  spent or not (`usage.Period`) — observed on every reset in the owner's
+  launch log, not asserted by `check` — and an idle account's figures can
+  be days old, so counting its renewed week whole from now would rank it
+  behind room that in fact lasts longer. Codex windows start with the next
+  request, so a passed or unstarted one counts its whole stated window, and
+  a window nothing dates counts a whole week, the least pressing it can be.
 - **An account that cannot be asked is tried, not avoided.** Only the vendor
   refreshes an access token, so an account nothing has used for about eight
   hours cannot be asked — and those are the idle accounts, the ones new
@@ -856,7 +877,12 @@ that turning auto on forgets the pin.
   the row a launch would take from those figures. A builder of the board's
   own can share the rule and still disagree on who is eligible, and then the
   mark names an account a launch refuses. The mark stays advice — a launch
-  reads the disk again — but it is never a second opinion. The same counting
+  reads the disk again — but it is never a second opinion. An open board
+  marks again at every frame's time from what its last round gathered: the
+  clock alone moves the choice — a window ending, a launch ageing out of the
+  load, a weekly reset coming nearer — and rounds stop once nobody is at the
+  keys, so a mark decided only per round drifts from the launch with nothing
+  re-read. A launch from another terminal shows at the next round. The same counting
   gives every row its load on the board and in `--json` (schema 7): busy
   sessions and recent launches, with another home's share named, so the
   owner sees what the other home is running on each subscription.
@@ -890,7 +916,11 @@ that turning auto on forgets the pin.
   printed as a bound (`≥12%`), a window whose reset has passed as
   `window ended`, a percent that does not parse as `?%`: the rule counts
   each of those differently from a measured figure, and the line must not
-  print them as one.
+  print them as one. The weekly figure carries the time it has left
+  (`week 7%, resets in 1.9d`), since that decides ties; the dry-run table
+  prints a renewal projected from a schedule as `≈6.5d`, never as the
+  vendor's countdown, and `headroom launches` keeps the time each launch's
+  week had left.
 - **A launch counts for a fixed span.** Fifteen minutes, whether or not its
   process is still alive and whatever was observed since: a short job that has
   exited still spent what the figures have not caught up with, and an

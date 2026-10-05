@@ -93,6 +93,41 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	}
 }
 
+// A board left open marks what a launch would take at the moment it draws, not
+// at its last round: with nothing re-read, a weekly window ending soon catches
+// up with room that lasts longer, and the mark moves with it.
+func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
+	f := boardFixture(t, "a@x.com", "b@x.com")
+	f.setCurrent("auto\n")
+	f.observe("qiushi", 30, 0, time.Minute)
+	f.observeWeek("a@x.com", 0, 70, time.Hour, time.Minute)
+	f.observeWeek("b@x.com", 0, 0, 7*time.Hour, time.Minute)
+
+	pg := newPage(f.cfg)
+	var out strings.Builder
+	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now(),
+		fp: &framePrinter{out: &out, size: func() (int, int, error) { return 120, 60, nil }}}
+	ui.show(context.Background(), 0)
+	next := func() string {
+		_, n := marks(pg.list)
+		if len(n) != 1 {
+			t.Fatalf("%d rows marked next", len(n))
+		}
+		return n[0]
+	}
+	if got := next(); got != "b@x.com" {
+		t.Fatalf("now: marked %s; 80 points over seven hours beat 10 over one", got)
+	}
+	pg.markAt(time.Now().Add(10 * time.Minute))
+	if got := next(); got != "a@x.com" {
+		t.Fatalf("ten minutes on: marked %s; a's 10 points now end within the hour", got)
+	}
+	ui.draw()
+	if got := next(); got != "b@x.com" {
+		t.Errorf("the frame drawn now marked %s, not what a launch now takes", got)
+	}
+}
+
 func TestSchema6SaysTheMode(t *testing.T) {
 	f := boardFixture(t, "a@x.com")
 	doc := func() doc5 {
@@ -377,6 +412,13 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 			t.Errorf("%s carries busy sessions Codex cannot report: %+v", c.Name, c)
 		}
 	}
+	// The window's stated length travels with the row: it is what an
+	// unstarted or ended Codex window is counted to have left.
+	for _, c := range recs[0].Candidates {
+		if c.Name == "u2@x.com" && (len(c.Limits) == 0 || c.Limits[0].WindowS != 604800) {
+			t.Errorf("logged rows %+v lack the stated window", c.Limits)
+		}
+	}
 	if recs[0].Vendor != "codex" || recs[0].Reason != placement.ReasonLeastLoad {
 		t.Errorf("log = %+v", recs[0])
 	}
@@ -409,9 +451,9 @@ func TestLaunchLineWording(t *testing.T) {
 		not   []string
 	}{
 		{"least load", choose(placement.Intent{}, obs("a", 12, 3, time.Minute), obs("b", 40, 3, time.Minute)), true, sessionRef{}, "",
-			[]string{"a · auto · 5h 12% · week 3% · load 1 (next: b)"}, []string{"old"}},
+			[]string{"a · auto · 5h 12% · week 3%, resets in 1.2d · load 1 (next: b)"}, []string{"old"}},
 		{"stale", choose(placement.Intent{}, obs("a", 0, 18, 40*time.Hour)), true, sessionRef{}, "",
-			[]string{"a · auto · 5h ≥0% · week ≥18% · figures 1d old · load 0"}, []string{"next"}},
+			[]string{"a · auto · 5h ≥0% · week ≥18%, resets in 1.2d · figures 1d old · load 0"}, []string{"next"}},
 		{"never observed", choose(placement.Intent{}, placement.Candidate{Name: "a", Key: "a"}), true, sessionRef{}, "",
 			[]string{"a · auto · never observed · load 0"}, nil},
 		{"near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute)), true, sessionRef{}, "",
