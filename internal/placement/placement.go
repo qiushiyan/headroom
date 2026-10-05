@@ -7,10 +7,11 @@
 // limit, five hours for Claude Code) ranks accounts, as load: its usage in
 // steps of ten points, plus one step for each busy session and each launch too
 // recent to show in the figures. Any limit at or above the near-limit
-// threshold sets an account aside. Weekly room breaks ties. A rule that folds
-// both windows into one figure lets the larger weekly number absorb every new
-// launch, and launches then pile onto one account — the failure this exists to
-// end.
+// threshold sets an account aside. Weekly room breaks ties, measured against
+// the time its window has left: room that ends tomorrow goes before room that
+// lasts the week. A rule that folds both windows into one figure lets the
+// larger weekly number absorb every new launch, and launches then pile onto
+// one account — the failure this exists to end.
 //
 // A figure is counted only for the window it describes. A row whose reset has
 // passed counts as zero, a stale observation's rows are lower bounds, and an
@@ -22,6 +23,7 @@ package placement
 import (
 	"cmp"
 	"fmt"
+	"math/bits"
 	"slices"
 	"strings"
 	"time"
@@ -30,7 +32,7 @@ import (
 // The constants are policy, chosen and not measured. They are named in Rule,
 // so a log line says which values decided it.
 const (
-	Rule = "load-1"
+	Rule = "load-2"
 
 	// StepPoints is one step of load: ten points of session-window usage, one
 	// busy session, or one pending placement.
@@ -49,6 +51,13 @@ const (
 	// not caught up with.
 	PendingFor = 15 * time.Minute
 
+	// AssumedWindow is the time a weekly window is counted to have left when
+	// neither its reset nor its length is known — its reset has passed or was
+	// not given, and the vendor states no duration — and for an account with
+	// no weekly row at all. A whole week is the most a weekly window can have
+	// left, so an assumed figure is never more pressing than a measured one.
+	AssumedWindow = 7 * 24 * time.Hour
+
 	// dedupeSlackMS is how much earlier than its own placement a busy session's
 	// registered start may be and still be the same process.
 	dedupeSlackMS = 10_000
@@ -64,6 +73,15 @@ const (
 	BasisBad      Basis = "bad"      // the percent did not parse; nothing bounds it
 )
 
+// TimeBasis says what a weekly window's counted time left rests on.
+type TimeBasis string
+
+const (
+	TimeReset   TimeBasis = "reset"   // the vendor's reset instant, still ahead
+	TimeWindow  TimeBasis = "window"  // the reset has passed or was not given: a whole stated window
+	TimeAssumed TimeBasis = "assumed" // nothing says: AssumedWindow
+)
+
 // Limit is one limit row of an account's newest observation.
 type Limit struct {
 	Kind    string // the vendor's word for the row
@@ -71,6 +89,7 @@ type Limit struct {
 	Percent int
 	Bad     bool  // the percent did not parse
 	ResetAt int64 // unix seconds; 0 = none
+	Window  int64 // the window's length in seconds, as the vendor states it; 0 = not stated
 	Session bool  // the session window
 }
 
@@ -253,12 +272,11 @@ type Counted struct {
 	// surface that says whose they are: the rule counts every home's alike.
 	Shares []Share
 
-	// Weekly is the highest counted figure among the rows that are not the
-	// session window; Highest is the highest over all rows, with HighestLabel
-	// and HighestReset naming it. Each carries the basis of the row it came
-	// from, so a surface that prints the figure can say what it rests on.
-	Weekly       int
-	WeeklyBasis  Basis // "" when the account has no such row
+	// Week is the weekly figure that breaks ties. Highest is the highest
+	// counted figure over all rows, with HighestLabel and HighestReset naming
+	// it. Each carries the basis of the row it came from, so a surface that
+	// prints the figure can say what it rests on.
+	Week         Week
 	Highest      int
 	HighestBasis Basis // "" when the account has no rows
 	HighestLabel string
@@ -267,6 +285,50 @@ type Counted struct {
 
 	LastPlacedMS int64
 	order        int
+}
+
+// Week is the weekly row that bounds how fast an account can be driven: of
+// the rows that are not the session window, the one with the least room per
+// second left — room being what remains below the near-limit threshold. Each
+// row is judged against its own window, so a row about to reset never makes
+// the account look tighter than a row that has days to run, and spending more
+// on any row never makes the account more attractive. An account with no such
+// row counts a whole assumed window of room; its Basis is "".
+type Week struct {
+	Kind    string
+	Label   string
+	Counted int
+	Basis   Basis // "" when the account has no weekly row
+	ResetAt int64 // the row's reset as the vendor gave it; 0 = none
+
+	Room      int   // NearLimitPercent minus Counted, never below zero
+	Left      int64 // seconds counted until the window ends; at least one
+	LeftBasis TimeBasis
+}
+
+// Pressing compares two weeks by room per second left: positive when a has
+// more of its room to spend per second than b, which is the order an
+// automatic choice prefers. The products are taken in 128 bits, so no figure
+// or window a vendor reports can overflow them.
+func (a Week) Pressing(b Week) int {
+	ah, al := bits.Mul64(uint64(a.Room), uint64(b.Left))
+	bh, bl := bits.Mul64(uint64(b.Room), uint64(a.Left))
+	return cmp.Or(cmp.Compare(ah, bh), cmp.Compare(al, bl))
+}
+
+// week counts one row's room and the time its window has left.
+func week(l Limit, counted int, basis Basis, nowS int64) Week {
+	w := Week{Kind: l.Kind, Label: l.Label, Counted: counted, Basis: basis, ResetAt: l.ResetAt,
+		Room: min(max(NearLimitPercent-counted, 0), NearLimitPercent)}
+	switch {
+	case l.ResetAt > nowS:
+		w.Left, w.LeftBasis = l.ResetAt-nowS, TimeReset
+	case l.Window > 0:
+		w.Left, w.LeftBasis = l.Window, TimeWindow
+	default:
+		w.Left, w.LeftBasis = int64(AssumedWindow/time.Second), TimeAssumed
+	}
+	return w
 }
 
 // Share is one home's part of an account's busy sessions and pending launches.
@@ -375,7 +437,7 @@ func (d *Decision) auto(intent Intent) {
 	slices.SortStableFunc(open, func(a, b Counted) int {
 		return cmp.Or(
 			cmp.Compare(a.Load, b.Load),
-			cmp.Compare(a.Weekly, b.Weekly),
+			b.Week.Pressing(a.Week),
 			cmp.Compare(a.LastPlacedMS, b.LastPlacedMS),
 			cmp.Compare(a.order, b.order),
 		)
@@ -459,6 +521,7 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 		ObservedAt: c.ObservedAt, Source: c.Source, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
 		Stale:  c.ObservedAt > 0 && nowS-c.ObservedAt > int64(StaleAfter/time.Second),
 		Limits: make([]CountedLimit, 0, len(c.Limits)),
+		Week:   week(Limit{}, 0, "", nowS),
 	}
 	session := 0
 	for i, l := range c.Limits {
@@ -482,8 +545,8 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 		}
 		if l.Session {
 			session = cl.Counted
-		} else if out.WeeklyBasis == "" || cl.Counted > out.Weekly {
-			out.Weekly, out.WeeklyBasis = cl.Counted, cl.Basis
+		} else if w := week(l, cl.Counted, cl.Basis, nowS); out.Week.Basis == "" || w.Pressing(out.Week) < 0 {
+			out.Week = w
 		}
 	}
 	shares := map[string]*Share{}

@@ -93,10 +93,16 @@ func (f autoFixture) key(name string) state.Key {
 // claim and completion, as taken `age` ago.
 func (f autoFixture) observe(name string, session, weekly int, age time.Duration) {
 	f.t.Helper()
+	f.observeWeek(name, session, weekly, 72*time.Hour, age)
+}
+
+// observeWeek is observe with the weekly window ending `left` from now.
+func (f autoFixture) observeWeek(name string, session, weekly int, left, age time.Duration) {
+	f.t.Helper()
 	at := time.Now().Add(-age)
 	reset := func(d time.Duration) string { return time.Now().Add(d).UTC().Format(time.RFC3339) }
 	body := fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":%d,"resets_at":%q},`+
-		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(72*time.Hour))
+		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(left))
 	k := f.key(name)
 	dec, err := f.st.Claim([]state.Key{k}, at)
 	if err != nil || !dec[0].Permit {
@@ -683,6 +689,36 @@ func TestTheLogIsInert(t *testing.T) {
 		t.Cleanup(func() { lock.Close() })
 	}); got != want {
 		t.Errorf("with the log's lock held: %s, want %s", got, want)
+	}
+}
+
+// What the vendor stored is what the rule weighs: an account whose weekly room
+// ends tomorrow takes the launch from one with less used and a week to run,
+// and the line, the table and the log each say when that room ends.
+func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.setCurrent("auto\n")
+	f.observeWeek("qiushi", 0, 5, 6*24*time.Hour, time.Minute)
+	f.observeWeek("a@x.com", 0, 30, 20*time.Hour, time.Minute)
+
+	table := captureStdout(t, func() { f.launch("--dry-run") })
+	for _, want := range []string{"resets", "→ a@x.com", "20.0h"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("table lacks %q:\n%s", want, table)
+		}
+	}
+	got := f.launch()
+	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto · 5h 0% · week 30%, resets in 20.0h") {
+		t.Fatalf("exit %d: %s", got.code, got.stderr)
+	}
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	if len(recs) != 1 {
+		t.Fatalf("%d records", len(recs))
+	}
+	for _, c := range recs[0].Candidates {
+		if c.Name == "a@x.com" && (c.Week.Kind != "weekly_all" || c.Week.Room != 50 || c.Week.LeftBasis != "reset" || c.Week.LeftS <= 19*3600) {
+			t.Errorf("logged week = %+v", c.Week)
+		}
 	}
 }
 

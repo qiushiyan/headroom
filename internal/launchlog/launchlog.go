@@ -76,6 +76,7 @@ type Candidate struct {
 	Pending    int      `json:"pending"`
 	Load       int      `json:"load"`
 	Weekly     int      `json:"weekly"`
+	Week       Week     `json:"week"`
 	LastPlaced *string  `json:"last_placed_at,omitempty"`
 
 	// Homes splits busy and pending by the home they came from, by accounts
@@ -91,12 +92,26 @@ type Share struct {
 	Pending int    `json:"pending"`
 }
 
+// Week is the weekly row that broke ties, as the rule counted it: its room
+// below the near-limit threshold and the seconds its window was counted to
+// have left, with what that time rests on. An account with no weekly row has
+// no kind and an assumed window.
+type Week struct {
+	Kind      string `json:"kind,omitempty"`
+	Label     string `json:"label,omitempty"`
+	Counted   int    `json:"counted"`
+	Room      int    `json:"room"`
+	LeftS     int64  `json:"left_s"`
+	LeftBasis string `json:"left_basis"`
+}
+
 // Limit is one row: what the vendor said and what the rule counted for it.
 type Limit struct {
 	Kind     string  `json:"kind"`
 	Label    string  `json:"label,omitempty"`
 	Percent  int     `json:"percent"`
 	ResetsAt *string `json:"resets_at"`
+	WindowS  int64   `json:"window_s,omitempty"`
 	Session  bool    `json:"session,omitempty"`
 	Counted  int     `json:"counted"`
 	Basis    string  `json:"basis"`
@@ -114,7 +129,11 @@ func New(d placement.Decision, at time.Time) Record {
 	for _, c := range d.Candidates {
 		lc := Candidate{
 			Name: c.Name, Eligible: c.Excluded == "", Excluded: c.Excluded, NearLimit: c.NearLimit,
-			Source: c.Source, Statuses: c.Statuses, Busy: c.Busy, Pending: c.Pending, Load: c.Load, Weekly: c.Weekly,
+			Source: c.Source, Statuses: c.Statuses, Busy: c.Busy, Pending: c.Pending, Load: c.Load, Weekly: c.Week.Counted,
+			Week: Week{
+				Kind: c.Week.Kind, Label: c.Week.Label, Counted: c.Week.Counted,
+				Room: c.Week.Room, LeftS: c.Week.Left, LeftBasis: string(c.Week.LeftBasis),
+			},
 			Limits: make([]Limit, 0, len(c.Limits)),
 		}
 		if lc.Statuses == nil {
@@ -130,7 +149,7 @@ func New(d placement.Decision, at time.Time) Record {
 			lc.Homes = append(lc.Homes, Share{Home: sh.Home, Busy: sh.Busy, Pending: sh.Pending})
 		}
 		for _, l := range c.Limits {
-			ll := Limit{Kind: l.Kind, Label: l.Label, Percent: l.Percent, Session: l.Session, Counted: l.Counted, Basis: string(l.Basis)}
+			ll := Limit{Kind: l.Kind, Label: l.Label, Percent: l.Percent, WindowS: l.Window, Session: l.Session, Counted: l.Counted, Basis: string(l.Basis)}
 			if l.ResetAt > 0 {
 				ll.ResetsAt = stamp(time.Unix(l.ResetAt, 0))
 			}

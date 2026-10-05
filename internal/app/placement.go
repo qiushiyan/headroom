@@ -319,7 +319,7 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 		}
 		limits = append(limits, placement.Limit{
 			Kind: r.Kind, Label: r.Label, Percent: r.Percent,
-			Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Session: j == session,
+			Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Window: r.WindowSeconds, Session: j == session,
 		})
 	}
 	return obs.ObservedAt, sourceNames[obs.Source], limits
@@ -725,8 +725,12 @@ func figures(c placement.Counted, now time.Time) []string {
 	if s, ok := c.Session(); ok {
 		out = append(out, shortLabel(s.Label)+" "+figure(s.Counted, s.Basis))
 	}
-	if c.WeeklyBasis != "" {
-		out = append(out, "week "+figure(c.Weekly, c.WeeklyBasis))
+	if c.Week.Basis != "" {
+		week := "week " + figure(c.Week.Counted, c.Week.Basis)
+		if c.Week.LeftBasis == placement.TimeReset {
+			week += ", resets in " + render.Remaining(c.Week.Left)
+		}
+		out = append(out, week)
 	}
 	if len(c.Limits) == 0 {
 		out = append(out, "no limits reported")
@@ -766,7 +770,7 @@ func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode s
 	for _, c := range d.Candidates {
 		nameW = max(nameW, render.Cells(render.Sanitize(c.Name)))
 	}
-	fmt.Fprintf(w, "  %s  %7s  %5s  %4s  %7s  %4s  %s\n", render.PadCell("account", nameW), "session", "week", "busy", "pending", "load", "note")
+	fmt.Fprintf(w, "  %s  %7s  %5s  %6s  %4s  %7s  %4s  %s\n", render.PadCell("account", nameW), "session", "week", "resets", "busy", "pending", "load", "note")
 	for _, c := range d.Candidates {
 		mark := "  "
 		switch c.Name {
@@ -775,15 +779,20 @@ func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode s
 		case d.RunnerUp:
 			mark = "· "
 		}
-		session, week := "—", "—"
+		session, week, resets := "—", "—", "—"
 		if s, ok := c.Session(); ok {
 			session = cell(s.Counted, s.Basis)
 		}
-		if c.WeeklyBasis != "" {
-			week = cell(c.Weekly, c.WeeklyBasis)
+		if c.Week.Basis != "" {
+			week = cell(c.Week.Counted, c.Week.Basis)
 		}
-		fmt.Fprintf(w, "%s%s  %7s  %5s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
+		// Only a reset the vendor gave is a countdown: a window counted whole
+		// because its reset passed or was never given has no instant to print.
+		if c.Week.LeftBasis == placement.TimeReset {
+			resets = render.Remaining(c.Week.Left)
+		}
+		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
+			session, week, resets, c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
 	}
 }
 

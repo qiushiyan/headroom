@@ -377,6 +377,13 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 			t.Errorf("%s carries busy sessions Codex cannot report: %+v", c.Name, c)
 		}
 	}
+	// The window's stated length travels with the row: it is what an
+	// unstarted or ended Codex window is counted to have left.
+	for _, c := range recs[0].Candidates {
+		if c.Name == "u2@x.com" && (len(c.Limits) == 0 || c.Limits[0].WindowS != 604800) {
+			t.Errorf("logged rows %+v lack the stated window", c.Limits)
+		}
+	}
 	if recs[0].Vendor != "codex" || recs[0].Reason != placement.ReasonLeastLoad {
 		t.Errorf("log = %+v", recs[0])
 	}
@@ -409,9 +416,9 @@ func TestLaunchLineWording(t *testing.T) {
 		not   []string
 	}{
 		{"least load", choose(placement.Intent{}, obs("a", 12, 3, time.Minute), obs("b", 40, 3, time.Minute)), true, sessionRef{}, "",
-			[]string{"a · auto · 5h 12% · week 3% · load 1 (next: b)"}, []string{"old"}},
+			[]string{"a · auto · 5h 12% · week 3%, resets in 1.2d · load 1 (next: b)"}, []string{"old"}},
 		{"stale", choose(placement.Intent{}, obs("a", 0, 18, 40*time.Hour)), true, sessionRef{}, "",
-			[]string{"a · auto · 5h ≥0% · week ≥18% · figures 1d old · load 0"}, []string{"next"}},
+			[]string{"a · auto · 5h ≥0% · week ≥18%, resets in 1.2d · figures 1d old · load 0"}, []string{"next"}},
 		{"never observed", choose(placement.Intent{}, placement.Candidate{Name: "a", Key: "a"}), true, sessionRef{}, "",
 			[]string{"a · auto · never observed · load 0"}, nil},
 		{"near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute)), true, sessionRef{}, "",
