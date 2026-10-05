@@ -50,12 +50,13 @@ the least-loaded account. Every launch says which account it took before
 `claude` starts:
 
 ```
-headroom launch: alice@example.com · auto · 5h 1% · week 3% · load 0 (next: bob@example.com)
+headroom launch: alice@example.com · auto · 5h 1% · week 3%, resets in 4.2d · load 0 (next: bob@example.com)
 ```
 
 Load is five-hour usage plus the sessions busy on that account and the
-launches just made there; an account near any limit is set aside, and weekly
-room breaks ties. Launches started together land on different accounts.
+launches just made there; an account near any limit is set aside, and among
+equally loaded accounts the weekly room that would lapse first is spent
+first. Launches started together land on different accounts.
 `headroom launch --dry-run` shows the whole table without starting anything,
 `headroom launches` what was chosen before, and enter on a board row pins one
 account again.

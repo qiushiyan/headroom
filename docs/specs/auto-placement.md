@@ -983,3 +983,11 @@ with more load than another candidate in the same record; launches started
 together landed on different accounts when their loads were equal; and a
 print-mode session's record shows whether it registered as live, which
 settles P3.
+
+**Closing read owed** (no PR: the `weekly-expiry` merge) — ready when: a
+day of ordinary use under `auto`, during which some account's weekly reset
+passed. Read: in `headroom launches --json`, every automatic launch among
+equally loaded candidates went to the one whose `week` had the most `room`
+per `left_s`; and the first observation after that reset names the next
+one exactly seven days on, which confirms the schedule `usage.Period`
+projects (until then it rests on the launch log of 2026-10-01 to 10-05).

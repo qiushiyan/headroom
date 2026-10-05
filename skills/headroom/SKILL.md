@@ -32,10 +32,12 @@ shell's `x-<name>`) — quote that spelling.
 - **Drift markers** → the vendor response changed shape; `headroom check`
   names what. A rolled-over window reads unknown until refreshed.
 - **Where a bare launch would go, and why**: `headroom launch --dry-run` —
-  one row per account with its figures, their age, busy sessions, load, and
-  why an account is left out. It starts nothing and records nothing.
+  one row per account with its figures, their age, how long its weekly
+  window has left (`≈` when projected from the schedule), busy sessions,
+  load, and why an account is left out. It starts nothing and records nothing.
 - **Where launches went**: `headroom launches` — newest launches, one line
-  each: account, how it was decided, the runner-up. `--json` for the full
+  each: account, how it was decided, the weekly figure and how long it had
+  left, the runner-up. `--json` for the full
   records.
 - **A `sessions:` line** under an account counts the sessions busy on it and
   the launches of the last fifteen minutes; a name in parentheses
@@ -54,7 +56,8 @@ shell's `x-<name>`) — quote that spelling.
 - **Let headroom choose the account**: `headroom accounts`, press **`a`**
   (or `headroom launch --auto --remember`). Each bare launch then goes to
   the least-loaded account — five-hour usage plus busy sessions and recent
-  launches, an account near any limit set aside, weekly room breaking ties.
+  launches, an account near any limit set aside, the weekly room that would
+  lapse first breaking ties.
   Every launch prints the account it took on stderr before `claude` starts
   (`· auto`, `· pinned`, `· named`, `· last`; `≥12%` there is a lower bound
   from old figures). Enter on a row pins one
