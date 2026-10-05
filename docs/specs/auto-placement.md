@@ -296,16 +296,23 @@ After: in auto mode the board shows no `← current`. The header says bare
 launches are automatic, and the row the rule would choose from the page's
 snapshot carries `← next`, in both layouts and in the one-shot print. The
 marker is advice: a launch reads the disk again and counts placements made
-since.
+since. An open board marks again at every frame's time from what its last
+round gathered, so a choice the clock alone changes — a window ending, a
+launch ageing out of the load, a weekly reset coming nearer — moves the
+mark without a round; a launch from another terminal shows at the next
+round.
 
 `headroom launch --dry-run [--auto | --last | --account <name>]` reads the
 disk, runs the rule and prints one row per account (figures, their age,
-busy sessions, pending placements, load, tightest weekly, and why an
-account was excluded). It records no placement, writes no log line,
+busy sessions, pending placements, load, tightest weekly and how long it
+has left — a countdown for the vendor's reset, `≈` for a renewal its
+schedule projects, `—` when nothing dates it — and why an account was
+excluded). It records no placement, writes no log line,
 starts no refresh and does not exec.
 
 `headroom launches` prints the newest log records, one line each: time,
-account, mode and reason, load, and the runner-up. `--json` emits the
+account, mode and reason, load, weekly figure and how long that week had
+left at the launch, and the runner-up. `--json` emits the
 records unchanged.
 
 `headroom resolve` without a name refuses in auto mode and points to
@@ -505,8 +512,10 @@ read only when the rule will choose.
    most weekly room per second left, then to the least recently placed,
    then to board order. A weekly row's room is 80 minus its counted
    figure, never below zero; its time left is the seconds to its reset
-   while that is ahead, otherwise a whole window — the length the vendor
-   states, else seven days. An account is judged by its tightest weekly
+   while that is ahead; past it, the next renewal on the window's schedule
+   when it keeps one (Claude Code's weekly windows renew every seven days
+   at a fixed instant, spent or not); otherwise a whole window — the
+   length the vendor states, else seven days. An account is judged by its tightest weekly
    row (the least room per second), so spending more on any row never
    makes it more attractive; with no weekly row it counts 80 over seven
    days. The comparison is exact, in 128-bit products.
@@ -557,8 +566,9 @@ through its writes untouched.
 `picker`, `last`, `least-load`, `near-limit`, `owner`, `moved`,
 `rotation`. `week` is the weekly row that broke ties as the rule counted
 it: room below 80%, the seconds its window was counted to have left, and
-`left_basis` — `reset` (the vendor's instant), `window` (a whole stated
-window, `window_s` on the row) or `assumed` (seven days). A record that
+`left_basis` — `reset` (the vendor's instant), `projected` (the next
+renewal on the row's schedule, `period_s` on the row), `window` (a whole
+stated window, `window_s` on the row) or `assumed` (seven days). A record that
 did not reach the placements section carries
 `recorded: false` and a `problem`. An append is one write. When the
 file exceeds 8 MB, the appender takes the log's own lock without waiting
@@ -757,13 +767,16 @@ Runners: `make check` and `make test-pty`. The pty harness already stubs
    59%, 61% or 75% over one day all lose to 40% over four days); a step of
    load outranks any weekly figure; one session at a time returns to the
    sooner reset once the last launch has stopped counting, and not before;
-   time left is the reset while ahead, else the stated window, else seven
+   time left is the reset while ahead, else the next renewal on a
+   schedule (a reset passed 13 h or eight days ago on a seven-day schedule
+   leaves 155 h or six days, and an account renewing in 155 h that way
+   beats one renewing in 166 h), else the stated window, else seven
    days, with a reset at this very second counted as passed, and an
    account with no weekly row or no observation counting 80 over seven
    days; figures and windows at the int64 limits compare without
-   overflow. The launch line and the dry-run table give a countdown only
-   for a reset the vendor gave; the log records the deciding week and each
-   row's stated window.
+   overflow. The launch line gives a countdown only for a reset the vendor
+   gave, and the dry-run table marks a projected renewal `≈`; the log
+   records the deciding week and each row's stated window and period.
 2. Obligation: the registry reader carries the status. Observe: `busy`,
    `idle`, `shell`, absent and a wrong type through `ReadRegistry`; only
    `busy` adds load; a record whose pid is alive under another start
@@ -813,7 +826,12 @@ Runners: `make check` and `make test-pty`. The pty harness already stubs
     harness, `a` writes `auto` to the visible vendor's `.current` alone
     and enter pins again; with inputs frozen and no placement in between,
     the `← next` row is the account a launch then chooses. The one-shot
-    print and `--compact` carry the same marker.
+    print and `--compact` carry the same marker. An open board whose tie
+    the clock alone reorders (10 points ending in one hour against 80 over
+    seven, ten minutes on) marks the account a launch takes at the frame's
+    time, with nothing re-read. `headroom launches` says how long each
+    launch's week had left, `≈` for a projected renewal, and nothing for a
+    record written before the field.
 11. Obligation: schema 6. Observe: the document under pinned, auto and an
     unresolvable `.current`, from `--json` and from `limits`.
 12. Obligation: `check` covers the new facts. Observe: FAIL when no
@@ -942,6 +960,17 @@ that launches still spread holds for a burst, through the pending step,
 not for one session at a time: serial use returns to the sooner reset
 once a launch stops counting, which is the preference, and the rule makes
 no promise that room ends proportional to time left.
+
+A goal review of the build (`review-r1`, codex gpt-6.1-sol) found it
+partly landed, and the owner had all three of its points built. A weekly
+reset that has passed now names the next renewal on Claude Code's
+seven-day schedule: counted as a whole week from now, an idle account
+whose figures predate its reset ranked behind room that in fact lasts
+longer. An open board marks at each frame's time: it marked only when a
+round ran, rounds stop once nobody is at the keys, and the clock alone
+now reorders a tie. And `headroom launches` says how long each launch's
+week had left, without which a launch that went to the fuller account
+read as unexplained.
 
 Open decisions: none.
 
