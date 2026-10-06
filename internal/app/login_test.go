@@ -220,9 +220,10 @@ func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
 	}
 }
 
-// A remote user cannot see this machine's screen: no page opens here, and
-// the instructions say to open the printed URL and paste the code.
-func TestLoginRemoteOpensNothingHere(t *testing.T) {
+// A remote user cannot see this machine's screen: the login is asked for a
+// remote page, and the instructions say to open the printed URL and paste the
+// code. That nothing opens is pinned through the binary.
+func TestLoginRemoteAsksForThePastedCode(t *testing.T) {
 	cfg, w := renewFixture(t)
 	w.remote = true
 	var out bytes.Buffer
@@ -251,5 +252,77 @@ func TestSSHRemote(t *testing.T) {
 		if got := sshRemote(conn); got != want {
 			t.Errorf("sshRemote(%q) = %v, want %v", conn, got, want)
 		}
+	}
+}
+
+// A live session refreshing the access token while the batch waits on other
+// approvals changes the credential without any login. Only a new refresh
+// expiry is a new login, and a failed vendor command is a failure whatever
+// changed meanwhile. (review r1)
+func TestLoginReadBackIgnoresAnAccessRefresh(t *testing.T) {
+	cfg, w := renewFixture(t)
+	d := w.deps()
+	d.login = func(a accounts.Account, _ accounts.Set, _ string, _ approvalPage) error {
+		// another session refreshed the access token; the login was abandoned
+		w.raw[a.Name] = blobEnding("refreshed-"+a.Name, w.now.Add(3*24*time.Hour))
+		return fmt.Errorf("exit status 1")
+	}
+	var out bytes.Buffer
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "✗ a@x.com: claude auth login: exit status 1") {
+		t.Errorf("vendor failure not reported:\n%s", out.String())
+	}
+	d.login = func(a accounts.Account, _ accounts.Set, _ string, _ approvalPage) error {
+		w.raw[a.Name] = blobEnding("refreshed-again-"+a.Name, w.now.Add(3*24*time.Hour))
+		return nil
+	}
+	out.Reset()
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d); code != 1 || !strings.Contains(out.String(), "✗ a@x.com: the stored login did not change") {
+		t.Errorf("access-only refresh read as a login: exit %d\n%s", code, out.String())
+	}
+}
+
+// An empty name is a caller's expansion bug, not a request for the pinned
+// account. (review r1)
+func TestLoginRefusesAnEmptyName(t *testing.T) {
+	cfg, w := renewFixture(t)
+	var errw bytes.Buffer
+	if code := runLoginTo(io.Discard, &errw, cfg, []string{""}, w.deps()); code != 2 {
+		t.Errorf("exit %d, want 2 (%s)", code, errw.String())
+	}
+	if len(w.logins) != 0 {
+		t.Errorf("an empty name logged in: %q", w.logins)
+	}
+}
+
+// A primary with a login but no readable identity cannot have its new login
+// checked, so it is held back — unless the vendor's own status names it.
+// (review r1)
+func TestLoginHoldsAPrimaryWhoseIdentityIsUnknown(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.raw["primary"] = blobEnding("old-p", w.now.Add(24*time.Hour))
+	var out bytes.Buffer
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"primary"}, w.deps()); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
+	}
+	if len(w.logins) != 0 || !strings.Contains(out.String(), "identity unreadable") {
+		t.Errorf("logins %q\n%s", w.logins, out.String())
+	}
+
+	d := w.deps()
+	d.health = func([]accounts.Account) auth.QueryFunc {
+		return func(dir string) auth.Status {
+			if dir == "" {
+				return auth.Status{Outcome: auth.OutcomeOK, LoggedIn: true, Email: "p@x.com"}
+			}
+			return auth.Status{}
+		}
+	}
+	w.approveAs["primary"] = "a@x.com"
+	out.Reset()
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"primary"}, d); code != 1 || !strings.Contains(out.String(), "logged in as a@x.com, not p@x.com") {
+		t.Errorf("primary not checked against the vendor's email: exit %d\n%s", code, out.String())
 	}
 }

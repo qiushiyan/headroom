@@ -227,12 +227,19 @@ click per account.
   at, so `$BROWSER` is `true(1)`: the vendor prints its URL, the user opens it
   where they are, in a browser signed in as the account, and pastes the code
   it shows. An ssh from a machine to itself — how the author's mini attaches
-  its own tmux — keeps the profile opener.
-- **The result is read back.** A login took only when the stored credential
-  changed and the dir's `.claude.json` now names the account's email — an
-  extra's dir name, the primary's previous login. Approving in the wrong
-  profile is the failure this catches at once, instead of later as the
-  board's `(dir says …!)`.
+  its own tmux — keeps the profile opener. Off macOS the vendor keeps its own
+  browser handling.
+- **The result is read back**, against the credential as it stood just
+  before that account's login. A login took only when the vendor command
+  succeeded, the refresh expiry is a new one, and the dir's `.claude.json`
+  now names the account's email — an extra's dir name, the primary's
+  previous login or, failing that, the vendor's status. A changed access
+  token is not evidence: any live session on the account refreshes it while
+  a batch waits on other approvals. Approving in the wrong profile is the
+  failure this catches at once, instead of later as the board's `(dir says
+  …!)` — but only after Claude Code has stored that login over the dir's
+  previous one. A primary with a login and no readable identity is held
+  back like a sealed account, since its new login could not be checked.
 
 The vendor can end a login before its recorded expiry — on the author's mini,
 logins made on different days were refused within the same half hour — and
@@ -1315,10 +1322,15 @@ refusal backoff and persistence are tested through the callers' interface.
 Checker tests use fixture processes and HTTP to verify the final exit verdict.
 Store tests own locking, generations, migration preservation and cooldowns;
 launch tests own routing, refusal-before-persistence and failure-after-write.
-`login` is tested through its command with the vendor's login injected:
-which accounts a window, names and `--all` choose, and a read-back that fails
-an unchanged credential and a login as the wrong email. The profile match is
-a table over the author's own `Local State` shape.
+`login` is tested through its command with the vendor's login injected —
+which accounts a window, names and `--all` choose, what is held back, and a
+read-back that fails an unchanged credential, an access-token refresh, a
+failed vendor command and a login as the wrong email — and through the
+built binary against stub `claude`, `open` and `security`: the login's dir,
+headroom as `$BROWSER`, the profile `open` receives, nothing opened for a
+remote user, and the opener answering under a configuration headroom
+refuses. The profile match is a table over the author's own `Local State`
+shape.
 
 A second home is tested at each tier. The store's tests drive a handle on
 each home's root over the real lock: a claim from either denies the other, a
