@@ -9,7 +9,8 @@ one frame off it, one row per account under `--compact`, a versioned document
 under `--json`), answers "which session do I get back into, and on which
 account?" (`sessions`, Claude Code only — see The session surface below),
 turns the chosen account into a running session (`launch`/`resolve` — see
-The launch surface), keeps one picture of each subscription's load when a
+The launch surface), renews the logins that end soon in one pass (`login` —
+see Renewing logins), keeps one picture of each subscription's load when a
 second home on the machine holds logins of the same subscriptions (see A
 second home), and proves its own assumptions still hold (`check`).
 This file records the mental model and the vendor contracts — the things the
@@ -84,8 +85,9 @@ Everything derives from that tree:
   ledger this home spends against — see A second home.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
-Keychain, never refreshes a token, and never touches vendor login or quota
-state — Claude Code owns all of it. What it writes is its own: `.current`,
+Keychain, never refreshes a token, and never writes vendor login or quota
+state — Claude Code owns all of it. `login` is no exception: it runs Claude
+Code's own login command, and Claude Code stores what results. What it writes is its own: `.current`,
 one `state.json` holding non-secret request timestamps, the usage
 responses it fetched itself, session re-homes and the record of recent
 launches, `launches.jsonl`, the launch log nothing routes by, and — only
@@ -173,6 +175,54 @@ token as a side effect; headroom neither relies on that nor invokes it hoping
 for it. Building on an unpromised side effect would be the same class of
 mistake as reading `expiresAt` as account health.
 
+### Renewing logins
+
+A Claude Code login ends at its `refreshTokenExpiresAt`, which the vendor
+fixes at login — about 27 to 30 days out, measured on 2.1.291 — and which
+using the account does not move. Each config dir on each machine is its own
+login, so an owner with several subscriptions on more than one machine meets a lapse
+every few days unless the logins are renewed together, after which they end
+together. `headroom login` is that batch; the owner's part is one Authorize
+click per account.
+
+- **The vendor does the login.** For each chosen account, in turn, headroom
+  runs `claude auth login --email <email>` under the environment
+  `launch.Prepare` builds for it, so the login lands in that dir and its
+  Keychain item exactly as a session's `/login` would. `--email` pre-fills
+  the sign-in page. stdio is the terminal's: when the browser cannot reach
+  the vendor's localhost callback, the vendor asks for the code there. A
+  session running on the account during its renewal keeps working.
+- **headroom is the vendor's `$BROWSER`.** Claude Code opens the approval page
+  by exec'ing `$BROWSER` with the URL as its only argument and its own
+  environment; a value carrying arguments is not run at all (both measured on
+  2.1.291). So `$BROWSER` is the headroom binary, with
+  `HEADROOM_BROWSER_PROFILE` naming a Chrome profile directory (empty for the
+  default browser). Called that way with one https URL, headroom only runs
+  `open(1)` — dispatched before configuration, like `version`, since the
+  vendor's environment is not one headroom must accept.
+- **The profile is matched, never configured** (`internal/browser`, reading
+  Chrome's `Local State`): the profile signed in to the account's email as a
+  Google account; failing that, the one named by the email or its local part,
+  among profiles not signed in to some other Google account. Exactly one
+  must match, or the page opens in the default browser and the plan says so.
+  The sign-in exclusion is load-bearing on the author's machines: `Default`
+  is named after the owner and signed in to the primary's Gmail, while an
+  extra whose local part is the same name has its own profile.
+- **Which accounts.** Names choose outright, `--all` chooses every account;
+  otherwise only positive evidence does, read as the board reads health: no
+  login, an end already passed, or an end within `--within` days (default
+  7). An absent or unreadable expiry is never read as near.
+- **The result is read back.** A login took only when the stored credential
+  changed and the dir's `.claude.json` now names the account's email — an
+  extra's dir name, the primary's previous login. Approving in the wrong
+  profile is the failure this catches at once, instead of later as the
+  board's `(dir says …!)`.
+
+The vendor can end a login before its recorded expiry — on the author's mini,
+logins made on different days were refused within the same half hour — and
+nothing in the stored credential shows it. Health then reads fine until a
+request fails; naming the account renews it.
+
 ## The data source, and drift as a design input
 
 The board calls the endpoint Claude Code's own `/usage` screen calls —
@@ -237,8 +287,8 @@ fractional seconds. Handled drift beats flagged drift.
 Health, observed usage and the latest request vary independently: a usable
 account can have old observations and a refused refresh at the same time.
 
-- **Health** — can Claude Code use this account? Only `/login` fixes a bad
-  answer. Sourced from `claude auth status`, with credential evidence as
+- **Health** — can Claude Code use this account? Only a new login (`/login`
+  in a session, or `headroom login`) fixes a bad answer. Sourced from `claude auth status`, with credential evidence as
   fallback.
 - **Observation** — rows, *always* carrying `ObservedAt` and `Source`. Rows
   never travel without their timestamp; that is what let carried-over data
@@ -1249,6 +1299,10 @@ refusal backoff and persistence are tested through the callers' interface.
 Checker tests use fixture processes and HTTP to verify the final exit verdict.
 Store tests own locking, generations, migration preservation and cooldowns;
 launch tests own routing, refusal-before-persistence and failure-after-write.
+`login` is tested through its command with the vendor's login injected:
+which accounts a window, names and `--all` choose, and a read-back that fails
+an unchanged credential and a login as the wrong email. The profile match is
+a table over the author's own `Local State` shape.
 
 A second home is tested at each tier. The store's tests drive a handle on
 each home's root over the real lock: a claim from either denies the other, a

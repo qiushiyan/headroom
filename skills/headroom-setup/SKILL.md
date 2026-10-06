@@ -35,8 +35,8 @@ named failure.
 3. `headroom` — the board.
 
 Done when the new row shows a plan and bars with no red `(dir says …!)` —
-that warning means the wrong account was chosen at `/login`; `/login` there
-again. Repeat per subscription. With two or more logged in, `a` on the board
+that warning means the dir was logged in as the wrong account; `headroom
+login <email>` again. Repeat per subscription. With two or more logged in, `a` on the board
 makes bare launches choose the least-loaded account from then on; an account
 not yet logged in is left out of that choice until it is. The primary needs nothing; its board name is
 its login's local part (`alice`), or `export HEADROOM_PRIMARY_NAME=<name>`.

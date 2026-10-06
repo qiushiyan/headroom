@@ -24,10 +24,10 @@ shell's `x-<name>`) — quote that spelling.
   answer or a script; it always emits JSON. `headroom --json` refreshes
   and emits the board document.
 - **Health lines, relayed as written**: *not logged in* / *login expired*
-  → the printed launcher, then `/login`. *access token stale* → any session
-  on that account refreshes it; only *login expired* calls for `/login`.
-  Red `(dir says …!)` → `/login` in that dir chose the wrong account;
-  `/login` there again.
+  → `headroom login <name>`. *access token stale* → any session on that
+  account refreshes it; only *login expired* calls for a login. Red `(dir
+  says …!)` → the dir was logged in as the wrong account; `headroom login
+  <name>` and approve as that email.
 - **Stale figures** keep their severity colours; their caption states the age.
 - **Drift markers** → the vendor response changed shape; `headroom check`
   names what. A rolled-over window reads unknown until refreshed.
@@ -79,6 +79,12 @@ shell's `x-<name>`) — quote that spelling.
 - **Resume, same account**: `headroom sessions`, enter — every session on
   the machine, each continued in its own project dir on the account that
   last drove it.
+- **Renew logins before they end**: `headroom login` — each login that ends
+  within a week; `--all` for every account, so they end together;
+  `--dry-run` for the plan. Hand it to the user: each account's approval
+  page opens in its Chrome profile and needs their Authorize click. Done
+  when every line reads `✓`; a `✗ … logged in as X` line means the wrong
+  profile approved — run `headroom login <name>` again.
 - **After a Claude Code update, or a board that looks wrong**: `headroom
   check` — PASS / FAIL / INCONCLUSIVE. FAIL names the assumption that
   broke; INCONCLUSIVE (rate limited, stale token) is not drift.

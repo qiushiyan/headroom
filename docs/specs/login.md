@@ -1,7 +1,10 @@
 # Login — renew every expiring Claude Code login in one pass
 
-Status: in progress on the `login` branch, 2026-10-06. Written against `main`
-at 982670c, Claude Code 2.1.291, macOS. Measurements below were taken on the
+Status: built on the `login` branch, 2026-10-06, and tested on the owner's
+mini with two real renewals that day; kept as the dated record of the
+decision. The design as it stands lives in `DESIGN.md` § Renewing logins —
+read that, not this, for what is true today. Written against `main` at
+982670c, Claude Code 2.1.291, macOS. Measurements below were taken on the
 owner's mini on that date.
 
 ## Summary
