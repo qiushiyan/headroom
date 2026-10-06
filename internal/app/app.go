@@ -17,6 +17,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
+	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/check"
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
@@ -31,6 +32,12 @@ func Run(args []string) int {
 	var rest []string
 	if len(args) > 0 {
 		cmd, rest = args[0], args[1:]
+	}
+	// headroom as a vendor's $BROWSER, set by `headroom login`: open the one
+	// URL in the profile it names and do nothing else. Before configuration,
+	// since the vendor's environment is not one headroom needs to accept.
+	if profileDir, ok := os.LookupEnv(browser.ProfileEnv); ok && browser.IsOpenRequest(args) {
+		return runOpen(profileDir, args[0])
 	}
 	// retired 2026-08-04: see DESIGN.md § The session surface. The tombstone
 	// dispatches before configuration on purpose — the shell it diagnoses is
@@ -171,6 +178,8 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		return runLimits(scopes, rest)
 	case "sessions":
 		return runSessions(cfg.Claude, rest)
+	case "login":
+		return runLogin(cfg.Claude, rest)
 	case "resolve":
 		scope, ok := one()
 		if !ok {
@@ -295,6 +304,13 @@ func printUsage(w io.Writer) {
              and its dir; scrub .order; never touch .current.
              Codex accounts are never removed: headroom cannot tell whether
              a codex session is running on a home
+  login      [<name>…] [--all] [--within <days>] [--dry-run]
+             renew Claude Code logins: each one that ends within 7 days
+             (or --within), is ended or never logged in — or the named
+             ones, or --all. One claude auth login per account, in turn;
+             its approval page opens in the Chrome profile matched to the
+             account's email, and the result is read back. --dry-run
+             prints the plan only
   --json     the board as JSON (schema versioned; every account carries its
              vendor, "current" and "mode" are keyed by vendor)
   limits     [--account <name>] what is already known about limits, as the

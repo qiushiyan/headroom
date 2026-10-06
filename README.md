@@ -99,7 +99,23 @@ enter there records the Codex account a bare Codex launch targets:
 A Codex account reads *unknown* until headroom's first fetch, and *blocked*
 when the vendor says so, whatever its percentages.
 
-### 5. A second home on the same machine
+### 5. Renew every login before it ends
+
+A Claude Code login lasts about a month from the day it was made, and every
+account's runs out on its own day. `headroom login` renews the ones that end
+within a week — `--all` renews every account, so they end together. Each
+account's approval page opens in the Chrome profile named after it (or signed
+in to its Google account); you click Authorize, and headroom checks the dir
+is now logged in as that account:
+
+```
+→ alice@example.com     login ends Oct 23 (in 6d) — Chrome profile alice (Profile 5)
+
+[1/1] alice@example.com — click Authorize in the page that opens
+✓ alice@example.com: logged in, login ends Nov 21 (in 29d)
+```
+
+### 6. A second home on the same machine
 
 An automated pipeline running headless `claude` sessions under its own
 `HOME` can hold its own logins of the same subscriptions and still be placed

@@ -10,7 +10,7 @@ the rest. The mental model and the reverse-engineered vendor contracts are in
 
 `--vendor <claude|codex>` defaults to `claude` on the commands that act on
 one account — `launch`, `resolve`, `accounts add`, `accounts remove` — so an
-invocation without it means Claude Code. The commands that report — the
+invocation without it means Claude Code. `login` is Claude Code only. The commands that report — the
 board, `--json`, `limits`, `launches` — and `refresh` cover every vendor
 present on the machine and take `--vendor` for one. `check` and `sessions` take no `--vendor`. A command
 naming a vendor this machine does not have fails saying so, except
@@ -118,6 +118,18 @@ naming a vendor this machine does not have fails saying so, except
   Then log in once: Claude Code — `headroom launch --account <email>` and
   `/login`; Codex — `headroom launch --vendor codex --account <email> --
   login`.
+- **`headroom login [<name>…] [--all] [--within <days>] [--dry-run]`:**
+  renews Claude Code logins, one `claude auth login` per account in turn,
+  each approval page opened in the Chrome profile matched to the account's
+  email — the profile signed in to that Google account, or the one named by
+  the email or its local part — and the default browser when none matches.
+  Bare, it renews each login that ends within 7 days (`--within`), has ended,
+  or was never made; names renew exactly those, `--all` every account, so
+  their logins end together. It first prints every account's login end and
+  the profile each chosen one opens in (all `--dry-run` prints), then after
+  each login reads the credential back: `✓` with the new end date, or `✗`
+  when nothing changed or the dir is now logged in as another email.
+  Exits 1 when any login did not take.
 - **`headroom accounts remove [<email>] [--yes]`:** bare, on a terminal, it
   offers a picker of the removable accounts; a name nobody answers to gets
   that list too. Confirms with `y/N`. Refuses while the account has a live
