@@ -212,6 +212,22 @@ click per account.
   otherwise only positive evidence does, read as the board reads health: no
   login, an end already passed, or an end within `--within` days (default
   7). An absent or unreadable expiry is never read as near.
+- **A Keychain closed to the session holds its accounts back.** macOS
+  refuses an ssh session the login Keychain ("User interaction is not
+  allowed") until `security unlock-keychain` runs in it; Claude Code then
+  reads and writes the file store, and `claude auth status` reports an
+  account whose login lives in the Keychain as logged out. The item's
+  attributes stay visible, so an account with an item is marked as
+  unreadable here and never renewed from here, even by name: its state is
+  unknown, and a login made here would land in a file that any session able
+  to read the Keychain ignores, since a readable item wins. Accounts with no
+  item are file-backed everywhere and renew normally.
+- **A remote user gets the URL, not a window.** When `SSH_CONNECTION` names
+  another machine as the client, the page would open on a screen nobody is
+  at, so `$BROWSER` is `true(1)`: the vendor prints its URL, the user opens it
+  where they are, in a browser signed in as the account, and pastes the code
+  it shows. An ssh from a machine to itself — how the author's mini attaches
+  its own tmux — keeps the profile opener.
 - **The result is read back.** A login took only when the stored credential
   changed and the dir's `.claude.json` now names the account's email — an
   extra's dir name, the primary's previous login. Approving in the wrong

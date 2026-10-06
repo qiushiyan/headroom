@@ -33,18 +33,32 @@ import (
 const defaultLoginWithin = 7 * 24 * time.Hour
 
 // loginDeps are the edges `headroom login` crosses — the health probe, the
-// credential and identity reads, the browser registry and the vendor's login
-// process — injected so selection and read-back are testable without a
-// Keychain, a browser or a network.
+// credential and identity reads, the Keychain's reach, the browser registry,
+// where the user is, and the vendor's login process — injected so selection
+// and read-back are testable without a Keychain, a browser or a network.
 type loginDeps struct {
 	health    func([]accounts.Account) auth.QueryFunc
 	readRaw   func(accounts.Account) string
 	metaEmail func(accounts.Account) string
-	profiles  []browser.Profile
-	now       func() time.Time
-	// login runs the vendor's login for acct, the page opening in the
-	// Chrome profile at profileDir ("" = the default browser).
-	login func(acct accounts.Account, set accounts.Set, email, profileDir string) error
+	// sealed: the login Keychain refuses this session, as macOS refuses an
+	// ssh session. inKeychain reports an account's item by its attributes,
+	// which a sealed Keychain still shows.
+	sealed     bool
+	inKeychain func(accounts.Account) bool
+	profiles   []browser.Profile
+	// remote: the user is not at this machine's screen, so a page opened
+	// here is a page nobody sees.
+	remote bool
+	now    func() time.Time
+	login  func(acct accounts.Account, set accounts.Set, email string, page approvalPage) error
+}
+
+// approvalPage is where the vendor's approval page goes: the Chrome profile
+// at profileDir ("" = the default browser), or, for a remote user, nowhere —
+// they open the printed URL where they are and paste back the code.
+type approvalPage struct {
+	profileDir string
+	remote     bool
 }
 
 // loginRow is one account as `login` sees it before acting.
@@ -54,6 +68,10 @@ type loginRow struct {
 	health accountstate.Health
 	blob   creds.Blob
 	blobOK bool
+	// sealed: the login lives in a Keychain this session cannot read, so its
+	// state is unknown here and a login made here would land in a file that
+	// any session able to read the Keychain ignores.
+	sealed bool
 	chosen bool
 	why    string // why chosen, or why left alone
 }
@@ -69,10 +87,25 @@ func runLogin(scope config.Scope, args []string) int {
 			email, _ := accounts.MetaEmail(a.MetaPath())
 			return email
 		},
-		profiles: browser.ReadProfiles(browser.LocalStatePath(scope.Home)),
-		now:      time.Now,
-		login:    vendorLogin,
+		sealed:     creds.KeychainSealed(),
+		inKeychain: func(a accounts.Account) bool { return creds.HasKeychainItem(a.ConfigDir) },
+		profiles:   browser.ReadProfiles(browser.LocalStatePath(scope.Home)),
+		remote:     sshRemote(os.Getenv("SSH_CONNECTION")),
+		now:        time.Now,
+		login:      vendorLogin,
 	})
+}
+
+// sshRemote reports whether SSH_CONNECTION ("client port server port") puts
+// the user on another machine. An ssh from a machine to itself — how the
+// author's mini attaches its own tmux — leaves the user at this screen.
+func sshRemote(conn string) bool {
+	f := strings.Fields(conn)
+	if len(f) < 3 {
+		return false
+	}
+	client, server := f[0], f[2]
+	return client != server && !strings.HasPrefix(client, "127.") && client != "::1"
 }
 
 func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps loginDeps) int {
@@ -126,30 +159,54 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 	chooseLogins(rows, named, all, within, now)
 
 	var chosen []*loginRow
+	sealed, refused := 0, 0
 	for _, r := range rows {
 		line := fmt.Sprintf("  %-28s %s", r.acct.Name, r.why)
 		if r.chosen {
 			chosen = append(chosen, r)
-			line = "→" + line[1:] + " — " + profilePhrase(deps.profiles, r.email)
+			line = "→" + line[1:] + " — " + pagePhrase(deps, r.email)
+		}
+		if r.sealed {
+			sealed++
+			if named[r.acct.Name] || all {
+				refused++
+			}
 		}
 		fmt.Fprintln(out, line)
 	}
+	if sealed > 0 {
+		fmt.Fprintf(out, "\nthe login Keychain is closed to this ssh session: the %d accounts marked above keep their\n"+
+			"login there, so it can be neither read nor renewed from here — a login made here would be\n"+
+			"saved to a file that every session able to read the Keychain ignores. Run\n"+
+			"`security unlock-keychain` in this session first (it asks for this Mac's password), or\n"+
+			"run headroom login at the machine.\n", sealed)
+	}
 	if len(chosen) == 0 {
-		fmt.Fprintf(out, "nothing to renew within %s; name an account or pass --all to renew anyway\n", days(within))
+		if refused > 0 {
+			return 1
+		}
+		if sealed == 0 {
+			fmt.Fprintf(out, "nothing to renew within %s; name an account or pass --all to renew anyway\n", days(within))
+		}
 		return 0
 	}
 	if dryRun {
 		return 0
 	}
 
-	failed := 0
+	failed := refused
 	for i, r := range chosen {
-		fmt.Fprintf(out, "\n[%d/%d] %s — click Authorize in the page that opens\n", i+1, len(chosen), r.acct.Name)
-		profileDir := ""
-		if p, ok := browser.Match(deps.profiles, r.email); ok {
-			profileDir = p.Dir
+		page := approvalPage{remote: deps.remote}
+		if p, ok := browser.Match(deps.profiles, r.email); ok && !deps.remote {
+			page.profileDir = p.Dir
 		}
-		err := deps.login(r.acct, set, r.email, profileDir)
+		if page.remote {
+			fmt.Fprintf(out, "\n[%d/%d] %s — open the URL below in a browser signed in to claude.ai as %s,\n"+
+				"click Authorize, and paste the code it shows\n", i+1, len(chosen), r.acct.Name, orNobody(r.email))
+		} else {
+			fmt.Fprintf(out, "\n[%d/%d] %s — click Authorize in the page that opens\n", i+1, len(chosen), r.acct.Name)
+		}
+		err := deps.login(r.acct, set, r.email, page)
 		if msg := readBack(r, err, deps); msg != "" {
 			failed++
 			fmt.Fprintf(out, "✗ %s: %s\n", r.acct.Name, msg)
@@ -159,7 +216,7 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		fmt.Fprintf(out, "✓ %s: logged in%s\n", r.acct.Name, endPhrase(blob, deps.now()))
 	}
 	if failed > 0 {
-		fmt.Fprintf(out, "\n%d of %d logins did not take\n", failed, len(chosen))
+		fmt.Fprintf(out, "\n%d of %d logins did not take\n", failed, len(chosen)+refused)
 		return 1
 	}
 	return 0
@@ -179,6 +236,7 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 			health: resolveHealth(health(a.ConfigDir), raw, blob, ok, now.UnixMilli()),
 			blob:   blob,
 			blobOK: ok,
+			sealed: deps.sealed && deps.inKeychain(a),
 		}
 	}
 	return rows
@@ -203,6 +261,8 @@ func chooseLogins(rows []*loginRow, named map[string]bool, all bool, within time
 	for _, r := range rows {
 		state := loginState(r, now)
 		switch {
+		case r.sealed:
+			r.why = "login kept in the Keychain, which this session cannot read"
 		case named[r.acct.Name]:
 			r.chosen, r.why = true, "named; "+state
 		case len(named) > 0:
@@ -257,8 +317,11 @@ func readBack(r *loginRow, runErr error, deps loginDeps) string {
 	return ""
 }
 
-func profilePhrase(profiles []browser.Profile, email string) string {
-	if p, ok := browser.Match(profiles, email); ok {
+func pagePhrase(deps loginDeps, email string) string {
+	if deps.remote {
+		return "over ssh: you open the printed URL where you are"
+	}
+	if p, ok := browser.Match(deps.profiles, email); ok {
 		return "Chrome profile " + p.Label()
 	}
 	return "default browser (no Chrome profile matches " + orNobody(email) + ")"
@@ -297,10 +360,11 @@ func orNobody(email string) string {
 
 // vendorLogin runs `claude auth login` for acct in the foreground, under the
 // environment launch builds for it, with this binary as $BROWSER so the
-// approval page opens in the matched profile. stdio is the terminal's: when
-// the browser cannot reach the vendor's localhost callback, the vendor asks
-// for the code there.
-func vendorLogin(acct accounts.Account, set accounts.Set, email, profileDir string) error {
+// approval page opens in the matched profile — or, for a remote user,
+// true(1), so nothing opens on a screen nobody is at. stdio is the
+// terminal's: the vendor always prints the URL, and asks for the code there
+// when the browser cannot reach its localhost callback.
+func vendorLogin(acct accounts.Account, set accounts.Set, email string, page approvalPage) error {
 	p, err := launch.Prepare(acct, set, os.Environ())
 	if err != nil {
 		return err
@@ -308,9 +372,12 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email, profileDir stri
 	for _, n := range p.Notices {
 		fmt.Fprintln(os.Stderr, "headroom: "+n)
 	}
-	self, err := os.Executable()
+	opener, err := os.Executable()
+	if page.remote {
+		opener, err = exec.LookPath("true")
+	}
 	if err != nil {
-		return fmt.Errorf("cannot name this binary as the browser: %w", err)
+		return fmt.Errorf("no browser command: %w", err)
 	}
 	args := []string{"auth", "login"}
 	if email != "" {
@@ -318,7 +385,7 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email, profileDir stri
 	}
 	cmd := exec.Command(p.Path, args...)
 	cmd.Args[0] = p.Binary
-	cmd.Env = append(withoutVars(p.Env, "BROWSER", browser.ProfileEnv), "BROWSER="+self, browser.ProfileEnv+"="+profileDir)
+	cmd.Env = append(withoutVars(p.Env, "BROWSER", browser.ProfileEnv), "BROWSER="+opener, browser.ProfileEnv+"="+page.profileDir)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }

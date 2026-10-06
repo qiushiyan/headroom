@@ -25,6 +25,9 @@ type loginWorld struct {
 	// approveAs is who the browser profile is signed in to; "" = the email
 	// asked for.
 	approveAs map[string]string
+	keychain  map[string]bool // accounts with a Keychain item
+	sealed    bool
+	remote    bool
 }
 
 func blobEnding(token string, end time.Time) string {
@@ -37,12 +40,19 @@ func (w *loginWorld) deps() loginDeps {
 		health: func([]accounts.Account) auth.QueryFunc {
 			return func(string) auth.Status { return auth.Status{} } // no oracle: credential evidence decides
 		},
-		readRaw:   func(a accounts.Account) string { return w.raw[a.Name] },
-		metaEmail: func(a accounts.Account) string { return w.email[a.Name] },
-		profiles:  []browser.Profile{{Dir: "Profile 2", Name: "a"}},
-		now:       func() time.Time { return w.now },
-		login: func(a accounts.Account, _ accounts.Set, email, profileDir string) error {
-			w.logins = append(w.logins, a.Name+" "+email+" "+profileDir)
+		readRaw:    func(a accounts.Account) string { return w.raw[a.Name] },
+		metaEmail:  func(a accounts.Account) string { return w.email[a.Name] },
+		sealed:     w.sealed,
+		inKeychain: func(a accounts.Account) bool { return w.keychain[a.Name] },
+		profiles:   []browser.Profile{{Dir: "Profile 2", Name: "a"}},
+		remote:     w.remote,
+		now:        func() time.Time { return w.now },
+		login: func(a accounts.Account, _ accounts.Set, email string, page approvalPage) error {
+			where := page.profileDir
+			if page.remote {
+				where = "remote"
+			}
+			w.logins = append(w.logins, a.Name+" "+email+" "+where)
 			who := email
 			if as := w.approveAs[a.Name]; as != "" {
 				who = as
@@ -73,6 +83,7 @@ func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
 		},
 		email:     map[string]string{"a@x.com": "a@x.com", "b@x.com": "b@x.com", "c@x.com": "c@x.com"},
 		approveAs: map[string]string{},
+		keychain:  map[string]bool{},
 	}
 	return cfg, w
 }
@@ -144,7 +155,7 @@ func TestLoginReadBackCatchesWrongAccount(t *testing.T) {
 func TestLoginReadBackCatchesUnchangedCredential(t *testing.T) {
 	cfg, w := renewFixture(t)
 	d := w.deps()
-	d.login = func(accounts.Account, accounts.Set, string, string) error { return nil }
+	d.login = func(accounts.Account, accounts.Set, string, approvalPage) error { return nil }
 	var out bytes.Buffer
 	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d); code != 1 {
 		t.Fatalf("exit %d, want 1", code)
@@ -168,5 +179,77 @@ func TestLoginFlags(t *testing.T) {
 	}
 	if len(w.logins) != 0 {
 		t.Errorf("a refused command logged in: %q", w.logins)
+	}
+}
+
+// Over ssh the login Keychain is sealed: an account whose login lives there
+// reads as logged out to the vendor's own probe, and a login made here would
+// land in a file the Keychain item outranks. Such an account is never renewed
+// from here — not even by name — and the plan says how to open the Keychain.
+func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.sealed = true
+	w.keychain["a@x.com"] = true
+	delete(w.raw, "a@x.com") // what a sealed read returns
+	var out bytes.Buffer
+	if code := runLoginTo(&out, io.Discard, cfg, nil, w.deps()); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	for _, l := range w.logins {
+		if strings.HasPrefix(l, "a@x.com") {
+			t.Errorf("renewed a sealed account: %q", w.logins)
+		}
+	}
+	for _, s := range []string{"a@x.com                      login kept in the Keychain", "security unlock-keychain"} {
+		if !strings.Contains(out.String(), s) {
+			t.Errorf("output lacks %q:\n%s", s, out.String())
+		}
+	}
+
+	_, w2 := renewFixture(t)
+	w2.sealed, w2.keychain["a@x.com"] = true, true
+	out.Reset()
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w2.deps()); code != 1 || len(w2.logins) != 0 {
+		t.Errorf("named sealed account: exit %d, logins %q, want 1 and none", code, w2.logins)
+	}
+	// An unsealed Keychain reads normally: the item alone refuses nothing.
+	_, w3 := renewFixture(t)
+	w3.keychain["a@x.com"] = true
+	if code := runLoginTo(io.Discard, io.Discard, cfg, []string{"a@x.com"}, w3.deps()); code != 0 || len(w3.logins) != 1 {
+		t.Errorf("unsealed: exit %d, logins %q", code, w3.logins)
+	}
+}
+
+// A remote user cannot see this machine's screen: no page opens here, and
+// the instructions say to open the printed URL and paste the code.
+func TestLoginRemoteOpensNothingHere(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.remote = true
+	var out bytes.Buffer
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w.deps()); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if len(w.logins) != 1 || w.logins[0] != "a@x.com a@x.com remote" {
+		t.Errorf("logins = %q, want the remote page", w.logins)
+	}
+	for _, s := range []string{"over ssh: you open the printed URL where you are", "paste the code it shows"} {
+		if !strings.Contains(out.String(), s) {
+			t.Errorf("output lacks %q:\n%s", s, out.String())
+		}
+	}
+}
+
+func TestSSHRemote(t *testing.T) {
+	for conn, want := range map[string]bool{
+		"":                                     false, // not over ssh
+		"100.68.130.84 56302 100.68.130.84 22": false, // the mini into itself
+		"127.0.0.1 5000 127.0.0.1 22":          false,
+		"::1 5000 ::1 22":                      false,
+		"100.68.130.84 56302 100.70.1.2 22":    true, // the mini into the laptop
+		"garbage":                              false,
+	} {
+		if got := sshRemote(conn); got != want {
+			t.Errorf("sshRemote(%q) = %v, want %v", conn, got, want)
+		}
 	}
 }
