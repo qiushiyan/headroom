@@ -128,8 +128,10 @@ naming a vendor this machine does not have fails saying so, except
   their logins end together. It first prints every account's login end and
   the profile each chosen one opens in (all `--dry-run` prints), then after
   each login reads the credential back: `✓` with the new end date, or `✗`
-  when nothing changed or the dir is now logged in as another email.
-  Exits 1 when any login did not take. Over ssh from another machine nothing
+  when nothing changed or the dir is now logged in as another email. It
+  closes on the earliest end among the logins renewed — when the next pass
+  is due on this machine — and, when any did not take, one `headroom login`
+  command naming just those. Exits 1 when any login did not take. Over ssh from another machine nothing
   opens on this one: open the printed URL where you are, in a browser signed
   in as the account, and paste the code it shows. An ssh session cannot read
   the login Keychain until `security unlock-keychain` runs in it, so accounts

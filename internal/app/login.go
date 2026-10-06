@@ -204,6 +204,8 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 	}
 
 	failed := refused
+	var retry []string // names whose login ran and did not take
+	var earliest int64 // the soonest end among the logins that took
 	for i, r := range chosen {
 		page := approvalPage{remote: deps.remote}
 		if p, ok := browser.Match(deps.profiles, r.email); ok && !deps.remote {
@@ -223,13 +225,26 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		blob, msg := readBack(r, before, beforeOK, err, deps)
 		if msg != "" {
 			failed++
+			retry = append(retry, r.acct.Name)
 			fmt.Fprintf(out, "✗ %s: %s\n", r.acct.Name, msg)
 			continue
 		}
+		if blob.RefreshState == tag.OK && (earliest == 0 || blob.RefreshExpiresMS < earliest) {
+			earliest = blob.RefreshExpiresMS
+		}
 		fmt.Fprintf(out, "✓ %s: logged in%s\n", r.acct.Name, endPhrase(blob, deps.now()))
 	}
+	// The batch's one date: when the next pass is due on this machine.
+	if earliest != 0 {
+		fmt.Fprintf(out, "\nthe logins renewed here end from %s\n", when(earliest, deps.now()))
+	}
 	if failed > 0 {
-		fmt.Fprintf(out, "\n%d of %d logins did not take\n", failed, len(chosen)+refused)
+		fmt.Fprintf(out, "%d of %d logins did not take\n", failed, len(chosen)+refused)
+		if len(retry) > 0 {
+			// Only the logins that ran and failed: retrying a held account is
+			// refused again until what holds it changes.
+			fmt.Fprintf(out, "retry them: headroom login %s\n", strings.Join(retry, " "))
+		}
 		return 1
 	}
 	return 0
