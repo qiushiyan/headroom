@@ -133,7 +133,8 @@ naming a vendor this machine does not have fails saying so, except
   opens on this one: open the printed URL where you are, in a browser signed
   in as the account, and paste the code it shows. An ssh session cannot read
   the login Keychain until `security unlock-keychain` runs in it, so accounts
-  whose login lives there are marked unreadable and left alone.
+  whose login lives there are marked unreadable and left alone, as is a
+  primary whose logged-in identity cannot be read.
 - **`headroom accounts remove [<email>] [--yes]`:** bare, on a terminal, it
   offers a picker of the removable accounts; a name nobody answers to gets
   that list too. Confirms with `y/N`. Refuses while the account has a live

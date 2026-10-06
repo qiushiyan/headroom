@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -68,9 +69,12 @@ type loginRow struct {
 	health accountstate.Health
 	blob   creds.Blob
 	blobOK bool
-	// sealed: the login lives in a Keychain this session cannot read, so its
-	// state is unknown here and a login made here would land in a file that
-	// any session able to read the Keychain ignores.
+	// held is why this account cannot be renewed from here, even by name:
+	// its login lives in a Keychain this session cannot read (sealed — its
+	// state is unknown here, and a login made here would land in a file that
+	// any session able to read the Keychain ignores), or nothing says whom
+	// its login belongs to, so a new one could not be checked.
+	held   string
 	sealed bool
 	chosen bool
 	why    string // why chosen, or why left alone
@@ -134,6 +138,11 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		case strings.HasPrefix(a, "-"):
 			fmt.Fprintf(errw, "headroom login: unknown flag %q\n", a)
 			return 2
+		case a == "":
+			// A caller's expansion bug (`headroom login "$name"`), never a
+			// request for the pinned account, which is what Select reads "" as.
+			fmt.Fprintln(errw, "headroom login: an account name cannot be empty")
+			return 2
 		default:
 			names = append(names, a)
 		}
@@ -168,9 +177,9 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		}
 		if r.sealed {
 			sealed++
-			if named[r.acct.Name] || all {
-				refused++
-			}
+		}
+		if r.held != "" && (named[r.acct.Name] || all) {
+			refused++
 		}
 		fmt.Fprintln(out, line)
 	}
@@ -206,13 +215,17 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		} else {
 			fmt.Fprintf(out, "\n[%d/%d] %s — click Authorize in the page that opens\n", i+1, len(chosen), r.acct.Name)
 		}
+		// The baseline is taken now, not when the batch was planned: a live
+		// session may have refreshed this account while earlier approvals
+		// were pending.
+		before, beforeOK := creds.Parse(deps.readRaw(r.acct))
 		err := deps.login(r.acct, set, r.email, page)
-		if msg := readBack(r, err, deps); msg != "" {
+		blob, msg := readBack(r, before, beforeOK, err, deps)
+		if msg != "" {
 			failed++
 			fmt.Fprintf(out, "✗ %s: %s\n", r.acct.Name, msg)
 			continue
 		}
-		blob, _ := creds.Parse(deps.readRaw(r.acct))
 		fmt.Fprintf(out, "✓ %s: logged in%s\n", r.acct.Name, endPhrase(blob, deps.now()))
 	}
 	if failed > 0 {
@@ -230,14 +243,22 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 	for i, a := range accts {
 		raw := deps.readRaw(a)
 		blob, ok := creds.Parse(raw)
-		rows[i] = &loginRow{
+		st := health(a.ConfigDir)
+		r := &loginRow{
 			acct:   a,
-			email:  loginEmail(a),
-			health: resolveHealth(health(a.ConfigDir), raw, blob, ok, now.UnixMilli()),
+			email:  loginEmail(a, st),
+			health: resolveHealth(st, raw, blob, ok, now.UnixMilli()),
 			blob:   blob,
 			blobOK: ok,
 			sealed: deps.sealed && deps.inKeychain(a),
 		}
+		switch {
+		case r.sealed:
+			r.held = "login kept in the Keychain, which this session cannot read"
+		case r.email == "" && ok:
+			r.held = "logged in, but its identity unreadable — a new login could not be checked"
+		}
+		rows[i] = r
 	}
 	return rows
 }
@@ -245,12 +266,17 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 // loginEmail is the address an account's login is for. An extra's dir is
 // named by the subscription it holds, so the name is the intent even when
 // the dir is logged in as someone else; the primary has no such name and is
-// whoever its identity document says.
-func loginEmail(a accounts.Account) string {
-	if a.IsPrimary() {
-		return a.Email
+// whoever its identity document says, or failing that the vendor's own
+// status. "" means nobody: a primary never logged in, or one whose identity
+// nothing could read.
+func loginEmail(a accounts.Account, st auth.Status) string {
+	if !a.IsPrimary() {
+		return a.Name
 	}
-	return a.Name
+	if a.Email == "" && st.Answered() && st.LoggedIn {
+		return st.Email
+	}
+	return a.Email
 }
 
 // chooseLogins marks the accounts to renew. Names and --all choose outright;
@@ -261,8 +287,8 @@ func chooseLogins(rows []*loginRow, named map[string]bool, all bool, within time
 	for _, r := range rows {
 		state := loginState(r, now)
 		switch {
-		case r.sealed:
-			r.why = "login kept in the Keychain, which this session cannot read"
+		case r.held != "":
+			r.why = r.held
 		case named[r.acct.Name]:
 			r.chosen, r.why = true, "named; "+state
 		case len(named) > 0:
@@ -298,23 +324,35 @@ func loginState(r *loginRow, now time.Time) string {
 	return "login ends " + when(r.blob.RefreshExpiresMS, now)
 }
 
-// readBack decides whether a login took: the stored credential must have
-// changed, and the dir must now be logged in as the account it is for. ""
-// means it took.
-func readBack(r *loginRow, runErr error, deps loginDeps) string {
+// readBack decides whether a login took, against the credential as it stood
+// just before: the vendor command succeeded, the stored login is a new one,
+// and the dir is now logged in as the account it is for. A new login is a new
+// refresh expiry — an access token changes whenever any session refreshes
+// it, so a token change counts only when the credential records no expiry.
+// It returns the verified credential, and "" when the login took.
+func readBack(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps loginDeps) (creds.Blob, string) {
+	if runErr != nil {
+		return creds.Blob{}, "claude auth login: " + runErr.Error()
+	}
 	blob, ok := creds.Parse(deps.readRaw(r.acct))
-	changed := ok && (!r.blobOK || blob.Token != r.blob.Token || blob.RefreshExpiresMS != r.blob.RefreshExpiresMS)
-	if !changed {
-		if runErr != nil {
-			return "claude auth login: " + runErr.Error()
-		}
-		return "the stored login did not change"
+	var renewed bool
+	switch {
+	case !ok:
+	case !beforeOK:
+		renewed = true
+	case blob.RefreshState == tag.OK:
+		renewed = before.RefreshState != tag.OK || blob.RefreshExpiresMS != before.RefreshExpiresMS
+	default:
+		renewed = blob.Token != before.Token
+	}
+	if !renewed {
+		return blob, "the stored login did not change"
 	}
 	got := deps.metaEmail(r.acct)
 	if r.email != "" && !strings.EqualFold(got, r.email) {
-		return fmt.Sprintf("logged in as %s, not %s — run `headroom login %s` again and approve as %s", orNobody(got), r.email, r.acct.Name, r.email)
+		return blob, fmt.Sprintf("logged in as %s, not %s — run `headroom login %s` again and approve as %s", orNobody(got), r.email, r.acct.Name, r.email)
 	}
-	return ""
+	return blob, ""
 }
 
 func pagePhrase(deps loginDeps, email string) string {
@@ -372,12 +410,22 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email string, page app
 	for _, n := range p.Notices {
 		fmt.Fprintln(os.Stderr, "headroom: "+n)
 	}
-	opener, err := os.Executable()
-	if page.remote {
-		opener, err = exec.LookPath("true")
-	}
-	if err != nil {
-		return fmt.Errorf("no browser command: %w", err)
+	env := p.Env
+	switch {
+	case page.remote:
+		opener, err := exec.LookPath("true")
+		if err != nil {
+			return fmt.Errorf("no browser command: %w", err)
+		}
+		env = append(withoutVars(env, "BROWSER", browser.ProfileEnv), "BROWSER="+opener)
+	case runtime.GOOS == "darwin":
+		// Profiles are opened with open(1); elsewhere the vendor's own
+		// browser handling stays.
+		self, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("no browser command: %w", err)
+		}
+		env = append(withoutVars(env, "BROWSER", browser.ProfileEnv), "BROWSER="+self, browser.ProfileEnv+"="+page.profileDir)
 	}
 	args := []string{"auth", "login"}
 	if email != "" {
@@ -385,7 +433,7 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email string, page app
 	}
 	cmd := exec.Command(p.Path, args...)
 	cmd.Args[0] = p.Binary
-	cmd.Env = append(withoutVars(p.Env, "BROWSER", browser.ProfileEnv), "BROWSER="+opener, browser.ProfileEnv+"="+page.profileDir)
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
