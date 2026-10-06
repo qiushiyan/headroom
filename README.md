@@ -113,6 +113,8 @@ is now logged in as that account:
 
 [1/1] alice@example.com — click Authorize in the page that opens
 ✓ alice@example.com: logged in, login ends Nov 21 (in 29d)
+
+the logins renewed here end from Nov 21 (in 29d)
 ```
 
 ### 6. A second home on the same machine

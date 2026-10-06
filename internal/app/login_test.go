@@ -100,7 +100,8 @@ func TestLoginChoosesExpiringAccounts(t *testing.T) {
 	if strings.Join(w.logins, "|") != strings.Join(want, "|") {
 		t.Errorf("logins = %q, want %q", w.logins, want)
 	}
-	for _, s := range []string{"Chrome profile a (Profile 2)", "default browser (no Chrome profile matches c@x.com)", "✓ a@x.com: logged in, login ends Nov 5"} {
+	for _, s := range []string{"Chrome profile a (Profile 2)", "default browser (no Chrome profile matches c@x.com)", "✓ a@x.com: logged in, login ends Nov 5",
+		"the logins renewed here end from Nov 5 (in 30d)"} {
 		if !strings.Contains(out.String(), s) {
 			t.Errorf("output lacks %q:\n%s", s, out.String())
 		}
@@ -148,6 +149,24 @@ func TestLoginReadBackCatchesWrongAccount(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "✗ a@x.com: logged in as b@x.com, not a@x.com") {
 		t.Errorf("wrong-account not reported:\n%s", out.String())
+	}
+}
+
+// A batch closes on its earliest end, and a partial failure on one command
+// that retries only the logins that ran and failed — not the ones that took,
+// and not a held account, which would be refused again.
+func TestLoginSummaryNamesTheEarliestEndAndTheRetry(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.approveAs["c@x.com"] = "b@x.com"
+	w.raw["primary"] = blobEnding("old-p", w.now.Add(24*time.Hour)) // a login, no identity: held
+	var out bytes.Buffer
+	if code := runLoginTo(&out, io.Discard, cfg, []string{"--all"}, w.deps()); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
+	}
+	for _, s := range []string{"the logins renewed here end from Nov 5", "2 of 4 logins did not take", "retry them: headroom login c@x.com\n"} {
+		if !strings.Contains(out.String(), s) {
+			t.Errorf("output lacks %q:\n%s", s, out.String())
+		}
 	}
 }
 
