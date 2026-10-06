@@ -133,6 +133,17 @@ func HasKeychainItem(configDir string) bool {
 	return err == nil
 }
 
+// KeychainSealed reports whether the login Keychain refuses this session —
+// macOS's answer to an ssh session ("User interaction is not allowed") until
+// `security unlock-keychain` runs in it. A sealed Keychain still shows an
+// item's attributes (HasKeychainItem) but none of its secrets, and Claude Code
+// then reads and writes the file store instead. A machine without `security`
+// has no Keychain to be sealed.
+func KeychainSealed() bool {
+	out, err := exec.Command("security", "show-keychain-info").CombinedOutput()
+	return err != nil && strings.Contains(string(out), "User interaction is not allowed")
+}
+
 // DeleteKeychainItem removes the account's credential item, if any. This is
 // headroom's one Keychain write, and it exists for exactly one caller —
 // `headroom accounts remove`, an explicit user command against an account

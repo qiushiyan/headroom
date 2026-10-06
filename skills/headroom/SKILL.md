@@ -84,7 +84,10 @@ shell's `x-<name>`) — quote that spelling.
   `--dry-run` for the plan. Hand it to the user: each account's approval
   page opens in its Chrome profile and needs their Authorize click. Done
   when every line reads `✓`; a `✗ … logged in as X` line means the wrong
-  profile approved — run `headroom login <name>` again.
+  profile approved — run `headroom login <name>` again. Over ssh, accounts
+  marked *login kept in the Keychain* need `security unlock-keychain` in
+  that session first (the Mac's password), and the user opens each printed
+  URL on the machine they are at and pastes back the code.
 - **After a Claude Code update, or a board that looks wrong**: `headroom
   check` — PASS / FAIL / INCONCLUSIVE. FAIL names the assumption that
   broke; INCONCLUSIVE (rate limited, stale token) is not drift.
