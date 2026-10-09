@@ -339,12 +339,14 @@ func printUsage(w io.Writer) {
   launches   [-n <count>] [--json] the newest launches, one line each: when,
              which account, how it was decided, and the runner-up
   launches --eval [--since <7d | 2026-10-01>] [--json]
-             how automatic placement has done, per rule version: limits
-             reached while another account had room, time near a limit,
-             weekly room that renewed unspent, how the chosen account's
-             session window went after each launch, and the launches this
-             binary's rule would decide differently. Reads the launch logs
-             and the usage log; asks nothing
+             how automatic placement has done, per rule version: windows
+             its launches went into that reached a limit while another
+             account had room, weekly room that may have renewed unspent,
+             how the chosen account's session window went after each
+             launch, and the launches this binary's rule would decide
+             differently. Observed outcomes, not what another choice would
+             have caused. Reads the launch logs and the usage log; asks
+             nothing
   refresh    ask the usage endpoint about every account that may be asked
              and store the answers; prints nothing. An automatic launch
              leaves one running for the next launch

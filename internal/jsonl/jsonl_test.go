@@ -53,35 +53,40 @@ func TestARewriteWaitsForSlackThenDropsPastKeep(t *testing.T) {
 	}
 }
 
-// The check before a rewrite reads the head of the file, not all of it: a
-// large file whose head is recent is left alone however often it is appended
-// to, and one whose head has aged out is rewritten.
+// Whether a rewrite is due is read from the head of the file, not all of it:
+// lines are appended in time order, so the oldest are there. A file whose
+// head is recent is never read whole, however large it grows — an old line
+// further in waits for the head to age — and once the head has aged out the
+// rewrite drops every old line, wherever it is.
 func TestTheHeadDecidesWhetherARewriteIsDue(t *testing.T) {
 	now := time.Now()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "x.jsonl")
-	var b strings.Builder
+	path := filepath.Join(t.TempDir(), "x.jsonl")
+	var recent strings.Builder
 	for i := range 4000 { // well past headBytes
-		fmt.Fprintf(&b, `{"at":%q,"n":%d}`+"\n", at(now), i)
+		fmt.Fprintf(&recent, `{"at":%q,"n":%d}`+"\n", at(now), i)
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+	oldTail := fmt.Sprintf(`{"at":%q,"n":-2}`+"\n", at(now.Add(-2*time.Hour)))
+	if err := os.WriteFile(path, []byte(recent.String()+oldTail), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	l := Log{Path: path, MaxBytes: 1, Keep: time.Hour, Slack: time.Minute}
-	if l.due(now) {
-		t.Error("a recent head was found due")
-	}
-	old := fmt.Sprintf(`{"at":%q,"n":-1}`+"\n", at(now.Add(-2*time.Hour)))
-	if err := os.WriteFile(path, []byte(old+b.String()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if !l.due(now) {
-		t.Error("an aged-out head was not found due")
-	}
 	if err := l.Append(line{At: at(now), N: 4000}); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(t, path); len(got) != 4001 || got[0].N != 0 {
-		t.Fatalf("after the rewrite: %d lines starting at %d", len(got), got[0].N)
+	if got := read(t, path); len(got) != 4002 {
+		t.Fatalf("with a recent head: %d lines, want all 4002 — the file was rewritten", len(got))
+	}
+
+	oldHead := fmt.Sprintf(`{"at":%q,"n":-1}`+"\n", at(now.Add(-2*time.Hour)))
+	data, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, append([]byte(oldHead), data...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Append(line{At: at(now), N: 4001}); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, path)
+	if len(got) != 4002 || got[0].N != 0 || got[len(got)-1].N != 4001 {
+		t.Fatalf("after the rewrite: %d lines from %d to %d, want both old lines gone", len(got), got[0].N, got[len(got)-1].N)
 	}
 }

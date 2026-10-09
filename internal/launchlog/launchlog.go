@@ -16,10 +16,13 @@ import (
 	"github.com/qiushiyan/headroom/internal/placement"
 )
 
-// Version is the record shape this binary writes. Version 1 carried no
-// account keys and no intent beyond the mode: a reader of a version 1 line
-// knows a candidate only by its name in the home that logged it, and cannot
-// tell an automatic choice from a forced one when the mode does not say.
+// Version is the record shape this binary writes. Version 1 carried the
+// candidates as the rule counted them and nothing more: no account keys, no
+// intent beyond the mode, busy sessions and recent launches as counts, and
+// times to the second. A reader of a version 1 line knows a candidate only by
+// its name in the home that logged it, cannot always tell an automatic choice
+// from a forced one, and cannot rebuild the counts a different rule would
+// have made.
 const Version = 2
 
 // The file is bounded by age, and only once it has grown past MaxBytes: a
@@ -51,12 +54,15 @@ type Record struct {
 
 	// Automatic says the rule chose. Owner and Exclude are the rest of what
 	// it was asked: the account that last drove the session the launch
-	// names, and the account it must not choose. Together with the
-	// candidates they are the decision's whole input, so a rule can be run
-	// over this line again.
-	Automatic bool   `json:"automatic"`
-	Owner     string `json:"owner,omitempty"`
-	Exclude   string `json:"exclude,omitempty"`
+	// names, and the account it must not choose. Recent is the record of
+	// launches the rule read, before this one joined it. Together with the
+	// candidates' busy processes and last placements they are the decision's
+	// whole input, so a rule can be run over this line again — including one
+	// that counts load differently.
+	Automatic bool                `json:"automatic"`
+	Owner     string              `json:"owner,omitempty"`
+	Exclude   string              `json:"exclude,omitempty"`
+	Recent    []placement.Pending `json:"recent"`
 
 	// Session is the session id the launch named, "" when it named none.
 	Session string `json:"session"`
@@ -81,16 +87,25 @@ type Candidate struct {
 	Limits     []Limit  `json:"limits"`
 	Statuses   []string `json:"statuses"` // every live session's status, as the vendor wrote it
 	Busy       int      `json:"busy"`
+	BusyProcs  []Proc   `json:"busy_procs"` // the processes behind Busy, before the rule merged them with recent launches
 	Pending    int      `json:"pending"`
 	Load       int      `json:"load"`
 	Weekly     int      `json:"weekly"`
 	Week       Week     `json:"week"`
-	LastPlaced *string  `json:"last_placed_at,omitempty"`
+	LastPlaced *string  `json:"last_placed_at,omitempty"` // RFC3339 UTC to the millisecond: a tie between two accounts is broken by it
 
 	// Homes splits busy and pending by the home they came from, by accounts
 	// root: another home holding logins of the same subscription puts its
 	// sessions and launches on the same count.
 	Homes []Share `json:"homes,omitempty"`
+}
+
+// Proc is one busy session's process: pids recycle, so its start travels with
+// it, and Home is the accounts root whose registry reported it.
+type Proc struct {
+	PID       int    `json:"pid"`
+	StartedMS int64  `json:"started_ms"`
+	Home      string `json:"home,omitempty"`
 }
 
 // Share is one home's part of a candidate's busy sessions and pending launches.
@@ -126,17 +141,19 @@ type Limit struct {
 	Basis    string  `json:"basis"`
 }
 
-// New builds a record from a decision and what the rule was asked. What
-// neither knows — the vendor, the process, how the account came to be decided
-// — is the caller's to add.
-func New(d placement.Decision, intent placement.Intent, at time.Time) Record {
+// New builds a record from a decision and everything it was decided on: the
+// candidates as the rule was handed them, the record of launches it read, and
+// what it was asked. What none of them knows — the vendor, the process, how
+// the account came to be decided — is the caller's to add.
+func New(d placement.Decision, cands []placement.Candidate, ledger placement.Ledger, intent placement.Intent, at time.Time) Record {
 	r := Record{
 		V: Version, At: at.UTC().Format(time.RFC3339),
 		Reason: d.Reason, Rule: d.Rule, Chosen: d.Chosen, RunnerUp: d.RunnerUp,
 		Automatic: intent.Kind == placement.Auto, Owner: intent.Owner, Exclude: intent.Exclude,
+		Recent:     append([]placement.Pending{}, ledger.Recent...),
 		Candidates: make([]Candidate, 0, len(d.Candidates)),
 	}
-	for _, c := range d.Candidates {
+	for i, c := range d.Candidates {
 		lc := Candidate{
 			Name: c.Name, Key: c.Key, Eligible: c.Excluded == "", Excluded: c.Excluded, NearLimit: c.NearLimit,
 			Source: c.Source, Statuses: c.Statuses, Busy: c.Busy, Pending: c.Pending, Load: c.Load, Weekly: c.Week.Counted,
@@ -149,11 +166,19 @@ func New(d placement.Decision, intent placement.Intent, at time.Time) Record {
 		if lc.Statuses == nil {
 			lc.Statuses = []string{}
 		}
+		// The rule counts its candidates in the order it was handed them.
+		lc.BusyProcs = []Proc{}
+		if i < len(cands) && cands[i].Name == c.Name {
+			for _, p := range cands[i].Busy {
+				lc.BusyProcs = append(lc.BusyProcs, Proc{PID: p.PID, StartedMS: p.StartedMS, Home: p.Home})
+			}
+		}
 		if c.ObservedAt > 0 {
 			lc.ObservedAt = stamp(time.Unix(c.ObservedAt, 0))
 		}
 		if c.LastPlacedMS > 0 {
-			lc.LastPlaced = stamp(time.UnixMilli(c.LastPlacedMS))
+			s := time.UnixMilli(c.LastPlacedMS).UTC().Format(millis)
+			lc.LastPlaced = &s
 		}
 		for _, sh := range c.Shares {
 			lc.Homes = append(lc.Homes, Share{Home: sh.Home, Busy: sh.Busy, Pending: sh.Pending})
@@ -169,6 +194,10 @@ func New(d placement.Decision, intent placement.Intent, at time.Time) Record {
 	}
 	return r
 }
+
+// millis is RFC3339 to the millisecond, for the times a decision compares
+// between candidates.
+const millis = "2006-01-02T15:04:05.000Z07:00"
 
 func stamp(t time.Time) *string {
 	s := t.UTC().Format(time.RFC3339)

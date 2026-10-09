@@ -1,14 +1,15 @@
 package eval
 
-// Time on the Step grid: how long some account's session window sat near its
-// limit, and how much of that time another account had room.
+// Time across every account on the Step grid: how long some session window sat
+// near its limit, how much of that another account had room, and how far
+// apart the accounts' session figures were. It is context and owned by no
+// rule — the logs say which launches went into a window, never which rule a
+// moment belongs to; a window's own time is its episode's.
 
-import (
-	"cmp"
-	"time"
-)
+import "time"
 
-func (e *evaluator) grid() {
+func (e *evaluator) fleet() FleetStats {
+	out := FleetStats{UnobservedRenewals: e.unobserved()}
 	first, last := int64(0), int64(0)
 	for _, rs := range e.readings {
 		if len(rs) == 0 {
@@ -20,89 +21,55 @@ func (e *evaluator) grid() {
 		last = max(last, rs[len(rs)-1].at)
 	}
 	if first == 0 {
-		return
+		return out
 	}
 	step := int64(Step / time.Second)
 	fresh := int64(FreshFor / time.Second)
 	start := max(first, e.since)
 	start += (step - start%step) % step
-
-	type state struct {
-		key     string
-		session int
-		near    bool   // the session window, at or above NearPercent
-		placed  string // ... and the rule whose automatic launch went into that window
-		fresh   bool
-		room    bool
-	}
-	spread := map[*RuleSummary][2]float64{} // sum, count
-	for t := start; t <= min(last, e.now); t += step {
-		var states []state
-		anyFresh := false
+	var spread, spreadN float64
+	// A reading describes its account for FreshFor after it was taken.
+	for t := start; t <= min(last+fresh, e.now); t += step {
+		hi, lo, nFresh := 0, FullPercent, 0
+		var near []string
 		for _, k := range e.keyOrder {
 			r, ok := e.stateAt(k, t)
 			if !ok {
 				continue
 			}
-			session, _, nearAny, ok := counted(r, t)
+			session, _, _, ok := counted(r, t)
 			if !ok {
 				continue
+			}
+			if t-r.at <= fresh {
+				hi, lo, nFresh = max(hi, session), min(lo, session), nFresh+1
 			}
 			// Near is the session window's: time a launch could have gone
 			// elsewhere. An account set aside for a weekly figure near its
 			// limit is the rule working, not load piling up.
-			st := state{key: k, session: session, near: session >= NearPercent, fresh: t-r.at <= fresh}
-			if st.near {
-				st.placed = e.placedInSession(r, t)
+			if session >= NearPercent {
+				near = append(near, k)
 			}
-			st.room = !nearAny && !r.blocked && session < RoomBelow && e.eligibleAt(k, t)
-			anyFresh = anyFresh || st.fresh
-			states = append(states, st)
 		}
-		if !anyFresh {
+		if nFresh == 0 {
 			continue
 		}
-		hi, lo, nFresh := 0, FullPercent, 0
-		near, squeezed, placed := false, false, ""
-		for _, a := range states {
-			if a.fresh {
-				hi, lo, nFresh = max(hi, a.session), min(lo, a.session), nFresh+1
+		out.ObservedS += step
+		if len(near) > 0 {
+			out.NearS += step
+			for _, k := range near {
+				if e.roomAt(t, k) != nil {
+					out.SqueezedS += step
+					break
+				}
 			}
-			if !a.near {
-				continue
-			}
-			near, placed = true, cmp.Or(placed, a.placed)
-			for _, b := range states {
-				squeezed = squeezed || (b.key != a.key && b.room)
-			}
-		}
-		// A moment is the rule's while bare launches went automatic — and,
-		// when a session window sat near its limit, only if the rule put work
-		// into that window: one filled by pinned launches is not the rule's
-		// doing, whatever the routing later became. The whole moment is
-		// charged to one column, so no column's near time exceeds its
-		// observed time.
-		by := ""
-		if sp := e.spanAt(t); sp.auto {
-			by = sp.rule
-		}
-		if near {
-			by = placed
-		}
-		s, _ := e.charged(t, by)
-		s.Time.ObservedS += step
-		if near {
-			s.Time.NearS += step
-		}
-		if squeezed {
-			s.Time.SqueezedS += step
 		}
 		if nFresh >= 2 {
-			sp := spread[s]
-			spread[s] = [2]float64{sp[0] + float64(hi-lo), sp[1] + 1}
+			spread, spreadN = spread+float64(hi-lo), spreadN+1
 		}
 	}
-	for s, sp := range spread {
-		s.Time.MeanSpreadPts = round1(sp[0] / sp[1])
+	if spreadN > 0 {
+		out.MeanSpreadPts = round1(spread / spreadN)
 	}
+	return out
 }

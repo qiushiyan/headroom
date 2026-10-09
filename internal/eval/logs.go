@@ -1,8 +1,7 @@
 package eval
 
-// What the logs say, put in one timeline: the launches oldest first, every
-// account's readings oldest first, and the rule and routing in force at any
-// moment.
+// What the logs say, put in one timeline: the launches oldest first, and every
+// account's readings oldest first.
 
 import (
 	"cmp"
@@ -50,14 +49,6 @@ type launch struct {
 	chosenKey string
 }
 
-// span is the rule and routing in force from one of the report's home's
-// launch lines on.
-type span struct {
-	at   int64
-	rule string
-	auto bool
-}
-
 type eligibility struct {
 	at int64
 	ok bool
@@ -68,7 +59,6 @@ type evaluator struct {
 	since    int64
 	now      int64
 	launches []launch             // oldest first
-	spans    []span               // oldest first
 	readings map[string][]reading // by key, oldest first
 	keyOrder []string             // the readings' keys, sorted: every walk over accounts is in one order
 	names    map[string]string    // key → the name a person reads
@@ -76,26 +66,30 @@ type evaluator struct {
 	eligible map[string][]eligibility
 	sources  Sources
 
-	byRule map[string]*RuleSummary
-	pinned *RuleSummary
+	// wins is every limit window the readings saw, by key and limit, in
+	// reset order, each with the launches that went into it: the one
+	// association decisions, episodes and renewals are all read from.
+	wins map[string][]*window
 
-	// starts is when each session window began, by key and reset.
-	starts map[string]int64
+	byRule   map[string]*RuleSummary
+	unplaced *RuleSummary
 }
 
 func newEvaluator(in Input) *evaluator {
 	e := &evaluator{
 		in: in, now: in.Now.Unix(),
 		readings: map[string][]reading{}, names: map[string]string{}, eligible: map[string][]eligibility{},
-		byRule: map[string]*RuleSummary{}, pinned: newSummary("pinned"),
+		byRule: map[string]*RuleSummary{}, unplaced: newSummary(""),
 	}
 	if !in.Since.IsZero() {
 		e.since = in.Since.Unix()
 	}
 	e.sources.Skipped = in.Skipped
+	e.sources.Problems = append([]string{}, in.Problems...)
 	e.learnKeys()
 	e.readLaunches()
 	e.readUsage()
+	e.collectWindows()
 	return e
 }
 
@@ -150,36 +144,6 @@ func (e *evaluator) readLaunches() {
 	}
 	slices.SortStableFunc(e.launches, func(a, b launch) int { return cmp.Compare(a.at, b.at) })
 	e.sources.Launches, e.sources.Homes, e.sources.Unkeyed = len(e.launches), len(homes), len(unkeyed)
-
-	// The rule and routing in force come from the report's own home: homes on
-	// one machine can run binaries of different ages, what happened to the
-	// accounts is the machine's, and the home a report is made from is the one
-	// whose rule is being worked on. A home with no lines of its own takes
-	// every home's. Routing is what a bare launch did: a line whose mode is
-	// "auto" or "pinned" says it, and the others leave it as it was.
-	own := slices.ContainsFunc(e.launches, func(l launch) bool { return l.Home == e.in.Home })
-	auto := true
-	for _, l := range e.launches {
-		if l.Mode == "pinned" {
-			auto = false
-			break
-		}
-		if l.Mode == "auto" {
-			break
-		}
-	}
-	for _, l := range e.launches {
-		if own && l.Home != e.in.Home {
-			continue
-		}
-		switch l.Mode {
-		case "auto":
-			auto = true
-		case "pinned":
-			auto = false
-		}
-		e.spans = append(e.spans, span{at: l.at, rule: l.Rule, auto: auto})
-	}
 }
 
 // readUsage puts the usage log's readings on the timeline, then the figures
@@ -326,13 +290,8 @@ func (e *evaluator) display(key string) string {
 	return key
 }
 
-// rule is one rule version's summary. The empty rule — before the first
-// launch line no rule is known to have been in force — gets a summary that is
-// counted nowhere.
+// rule is one rule version's summary.
 func (e *evaluator) rule(name string) *RuleSummary {
-	if name == "" {
-		return newSummary("")
-	}
 	s, ok := e.byRule[name]
 	if !ok {
 		s = newSummary(name)
@@ -341,59 +300,13 @@ func (e *evaluator) rule(name string) *RuleSummary {
 	return s
 }
 
-// spanAt is the rule and routing in force at a moment.
-func (e *evaluator) spanAt(at int64) span {
-	i := sort.Search(len(e.spans), func(i int) bool { return e.spans[i].at > at })
-	if i == 0 {
-		return span{}
+// charged is the summary a window counts under: the rule whose automatic
+// launch went into it, or Unplaced.
+func (e *evaluator) charged(by string) *RuleSummary {
+	if by == "" {
+		return e.unplaced
 	}
-	return e.spans[i-1]
-}
-
-// charged is the summary something observed at a moment is charged to, and
-// the rule it is said under. by is the rule whose automatic launch placed what
-// was observed: the rule's own column when there was one, Pinned — under the
-// rule in force — when there was none.
-func (e *evaluator) charged(at int64, by string) (*RuleSummary, string) {
-	if by != "" {
-		return e.rule(by), by
-	}
-	sp := e.spanAt(at)
-	if sp.rule == "" {
-		return newSummary(""), ""
-	}
-	return e.pinned, sp.rule
-}
-
-// placedInSession is the rule of the newest automatic launch into the session
-// window a reading describes, up to a moment; "" when none went there.
-func (e *evaluator) placedInSession(r reading, at int64) string {
-	for _, w := range r.rows {
-		if w.session && w.reset > 0 {
-			if start, ok := e.starts[r.key+"\x00"+stamp(minute(w.reset))]; ok {
-				return e.placedBy(r.key, start, at)
-			}
-			return ""
-		}
-	}
-	return ""
-}
-
-// placedBy is the rule of the newest automatic launch onto the account between
-// two moments — whichever home made it — or "" when the rule placed nothing
-// there.
-func (e *evaluator) placedBy(key string, from, to int64) string {
-	rule := ""
-	i := sort.Search(len(e.launches), func(i int) bool { return e.launches[i].at >= from })
-	for _, l := range e.launches[i:] {
-		if l.at > to {
-			break
-		}
-		if l.automatic && l.chosenKey == key {
-			rule = l.Rule
-		}
-	}
-	return rule
+	return e.rule(by)
 }
 
 // stateAt is an account's newest reading at or before a moment.
@@ -419,9 +332,10 @@ func (e *evaluator) eligibleAt(key string, at int64) bool {
 }
 
 // counted is a reading as it stands at a moment, as the rule counts it: a row
-// whose window has ended counts zero, and an old figure is a lower bound. ok
-// is false when a figure did not parse.
-func counted(r reading, at int64) (session, highest int, near, ok bool) {
+// whose window has ended counts zero, and an old figure is a lower bound.
+// ended says the session window has ended since the reading. ok is false
+// when a figure did not parse.
+func counted(r reading, at int64) (session, highest int, ended, ok bool) {
 	for _, w := range r.rows {
 		if w.bad {
 			return 0, 0, false, false
@@ -429,36 +343,58 @@ func counted(r reading, at int64) (session, highest int, near, ok bool) {
 		v := w.percent
 		if w.reset > 0 && w.reset <= at {
 			v = 0
+			ended = ended || w.session
 		}
 		if w.session {
 			session = v
 		}
 		highest = max(highest, v)
 	}
-	return session, highest, highest >= NearPercent, true
+	return session, highest, ended, true
 }
 
-// roomAt is the other account with the most room at a moment, or nil. An
-// account counts on its own newest figures, however old — an account nobody
-// could ask is the idle one, and the rule tries it rather than avoiding it —
-// and on the launch log's word that it could be chosen.
+// roomOf is whether an account's newest reading shows room at a moment, and
+// what says so. A fresh reading below the thresholds is room; an older one is
+// a lower bound and shows room only where its session window has ended since
+// — what nobody could ask is the idle account, and an ended window is empty
+// unless it was used where nobody looked.
+func (e *evaluator) roomOf(key string, at int64) (Room, bool) {
+	if !e.eligibleAt(key, at) {
+		return Room{}, false
+	}
+	r, ok := e.stateAt(key, at)
+	if !ok || r.blocked {
+		return Room{}, false
+	}
+	session, highest, ended, ok := counted(r, at)
+	if !ok || highest >= NearPercent || session >= RoomBelow {
+		return Room{}, false
+	}
+	room := Room{Account: e.display(key), Session: session, Highest: highest, AgeS: at - r.at}
+	switch {
+	case room.AgeS <= int64(FreshFor/time.Second):
+		room.Basis = "fresh"
+	case ended:
+		room.Basis = "ended"
+	default:
+		return Room{}, false
+	}
+	return room, true
+}
+
+// roomAt is the other account with the most room at a moment, or nil.
 func (e *evaluator) roomAt(at int64, except string) *Room {
 	var best *Room
 	for _, k := range e.keyOrder {
-		if k == except || !e.eligibleAt(k, at) {
+		if k == except {
 			continue
 		}
-		r, ok := e.stateAt(k, at)
-		if !ok || r.blocked {
+		room, ok := e.roomOf(k, at)
+		if !ok {
 			continue
 		}
-		session, highest, near, ok := counted(r, at)
-		if !ok || near || session >= RoomBelow {
-			continue
-		}
-		room := &Room{Account: e.display(k), Session: session, Highest: highest, AgeS: at - r.at}
 		if best == nil || cmp.Or(cmp.Compare(room.Session, best.Session), cmp.Compare(room.Highest, best.Highest), cmp.Compare(room.Account, best.Account)) < 0 {
-			best = room
+			best = &room
 		}
 	}
 	return best

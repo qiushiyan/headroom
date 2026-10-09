@@ -353,6 +353,11 @@ type Placed struct {
 	Decision placement.Decision
 	Recorded bool // the launch is in the record the next placement reads
 
+	// Ledger is the record of launches the decision was made on, as the rule
+	// read it — before this launch was added to it — for the launch log, which
+	// keeps every input so a rule can be run over the line again.
+	Ledger placement.Ledger
+
 	// RecordErr says why the launch is not in the record although Place
 	// returned no error: the ledger is another home's file, the re-home this
 	// launch depended on was written first, and the ledger's write then
@@ -420,6 +425,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		}
 		led.register(s.member, now)
 		out.Decision = placement.Choose(l.Candidates, led.placements, l.Intent, now)
+		out.Ledger = led.placements.Clone()
 		chosen, ok := out.Decision.Find(out.Decision.Chosen)
 		if out.Decision.Chosen == "" || !ok {
 			return commit{ledger: true}, nil
@@ -462,7 +468,8 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		out.ReHomed, out.SessionErr = false, partial.err
 		return out, nil
 	case err != nil:
-		out = Placed{Decision: placement.Choose(l.Candidates, s.Load().Placements(), l.Intent, now)}
+		ledger := s.Load().Placements()
+		out = Placed{Decision: placement.Choose(l.Candidates, ledger, l.Intent, now), Ledger: ledger}
 		return out, err
 	}
 	return out, nil

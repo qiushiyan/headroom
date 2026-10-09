@@ -1,24 +1,27 @@
 package eval
 
-// Every limit window the readings saw: the ones that reached the near-limit
-// threshold, and the weekly ones that renewed.
+// Every limit window the readings saw, and the launches that went into each:
+// the one association the decisions, the episodes and the renewals are all
+// read from.
 
 import (
 	"cmp"
 	"slices"
+	"time"
 )
 
 // window is one limit of one account between two resets.
 type window struct {
-	key     string
-	id      string
-	label   string
-	session bool
-	reset   int64 // to the minute: the vendor's instant drifts by fractions of a second
-	length  int64 // seconds; 0 = nothing states it
-	period  int64
-	start   int64
-	points  []point
+	key      string
+	id       string
+	label    string
+	session  bool
+	reset    int64 // to the minute: the vendor's instant drifts by fractions of a second
+	length   int64 // seconds; 0 = nothing states it
+	period   int64
+	start    int64
+	points   []point  // oldest first
+	launches []launch // the launches onto the account from start until the reset, oldest first
 }
 
 func (w *window) firstAt(threshold int) (int64, bool) {
@@ -40,9 +43,24 @@ func (w *window) peak() int {
 	return peak
 }
 
-func (e *evaluator) collectWindows() []*window {
+// placedBy is the rule of the newest automatic launch into the window up to a
+// moment, whichever home made it; "" when the rule put nothing there.
+func (w *window) placedBy(to int64) string {
+	rule := ""
+	for _, l := range w.launches {
+		if l.at > to {
+			break
+		}
+		if l.automatic {
+			rule = l.Rule
+		}
+	}
+	return rule
+}
+
+func (e *evaluator) collectWindows() {
 	byID := map[string]*window{}
-	var all []*window
+	e.wins = map[string][]*window{}
 	for _, k := range e.keyOrder {
 		for _, r := range e.readings[k] {
 			for _, w := range r.rows {
@@ -56,40 +74,84 @@ func (e *evaluator) collectWindows() []*window {
 					win = &window{key: k, id: w.id, label: w.label, session: w.session, reset: reset, period: w.period,
 						length: cmp.Or(w.window, w.period)}
 					byID[id] = win
-					all = append(all, win)
+					e.wins[k+"\x00"+w.id] = append(e.wins[k+"\x00"+w.id], win)
 				}
 				win.points = append(win.points, w.point)
 			}
 		}
 	}
-	slices.SortStableFunc(all, func(a, b *window) int {
-		return cmp.Or(cmp.Compare(a.key, b.key), cmp.Compare(a.id, b.id), cmp.Compare(a.reset, b.reset))
-	})
 	// A window starts its stated length before its reset. One whose length
-	// nothing states — Claude Code's session window starts at the first
-	// request after the last one ended — starts no earlier than the previous
-	// window of the same limit reset, and no later than its first reading.
-	for i, w := range all {
-		switch {
-		case w.length > 0:
-			w.start = w.reset - w.length
-		case i > 0 && all[i-1].key == w.key && all[i-1].id == w.id && all[i-1].reset < w.points[0].at:
-			w.start = all[i-1].reset
-		default:
-			w.start = w.points[0].at
+	// nothing states starts no earlier than Follow before its reset, and no
+	// earlier than the previous window of the same limit reset — Claude Code's
+	// session window opens at the first request after the last one ended.
+	for _, ws := range e.wins {
+		slices.SortFunc(ws, func(a, b *window) int { return cmp.Compare(a.reset, b.reset) })
+		for i, w := range ws {
+			switch {
+			case w.length > 0:
+				w.start = w.reset - w.length
+			case i > 0:
+				w.start = max(ws[i-1].reset, w.reset-int64(Follow/time.Second))
+			default:
+				w.start = w.reset - int64(Follow/time.Second)
+			}
+			w.start = min(w.start, w.points[0].at)
 		}
 	}
-	return all
+	// A launch went into the window of each limit that was open at it, or —
+	// when none was — the first to open after it.
+	for _, l := range e.launches {
+		for _, k := range e.limitsOf(l.chosenKey) {
+			if w := e.windowAt(k, l.at); w != nil {
+				w.launches = append(w.launches, l)
+			}
+		}
+	}
+}
+
+// limitsOf is the window lists of one account, one per limit.
+func (e *evaluator) limitsOf(key string) []string {
+	var out []string
+	for k, ws := range e.wins {
+		if ws[0].key == key {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// windowAt is the window of one limit a launch at a moment went into.
+func (e *evaluator) windowAt(limit string, at int64) *window {
+	for _, w := range e.wins[limit] {
+		if w.start <= at && at < w.reset {
+			return w
+		}
+	}
+	return nil
+}
+
+// sessionAt is the session window of an account a launch at a moment went
+// into.
+func (e *evaluator) sessionAt(key string, at int64) *window {
+	for _, limit := range e.limitsOf(key) {
+		if ws := e.wins[limit]; ws[0].session {
+			if w := e.windowAt(limit, at); w != nil {
+				return w
+			}
+		}
+	}
+	return nil
 }
 
 func (e *evaluator) windows(rep *Report) {
-	all := e.collectWindows()
-	e.starts = map[string]int64{}
-	for _, w := range all {
-		if w.session {
-			e.starts[w.key+"\x00"+stamp(w.reset)] = w.start
-		}
+	var all []*window
+	for _, ws := range e.wins {
+		all = append(all, ws...)
 	}
+	slices.SortFunc(all, func(a, b *window) int {
+		return cmp.Or(cmp.Compare(a.key, b.key), cmp.Compare(a.id, b.id), cmp.Compare(a.reset, b.reset))
+	})
 	for _, w := range all {
 		if ep, ok := e.episode(w); ok {
 			rep.Episodes = append(rep.Episodes, ep)
@@ -104,17 +166,18 @@ func (e *evaluator) windows(rep *Report) {
 	})
 }
 
-// episode is a window that reached the near-limit threshold, with what was
-// launched into it and the room another account had at that moment.
+// episode is a window that reached the near-limit threshold: what was launched
+// into it, how long it sat there, and the room another account had meanwhile.
+// A percent never falls within a window, so a window near its limit at one
+// reading stays near it until the reset.
 func (e *evaluator) episode(w *window) (Episode, bool) {
 	nearAt, near := w.firstAt(NearPercent)
 	if !near || nearAt < e.since {
 		return Episode{}, false
 	}
-	by := e.placedBy(w.key, w.start, nearAt)
-	s, rule := e.charged(nearAt, by)
+	by := w.placedBy(nearAt)
 	ep := Episode{
-		Account: e.display(w.key), Key: w.key, Limit: w.label, Session: w.session, Rule: rule, Placed: by != "",
+		Account: e.display(w.key), Key: w.key, Limit: w.label, Session: w.session, Rule: by, Placed: by != "",
 		NearAt: stamp(nearAt), Peak: w.peak(), ResetsAt: stamp(w.reset),
 		Launches: map[string]int{}, ByHome: map[string]int{}, Elsewhere: e.roomAt(nearAt, w.key),
 	}
@@ -122,21 +185,33 @@ func (e *evaluator) episode(w *window) (Episode, bool) {
 		full := stamp(at)
 		ep.ExhaustedAt = &full
 	}
-	for _, l := range e.launches {
-		if l.chosenKey == w.key && l.at >= w.start && l.at <= nearAt {
-			mode := l.Mode
-			if l.automatic {
-				mode = "auto"
-			}
-			ep.Launches[mode]++
-			ep.ByHome[l.Home]++
+	for _, l := range w.launches {
+		if l.at > nearAt {
+			break
+		}
+		mode := l.Mode
+		if l.automatic {
+			mode = "auto"
+		}
+		ep.Launches[mode]++
+		ep.ByHome[l.Home]++
+	}
+	end := min(w.reset, e.now)
+	ep.NearS = max(0, end-nearAt)
+	step := int64(Step / time.Second)
+	for t := nearAt; t < end; t += step {
+		if e.roomAt(t, w.key) != nil {
+			ep.SqueezedS += min(step, end-t)
 		}
 	}
+	s := e.charged(by)
 	stats := &s.Session
 	if !w.session {
 		stats = &s.Weekly.LimitStats
 	}
 	stats.ReachedNear++
+	stats.NearS += ep.NearS
+	stats.SqueezedS += ep.SqueezedS
 	if ep.ExhaustedAt != nil {
 		stats.Exhausted++
 	}
@@ -149,59 +224,42 @@ func (e *evaluator) episode(w *window) (Episode, bool) {
 // renewals are the weekly windows read to their end. A renewal is the
 // account's, not one row's: of the weekly limits that renew at one instant,
 // the one read highest is what bound the account, and the room it left is what
-// lapsed. A scoped limit nobody spends against renews at zero beside it, and
-// its room could not have been spent without spending the binding limit's.
+// may have lapsed. A scoped limit nobody spends against renews at zero beside
+// it, and its room could not have been spent without spending the binding
+// limit's.
 func (e *evaluator) renewals(rep *Report, all []*window) {
 	type renewalID struct {
 		key   string
 		reset int64
 	}
 	binding := map[renewalID]*window{}
-	scheduled := map[string][]int64{} // key → the scheduled renewals read
-	period := map[string]int64{}
+	var order []renewalID
 	for _, w := range all {
 		if w.session {
 			continue
 		}
 		id := renewalID{w.key, w.reset}
-		if b, ok := binding[id]; !ok || w.last().percent > b.last().percent {
+		b, ok := binding[id]
+		if !ok {
+			order = append(order, id)
+		}
+		if !ok || w.last().percent > b.last().percent {
 			binding[id] = w
-		}
-		if w.period > 0 {
-			scheduled[w.key] = append(scheduled[w.key], w.reset)
-			period[w.key] = w.period
-		}
-	}
-	// Renewals a schedule implies between two that were read: weeks nobody
-	// observed, neither spent nor lapsed as far as anyone knows.
-	for k, rs := range scheduled {
-		slices.Sort(rs)
-		rs = slices.Compact(rs)
-		p := period[k]
-		for i := 1; i < len(rs); i++ {
-			for n := int64(1); n < (rs[i]-rs[i-1]+p/2)/p; n++ {
-				if at := rs[i-1] + n*p; at >= e.since && at <= e.now {
-					// Nobody read the account that week, so nobody knows
-					// what was placed there: the rule in force carries it.
-					s, _ := e.charged(at, e.spanAt(at).rule)
-					s.Weekly.Unobserved++
-				}
-			}
 		}
 	}
 	used := map[*RuleSummary]float64{}
-	for _, w := range binding {
+	for _, id := range order {
+		w := binding[id]
 		if w.reset > e.now || w.reset < e.since {
 			continue
 		}
 		last := w.last()
-		from := w.reset - cmp.Or(w.length, assumedWeek)
-		by := e.placedBy(w.key, from, w.reset)
-		s, rule := e.charged(w.reset, by)
+		by := w.placedBy(w.reset)
 		rn := Renewal{
-			Account: e.display(w.key), Key: w.key, Limit: w.label, Rule: rule, Placed: by != "", RenewedAt: stamp(w.reset),
-			Used: last.percent, LastReadS: w.reset - last.at, Lapsed: max(0, FullPercent-last.percent),
+			Account: e.display(w.key), Key: w.key, Limit: w.label, Rule: by, Placed: by != "", RenewedAt: stamp(w.reset),
+			UsedMin: last.percent, LastReadS: w.reset - last.at, LapsedMax: max(0, FullPercent-last.percent),
 		}
+		from := w.reset - cmp.Or(w.length, assumedWeek)
 		for _, o := range all {
 			if o.key == w.key || o.id != w.id {
 				continue
@@ -212,15 +270,45 @@ func (e *evaluator) renewals(rep *Report, all []*window) {
 				}
 			}
 		}
+		s := e.charged(by)
 		s.Weekly.Renewals++
-		s.Weekly.LapsedPts += rn.Lapsed
-		used[s] += float64(rn.Used)
-		if rn.Lapsed > 0 && rn.PeakElsewhere >= NearPercent {
-			s.Weekly.LapsedSqueeze++
+		s.Weekly.LapsedMaxPts += rn.LapsedMax
+		used[s] += float64(rn.UsedMin)
+		if rn.LapsedMax > 0 && rn.PeakElsewhere >= NearPercent {
+			s.Weekly.LapsedWhileSqueezed++
 		}
 		rep.Renewals = append(rep.Renewals, rn)
 	}
 	for s, sum := range used {
-		s.Weekly.MeanUsed = sum / float64(s.Weekly.Renewals)
+		s.Weekly.MeanUsedMin = sum / float64(s.Weekly.Renewals)
 	}
+}
+
+// unobserved counts the weekly renewals a window's schedule implies between
+// two that were read: weeks nobody observed.
+func (e *evaluator) unobserved() int {
+	n := 0
+	scheduled := map[string][]int64{}
+	period := map[string]int64{}
+	for _, ws := range e.wins {
+		for _, w := range ws {
+			if !w.session && w.period > 0 {
+				scheduled[w.key] = append(scheduled[w.key], w.reset)
+				period[w.key] = w.period
+			}
+		}
+	}
+	for k, rs := range scheduled {
+		slices.Sort(rs)
+		rs = slices.Compact(rs)
+		p := period[k]
+		for i := 1; i < len(rs); i++ {
+			for j := int64(1); j < (rs[i]-rs[i-1]+p/2)/p; j++ {
+				if at := rs[i-1] + j*p; at >= e.since && at <= e.now {
+					n++
+				}
+			}
+		}
+	}
+	return n
 }

@@ -117,6 +117,50 @@ func TestRequestLifecycle(t *testing.T) {
 	}
 }
 
+// A reading goes to the usage log beside the subscription ledger — another
+// home's root when this home spends against its ledger — carrying what the
+// response said and which home asked. A log that cannot be written costs the
+// line and nothing else: the request completes as it would have.
+func TestAReadingIsLoggedBesideTheLedger(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"limits":[{"kind":"session","percent":42,"resets_at":"2026-10-09T20:50:00Z"}]}`))
+	}))
+	defer srv.Close()
+	own, ledger := t.TempDir(), t.TempDir()
+	st := state.Open(config.Scope{AccountsRoot: own, LedgerRoot: ledger})
+	for r := range Start(context.Background(), st, []*Candidate{requestCandidate(t, srv.URL, "a", "secret")}, nil) {
+		if r.Attempt.State != accountstate.AttemptOK || r.StoreErr != nil {
+			t.Fatalf("result = %+v", r)
+		}
+	}
+	if mine, _, _ := usagelog.Read(own); len(mine) != 0 {
+		t.Errorf("logged in the home's own root: %+v", mine)
+	}
+	logged, _, err := usagelog.Read(ledger)
+	if err != nil || len(logged) != 1 {
+		t.Fatalf("ledger root's log: %+v %v", logged, err)
+	}
+	l := logged[0]
+	if l.Home != filepath.Clean(own) || l.Name != "a" || l.Key != "dir:a" || len(l.Rows) != 1 ||
+		l.Rows[0].Percent != 42 || l.Rows[0].Kind != "session" || l.Rows[0].ResetsAt == nil || *l.Rows[0].ResetsAt != "2026-10-09T20:50:00Z" {
+		t.Errorf("line = %+v", l)
+	}
+
+	broken := t.TempDir()
+	if err := os.Mkdir(usagelog.Path(broken), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st = state.Open(config.Scope{AccountsRoot: broken})
+	for r := range Start(context.Background(), st, []*Candidate{requestCandidate(t, srv.URL, "a", "secret")}, nil) {
+		if r.Attempt.State != accountstate.AttemptOK || r.StoreErr != nil || r.Observation == nil {
+			t.Errorf("with an unwritable log: %+v", r)
+		}
+	}
+	if _, ok := st.Load().Observation(state.Key{Name: "a"}, time.Now()); !ok {
+		t.Error("an unwritable log cost the stored reading")
+	}
+}
+
 func TestAnyHTTP200ClearsRefusalStrikes(t *testing.T) {
 	for _, body := range []string{`{"limits":[]}`, `nonsense`} {
 		t.Run(body, func(t *testing.T) {

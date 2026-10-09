@@ -72,7 +72,7 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 		fmt.Fprintln(os.Stderr, "headroom launches: --since narrows --eval")
 		return 2
 	case evaluate:
-		return runEval(w, scopes, since, jsonMode)
+		return runEval(w, scopes, since, jsonMode, time.Now())
 	}
 
 	var all []launchlog.Record

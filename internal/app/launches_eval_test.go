@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,9 +26,14 @@ func runEvalJSON(t *testing.T, scope config.Scope, args ...string) evalDoc {
 	if code := runLaunchesTo(&out, []config.Scope{scope}, append([]string{"--eval", "--json"}, args...)); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
+	return decodeEval(t, out.Bytes())
+}
+
+func decodeEval(t *testing.T, out []byte) evalDoc {
+	t.Helper()
 	var doc evalDoc
-	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
 	if doc.Schema != EvalSchema || len(doc.Vendors) != 1 {
 		t.Fatalf("document = %+v", doc)
@@ -48,23 +54,36 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 	f.launch("--account", "qiushi")
 
 	recs := f.log()
-	if r := recs[0]; r.V != launchlog.Version || !r.Automatic || loggedCandidate(r, "a@x.com").Key != "uuid:u-a@x.com" {
-		t.Fatalf("launch line = v%d automatic %v candidates %+v", r.V, r.Automatic, r.Candidates)
+	chosen := loggedCandidate(recs[0], "a@x.com")
+	if r := recs[0]; r.V != launchlog.Version || !r.Automatic || chosen.Key != "uuid:u-a@x.com" || r.Recent == nil || chosen.BusyProcs == nil {
+		t.Fatalf("launch line = v%d automatic %v recent %v candidates %+v", r.V, r.Automatic, r.Recent, r.Candidates)
 	}
 	if recs[1].Automatic {
 		t.Error("a named launch logged as the rule's choice")
 	}
 
-	// What the refresh after the launch would have logged.
+	// What the refresh after the launch would have logged: half a minute on,
+	// in the window the launch was decided in. The report is made a minute
+	// after that.
+	launched, _ := time.Parse(time.RFC3339, recs[0].At)
+	var reset time.Time
+	for _, l := range chosen.Limits {
+		if l.Session {
+			reset, _ = time.Parse(time.RFC3339, *l.ResetsAt)
+		}
+	}
 	ok := usage.StateOK
-	later := time.Now().Add(time.Minute)
-	if err := usagelog.Append(f.cfg.AccountsRoot, usagelog.New(later, config.Claude, "uuid:u-a@x.com", "a@x.com", f.cfg.AccountsRoot,
-		[]usage.Row{{Kind: "session", Label: "5h session", Percent: 30, ResetAt: later.Add(time.Hour).Unix(), PercentState: ok, ResetState: ok, IdentityState: ok}},
+	read := launched.Add(30 * time.Second)
+	if err := usagelog.Append(f.cfg.AccountsRoot, usagelog.New(read, config.Claude, "uuid:u-a@x.com", "a@x.com", f.cfg.AccountsRoot,
+		[]usage.Row{{Kind: "session", Label: "5h session", Percent: 30, ResetAt: reset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok}},
 		usage.Allowance{})); err != nil {
 		t.Fatal(err)
 	}
-
-	rep := runEvalJSON(t, f.cfg).Vendors[0]
+	var out bytes.Buffer
+	if code := runEval(&out, []config.Scope{f.cfg}, time.Time{}, true, read.Add(time.Minute)); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	rep := decodeEval(t, out.Bytes()).Vendors[0]
 	if rep.Sources.Launches != 2 || rep.Sources.Logged != 1 || rep.Sources.Homes != 1 || len(rep.Decisions) != 1 {
 		t.Fatalf("sources %+v, %d decisions", rep.Sources, len(rep.Decisions))
 	}
@@ -72,11 +91,11 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 	if d.Chosen != "a@x.com" || !d.Replay.Agrees || !d.Replay.Exact {
 		t.Errorf("decision = %+v", d)
 	}
-	if d.ChosenAfter == nil || d.ChosenAfter.Counted != 5 || d.ChosenAfter.Peak != 30 {
-		t.Errorf("after = %+v", d.ChosenAfter)
+	if d.ChosenAfter == nil || d.ChosenAfter.Counted != 5 || d.ChosenAfter.Peak != 30 || d.ChosenAfter.PeakAt > rep.Until {
+		t.Errorf("after = %+v, until %s", d.ChosenAfter, rep.Until)
 	}
 
-	var out bytes.Buffer
+	out.Reset()
 	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
@@ -114,6 +133,24 @@ func TestTheEvaluationReadsEveryHomeOnTheLedger(t *testing.T) {
 	}
 	if !homes[f.steward.AccountsRoot] || !homes[f.owner.AccountsRoot] {
 		t.Errorf("decision homes = %v", homes)
+	}
+
+	// A home on the ledger whose log cannot be read is named, in the
+	// document and in the text: the report is partial and says so.
+	path := launchlog.Path(f.steward.AccountsRoot)
+	if err := os.Rename(path, path+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep = runEvalJSON(t, f.owner).Vendors[0]
+	if rep.Sources.Homes != 1 || len(rep.Sources.Problems) != 1 || !strings.Contains(rep.Sources.Problems[0], path) {
+		t.Errorf("sources = %+v", rep.Sources)
+	}
+	var out bytes.Buffer
+	if code := runLaunchesTo(&out, []config.Scope{f.owner}, []string{"--eval"}); code != 0 || !strings.Contains(out.String(), "partial: "+path) {
+		t.Errorf("exit %d:\n%s", code, out.String())
 	}
 }
 

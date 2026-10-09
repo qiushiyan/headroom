@@ -6,6 +6,7 @@ package eval
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/launchlog"
@@ -40,7 +41,7 @@ func (e *evaluator) decisions(rep *Report) {
 		}
 		s.Launches.LongestRun = max(s.Launches.LongestRun, run)
 
-		d := Decision{At: l.At, Home: l.Home, Rule: l.Rule, Mode: l.Mode, Reason: l.Reason, Chosen: e.display(l.chosenKey)}
+		d := Decision{At: l.At, Home: l.Home, Rule: l.Rule, Mode: l.Mode, Reason: l.Reason, Chosen: l.Chosen, RunnerUp: l.RunnerUp}
 		if c, ok := find(l.Record, l.Chosen); ok {
 			if c.ObservedAt == nil {
 				s.Launches.ChosenUnobserved++
@@ -50,7 +51,7 @@ func (e *evaluator) decisions(rep *Report) {
 					s.Launches.ChosenStale++
 				}
 			}
-			d.ChosenAfter = e.after(l.chosenKey, l.at, sessionCounted(c))
+			d.ChosenAfter = e.after(l.chosenKey, l.at, c)
 		}
 		if a := d.ChosenAfter; a != nil {
 			s.Outcomes.Followed++
@@ -64,9 +65,7 @@ func (e *evaluator) decisions(rep *Report) {
 			rise[l.Rule] = [2]float64{r[0] + float64(a.Peak-a.Counted), r[1] + 1}
 		}
 		if c, ok := find(l.Record, l.RunnerUp); ok && l.RunnerUp != "" {
-			k := e.keyOrName(l.Home, c)
-			d.RunnerUp = e.display(k)
-			if a := e.after(k, l.at, sessionCounted(c)); a != nil {
+			if a := e.after(e.keyOrName(l.Home, c), l.at, c); a != nil {
 				d.RunnerUpAfter = a
 				s.Outcomes.RunnerUpFollowed++
 				if a.Peak >= NearPercent {
@@ -104,56 +103,56 @@ func find(r launchlog.Record, name string) (launchlog.Candidate, bool) {
 	return launchlog.Candidate{}, false
 }
 
-// sessionCounted is the session figure a launch line counted for an account.
-func sessionCounted(c launchlog.Candidate) int {
-	for _, l := range c.Limits {
-		if l.Session {
-			return l.Counted
+// after follows an account's session window from a launch: the window the
+// launch went into, and how high it went once the launch was made. The
+// figure the launch was decided on counts as the window's starting point only
+// when it was a reading of this window; a window that opened after the launch
+// started from nothing. Nil when nobody read the window after the launch.
+func (e *evaluator) after(key string, at int64, c launchlog.Candidate) *After {
+	w := e.sessionAt(key, at)
+	if w == nil {
+		return nil
+	}
+	var out *After
+	for _, p := range w.points {
+		if p.at <= at {
+			continue // what the launch was decided on, not what followed it
+		}
+		if out == nil || p.percent > out.Peak {
+			out = &After{Peak: p.percent, PeakAt: stamp(p.at), ResetsAt: stamp(w.reset)}
 		}
 	}
-	return 0
-}
-
-// after follows an account's session window from a moment: the window the
-// first reading after it describes, and how high that window went. A reading
-// taken at the moment itself is what the launch was decided on, not what
-// followed it.
-func (e *evaluator) after(key string, at int64, countedAt int) *After {
-	end := at + int64(Follow/time.Second)
-	var reset int64
-	var out *After
-	for _, r := range e.readings[key] {
-		if r.at <= at {
-			continue
-		}
-		if r.at > end {
-			break
-		}
-		for _, w := range r.rows {
-			if !w.session || w.bad || w.reset <= r.at {
-				continue
-			}
-			if reset == 0 {
-				reset = minute(w.reset)
-				out = &After{Counted: countedAt, Peak: w.percent, PeakAt: stamp(r.at), ResetsAt: stamp(reset)}
-			}
-			if minute(w.reset) == reset && w.percent > out.Peak {
-				out.Peak, out.PeakAt = w.percent, stamp(r.at)
-			}
+	if out == nil {
+		return nil
+	}
+	for _, l := range c.Limits {
+		if l.Session && minute(unix(l.ResetsAt)) == w.reset {
+			out.Counted = l.Counted
 		}
 	}
 	return out
 }
 
-// replay decides a launch line again with this binary's rule, from the input
-// the line recorded. Busy sessions and recent launches come back as the
-// counts the line holds — the rule's own deduplication already applied, so a
-// rule that counts them differently is replayed on the old counting — and the
-// line's time is its second.
+// ---- the replay ----
+
+// replay decides a launch line again with this binary's rule. A version 2 line
+// carries the rule's whole input — the candidates, their busy processes, the
+// record of launches and its last placements to the millisecond — and is
+// rebuilt as it was read. An older line carries busy sessions and recent
+// launches only as the counts the rule made of them; it is rebuilt from those,
+// which reproduces a rule that counts alike and nothing more, and is inexact
+// wherever such counts, a tie inside one second, or the intent decided.
 func (e *evaluator) replay(l launch) Replay {
 	now := time.Unix(l.at, 0)
+	whole := l.Recent != nil
+	for _, c := range l.Candidates {
+		whole = whole && c.BusyProcs != nil
+	}
+	exact := true
 	var cands []placement.Candidate
 	ledger := placement.Ledger{Last: map[string]placement.Last{}}
+	pending := map[string]int{} // older lines: the recent launches each subscription counted
+	seconds := map[int64]int{}  // older lines: last placements that fall in one second
 	pid := 0
 	for _, c := range l.Candidates {
 		key := e.keyOrName(l.Home, c)
@@ -170,44 +169,59 @@ func (e *evaluator) replay(l launch) Replay {
 				ResetAt: unix(lim.ResetsAt), Window: lim.WindowS, Period: lim.PeriodS, Session: lim.Session,
 			})
 		}
-		// Busy sessions get pids no recorded launch carries, so the rule's
-		// deduplication finds nothing to merge: the line already did.
-		for range c.Busy {
-			pid--
-			pc.Busy = append(pc.Busy, placement.Proc{PID: pid})
+		if whole {
+			for _, p := range c.BusyProcs {
+				pc.Busy = append(pc.Busy, placement.Proc{PID: p.PID, StartedMS: p.StartedMS, Home: p.Home})
+			}
+		} else {
+			// The busy count, as processes no recorded launch carries, so the
+			// rule's deduplication finds nothing to merge: the line did.
+			for range c.Busy {
+				pid--
+				pc.Busy = append(pc.Busy, placement.Proc{PID: pid})
+			}
+			pending[key] = max(pending[key], c.Pending)
+			exact = exact && c.Busy == 0 && c.Pending == 0
 		}
-		for range c.Pending {
-			ledger.Recent = append(ledger.Recent, placement.Pending{Key: key, Name: c.Name, AtMS: now.UnixMilli()})
-		}
-		if t := unix(c.LastPlaced); t > 0 {
-			if cur, ok := ledger.Last[key]; !ok || t*1000 > cur.AtMS {
-				ledger.Last[key] = placement.Last{Name: c.Name, AtMS: t * 1000}
+		if t, ok := parse(c.LastPlaced); ok {
+			if cur, seen := ledger.Last[key]; !seen || t.UnixMilli() > cur.AtMS {
+				ledger.Last[key] = placement.Last{Name: c.Name, AtMS: t.UnixMilli()}
+			}
+			if !strings.Contains(*c.LastPlaced, ".") {
+				seconds[t.Unix()]++
 			}
 		}
 		cands = append(cands, pc)
 	}
+	if whole {
+		ledger.Recent = slices.Clone(l.Recent)
+	} else {
+		// Two dirs on one subscription each counted the same launches: they
+		// go back once, for the subscription.
+		for _, c := range cands {
+			for ; pending[c.Key] > 0; pending[c.Key]-- {
+				ledger.Recent = append(ledger.Recent, placement.Pending{Key: c.Key, Name: c.Name, AtMS: now.UnixMilli()})
+			}
+		}
+	}
+	for _, n := range seconds {
+		exact = exact && n < 2
+	}
 	intent := placement.Intent{Kind: placement.Auto, Home: l.Home, Owner: l.Owner, Exclude: l.Exclude}
-	exact := true
 	if l.V < 2 {
 		// Version 1 kept no intent: an owner is known only when it was
 		// followed, and an account the picker moved a session off not at all.
 		if l.Reason == placement.ReasonOwner {
 			intent.Owner = l.Chosen
 		}
-		exact = l.Mode == "auto" && l.Reason != placement.ReasonMoved
+		exact = exact && l.Mode == "auto" && l.Reason != placement.ReasonMoved
 	}
 	d := placement.Choose(cands, ledger, intent, now)
 	out := Replay{Chosen: d.Chosen, Reason: d.Reason, Agrees: d.Chosen == l.Chosen, Exact: exact}
-	for _, c := range cands {
-		if c.Name != d.Chosen {
-			continue
+	if !out.Agrees && d.Chosen != "" {
+		if c, ok := find(l.Record, d.Chosen); ok {
+			out.After = e.after(e.keyOrName(l.Home, c), l.at, c)
 		}
-		out.Chosen = e.display(c.Key)
-		if !out.Agrees {
-			lc, _ := find(l.Record, c.Name)
-			out.After = e.after(c.Key, l.at, sessionCounted(lc))
-		}
-		break
 	}
 	return out
 }
