@@ -39,6 +39,15 @@ shell's `x-<name>`) — quote that spelling.
   each: account, how it was decided, the weekly figure and how long it had
   left, the runner-up. `--json` for the full
   records.
+- **How automatic placement has done**: `headroom launches --eval
+  [--since 7d]` — per rule version, how high the chosen accounts' session
+  windows went, windows that reached 80% while another account had room
+  (and which launches went into them: an `unplaced` window was filled by
+  pinned or named work, not by the rule), weekly room that may have renewed
+  unspent, and the past choices this binary's rule would make differently.
+  Outcomes are observed, not what another choice would have caused; a
+  `partial:` line names what could not be read. `--json` for every decision
+  and window.
 - **A `sessions:` line** under an account counts the sessions busy on it and
   the launches of the last fifteen minutes; a name in parentheses
   (`steward-home: 1 busy`) is another home on this machine spending the same
