@@ -623,7 +623,7 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
 	}
-	rec := launchlog.New(out.decision, req.now)
+	rec := launchlog.New(out.decision, req.intent, req.now)
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.cwd, req.mode, placed.Recorded
 	rec.Session = req.ref.Route
 	if err := cmp.Or(placeErr, placed.RecordErr); err != nil {

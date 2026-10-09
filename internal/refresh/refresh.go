@@ -1,5 +1,6 @@
 // Package refresh owns one request lifecycle: local eligibility, durable claim,
-// fetch, interpretation and completion. It never retries a request.
+// fetch, interpretation and completion — the ledger's record and the usage
+// log's line. It never retries a request.
 package refresh
 
 import (
@@ -16,6 +17,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
+	"github.com/qiushiyan/headroom/internal/usagelog"
 )
 
 // Candidate contains spendable credentials, never permission to fetch.
@@ -211,6 +213,13 @@ func Start(ctx context.Context, st *state.Store, candidates []*Candidate, reread
 			r.StoreErr = err
 			if !next.IsZero() {
 				r.Attempt.NextEligibleAt = next.Unix()
+			}
+			if o := r.Observation; o != nil {
+				// What the reading said, for judging placements later — even
+				// one a newer claim outran, since it measured the account all
+				// the same. A line that could not be written is unobserved
+				// time to the log's reader and nothing to anyone else.
+				_ = usagelog.Append(st.Ledger(), usagelog.New(at, c.vendor, c.key.ID(), c.key.Name, st.Home(), o.Rows, o.Allowance))
 			}
 			updates <- r
 		}(i, c, dec.Generation)

@@ -28,7 +28,7 @@ func decision(now time.Time) placement.Decision {
 func TestRecordCarriesEveryInput(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 10, 1, 10, 2, 11, 0, time.UTC)
-	rec := New(decision(now), now)
+	rec := New(decision(now), placement.Intent{Owner: "a", Exclude: "c"}, now)
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = "claude", 4242, "/tmp/p", "auto", true
 	if err := Append(root, rec); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,18 @@ func TestRecordCarriesEveryInput(t *testing.T) {
 	if r.At != "2026-10-01T10:02:11Z" || r.Chosen != "a" || r.Reason != placement.ReasonLeastLoad || r.Rule != placement.Rule || !r.Recorded {
 		t.Errorf("record = %+v", r)
 	}
+	// What the rule was asked travels with what it answered, so the line can
+	// be decided again.
+	if r.V != Version || !r.Automatic || r.Owner != "a" || r.Exclude != "c" {
+		t.Errorf("intent = v%d automatic %v owner %q exclude %q", r.V, r.Automatic, r.Owner, r.Exclude)
+	}
+	if forced := New(decision(now), placement.Intent{Kind: placement.Forced, Account: "a"}, now); forced.Automatic {
+		t.Error("a forced launch logged as the rule's choice")
+	}
 	a, b := r.Candidates[0], r.Candidates[1]
+	if a.Key != "uuid:a" || b.Key != "uuid:b" {
+		t.Errorf("keys = %q, %q", a.Key, b.Key)
+	}
 	if !a.Eligible || a.Load != 4 || a.Busy != 1 || a.Weekly != 12 || a.Source != "headroom_cache" ||
 		strings.Join(a.Statuses, ",") != "busy,shell" || a.ObservedAt == nil {
 		t.Errorf("candidate a = %+v", a)
@@ -61,7 +72,7 @@ func TestATornLineIsSkippedNotFatal(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	for range 3 {
-		if err := Append(root, New(decision(now), now)); err != nil {
+		if err := Append(root, New(decision(now), placement.Intent{}, now)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,11 +93,11 @@ func TestATornLineIsSkippedNotFatal(t *testing.T) {
 func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
-	old := New(decision(now), now.Add(-Keep-time.Hour))
+	old := New(decision(now), placement.Intent{}, now.Add(-2*Keep))
 	if err := Append(root, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := Append(root, New(decision(now), now)); err != nil {
+	if err := Append(root, New(decision(now), placement.Intent{}, now)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := Read(root, 0); len(got) != 2 {
@@ -108,7 +119,7 @@ func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if err := Append(root, New(decision(now), now)); err != ErrBusy {
+	if err := Append(root, New(decision(now), placement.Intent{}, now)); err != ErrBusy {
 		t.Fatalf("append under a held lock: %v, want ErrBusy", err)
 	}
 	if time.Since(start) > time.Second {
@@ -120,7 +131,7 @@ func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
 	syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	lock.Close()
 
-	if err := Append(root, New(decision(now), now)); err != nil {
+	if err := Append(root, New(decision(now), placement.Intent{}, now)); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ := Read(root, 0)
@@ -142,7 +153,7 @@ func TestADamagedTailDoesNotSwallowTheNextRecord(t *testing.T) {
 	if err := os.WriteFile(Path(root), []byte(`{"v":1,"at":"2026-10-01T10:0`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Append(root, New(decision(now), now)); err != nil {
+	if err := Append(root, New(decision(now), placement.Intent{}, now)); err != nil {
 		t.Fatal(err)
 	}
 	got, skipped, err := Read(root, 0)
@@ -172,10 +183,10 @@ func TestAppendsSurviveConcurrentPruning(t *testing.T) {
 			for i := range each {
 				// An old line beside every new one, so each rewrite has
 				// something to drop and really does rename.
-				old := New(decision(now), now.Add(-Keep-time.Hour))
+				old := New(decision(now), placement.Intent{}, now.Add(-2*Keep))
 				old.PID = -1
 				_ = Append(root, old)
-				rec := New(decision(now), now)
+				rec := New(decision(now), placement.Intent{}, now)
 				rec.PID = w*1000 + i
 				switch err := Append(root, rec); err {
 				case nil:

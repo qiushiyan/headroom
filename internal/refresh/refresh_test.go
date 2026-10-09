@@ -19,6 +19,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tag"
+	"github.com/qiushiyan/headroom/internal/usagelog"
 )
 
 func requestCandidate(t *testing.T, url, name, token string) *Candidate {
@@ -92,6 +93,17 @@ func TestRequestLifecycle(t *testing.T) {
 			}
 			if results != 1 {
 				t.Fatalf("results=%d", results)
+			}
+			// A reading lands in the usage log beside the ledger; a request
+			// that brought none leaves no line.
+			logged, _, err := usagelog.Read(root)
+			switch {
+			case err != nil:
+				t.Fatal(err)
+			case tc.rows < 0 && len(logged) != 0:
+				t.Errorf("a request with no reading logged %+v", logged)
+			case tc.rows >= 0 && (len(logged) != 1 || len(logged[0].Rows) != tc.rows || logged[0].Key != key.ID() || logged[0].Home != st.Home()):
+				t.Errorf("usage log = %+v", logged)
 			}
 			next := st.Load().NextEligible(key, time.Now())
 			spacing := config.DefaultSpacing
