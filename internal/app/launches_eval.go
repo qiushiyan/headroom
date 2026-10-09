@@ -167,6 +167,22 @@ func writeEval(w io.Writer, rep eval.Report) {
 	t := rep.Thresholds
 	fmt.Fprintf(w, "  replay runs %s · near a limit at %d%% · room below %d%% on a reading under %s old, or a window ended since\n",
 		rep.Rule, t.NearPercent, t.RoomBelow, render.Age(t.FreshForS))
+	var faults, differ []eval.Decision
+	for _, d := range rep.Decisions {
+		switch {
+		case d.Replay.Fault:
+			faults = append(faults, d)
+		case !d.Replay.Agrees:
+			differ = append(differ, d)
+		}
+	}
+	// Said before the table, because it undoes the table: a rule that no
+	// longer decides its own lines alike is two rules under one name, and
+	// every figure in its column mixes them.
+	if len(faults) > 0 {
+		fmt.Fprintf(w, "  fault: %d line(s) %s decided, with their whole input on record, %s now decides differently — a line is missing an input the rule reads, or the rule changed without a new name (placement.Rule); its column mixes both. See replay faults below.\n",
+			len(faults), rep.Rule, rep.Rule)
+	}
 	if len(rep.Rules) == 0 {
 		return
 	}
@@ -252,8 +268,15 @@ func writeEval(w io.Writer, rep eval.Report) {
 	decided("replay agrees", func(s eval.RuleSummary) string {
 		r := s.Replay
 		out := fmt.Sprintf("%d of %d", r.Agreed, r.Replayed)
+		var notes []string
 		if r.Inexact > 0 {
-			out += fmt.Sprintf(" (%d inexact)", r.Inexact)
+			notes = append(notes, fmt.Sprintf("%d inexact", r.Inexact))
+		}
+		if r.Faults > 0 {
+			notes = append(notes, fmt.Sprintf("%d fault", r.Faults))
+		}
+		if len(notes) > 0 {
+			out += " (" + strings.Join(notes, ", ") + ")"
 		}
 		return out
 	})
@@ -312,12 +335,13 @@ func writeEval(w io.Writer, rep eval.Report) {
 			}
 		}
 	})
-	var differ []eval.Decision
-	for _, d := range rep.Decisions {
-		if !d.Replay.Agrees {
-			differ = append(differ, d)
+	writeEvidence(w, "replay faults — lines "+rep.Rule+" decided and now decides differently", len(faults), func(yield func(string) bool) {
+		for i := len(faults) - 1; i >= 0; i-- {
+			if !yield(disagreementLine(faults[i], rep.Rule, rep.Home)) {
+				return
+			}
 		}
-	}
+	})
 	writeEvidence(w, "replay disagreements — what "+rep.Rule+" would choose from the same input; each account's window as observed, not as the other choice would have left it",
 		len(differ), func(yield func(string) bool) {
 			for i := len(differ) - 1; i >= 0; i-- {

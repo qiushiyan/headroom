@@ -1096,9 +1096,12 @@ was shown and chose, and what every account's windows did afterwards.
   window is shown as observed, with the launch elsewhere.
 - **A rule that decides differently has a new name.** The replay of a line
   decided by the rule it runs must agree, so an input the line does not carry
-  shows as a disagreement and so does a rule changed under its old name.
-  Lines frozen when a rule was named (`internal/eval/testdata/<rule>.jsonl`)
-  are replayed by the suite, and a rule with no frozen lines fails it.
+  shows as a disagreement and so does a rule changed under its old name. On
+  a line with its whole input on record such a disagreement is a *fault*,
+  said before the report's table, because the rule's column then mixes the
+  rule that made those lines with the one carrying its name. Lines frozen when a rule was named
+  (`internal/eval/testdata/<rule>.jsonl`) are replayed by the suite, and a
+  rule with no frozen lines fails it.
 
 ## A second home
 

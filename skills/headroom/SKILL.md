@@ -46,8 +46,10 @@ shell's `x-<name>`) — quote that spelling.
   pinned or named work, not by the rule), weekly room that may have renewed
   unspent, and the past choices this binary's rule would make differently.
   Outcomes are observed, not what another choice would have caused; a
-  `partial:` line names what could not be read. `--json` for every decision
-  and window.
+  `partial:` line names what could not be read, and a `fault:` line means
+  the current rule decides some of its own past launches differently — its
+  figures mix the rule that made them with the one carrying its name now.
+  `--json` for every decision and window.
 - **A `sessions:` line** under an account counts the sessions busy on it and
   the launches of the last fifteen minutes; a name in parentheses
   (`steward-home: 1 busy`) is another home on this machine spending the same

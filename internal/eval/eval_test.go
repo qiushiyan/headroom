@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -216,6 +217,41 @@ func TestFrozenLinesOfThisRuleAreDecidedAlike(t *testing.T) {
 			t.Errorf("rule %s no longer decides a line it made (%s chose %s, now %s): give the changed rule a new name",
 				placement.Rule, d.At, d.Chosen, d.Replay.Chosen)
 		}
+	}
+}
+
+// A fault is a disagreement no difference between rules explains: a line the
+// replayed rule itself decided, whole input on record, now decided otherwise
+// — here, a rule whose choice changed under its old name. Another rule's
+// disagreement is the replay working, and an inexact line's is its missing
+// input.
+func TestAFaultIsADisagreementNoRuleDifferenceExplains(t *testing.T) {
+	now := at(0)
+	soon, week := at(2*time.Hour), at(3*24*time.Hour)
+	decided := func() Launch {
+		return auto(now, cand("a", now, limits(10, 10, soon, week)), cand("b", now, limits(40, 10, soon, week)))
+	}
+	changed := decided()
+	changed.Chosen = "b" // what a rule renamed in nothing but its code would have logged
+	older := decided()
+	older.Chosen, older.Rule = "b", "load-0"
+	v1 := line(now, "picker", placement.Intent{Exclude: "a"}, placement.Ledger{},
+		cand("a", now, limits(0, 10, soon, week)), cand("b", now, limits(30, 10, soon, week)))
+	v1.V, v1.Automatic, v1.Exclude = 1, false, ""
+
+	rep := build([]Launch{decided(), changed, older, v1}, nil, now.Add(time.Hour))
+	var faults []bool
+	for _, d := range rep.Decisions {
+		faults = append(faults, d.Replay.Fault)
+	}
+	if want := []bool{false, true, false, false}; fmt.Sprint(faults) != fmt.Sprint(want) {
+		t.Errorf("faults = %v, want %v", faults, want)
+	}
+	if s := summary(t, rep, placement.Rule); s.Replay.Faults != 1 || s.Replay.Replayed != 3 {
+		t.Errorf("this rule's replay = %+v", s.Replay)
+	}
+	if s := summary(t, rep, "load-0"); s.Replay.Faults != 0 || s.Replay.Agreed != 0 {
+		t.Errorf("an older rule's replay = %+v", s.Replay)
 	}
 }
 

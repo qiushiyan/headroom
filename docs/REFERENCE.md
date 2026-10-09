@@ -112,7 +112,12 @@ naming a vendor this machine does not have fails saying so, except
   on a `partial:` line. It reads the launch logs of every home on the ledger
   and the usage log, asks nothing and writes nothing. These are observed
   outcomes — a replayed choice's window is shown as it was, not as it would
-  have been. `--json` carries every decision, window and renewal (schema 1).
+  have been. A `fault:` line before the table counts the launches this
+  binary's rule decided, whole input on record, that it now decides
+  differently: a line is missing an input the rule reads, or the rule
+  changed without a new name, and that rule's column mixes both. `--json`
+  carries every decision, window and renewal (schema 1); a fault is
+  `replay.fault`.
 - **`headroom refresh`:** asks the usage endpoint about every account that may
   be asked, stores the answers and prints nothing — the round `--json` runs,
   without the health probes or the document. An automatic launch leaves one
