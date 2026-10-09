@@ -99,6 +99,20 @@ naming a vendor this machine does not have fails saying so, except
   weekly figure it was decided on, how long that week had left, and the
   runner-up. `--json` emits the records unchanged, one per
   line, with every account's figures as they were counted.
+- **`headroom launches --eval [--since <7d | 36h | 2026-10-01>] [--json]`:**
+  how automatic placement has done, a column per rule version and one for
+  windows no automatic launch went into: the decisions and how old their
+  figures were, how high the chosen account's session window (and the
+  runner-up's) went after each launch, windows that reached 80% and how long
+  another account had room meanwhile, weekly room that may have renewed
+  unspent (a figure read before a renewal is a lower bound, so the room is
+  an upper one), and every automatic launch replayed through this binary's
+  rule with the choices it would make differently. Time across every account
+  follows, owned by no rule; a home or file that could not be read is named
+  on a `partial:` line. It reads the launch logs of every home on the ledger
+  and the usage log, asks nothing and writes nothing. These are observed
+  outcomes — a replayed choice's window is shown as it was, not as it would
+  have been. `--json` carries every decision, window and renewal (schema 1).
 - **`headroom refresh`:** asks the usage endpoint about every account that may
   be asked, stores the answers and prints nothing — the round `--json` runs,
   without the health probes or the document. An automatic launch leaves one
@@ -237,8 +251,10 @@ The step, the 80% threshold and the fifteen minutes are policy, not
 measurements.
 
 Each launch appends one line to `launches.jsonl` beside `state.json`, with
-every account's figures as counted. Nothing that routes reads that file:
-deleting it changes no launch.
+everything the choice was made from, and every usage reading headroom
+fetches appends one to `usage.jsonl` beside the ledger's `state.json`.
+`headroom launches --eval` joins the two. Nothing that routes reads either
+file: deleting them changes no launch.
 
 ### A second home on the same machine
 
@@ -267,7 +283,7 @@ busy session on a subscription counts for both, whichever home it is in.
 What a home owns stays its own: its dirs and logins, its `.current`, its
 session store, its re-homes (in its own `state.json`), its launch log and
 its `--last`. The first home's board names the other's share of each
-account's load.
+account's load, and both homes' readings land in the first home's usage log.
 
 A home whose `HOME` is not the user's login home launches its primary with
 `CLAUDE_CONFIG_DIR` set to its dir, never by the variable's absence, so it
@@ -302,9 +318,9 @@ it — changing the default steers new sessions; an old one moves to another acc
 
 headroom is **read-only** toward that system: it never refreshes a token and
 no observation path writes anything of Claude Code's — Claude Code owns login
-state. It keeps three files of its own (`state.json`, `.current` and
-`launches.jsonl`), and a fourth, `.ledger`, when `accounts ledger` writes
-it; the only
+state. It keeps files of its own — `state.json`, `.current`, the launch log
+`launches.jsonl` and the usage log `usage.jsonl` — and `.ledger` when
+`accounts ledger` writes it; the only
 vendor-state mutations are explicit user commands naming their object — the
 session picker's `rename`/`delete`, and `accounts remove` deleting the
 removed account's own Keychain item — all refused while liveness is active

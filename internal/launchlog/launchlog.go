@@ -9,20 +9,21 @@
 package launchlog
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"io/fs"
-	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/jsonl"
 	"github.com/qiushiyan/headroom/internal/placement"
 )
 
-// Version is the record shape this binary writes.
-const Version = 1
+// Version is the record shape this binary writes. Version 1 carried the
+// candidates as the rule counted them and nothing more: no account keys, no
+// intent beyond the mode, busy sessions and recent launches as counts, and
+// times to the second. A reader of a version 1 line knows a candidate only by
+// its name in the home that logged it, cannot always tell an automatic choice
+// from a forced one, and cannot rebuild the counts a different rule would
+// have made.
+const Version = 2
 
 // The file is bounded by age, and only once it has grown past MaxBytes: a
 // rewrite on every append would be pure contention for a file that gains a few
@@ -38,7 +39,8 @@ func Path(accountsRoot string) string { return filepath.Join(accountsRoot, "laun
 // Record is one launch.
 type Record struct {
 	V      int    `json:"v"`
-	At     string `json:"at"` // RFC3339 UTC
+	At     string `json:"at"`    // RFC3339 UTC
+	AtMS   int64  `json:"at_ms"` // the same instant to the millisecond: the clock the decision counted recent launches by
 	Vendor string `json:"vendor"`
 	PID    int    `json:"pid"`
 	CWD    string `json:"cwd"`
@@ -50,6 +52,18 @@ type Record struct {
 	Rule     string `json:"rule"`
 	Chosen   string `json:"chosen"`
 	RunnerUp string `json:"runner_up,omitempty"`
+
+	// Automatic says the rule chose. Owner and Exclude are the rest of what
+	// it was asked: the account that last drove the session the launch
+	// names, and the account it must not choose. Recent is the record of
+	// launches the rule read, before this one joined it. Together with the
+	// candidates' busy processes and last placements they are the decision's
+	// whole input, so a rule can be run over this line again — including one
+	// that counts load differently.
+	Automatic bool                `json:"automatic"`
+	Owner     string              `json:"owner,omitempty"`
+	Exclude   string              `json:"exclude,omitempty"`
+	Recent    []placement.Pending `json:"recent"`
 
 	// Session is the session id the launch named, "" when it named none.
 	Session string `json:"session"`
@@ -65,6 +79,7 @@ type Record struct {
 // Candidate is one account as the rule counted it.
 type Candidate struct {
 	Name       string   `json:"name"`
+	Key        string   `json:"key"` // the subscription's ledger key: what joins this line to the usage log
 	Eligible   bool     `json:"eligible"`
 	Excluded   string   `json:"excluded,omitempty"`
 	NearLimit  bool     `json:"near_limit"`
@@ -73,16 +88,25 @@ type Candidate struct {
 	Limits     []Limit  `json:"limits"`
 	Statuses   []string `json:"statuses"` // every live session's status, as the vendor wrote it
 	Busy       int      `json:"busy"`
+	BusyProcs  []Proc   `json:"busy_procs"` // the processes behind Busy, before the rule merged them with recent launches
 	Pending    int      `json:"pending"`
 	Load       int      `json:"load"`
 	Weekly     int      `json:"weekly"`
 	Week       Week     `json:"week"`
-	LastPlaced *string  `json:"last_placed_at,omitempty"`
+	LastPlaced *string  `json:"last_placed_at,omitempty"` // RFC3339 UTC to the millisecond: a tie between two accounts is broken by it
 
 	// Homes splits busy and pending by the home they came from, by accounts
 	// root: another home holding logins of the same subscription puts its
 	// sessions and launches on the same count.
 	Homes []Share `json:"homes,omitempty"`
+}
+
+// Proc is one busy session's process: pids recycle, so its start travels with
+// it, and Home is the accounts root whose registry reported it.
+type Proc struct {
+	PID       int    `json:"pid"`
+	StartedMS int64  `json:"started_ms"`
+	Home      string `json:"home,omitempty"`
 }
 
 // Share is one home's part of a candidate's busy sessions and pending launches.
@@ -118,18 +142,21 @@ type Limit struct {
 	Basis    string  `json:"basis"`
 }
 
-// New builds a record from a decision. What the decision does not know — the
-// vendor, the process, how the account came to be decided — is the caller's to
-// add.
-func New(d placement.Decision, at time.Time) Record {
+// New builds a record from a decision and everything it was decided on: the
+// candidates as the rule was handed them, the record of launches it read, and
+// what it was asked. What none of them knows — the vendor, the process, how
+// the account came to be decided — is the caller's to add.
+func New(d placement.Decision, cands []placement.Candidate, ledger placement.Ledger, intent placement.Intent, at time.Time) Record {
 	r := Record{
-		V: Version, At: at.UTC().Format(time.RFC3339),
+		V: Version, At: at.UTC().Format(time.RFC3339), AtMS: at.UnixMilli(),
 		Reason: d.Reason, Rule: d.Rule, Chosen: d.Chosen, RunnerUp: d.RunnerUp,
+		Automatic: intent.Kind == placement.Auto, Owner: intent.Owner, Exclude: intent.Exclude,
+		Recent:     append([]placement.Pending{}, ledger.Recent...),
 		Candidates: make([]Candidate, 0, len(d.Candidates)),
 	}
-	for _, c := range d.Candidates {
+	for i, c := range d.Candidates {
 		lc := Candidate{
-			Name: c.Name, Eligible: c.Excluded == "", Excluded: c.Excluded, NearLimit: c.NearLimit,
+			Name: c.Name, Key: c.Key, Eligible: c.Excluded == "", Excluded: c.Excluded, NearLimit: c.NearLimit,
 			Source: c.Source, Statuses: c.Statuses, Busy: c.Busy, Pending: c.Pending, Load: c.Load, Weekly: c.Week.Counted,
 			Week: Week{
 				Kind: c.Week.Kind, Label: c.Week.Label, Counted: c.Week.Counted,
@@ -140,11 +167,19 @@ func New(d placement.Decision, at time.Time) Record {
 		if lc.Statuses == nil {
 			lc.Statuses = []string{}
 		}
+		// The rule counts its candidates in the order it was handed them.
+		lc.BusyProcs = []Proc{}
+		if i < len(cands) && cands[i].Name == c.Name {
+			for _, p := range cands[i].Busy {
+				lc.BusyProcs = append(lc.BusyProcs, Proc{PID: p.PID, StartedMS: p.StartedMS, Home: p.Home})
+			}
+		}
 		if c.ObservedAt > 0 {
 			lc.ObservedAt = stamp(time.Unix(c.ObservedAt, 0))
 		}
 		if c.LastPlacedMS > 0 {
-			lc.LastPlaced = stamp(time.UnixMilli(c.LastPlacedMS))
+			s := time.UnixMilli(c.LastPlacedMS).UTC().Format(millis)
+			lc.LastPlaced = &s
 		}
 		for _, sh := range c.Shares {
 			lc.Homes = append(lc.Homes, Share{Home: sh.Home, Busy: sh.Busy, Pending: sh.Pending})
@@ -161,6 +196,10 @@ func New(d placement.Decision, at time.Time) Record {
 	return r
 }
 
+// millis is RFC3339 to the millisecond, for the times a decision compares
+// between candidates.
+const millis = "2006-01-02T15:04:05.000Z07:00"
+
 func stamp(t time.Time) *string {
 	s := t.UTC().Format(time.RFC3339)
 	return &s
@@ -168,172 +207,28 @@ func stamp(t time.Time) *string {
 
 // ErrBusy is Append's answer when the log is being rewritten and stayed so past
 // the wait: the record was not written, and the caller says so.
-var ErrBusy = errors.New("launch log is busy")
+var ErrBusy = jsonl.ErrBusy
 
-const (
-	appendWait = 250 * time.Millisecond
-	lockPoll   = 10 * time.Millisecond
-)
+// file is the log of one accounts root, bounded as the variables say now.
+func file(accountsRoot string) jsonl.Log {
+	return jsonl.Log{Path: Path(accountsRoot), MaxBytes: MaxBytes, Keep: Keep, Slack: Keep / 10}
+}
 
-// Append writes one record as one line, in one write, so concurrent appenders
-// interleave whole lines. A failure is the caller's to mention and never to
-// act on: a launch that could not be logged is still a launch.
-//
-// Appending and the rewrite that bounds the file are one protocol on the log's
-// own lock: appenders share it, the rewrite holds it alone. Without that, a
-// rewrite renames a new file over the one an appender has just written to, and
-// a launch that succeeded leaves no line. The state lock is never involved —
-// routing must not wait on a file it does not read — and an appender waits
-// only as long as a rewrite takes, then gives up and reports it.
+// Append writes one record as one line. A failure is the caller's to mention
+// and never to act on: a launch that could not be logged is still a launch.
+// The state lock is never involved — routing must not wait on a file it does
+// not read.
 func Append(accountsRoot string, r Record) error {
-	line, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(accountsRoot, 0o755); err != nil {
-		return err
-	}
-	path := Path(accountsRoot)
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := flock(lock, syscall.LOCK_SH, appendWait); err != nil {
-		return err
-	}
-	size, err := appendLine(path, line)
-	_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	if err == nil && size > MaxBytes {
-		prune(path, lock, time.Now())
-	}
-	return err
-}
-
-// appendLine writes the record and reports the file's size afterwards. A file
-// that does not end in a newline holds a line some writer never finished; the
-// record then starts on a line of its own, so the damage costs the damaged
-// line and not the launch after it.
-func appendLine(path string, line []byte) (int64, error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return 0, err
-	}
-	out := make([]byte, 0, len(line)+2)
-	if fi.Size() > 0 {
-		last := make([]byte, 1)
-		if _, err := f.ReadAt(last, fi.Size()-1); err == nil && last[0] != '\n' {
-			out = append(out, '\n')
-		}
-	}
-	out = append(append(out, line...), '\n')
-	if _, err := f.Write(out); err != nil {
-		return 0, err
-	}
-	return fi.Size() + int64(len(out)), nil
-}
-
-// flock takes the lock in the given mode, polling for at most wait.
-func flock(f *os.File, how int, wait time.Duration) error {
-	deadline := time.Now().Add(wait)
-	for {
-		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) {
-			return err
-		}
-		if !time.Now().Before(deadline) {
-			return ErrBusy
-		}
-		time.Sleep(lockPoll)
-	}
-}
-
-// prune rewrites the log without the lines older than Keep, holding the log's
-// lock alone so no appender writes to the file being replaced. It does not
-// wait for the lock: an appender holding it is about to make the same check,
-// and a rewrite skipped now happens at a later append. A line that does not
-// parse, or carries no time, is dropped with the old ones.
-func prune(path string, lock *os.File, now time.Time) {
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	cutoff := now.Add(-Keep)
-	var kept bytes.Buffer
-	dropped := false
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
-		var head struct {
-			At string `json:"at"`
-		}
-		at, perr := time.Time{}, json.Unmarshal(line, &head)
-		if perr == nil {
-			at, perr = time.Parse(time.RFC3339, head.At)
-		}
-		if perr != nil || at.Before(cutoff) {
-			dropped = true
-			continue
-		}
-		kept.Write(line)
-		kept.WriteByte('\n')
-	}
-	if !dropped {
-		return
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "launches-*.jsonl")
-	if err != nil {
-		return
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.Write(kept.Bytes()); err != nil {
-		tmp.Close()
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		return
-	}
-	_ = os.Rename(tmp.Name(), path)
+	return file(accountsRoot).Append(r)
 }
 
 // Read returns the newest n records, oldest first; n <= 0 means all of them.
 // A line that does not parse is skipped and counted: a torn final line during a
 // concurrent append is ordinary. An absent file is an empty log.
 func Read(accountsRoot string, n int) (records []Record, skipped int, err error) {
-	data, err := os.ReadFile(Path(accountsRoot))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, 0, nil
-		}
-		return nil, 0, err
-	}
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
-		var r Record
-		if json.Unmarshal(line, &r) != nil || r.At == "" {
-			skipped++
-			continue
-		}
-		records = append(records, r)
-	}
+	records, skipped, err = jsonl.Read(Path(accountsRoot), func(r Record) bool { return r.At != "" })
 	if n > 0 && len(records) > n {
 		records = records[len(records)-n:]
 	}
-	return records, skipped, nil
+	return records, skipped, err
 }

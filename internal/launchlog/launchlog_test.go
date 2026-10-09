@@ -12,23 +12,29 @@ import (
 	"github.com/qiushiyan/headroom/internal/placement"
 )
 
-func decision(now time.Time) placement.Decision {
+// record is a launch logged as placeLaunch logs it: the decision, and the
+// candidates, record of launches and intent it was made from.
+func record(now time.Time, intent placement.Intent) Record {
 	cands := []placement.Candidate{
 		{Name: "a", Key: "uuid:a", ObservedAt: now.Add(-time.Minute).Unix(), Source: "headroom_cache",
 			Limits: []placement.Limit{
 				{Kind: "session", Label: "5h session", Percent: 34, ResetAt: now.Add(time.Hour).Unix(), Session: true},
 				{Kind: "weekly_all", Label: "All models (7d)", Percent: 12},
 			},
-			Busy: []placement.Proc{{PID: 9, StartedMS: 1}}, Statuses: []string{"busy", "shell"}},
+			Busy: []placement.Proc{{PID: 9, StartedMS: 1, Home: "/h"}}, Statuses: []string{"busy", "shell"}},
 		{Name: "b", Key: "uuid:b", Excluded: "not logged in"},
 	}
-	return placement.Choose(cands, placement.Ledger{}, placement.Intent{}, now)
+	ledger := placement.Ledger{
+		Recent: []placement.Pending{{Key: "uuid:b", Name: "b", PID: 3, AtMS: now.Add(-time.Minute).UnixMilli() + 7, Home: "/h"}},
+		Last:   map[string]placement.Last{"uuid:a": {Name: "a", AtMS: now.Add(-time.Hour).UnixMilli() + 250}},
+	}
+	return New(placement.Choose(cands, ledger, intent, now), cands, ledger, intent, now)
 }
 
 func TestRecordCarriesEveryInput(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 10, 1, 10, 2, 11, 0, time.UTC)
-	rec := New(decision(now), now)
+	rec := record(now, placement.Intent{Owner: "a", Exclude: "c"})
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = "claude", 4242, "/tmp/p", "auto", true
 	if err := Append(root, rec); err != nil {
 		t.Fatal(err)
@@ -38,10 +44,32 @@ func TestRecordCarriesEveryInput(t *testing.T) {
 		t.Fatalf("read: %d records, %d skipped, %v", len(got), skipped, err)
 	}
 	r := got[0]
-	if r.At != "2026-10-01T10:02:11Z" || r.Chosen != "a" || r.Reason != placement.ReasonLeastLoad || r.Rule != placement.Rule || !r.Recorded {
+	if r.At != "2026-10-01T10:02:11Z" || r.Chosen != "a" || r.Reason != placement.ReasonOwner || r.Rule != placement.Rule || !r.Recorded {
 		t.Errorf("record = %+v", r)
 	}
+	// What the rule was asked travels with what it answered, so the line can
+	// be decided again.
+	if r.V != Version || !r.Automatic || r.Owner != "a" || r.Exclude != "c" {
+		t.Errorf("intent = v%d automatic %v owner %q exclude %q", r.V, r.Automatic, r.Owner, r.Exclude)
+	}
+	if forced := record(now, placement.Intent{Kind: placement.Forced, Account: "a"}); forced.Automatic {
+		t.Error("a forced launch logged as the rule's choice")
+	}
 	a, b := r.Candidates[0], r.Candidates[1]
+	if a.Key != "uuid:a" || b.Key != "uuid:b" {
+		t.Errorf("keys = %q, %q", a.Key, b.Key)
+	}
+	// The raw input, not only the counts: the busy process, the record of
+	// launches, and the last placement to the millisecond that breaks ties.
+	if len(a.BusyProcs) != 1 || a.BusyProcs[0] != (Proc{PID: 9, StartedMS: 1, Home: "/h"}) || b.BusyProcs == nil {
+		t.Errorf("busy procs = %+v, %+v", a.BusyProcs, b.BusyProcs)
+	}
+	if len(r.Recent) != 1 || r.Recent[0].PID != 3 || r.Recent[0].AtMS != now.Add(-time.Minute).UnixMilli()+7 {
+		t.Errorf("recent = %+v", r.Recent)
+	}
+	if a.LastPlaced == nil || *a.LastPlaced != "2026-10-01T09:02:11.250Z" {
+		t.Errorf("last placed = %v", a.LastPlaced)
+	}
 	if !a.Eligible || a.Load != 4 || a.Busy != 1 || a.Weekly != 12 || a.Source != "headroom_cache" ||
 		strings.Join(a.Statuses, ",") != "busy,shell" || a.ObservedAt == nil {
 		t.Errorf("candidate a = %+v", a)
@@ -61,7 +89,7 @@ func TestATornLineIsSkippedNotFatal(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	for range 3 {
-		if err := Append(root, New(decision(now), now)); err != nil {
+		if err := Append(root, record(now, placement.Intent{})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,11 +110,11 @@ func TestATornLineIsSkippedNotFatal(t *testing.T) {
 func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
-	old := New(decision(now), now.Add(-Keep-time.Hour))
+	old := record(now.Add(-2*Keep), placement.Intent{})
 	if err := Append(root, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := Append(root, New(decision(now), now)); err != nil {
+	if err := Append(root, record(now, placement.Intent{})); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := Read(root, 0); len(got) != 2 {
@@ -108,7 +136,7 @@ func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if err := Append(root, New(decision(now), now)); err != ErrBusy {
+	if err := Append(root, record(now, placement.Intent{})); err != ErrBusy {
 		t.Fatalf("append under a held lock: %v, want ErrBusy", err)
 	}
 	if time.Since(start) > time.Second {
@@ -120,7 +148,7 @@ func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
 	syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	lock.Close()
 
-	if err := Append(root, New(decision(now), now)); err != nil {
+	if err := Append(root, record(now, placement.Intent{})); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ := Read(root, 0)
@@ -142,7 +170,7 @@ func TestADamagedTailDoesNotSwallowTheNextRecord(t *testing.T) {
 	if err := os.WriteFile(Path(root), []byte(`{"v":1,"at":"2026-10-01T10:0`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Append(root, New(decision(now), now)); err != nil {
+	if err := Append(root, record(now, placement.Intent{})); err != nil {
 		t.Fatal(err)
 	}
 	got, skipped, err := Read(root, 0)
@@ -172,10 +200,10 @@ func TestAppendsSurviveConcurrentPruning(t *testing.T) {
 			for i := range each {
 				// An old line beside every new one, so each rewrite has
 				// something to drop and really does rename.
-				old := New(decision(now), now.Add(-Keep-time.Hour))
+				old := record(now.Add(-2*Keep), placement.Intent{})
 				old.PID = -1
 				_ = Append(root, old)
-				rec := New(decision(now), now)
+				rec := record(now, placement.Intent{})
 				rec.PID = w*1000 + i
 				switch err := Append(root, rec); err {
 				case nil:

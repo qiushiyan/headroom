@@ -541,18 +541,7 @@ func (s Snapshot) Owners() map[string]sessions.OwnerRec {
 // Placements is the record of launches as it stood when the document was read.
 // It is the caller's to read, never to keep: a choice made on it is advice, and
 // only Place — under the lock — may record one.
-func (s Snapshot) Placements() placement.Ledger {
-	out := placement.Ledger{Recent: append([]placement.Pending(nil), s.d.placements.Recent...)}
-	if len(s.d.placements.Last) > 0 {
-		out.Last = make(map[string]placement.Last, len(s.d.placements.Last))
-		maps.Copy(out.Last, s.d.placements.Last)
-	}
-	if len(s.d.placements.ByHome) > 0 {
-		out.ByHome = make(map[string]placement.Last, len(s.d.placements.ByHome))
-		maps.Copy(out.ByHome, s.d.placements.ByHome)
-	}
-	return out
-}
+func (s Snapshot) Placements() placement.Ledger { return s.d.placements.Clone() }
 
 // OwnersReadable reports whether the sessions section decoded. False means
 // routing falls back to derived evidence, which the resume picker says out

@@ -1,7 +1,8 @@
 package app
 
 // The launches surface: what the launch log holds, for a person. It reads the
-// log and nothing else, and nothing that routes reads the log at all.
+// log and nothing else, and nothing that routes reads the log at all. --eval
+// is its other half (launches_eval.go): what followed the launches.
 
 import (
 	"encoding/json"
@@ -25,12 +26,28 @@ func runLaunches(scopes []config.Scope, args []string) int {
 }
 
 func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
-	n, jsonMode := defaultLaunches, false
+	n, jsonMode, evaluate, nSet := defaultLaunches, false, false, false
+	var since time.Time
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonMode = true
+		case "--eval":
+			evaluate = true
+		case "--since":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "headroom launches: --since needs a span or a date")
+				return 2
+			}
+			i++
+			t, err := parseSince(args[i], time.Now())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
+				return 2
+			}
+			since = t
 		case "-n":
+			nSet = true
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "headroom launches: -n needs a count")
 				return 2
@@ -46,6 +63,16 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 			fmt.Fprintf(os.Stderr, "headroom launches: unknown argument %q\n", args[i])
 			return 2
 		}
+	}
+	switch {
+	case evaluate && nSet:
+		fmt.Fprintln(os.Stderr, "headroom launches: --eval reads every line — -n does not apply; --since narrows it")
+		return 2
+	case !evaluate && !since.IsZero():
+		fmt.Fprintln(os.Stderr, "headroom launches: --since narrows --eval")
+		return 2
+	case evaluate:
+		return runEval(w, scopes, since, jsonMode, time.Now())
 	}
 
 	var all []launchlog.Record

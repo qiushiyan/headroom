@@ -23,6 +23,7 @@ package placement
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"math/bits"
 	"slices"
 	"strings"
@@ -156,6 +157,11 @@ type Ledger struct {
 	Recent []Pending       `json:"recent,omitempty"`
 	Last   map[string]Last `json:"last,omitempty"`
 	ByHome map[string]Last `json:"by_home,omitempty"`
+}
+
+// Clone is a copy that a later Record or Prune on the original leaves alone.
+func (l Ledger) Clone() Ledger {
+	return Ledger{Recent: slices.Clone(l.Recent), Last: maps.Clone(l.Last), ByHome: maps.Clone(l.ByHome)}
 }
 
 // Record adds a launch on an account, made by the home at that accounts root.

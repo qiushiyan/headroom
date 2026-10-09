@@ -90,8 +90,9 @@ state — Claude Code owns all of it. `login` is no exception: it runs Claude
 Code's own login command, and Claude Code stores what results. What it writes is its own: `.current`,
 one `state.json` holding non-secret request timestamps, the usage
 responses it fetched itself, session re-homes and the record of recent
-launches, `launches.jsonl`, the launch log nothing routes by, and — only
-when `accounts ledger` is asked to — `.ledger`. Three documented
+launches, `launches.jsonl` and `usage.jsonl`, the launch log and the usage
+log nothing routes by (see Judging placement), and — only when `accounts
+ledger` is asked to — `.ledger`. Three documented
 exceptions, every one an explicit user command naming its object and refused
 while a session is live or liveness is unverifiable: the session picker's `r`
 appends one vendor-format `custom-title` record (exactly what the native
@@ -1026,20 +1027,78 @@ that turning auto on forgets the pin.
   apart: where a session is routed (the re-home), which account drove it (the
   registry and prompt history), and how much load is on its way (the
   placements).
-- **The log explains; it is never an input.** `launches.jsonl` holds one line
-  per launch with every candidate as counted. No routing code reads it, it
-  has its own lock, and it is bounded by age once it grows. Appenders hold
-  that lock shared and the pruner holds it exclusively, since a prune
-  rewrites the file and a record appended to the old one meanwhile would be
-  lost; an append waits a quarter of a second for a prune and then gives the
-  line up, and one that follows a torn line starts on a new one. Replaying
-  another rule over it shows what that rule would have decided on the
-  recorded inputs, not what the usage would then have been.
-
 Codex follows the same mode through its own `.current`, with what it has:
 the shortest window of its main rate limit as the session window, its
 allowance as the block, and launches as the only load. It has no registry to
 read and no session ownership, so `resume` is placed like a new session.
+
+### Judging placement
+
+The rule's constants are policy, and a policy is changed by seeing what it
+did. Two logs make that possible, and `headroom launches --eval`
+(`internal/eval`, pure over what the logs hold) reads them: what each launch
+was shown and chose, and what every account's windows did afterwards.
+
+- **The logs explain; they are never an input.** No routing, claim or
+  rendering reads either file, so deleting one, corrupting it or holding its
+  lock changes nothing headroom does. Both are append-only lines on their own
+  lock (`internal/jsonl`): appenders hold it shared and the pruner holds it
+  exclusively, since a prune rewrites the file and a line appended to the old
+  one meanwhile would be lost; an append waits a quarter of a second for a
+  prune and then gives the line up, and one that follows a torn line starts
+  on a new one. A file is bounded by age once it grows past its size bound,
+  and only its head is read to decide whether a rewrite would drop anything —
+  lines are appended in time order, so the oldest are there — and a rewrite
+  waits until the oldest line is a tenth of the retention past it, so a file
+  in its steady state is not rewritten on every append.
+- **A launch line is the decision's whole input.** `launches.jsonl`, per
+  home, holds every candidate as counted and as the rule was handed it: its
+  subscription key, its busy processes, its last placement to the
+  millisecond, the record of recent launches the rule read (`state.Place`
+  returns it before recording the launch), the intent, and the decision's
+  millisecond. So any rule can be run over a line again, one that counts load
+  differently included. Version 1 lines carried counts, names and seconds
+  only; they are rebuilt from those and marked inexact wherever that could
+  decide.
+- **A usage line is a reading, decoded.** `refresh` appends each reading it
+  receives to `usage.jsonl` beside the subscription ledger — the ledger
+  root's, so both homes' readings of a subscription land in one file — after
+  recording it in the store, and a line that cannot be written costs the line
+  alone. It holds the parser's decoded rows with their identity and drift
+  marks, never the body: the vendor's parser stays the only reader of vendor
+  bodies, and the vendor helpers (`usage.SessionWindow`, `General`, `Period`)
+  read a logged row at report time as they read a live one. A reading
+  identical to the last one the same process logged is skipped until that
+  line is fifteen minutes old, so an open board does not write a line a
+  minute per account and a longer gap between an account's lines is time
+  nobody observed it.
+- **A window is charged to whoever put work in it.** Readings group into
+  windows by limit and reset, and every launch joins one window per limit:
+  the one open at it, or the one that opens within the fifteen minutes a
+  launch counts as load, since a window that starts with a request opens a
+  moment after the launch that made it. A window whose length nothing states
+  begins no earlier than the previous window's reset and at most six hours
+  before its own. Each outcome — the chosen account's window after a launch,
+  a window that reached 80%, a weekly renewal — counts under the rule of the
+  newest automatic launch into that window, whichever home made it, and
+  under *unplaced* when only pinned, named or resumed work went there. Time
+  across every account is reported beside them and owned by no rule: the
+  logs say which launches went into a window, never which rule a moment
+  belongs to, and charging time to the rule in force would charge it for
+  windows pinned launches filled.
+- **Every figure says which way it bounds.** A percent never falls within a
+  window, so a window near its limit stays near until its reset; the last
+  reading before a renewal is usage at least that, and the room it left at
+  most the rest. Another account had room only on a fresh reading or a
+  session window that has ended since an older one — an old reading of a
+  window still open is a lower bound and shows none. The outcomes are what
+  happened, never what another choice would have caused: a replayed choice's
+  window is shown as observed, with the launch elsewhere.
+- **A rule that decides differently has a new name.** The replay of a line
+  decided by the rule it runs must agree, so an input the line does not carry
+  shows as a disagreement and so does a rule changed under its old name.
+  Lines frozen when a rule was named (`internal/eval/testdata/<rule>.jsonl`)
+  are replayed by the suite, and a rule with no frozen lines fails it.
 
 ## A second home
 
@@ -1083,9 +1142,11 @@ spend it.
   records named by account names that both homes spell alike — and each
   home's sweep sees only its own store.
 - **What is shared and what is not.** The ledger root's `state.json` holds the
-  request ledger, the stored responses, the placements and the member homes.
-  Each home's own `state.json` holds its re-homes, and its launch log, its
-  registries and its prompt history are its own. A session picker lists its
+  request ledger, the stored responses, the placements and the member homes,
+  and its `usage.jsonl` every reading either home fetched. Each home's own
+  `state.json` holds its re-homes, and its launch log, its registries and its
+  prompt history are its own; `launches --eval` reads every member home's
+  launch log beside the ledger's usage log. A session picker lists its
   own store, routes by its own re-homes and sweeps only those; ownership is
   never inferred from another home's registry. `--last` means this home's last
   launch.
@@ -1352,6 +1413,13 @@ own file; a refresh killed mid-request leaves the shared store readable,
 unlocked and askable after one spacing; and one sent SIGTERM — mid-request
 or mid credential read — stops within a second, having claimed nothing it
 could not complete.
+
+The evaluation is tested as a pure function over constructed logs, both
+vendors', with totals a reader can redo by hand, and through the command over
+a real launch, a second home and an unreadable log. The guard on its replay
+is a table of decisions whose every input matters — busy processes, recent
+launches, aliases of one subscription, a millisecond tie, an owner, a move —
+each logged and replayed, beside the frozen lines of the current rule.
 
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
 interaction, selection, refresh scheduling, scrollback and terminal lifetime.
