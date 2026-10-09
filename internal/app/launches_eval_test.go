@@ -11,6 +11,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/eval"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/usage"
 	"github.com/qiushiyan/headroom/internal/usagelog"
 )
@@ -151,6 +152,53 @@ func TestTheEvaluationReadsEveryHomeOnTheLedger(t *testing.T) {
 	var out bytes.Buffer
 	if code := runLaunchesTo(&out, []config.Scope{f.owner}, []string{"--eval"}); code != 0 || !strings.Contains(out.String(), "partial: "+path) {
 		t.Errorf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// A line this rule decided and now decides differently is said before the
+// table, counted in the rule's column and listed apart from the choices an
+// older rule made: it means the column mixes two rules.
+func TestAReplayFaultIsSaidFirst(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.setCurrent("auto\n")
+	f.observe("qiushi", 40, 40, time.Minute)
+	f.observe("a@x.com", 5, 10, time.Minute)
+	if got := f.launch(); got.code != 0 {
+		t.Fatal(got.stderr)
+	}
+	var out bytes.Buffer
+	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 || strings.Contains(out.String(), "fault") {
+		t.Fatalf("a clean log: exit %d\n%s", code, out.String())
+	}
+
+	// The same decision, logged as a rule changed under its name would have
+	// logged it.
+	rec := f.log()[0]
+	rec.Chosen, rec.RunnerUp = "qiushi", "a@x.com"
+	if err := launchlog.Append(f.cfg.AccountsRoot, rec); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	defer func() {
+		if t.Failed() {
+			t.Log(out.String())
+		}
+	}()
+	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	text := out.String()
+	fault := strings.Index(text, "fault: 1 line(s) "+placement.Rule+" decided")
+	table := strings.Index(text, "replay agrees")
+	if fault < 0 || table < fault || !strings.Contains(text, "1 of 2 (1 fault)") {
+		t.Errorf("fault not said first, or not counted:\n%s", text)
+	}
+	if !strings.Contains(text, "replay faults") || strings.Contains(text, "replay disagreements") {
+		t.Errorf("the fault is not listed apart:\n%s", text)
+	}
+	rep := runEvalJSON(t, f.cfg).Vendors[0]
+	if d := rep.Decisions[1]; !d.Replay.Fault || rep.Rules[0].Replay.Faults != 1 {
+		t.Errorf("json: decision %+v, replay %+v", d.Replay, rep.Rules[0].Replay)
 	}
 }
 

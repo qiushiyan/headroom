@@ -81,6 +81,9 @@ func (e *evaluator) decisions(rep *Report) {
 		if !d.Replay.Exact {
 			s.Replay.Inexact++
 		}
+		if d.Replay.Fault {
+			s.Replay.Faults++
+		}
 		rep.Decisions = append(rep.Decisions, d)
 	}
 	for rule, as := range ages {
@@ -225,6 +228,7 @@ func (e *evaluator) replay(l launch) Replay {
 	}
 	d := placement.Choose(cands, ledger, intent, now)
 	out := Replay{Chosen: d.Chosen, Reason: d.Reason, Agrees: d.Chosen == l.Chosen, Exact: exact}
+	out.Fault = !out.Agrees && out.Exact && l.Rule == placement.Rule
 	if !out.Agrees && d.Chosen != "" {
 		if c, ok := find(l.Record, d.Chosen); ok {
 			out.After = e.after(e.keyOrName(l.Home, c), l.at, c)

@@ -227,6 +227,7 @@ type ReplayStats struct {
 	Replayed int  `json:"replayed"` // automatic launches decided again
 	Agreed   int  `json:"agreed"`
 	Inexact  int  `json:"inexact"`   // lines whose whole input is not on record
+	Faults   int  `json:"faults"`    // see Replay.Fault
 	SameRule bool `json:"same_rule"` // the lines were decided by the rule the replay ran
 }
 
@@ -321,6 +322,13 @@ type Replay struct {
 	Reason string `json:"reason"`
 	Agrees bool   `json:"agrees"`
 	Exact  bool   `json:"exact"` // the line carried the decision's whole input
+
+	// Fault marks a disagreement that cannot be a difference between rules:
+	// the line was decided by the rule the replay ran, its whole input on
+	// record. Either the line is missing an input the rule reads, or the rule
+	// changed without a new name — and every figure this report credits to
+	// that name mixes two rules.
+	Fault bool `json:"fault"`
 
 	// After is the replayed choice's session window as it was observed — with
 	// the launch on the other account, not as it would have been with it.
