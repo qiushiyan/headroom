@@ -8,6 +8,8 @@ import (
 	"cmp"
 	"slices"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/placement"
 )
 
 // window is one limit of one account between two resets.
@@ -99,7 +101,9 @@ func (e *evaluator) collectWindows() {
 		}
 	}
 	// A launch went into the window of each limit that was open at it, or —
-	// when none was — the first to open after it.
+	// when none was — the one that opened within PendingFor after it: a
+	// window that starts with a request opens a moment after the launch that
+	// made it, and a launch counts as load for as long as the rule says.
 	for _, l := range e.launches {
 		for _, k := range e.limitsOf(l.chosenKey) {
 			if w := e.windowAt(k, l.at); w != nil {
@@ -123,8 +127,14 @@ func (e *evaluator) limitsOf(key string) []string {
 
 // windowAt is the window of one limit a launch at a moment went into.
 func (e *evaluator) windowAt(limit string, at int64) *window {
+	grace := int64(placement.PendingFor / time.Second)
 	for _, w := range e.wins[limit] {
 		if w.start <= at && at < w.reset {
+			return w
+		}
+	}
+	for _, w := range e.wins[limit] {
+		if w.start > at && w.start-at <= grace {
 			return w
 		}
 	}

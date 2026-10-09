@@ -28,8 +28,11 @@ func (e *evaluator) fleet() FleetStats {
 	start := max(first, e.since)
 	start += (step - start%step) % step
 	var spread, spreadN float64
-	// A reading describes its account for FreshFor after it was taken.
-	for t := start; t <= min(last+fresh, e.now); t += step {
+	// A reading describes its account for FreshFor after it was taken; each
+	// grid point stands for the step after it, cut at the end.
+	end := min(last+fresh, e.now)
+	for t := start; t < end; t += step {
+		span := min(step, end-t)
 		hi, lo, nFresh := 0, FullPercent, 0
 		var near []string
 		for _, k := range e.keyOrder {
@@ -54,12 +57,12 @@ func (e *evaluator) fleet() FleetStats {
 		if nFresh == 0 {
 			continue
 		}
-		out.ObservedS += step
+		out.ObservedS += span
 		if len(near) > 0 {
-			out.NearS += step
+			out.NearS += span
 			for _, k := range near {
 				if e.roomAt(t, k) != nil {
-					out.SqueezedS += step
+					out.SqueezedS += span
 					break
 				}
 			}

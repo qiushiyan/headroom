@@ -39,7 +39,8 @@ func Path(accountsRoot string) string { return filepath.Join(accountsRoot, "laun
 // Record is one launch.
 type Record struct {
 	V      int    `json:"v"`
-	At     string `json:"at"` // RFC3339 UTC
+	At     string `json:"at"`    // RFC3339 UTC
+	AtMS   int64  `json:"at_ms"` // the same instant to the millisecond: the clock the decision counted recent launches by
 	Vendor string `json:"vendor"`
 	PID    int    `json:"pid"`
 	CWD    string `json:"cwd"`
@@ -147,7 +148,7 @@ type Limit struct {
 // the account came to be decided — is the caller's to add.
 func New(d placement.Decision, cands []placement.Candidate, ledger placement.Ledger, intent placement.Intent, at time.Time) Record {
 	r := Record{
-		V: Version, At: at.UTC().Format(time.RFC3339),
+		V: Version, At: at.UTC().Format(time.RFC3339), AtMS: at.UnixMilli(),
 		Reason: d.Reason, Rule: d.Rule, Chosen: d.Chosen, RunnerUp: d.RunnerUp,
 		Automatic: intent.Kind == placement.Auto, Owner: intent.Owner, Exclude: intent.Exclude,
 		Recent:     append([]placement.Pending{}, ledger.Recent...),

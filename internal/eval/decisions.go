@@ -103,20 +103,21 @@ func find(r launchlog.Record, name string) (launchlog.Candidate, bool) {
 	return launchlog.Candidate{}, false
 }
 
-// after follows an account's session window from a launch: the window the
-// launch went into, and how high it went once the launch was made. The
-// figure the launch was decided on counts as the window's starting point only
-// when it was a reading of this window; a window that opened after the launch
-// started from nothing. Nil when nobody read the window after the launch.
+// after follows an account's session window from a launch, for Follow: the
+// window the launch went into, and how high it went once the launch was made.
+// The figure the launch was decided on counts as the window's starting point
+// only when it was a reading of this window; a window that opened after the
+// launch started from nothing. Nil when nobody read the window in that time.
 func (e *evaluator) after(key string, at int64, c launchlog.Candidate) *After {
 	w := e.sessionAt(key, at)
 	if w == nil {
 		return nil
 	}
+	end := at + int64(Follow/time.Second)
 	var out *After
 	for _, p := range w.points {
-		if p.at <= at {
-			continue // what the launch was decided on, not what followed it
+		if p.at <= at || p.at > end {
+			continue // what the launch was decided on, or past what is followed
 		}
 		if out == nil || p.percent > out.Peak {
 			out = &After{Peak: p.percent, PeakAt: stamp(p.at), ResetsAt: stamp(w.reset)}
@@ -144,6 +145,9 @@ func (e *evaluator) after(key string, at int64, c launchlog.Candidate) *After {
 // wherever such counts, a tie inside one second, or the intent decided.
 func (e *evaluator) replay(l launch) Replay {
 	now := time.Unix(l.at, 0)
+	if l.AtMS > 0 {
+		now = time.UnixMilli(l.AtMS)
+	}
 	whole := l.Recent != nil
 	for _, c := range l.Candidates {
 		whole = whole && c.BusyProcs != nil
@@ -195,6 +199,9 @@ func (e *evaluator) replay(l launch) Replay {
 	}
 	if whole {
 		ledger.Recent = slices.Clone(l.Recent)
+		// A line without its millisecond decided at a second the replay can
+		// only round, which a recent launch on the edge of PendingFor feels.
+		exact = exact && l.AtMS > 0
 	} else {
 		// Two dirs on one subscription each counted the same launches: they
 		// go back once, for the subscription.

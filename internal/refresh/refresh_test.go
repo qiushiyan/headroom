@@ -259,6 +259,10 @@ func TestReceivedObservationSurvivesCompletionFailure(t *testing.T) {
 			t.Fatalf("lost response or persistence evidence: %+v", r)
 		}
 	}
+	// The reading measured the account all the same: it is in the usage log.
+	if logged, _, _ := usagelog.Read(root); len(logged) != 1 || logged[0].Rows[0].Percent != 42 {
+		t.Errorf("usage log after a failed completion = %+v", logged)
+	}
 }
 
 // A round already cancelled has nothing that could leave, so it claims

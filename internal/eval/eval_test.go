@@ -209,7 +209,10 @@ func TestFrozenLinesOfThisRuleAreDecidedAlike(t *testing.T) {
 		t.Fatalf("%d decisions from %d frozen lines", len(rep.Decisions), len(launches))
 	}
 	for _, d := range rep.Decisions {
-		if !d.Replay.Agrees || !d.Replay.Exact {
+		switch {
+		case !d.Replay.Exact:
+			t.Errorf("a frozen line of %s no longer carries its whole input: the record lost a field the replay reads", placement.Rule)
+		case !d.Replay.Agrees:
 			t.Errorf("rule %s no longer decides a line it made (%s chose %s, now %s): give the changed rule a new name",
 				placement.Rule, d.At, d.Chosen, d.Replay.Chosen)
 		}
@@ -560,14 +563,18 @@ func TestTheFiguresAddUp(t *testing.T) {
 		logged(at(30*time.Minute), "a", 80, 10, soon, week), logged(at(30*time.Minute), "b", 20, 10, soon, week),
 	}
 	f := build(nil, usage, at(time.Hour)).Fleet
-	// Grid points at 0..60m every 5m: 13 points, all with a reading fresh
-	// within 30m; a near from 30m on (7 points), b with room throughout.
-	if f.ObservedS != 13*300 || f.NearS != 7*300 || f.SqueezedS != 7*300 {
+	// The last readings are fresh until 60m, the report's end: an hour
+	// observed, a near from 30m on, b with room throughout.
+	if f.ObservedS != 3600 || f.NearS != 1800 || f.SqueezedS != 1800 {
 		t.Errorf("fleet = %+v", f)
 	}
-	// Spread: 30 points at 0..25m (6 points), 60 at 30m..60m (7 points).
-	if want := round1(float64(6*30+7*60) / 13); f.MeanSpreadPts != want {
-		t.Errorf("spread = %v, want %v", f.MeanSpreadPts, want)
+	// Spread: 30 points over the first half hour, 60 over the second.
+	if f.MeanSpreadPts != 45 {
+		t.Errorf("spread = %v, want 45", f.MeanSpreadPts)
+	}
+	// One reading is fresh for FreshFor, and that is all it observes.
+	if f := build(nil, usage[:1], at(time.Hour)).Fleet; f.ObservedS != int64(FreshFor/time.Second) {
+		t.Errorf("one reading observed %ds", f.ObservedS)
 	}
 }
 
@@ -599,6 +606,55 @@ func TestCodexIsReadByItsOwnRules(t *testing.T) {
 	readings[2] = codex(at(50*time.Minute), "y", 5, 10, 0, usage.AllowanceAllowed)
 	if ep := Build(Input{Vendor: config.Codex, Home: home, Usage: readings, Now: at(2 * time.Hour)}).Episodes[0]; ep.Elsewhere == nil || ep.Elsewhere.Account != "y" {
 		t.Errorf("an allowed account's room = %+v", ep.Elsewhere)
+	}
+}
+
+// A window that starts with a request opens a moment after the launch that
+// made it: the launch went into it, and is followed through it — for Follow
+// and no further, however long the window runs.
+func TestALaunchOpensTheWindowThatStartsAfterIt(t *testing.T) {
+	ok := usage.StateOK
+	codex := func(when time.Time, pct int, windowS int64, reset time.Time) usagelog.Record {
+		return usagelog.New(when, config.Codex, "uuid:x", "x", home, []usage.Row{
+			{Kind: "primary", Group: usage.CodexGroupMain, WindowSeconds: windowS, Label: "w", Percent: pct, ResetAt: reset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
+		}, usage.Allowance{})
+	}
+	l := line(at(0), "auto", placement.Intent{}, placement.Ledger{}, placement.Candidate{Name: "x", Key: "uuid:x"})
+	l.Vendor = "codex"
+	opened := at(2 * time.Minute)
+	rep := Build(Input{Vendor: config.Codex, Home: home, Launches: []Launch{l}, Now: at(6 * time.Hour), Usage: []usagelog.Record{
+		codex(at(time.Hour), 40, 18000, opened.Add(5*time.Hour)), codex(at(3*time.Hour), 85, 18000, opened.Add(5*time.Hour)),
+	}})
+	if d := rep.Decisions[0]; d.ChosenAfter == nil || d.ChosenAfter.Peak != 85 || d.ChosenAfter.Counted != 0 {
+		t.Errorf("after = %+v", d.ChosenAfter)
+	}
+	if len(rep.Episodes) != 1 || !rep.Episodes[0].Placed || rep.Episodes[0].Launches["auto"] != 1 {
+		t.Errorf("episodes = %+v", rep.Episodes)
+	}
+	// A week-long window, as Codex's shortest main window can be: followed
+	// for Follow, its later readings say nothing about this launch.
+	week := opened.Add(7 * 24 * time.Hour)
+	rep = Build(Input{Vendor: config.Codex, Home: home, Launches: []Launch{l}, Now: at(12 * time.Hour), Usage: []usagelog.Record{
+		codex(at(time.Hour), 20, 604800, week), codex(at(10*time.Hour), 60, 604800, week),
+	}})
+	if a := rep.Decisions[0].ChosenAfter; a == nil || a.Peak != 20 {
+		t.Errorf("after = %+v: a reading %v after the launch is past Follow", a, 10*time.Hour)
+	}
+}
+
+// The rule is replayed at the instant it decided, to the millisecond: a
+// recent launch on the edge of PendingFor counts or not as it did then.
+func TestTheReplayKeepsTheDecisionsMillisecond(t *testing.T) {
+	now := at(0).Add(700 * time.Millisecond)
+	soon, week := at(2*time.Hour), at(3*24*time.Hour)
+	// 900.4s old at the decision: no longer pending. At the second the line
+	// used to keep, it would be 900.0s old — pending still.
+	edge := now.Add(-placement.PendingFor - 400*time.Millisecond)
+	ledger := placement.Ledger{Recent: []placement.Pending{{Key: "uuid:a", Name: "a", PID: 9, AtMS: edge.UnixMilli()}}}
+	l := line(now, "auto", placement.Intent{}, ledger, cand("a", now, limits(10, 10, soon, week)), cand("b", now, limits(10, 50, soon, week)))
+	rep := build([]Launch{l}, nil, now.Add(time.Hour))
+	if r := rep.Decisions[0].Replay; !r.Agrees || !r.Exact {
+		t.Errorf("logged %s, replayed %+v", l.Chosen, r)
 	}
 }
 
