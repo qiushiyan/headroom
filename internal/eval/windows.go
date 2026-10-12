@@ -200,7 +200,9 @@ func (e *evaluator) episode(w *window) (Episode, bool) {
 			break
 		}
 		mode := l.Mode
-		if l.automatic {
+		if l.automatic && mode != "headless" {
+			// A headless caller's placements are the rule's too, and stay
+			// apart from the person's own.
 			mode = "auto"
 		}
 		ep.Launches[mode]++

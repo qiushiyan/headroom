@@ -252,7 +252,8 @@ type Episode struct {
 	SqueezedS   int64   `json:"squeezed_s"` // ... of which another account had room
 
 	// Launches is every launch into the window up to NearAt, by how it was
-	// decided ("auto" for the rule's choices), and the same launches by the
+	// decided ("auto" for the rule's choices, "headless" for a headless
+	// caller's placements), and the same launches by the
 	// accounts root that made them.
 	Launches map[string]int `json:"launches"`
 	ByHome   map[string]int `json:"launches_by_home"`

@@ -130,12 +130,17 @@ type Candidate struct {
 
 // Pending is one recorded launch. Home is the accounts root of the home that
 // made it: the rule counts every home's alike, and a surface says whose.
+//
+// ID names a headless placement — one whose caller starts the session itself
+// and reports its process afterwards (Attach). Until it does, PID is 0, which
+// no process carries, so the placement counts as a launch and nothing else.
 type Pending struct {
 	Key  string `json:"account"`
 	Name string `json:"name"`
 	PID  int    `json:"pid"`
 	AtMS int64  `json:"at_ms"`
 	Home string `json:"home,omitempty"`
+	ID   string `json:"id,omitempty"`
 }
 
 // Last is the newest launch recorded on one account.
@@ -166,8 +171,14 @@ func (l Ledger) Clone() Ledger {
 
 // Record adds a launch on an account, made by the home at that accounts root.
 func (l *Ledger) Record(key, name string, pid int, home string, now time.Time) {
+	l.RecordAs("", key, name, pid, home, now)
+}
+
+// RecordAs is Record for a placement that carries an id: a headless one,
+// whose session process is attached to it later.
+func (l *Ledger) RecordAs(id, key, name string, pid int, home string, now time.Time) {
 	at := now.UnixMilli()
-	l.Recent = append(l.Recent, Pending{Key: key, Name: name, PID: pid, AtMS: at, Home: home})
+	l.Recent = append(l.Recent, Pending{Key: key, Name: name, PID: pid, AtMS: at, Home: home, ID: id})
 	if l.Last == nil {
 		l.Last = map[string]Last{}
 	}
@@ -182,6 +193,22 @@ func (l *Ledger) Record(key, name string, pid int, home string, now time.Time) {
 	if cur, ok := l.ByHome[home]; !ok || at >= cur.AtMS {
 		l.ByHome[home] = Last{Name: name, AtMS: at}
 	}
+}
+
+// Attach gives the placement named id the process that took it, so that once
+// the process is counted as busy the placement is not counted beside it. It
+// returns the placement, and false when no recent placement has that id.
+func (l *Ledger) Attach(id string, pid int) (Pending, bool) {
+	if id == "" {
+		return Pending{}, false
+	}
+	for i := range l.Recent {
+		if l.Recent[i].ID == id {
+			l.Recent[i].PID = pid
+			return l.Recent[i], true
+		}
+	}
+	return Pending{}, false
 }
 
 // Prune drops what no longer counts: recent launches past PendingFor, and
@@ -241,6 +268,12 @@ type Intent struct {
 	// session means somewhere other than where it is.
 	Owner   string
 	Exclude string
+
+	// CanWait says the caller would rather wait than take an account near a
+	// limit: when every account left is near one, the rule refuses instead of
+	// choosing the least spent of them, and says when room returns. A headless
+	// caller can wait; the person whose own sessions share the account cannot.
+	CanWait bool
 }
 
 // The reasons a decision carries.
@@ -381,6 +414,11 @@ type Decision struct {
 	RunnerUp   string // the account the rule would have chosen next
 	Rule       string
 	Candidates []Counted
+
+	// RoomAt is when the first account set aside near a limit has room again,
+	// in unix seconds, on a refusal to a caller that can wait; 0 when no such
+	// account says when its limits reset.
+	RoomAt int64
 }
 
 // Find returns the counted candidate of that name.
@@ -467,6 +505,10 @@ func (d *Decision) auto(intent Intent) {
 		d.Refusal = "no account can take a launch: " + d.exclusions(intent)
 		return
 	}
+	if intent.CanWait && len(open) == 0 {
+		d.Refusal, d.RoomAt = d.nearRefusal(near, intent), roomAt(near)
+		return
+	}
 
 	if intent.Owner != "" {
 		for _, c := range open {
@@ -496,6 +538,61 @@ func (d *Decision) auto(intent Intent) {
 	default:
 		d.Reason = ReasonLeastLoad
 	}
+}
+
+// nearRefusal says why a caller that can wait was refused: every account it
+// could take is near a limit, each named with its highest figure, and the
+// others with why they could not be chosen at all.
+func (d Decision) nearRefusal(near []Counted, intent Intent) string {
+	parts := make([]string, 0, len(near))
+	for _, c := range near {
+		parts = append(parts, fmt.Sprintf("%s (%s %d%%)", c.Name, c.HighestLabel, c.Highest))
+	}
+	why := "every account that could take it is near a limit: " + strings.Join(parts, ", ")
+	var others []string
+	for _, c := range d.Candidates {
+		switch {
+		case c.Excluded != "":
+			others = append(others, fmt.Sprintf("%s (%s)", c.Name, c.Excluded))
+		case c.Name == intent.Exclude:
+			others = append(others, fmt.Sprintf("%s (the session is already there)", c.Name))
+		}
+	}
+	if len(others) > 0 {
+		why += "; not eligible: " + strings.Join(others, ", ")
+	}
+	return why
+}
+
+// roomAt is when the first of these accounts leaves the near-limit set; 0
+// when none says.
+func roomAt(near []Counted) int64 {
+	var first int64
+	for _, c := range near {
+		if at := c.RoomAt(); at > 0 && (first == 0 || at < first) {
+			first = at
+		}
+	}
+	return first
+}
+
+// RoomAt is when an account near a limit leaves the near-limit set, in unix
+// seconds: once every row at or past the threshold has reset, so the latest
+// of those resets. 0 when the account is not near a limit, or a row at the
+// threshold names no reset or has a percent that did not parse — nothing
+// then says when.
+func (c Counted) RoomAt() int64 {
+	var at int64
+	for _, l := range c.Limits {
+		if l.Counted < NearLimitPercent {
+			continue
+		}
+		if l.Basis == BasisBad || l.ResetAt == 0 {
+			return 0
+		}
+		at = max(at, l.ResetAt)
+	}
+	return at
 }
 
 // compareReset orders by the sooner reset; an unknown reset sorts last.

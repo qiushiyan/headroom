@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -41,6 +42,12 @@ const (
 	// request rewrites it. Registration is otherwise written only when it
 	// changes, so a claim that permits nothing stays a read.
 	memberRefresh = 24 * time.Hour
+
+	// runKeep bounds a headless session's record by age, whether or not its
+	// process still runs: far longer than any session such a caller starts,
+	// and short enough that a record whose process nobody has seen exit — the
+	// process table was never asked — does not count for days.
+	runKeep = 12 * time.Hour
 
 	// retention bounds the ledger by age. Sweeping by absence instead would
 	// need a complete account registry, which no caller can promise: an
@@ -345,6 +352,63 @@ type Launch struct {
 	// sessions are gone. It runs inside the lock, for Enumerator's reason, and
 	// only when this launch writes a re-home.
 	Live Enumerator
+
+	// ID names a headless placement, whose caller starts the session itself
+	// and reports its process to Started; PID is then 0 until it does.
+	ID string
+
+	// Gone are headless runs the caller has proven over — their process has
+	// exited, or its pid now belongs to a process started later. They are
+	// dropped inside the lock; a run recorded since the caller looked is not
+	// among them, so it cannot be dropped by a reader that never saw it.
+	Gone []Run
+}
+
+// Run is one headless session's process: a caller that starts its own
+// session on a placement reports the process, which spends the placed
+// subscription until it exits. Whether it still runs is the reader's to
+// verify, exactly as for a vendor's registry claim: the pid is alive and its
+// kernel start is StartedMS.
+type Run struct {
+	Placement string `json:"placement"`
+	Key       string `json:"account"`
+	Name      string `json:"name"`
+	PID       int    `json:"pid"`
+	StartedMS int64  `json:"started_ms"`
+	Home      string `json:"home"`
+}
+
+// validRuns rejects a section that decodes around a record nothing could
+// count: a process with no pid, start or subscription.
+func validRuns(runs []Run) bool {
+	for _, r := range runs {
+		if r.PID <= 0 || r.StartedMS <= 0 || r.Key == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// sweepRuns drops the runs proven over and the ones past runKeep, and sets
+// aside a section that would not decode; whatever it changes dirties the
+// document.
+func (d *doc) sweepRuns(gone []Run, now time.Time) {
+	if d.badRuns {
+		d.quarantine("runs")
+		d.badRuns = false
+		d.runs = nil
+		d.dirty = true
+	}
+	old := now.Add(-runKeep).UnixMilli()
+	kept := d.runs[:0]
+	for _, r := range d.runs {
+		if r.StartedMS < old || slices.Contains(gone, r) {
+			d.dirty = true
+			continue
+		}
+		kept = append(kept, r)
+	}
+	d.runs = kept
 }
 
 // Placed is Place's answer. The decision is always there; the flags say what
@@ -423,6 +487,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		if led.placements.Prune(now, retention) {
 			led.dirty = true
 		}
+		led.sweepRuns(l.Gone, now)
 		led.register(s.member, now)
 		out.Decision = placement.Choose(l.Candidates, led.placements, l.Intent, now)
 		out.Ledger = led.placements.Clone()
@@ -430,7 +495,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		if out.Decision.Chosen == "" || !ok {
 			return commit{ledger: true}, nil
 		}
-		led.placements.Record(chosen.Key, chosen.Name, l.PID, s.root, now)
+		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, l.PID, s.root, now)
 		led.dirty = true
 		out.Recorded = true
 		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
@@ -473,6 +538,35 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// ErrNotPlaced is Started's answer for an id no recent placement carries: it
+// was never placed, or it has stopped counting and been pruned.
+var ErrNotPlaced = errors.New("no recent placement has that id")
+
+// Started records the process a headless caller started on its placement: the
+// placement is given the process, so the two are counted once, and the run is
+// recorded so the process counts as busy on that subscription until it exits.
+// Gone are runs the caller has proven over, dropped in the same write. A
+// second report for one placement replaces the first.
+func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now time.Time) (Run, error) {
+	var out Run
+	err := s.update(s.ledger, claimWait, func(d *doc) error {
+		if d.badPlacements {
+			return ErrCorrupt
+		}
+		p, ok := d.placements.Attach(id, pid)
+		if !ok {
+			return ErrNotPlaced
+		}
+		d.sweepRuns(gone, now)
+		out = Run{Placement: id, Key: p.Key, Name: p.Name, PID: pid, StartedMS: startedMS, Home: p.Home}
+		d.runs = slices.DeleteFunc(d.runs, func(r Run) bool { return r.Placement == id })
+		d.runs = append(d.runs, out)
+		d.dirty = true
+		return nil
+	})
+	return out, err
 }
 
 // Forget drops a session's re-home — a deleted transcript needs no routing

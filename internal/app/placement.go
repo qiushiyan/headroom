@@ -69,6 +69,13 @@ type placeFacts struct {
 
 	refs     []sessions.AccountRef
 	evidence map[string]sessions.ProcessEvidence
+
+	// obs is each candidate's observation, in order, as it was handed in.
+	obs []*accountstate.Observation
+
+	// gone are the headless runs this reading proved over, for the next write
+	// of the ledger to drop.
+	gone []state.Run
 }
 
 func (f placeFacts) account(name string) (accounts.Account, bool) {
@@ -104,7 +111,7 @@ func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic 
 	for i, fa := range facts {
 		src[i] = placeSource{acct: fa.Acct, key: fa.Key, obs: fa.View.Obs}
 	}
-	f := buildCandidates(set, src, env, automatic, now, st.Home(), otherHomes(set.Scope, snap))
+	f := buildCandidates(set, src, env, automatic, now, st.Home(), otherHomes(set.Scope, snap), snap.Runs())
 	f.snap = snap
 	return f
 }
@@ -175,8 +182,9 @@ func homeLabel(labels map[string]string, root string) string {
 // Busy sessions are the subscription's, not the dir's: two dirs on one
 // account, in this home or in another home sharing the ledger, spend one
 // quota, so every verified-live busy session on that account counts on each
-// candidate that spends it.
-func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time, home string, others []accounts.Home) placeFacts {
+// candidate that spends it — and so does every headless run whose process
+// still runs.
+func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time, home string, others []accounts.Home, runs []state.Run) placeFacts {
 	scope := set.Scope
 	f := placeFacts{set: set, home: home, prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{}}
 
@@ -192,8 +200,8 @@ func buildCandidates(set accounts.Set, src []placeSource, env []string, automati
 	for _, s := range src {
 		keys[s.acct.Name] = s.key.ID()
 	}
-	load := readSessionLoad(set, keys, home, others)
-	f.refs, f.evidence = load.refs, load.evidence
+	load := readSessionLoad(set, keys, home, others, runs)
+	f.refs, f.evidence, f.gone = load.refs, load.evidence, load.gone
 
 	for i, s := range src {
 		a := s.acct
@@ -212,6 +220,7 @@ func buildCandidates(set accounts.Set, src []placeSource, env []string, automati
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
 		f.cands = append(f.cands, c)
 		f.keys = append(f.keys, s.key)
+		f.obs = append(f.obs, s.obs)
 		askable := false
 		switch {
 		case !automatic:
@@ -232,11 +241,18 @@ func buildCandidates(set accounts.Set, src []placeSource, env []string, automati
 // and in every other home that shares the ledger. The refs and the evidence
 // are this home's alone: they decide a session's owner, and another home's
 // sessions are never this home's to route.
+//
+// Headless runs join them: a process a headless caller started and reported
+// is working for as long as it runs, so a verified-live run is a busy session
+// of the subscription it was placed on. Its config dir is the caller's and is
+// read by nobody; the run's record is the claim, verified the same way. gone
+// are the runs proven over.
 type sessionLoad struct {
 	busy     map[string][]placement.Proc
 	statuses map[string][]string
 	refs     []sessions.AccountRef
 	evidence map[string]sessions.ProcessEvidence
+	gone     []state.Run
 }
 
 // readSessionLoad reads every account's registry, this home's and the other
@@ -245,7 +261,7 @@ type sessionLoad struct {
 // only when its identity says which subscription it is, since its dir name is
 // that home's to choose. Codex has no registry headroom can read: its accounts
 // carry no busy sessions, and an empty read there is not evidence of idleness.
-func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []accounts.Home) sessionLoad {
+func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []accounts.Home, runs []state.Run) sessionLoad {
 	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
 	if set.Scope.Vendor != config.Claude {
 		return out
@@ -271,9 +287,20 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 			all = append(all, sessions.ReadRegistry(label, a.Dir()).Entries...)
 		}
 	}
+	for i, r := range runs {
+		// Labelled like another home's accounts, mapped back below.
+		label := fmt.Sprintf("\x00run\x00%d", i)
+		who[label] = claimant{r.Key, r.Home}
+		all = append(all, runEntry(label, r))
+	}
 	probe := sampleOnce(placementProbe)
 	out.evidence, _ = sessions.InspectClaims(own, probe)
-	_, live := sessions.InspectClaims(all, probe)
+	evidence, live := sessions.InspectClaims(all, probe)
+	for _, r := range runs {
+		if evidence[runEntry("", r).SessionID].State == sessions.NotLive {
+			out.gone = append(out.gone, r)
+		}
+	}
 	for _, e := range live {
 		c := who[e.Account]
 		if c.key == "" {
@@ -285,6 +312,15 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 		}
 	}
 	return out
+}
+
+// runEntry is a headless run as a registry claim: working, for as long as
+// its process runs.
+func runEntry(label string, r state.Run) sessions.RegistryEntry {
+	return sessions.RegistryEntry{
+		Account: label, SessionID: "run:" + r.Placement, PID: r.PID, StartedAtMS: r.StartedMS,
+		OK: true, Status: sessions.StatusBusy, StatusState: tag.OK,
+	}
 }
 
 // sampleOnce answers each pid from one sample, however many times it is
@@ -352,7 +388,7 @@ func markPlacement(set accounts.Set, list []*accountData, mode string, st *state
 		src[i] = placeSource{acct: d.Acct, key: d.Key, obs: d.View.Obs}
 	}
 	auto := mode == "auto"
-	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(set.Scope, snap))
+	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(set.Scope, snap), snap.Runs())
 	m := &placeMark{cands: f.cands, ledger: snap.Placements(), home: st.Home(), labels: homeLabels(snap, st.Home()), auto: auto}
 	m.mark(list, now)
 	return m
@@ -588,7 +624,7 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	}
 	launch := state.Launch{
 		Candidates: facts.cands, Intent: req.intent, PID: os.Getpid(), Now: req.now,
-		Session: req.ref.Record, MustReHome: req.mustReHome,
+		Session: req.ref.Record, MustReHome: req.mustReHome, Gone: facts.gone,
 	}
 	if req.ref.Record != "" {
 		launch.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }

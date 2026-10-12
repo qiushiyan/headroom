@@ -9,6 +9,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/headless"
 )
 
 func lifecycleConfig(t *testing.T) config.Scope {
@@ -219,11 +220,20 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if code := run(unknown, "a@x.com", "--yes"); code != 1 || !strings.Contains(errw.String(), "could not be verified") {
 		t.Errorf("unverifiable: exit %d %s", code, errw.String())
 	}
-	// Dead pid: the claim is stale, removal proceeds — Keychain first, then dir.
+	// Dead pid: the claim is stale, removal proceeds — Keychain first, then
+	// dir, then the account's headless token, and no other's.
 	os.WriteFile(cfg.CurrentFile(), []byte("a@x.com\n"), 0o644)
 	os.WriteFile(filepath.Join(cfg.StoreDir(), "t.jsonl"), []byte("x"), 0o644)
+	for _, n := range []string{"a@x.com", "other@x.com"} {
+		if err := headless.Put(cfg.AccountsRoot, n, headless.Token{Value: testToken}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if code := run(deps, "a@x.com", "--yes"); code != 0 {
 		t.Fatalf("remove: exit %d %s", code, errw.String())
+	}
+	if tokens, _ := headless.Read(cfg.AccountsRoot); len(tokens) != 1 || tokens["other@x.com"].Value == "" || !strings.Contains(out.String(), "forgot its headless token") {
+		t.Errorf("headless tokens after removal: %v\n%s", tokens, out.String())
 	}
 	if len(keychainCalls) != 1 || keychainCalls[0] != dir {
 		t.Errorf("keychain calls %v", keychainCalls)

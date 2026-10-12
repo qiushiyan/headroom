@@ -180,6 +180,8 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		return runSessions(cfg.Claude, rest)
 	case "login":
 		return runLogin(cfg.Claude, rest)
+	case "headless":
+		return runHeadless(cfg.Claude, rest)
 	case "resolve":
 		scope, ok := one()
 		if !ok {
@@ -353,6 +355,7 @@ func printUsage(w io.Writer) {
   resolve    [--vendor <v>] [<name>] print canonical-name<TAB>dir<TAB>kind
              (kind: primary|extra) for shell preflight; under auto a name
              is required
+  headless   mint|place|started|token|forget — headless sessions on setup-tokens
   check      verify the reverse-engineered assumptions still hold, for
              every vendor on this machine
   version    the commit this binary was built from, and its time
