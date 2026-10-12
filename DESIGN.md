@@ -89,10 +89,12 @@ Keychain, never refreshes a token, and never writes vendor login or quota
 state — Claude Code owns all of it. `login` is no exception: it runs Claude
 Code's own login command, and Claude Code stores what results. What it writes is its own: `.current`,
 one `state.json` holding non-secret request timestamps, the usage
-responses it fetched itself, session re-homes and the record of recent
-launches, `launches.jsonl` and `usage.jsonl`, the launch log and the usage
-log nothing routes by (see Judging placement), and — only when `accounts
-ledger` is asked to — `.ledger`. Three documented
+responses it fetched itself, session re-homes, the record of recent
+launches and the headless runs, `launches.jsonl` and `usage.jsonl`, the
+launch log and the usage log nothing routes by (see Judging placement),
+`headless.json`, the one file that holds secrets — the headless tokens, mode
+0600 (see Headless tokens) — and, only when `accounts ledger` is asked to,
+`.ledger`. Three documented
 exceptions, every one an explicit user command naming its object and refused
 while a session is live or liveness is unverifiable: the session picker's `r`
 appends one vendor-format `custom-title` record (exactly what the native
@@ -247,6 +249,50 @@ logins made on different days were refused within the same half hour — and
 nothing in the stored credential shows it. Health then reads fine until a
 request fails; naming the account renews it.
 
+### Headless tokens
+
+A caller that runs sessions under a config dir of its own (a skill-eval
+runner) cannot be handed an account dir, and must not be lent its login: a
+login refreshed from a dir that does not hold its lock is a login two
+processes refresh. `headroom headless` gives it a token per account instead,
+and a placement; the caller starts the session itself. The commands and the
+document a caller reads are in `docs/specs/headless.md`, the dated record of
+the decision. What it rests on, measured on 2.1.296:
+
+- **`claude setup-token` is `auth login`'s flow with a narrower grant**:
+  scope `user:inference`, a lifetime of 365 days, no `--email`. It execs
+  `$BROWSER` with the URL as its only argument and takes the code at its own
+  paste prompt, so `mint` drives it as `login` drives the login. It stores
+  nothing — it prints the token — so `mint` runs it under a scratch config
+  dir and the account's dir, its login included, is never touched.
+- **Its screen is read off a pipe.** With its output on a pipe it draws
+  whole frames of plain lines, unwrapped; its input must stay the terminal.
+  `headless.Scanner` is the one reader of that screen: it keeps the token and
+  the lifetime the success line states (`valid for 1 year`, from the granted
+  expiry), and withholds every `sk-ant-` string from the terminal. While it
+  waits for the approval the vendor ignores every key, ctrl-c included, and
+  exits on SIGTERM or SIGHUP, so `mint` bounds the wait.
+- **A token says nothing about whose it is.** `claude auth status` with only
+  `CLAUDE_CODE_OAUTH_TOKEN` set answers `authMethod: "oauth_token"`, logged
+  in, with no identity — a made-up token reads the same. The account is the
+  profile it was approved in; `mint` records the dir's identity at that
+  moment, and a placement excludes the account once its dir names another.
+
+A placement is the automatic launch's rule over the accounts holding a token,
+with one intent the launch never sets: `CanWait` refuses when every account
+left is near a limit, and says when the first has room again, instead of
+taking the least spent — an eval can wait; the owner's sessions on that
+account cannot. The caller reports the session's process, and that *run*,
+kept in the subscription ledger, is a busy session of its subscription on
+every surface for as long as its pid runs with its recorded start — the
+registry claim's verification, on a record the caller supplies.
+
+A token leaves `headless.json` only through `headless token <account>`: no
+listing, document, log or `state.json` record carries one. A token file that
+others can read is refused rather than repaired, so the owner sees that a
+secret may have been read, and one that does not decode is never written
+over.
+
 ## The data source, and drift as a design input
 
 The board calls the endpoint Claude Code's own `/usage` screen calls —
@@ -393,7 +439,8 @@ coordination the whole fleet would go dark together rather than one account at
 a time. Every process is short-lived and there is no daemon, so coordination
 has to live on disk. `internal/state` owns that file — one JSON document under
 the accounts root, written atomically under an flock, holding the request
-ledger, the responses, the session re-homes and the recent launches.
+ledger, the responses, the session re-homes, the recent launches and the
+headless runs.
 
 - **A claim is a test-and-set, and the claim is the authorization.**
   Eligibility is decided and the claim recorded inside one locked section, so
@@ -411,8 +458,8 @@ ledger, the responses, the session re-homes and the recent launches.
   `.order`, so nothing in Claude Code's files is re-keyed by Codex existing,
   and the store a body was read from says which vendor's parser reads it. A
   file holds two halves with different owners: the *subscription ledger* —
-  the request ledger, the responses, the recent launches and the homes that
-  spend against it — is about quota, keyed by account identity; the
+  the request ledger, the responses, the recent launches, the headless runs
+  and the homes that spend against it — is about quota, keyed by account identity; the
   *re-homes* are about one home's sessions, named by that home's account
   names. A home alone keeps both in its one file. A second home that holds
   logins of the same subscriptions keeps its re-homes in its own file and
@@ -1145,10 +1192,10 @@ spend it.
   records named by account names that both homes spell alike — and each
   home's sweep sees only its own store.
 - **What is shared and what is not.** The ledger root's `state.json` holds the
-  request ledger, the stored responses, the placements and the member homes,
-  and its `usage.jsonl` every reading either home fetched. Each home's own
-  `state.json` holds its re-homes, and its launch log, its registries and its
-  prompt history are its own; `launches --eval` reads every member home's
+  request ledger, the stored responses, the placements, the headless runs and
+  the member homes, and its `usage.jsonl` every reading either home fetched.
+  Each home's own `state.json` holds its re-homes, and its launch log, its
+  registries, its prompt history and its headless tokens are its own; `launches --eval` reads every member home's
   launch log beside the ledger's usage log. A session picker lists its
   own store, routes by its own re-homes and sweeps only those; ownership is
   never inferred from another home's registry. `--last` means this home's last
@@ -1394,7 +1441,12 @@ built binary against stub `claude`, `open` and `security`: the login's dir,
 headroom as `$BROWSER`, the profile `open` receives, nothing opened for a
 remote user, and the opener answering under a configuration headroom
 refuses. The profile match is a table over the author's own `Local State`
-shape.
+shape. `headless` is tested through its commands over the real store — a
+placement among token holders, the refusal near a limit and its retry
+instant, a run counted once, past fifteen minutes, then swept — and `mint`
+through the built binary under script(1) against a stub `setup-token`: the
+scratch dir, gone after; headroom as `$BROWSER`; the token stored 0600 and
+never in the output. The scanner is a table over reads cut at every size.
 
 A second home is tested at each tier. The store's tests drive a handle on
 each home's root over the real lock: a claim from either denies the other, a

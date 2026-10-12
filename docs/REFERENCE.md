@@ -184,6 +184,7 @@ naming a vendor this machine does not have fails saying so, except
   vendor's to change), and its `settings:` line fails unless every sharing
   account, the primary included, reads one `settings.json`. A configuration headroom refuses (a relative `HEADROOM_*`
   override, an unusable `.ledger`) exits 1 with a `config:` FAIL.
+- **`headroom headless mint|place|started|token|forget`:** sessions a headless runner starts itself on per-account setup-tokens, placed by the automatic rule; the caller's contract is `docs/specs/headless.md`.
 - **`headroom version`:** one line, `headroom <commit>[+dirty] <commit time>`
   — the commit the binary was built from. Answers whatever the environment
   or the files say.

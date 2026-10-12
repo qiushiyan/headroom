@@ -1,11 +1,11 @@
 # Headless — a headless runner spends the subscriptions
 
-Status: built on the `headless` branch, 2026-10-13, against `main` at
-5f6b22c and Claude Code 2.1.296 on the owner's laptop. Not yet run against a
-real approval: minting a token needs a person to click Authorize. The vendor
-facts below were measured on that date; the ones marked unverified need that
-first real mint. `DESIGN.md` § Headless tokens holds the vendor contract as
-it stands.
+Status: built on the `headless` branch, 2026-10-13; kept as the dated record
+of the decision and as the contract a caller is built against — the commands,
+exit statuses and JSON below. The design as it stands lives in `DESIGN.md`
+§ Headless tokens. Written against `main` at 5f6b22c and Claude Code 2.1.296;
+every measurement below was taken on the owner's laptop on that date. A real
+mint is owed (§ Owed): minting needs a person to click Authorize.
 
 ## Summary
 
@@ -54,16 +54,11 @@ Measured on 2.1.296, laptop, 2026-10-13:
 - `sandbox-exec -f <profile> <cmd>` execs in place: the pid a caller's
   `Popen` returns is the session's own process.
 
-Unverified (needs a real mint):
-
-- That the vendor exits by itself after printing the token. headroom does
-  not depend on it: once the token is captured it gives the vendor five
-  seconds and then ends it.
-- That spend through a token shows in the usage figures headroom reads for
-  that account. It should: a setup-token is an OAuth grant of the
-  subscription's own. To check: mint one, note the account's 5h figure on
-  the board, run a session of a few minutes on the token, `headroom refresh`
-  a minute later, and see the figure move on that account and no other.
+Two facts wait on a real mint (§ Owed): whether the vendor exits by itself
+after printing the token — headroom does not depend on it: once the token is
+captured it gives the vendor five seconds and then ends it — and whether
+spend through a token shows in the account's usage figures, as it should,
+since a setup-token is an OAuth grant of the subscription's own.
 
 ## Commands
 
@@ -256,3 +251,12 @@ out, err = p.communicate(timeout=...)
   subscription `SKILL_EVAL_OAUTH_TOKEN` path can stay as the fallback.
 - A refusal is the normal "every account is busy for the owner" answer: hold
   new rollouts, not running ones.
+
+## Owed
+
+**Closing read owed** (no PR: the `headless` branch, merged locally) — ready
+when: the owner has minted a token for one account with `headroom headless
+mint` and run one session of a few minutes on it. Read: the mint ended on its
+own with `✓ … headless token stored`, without the five-second stop; and the
+account's 5h figure, read by `headroom refresh` a minute after the session,
+moved on that account and on no other.
