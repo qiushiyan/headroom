@@ -24,6 +24,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
@@ -52,6 +53,10 @@ type loginDeps struct {
 	remote bool
 	now    func() time.Time
 	login  func(acct accounts.Account, set accounts.Set, email string, page approvalPage) error
+
+	// tokens are the stored headless tokens, whose ends the plan reports the
+	// way it reports logins'.
+	tokens func() (map[string]headless.Token, error)
 }
 
 // approvalPage is where the vendor's approval page goes: the Chrome profile
@@ -97,6 +102,7 @@ func runLogin(scope config.Scope, args []string) int {
 		remote:     sshRemote(os.Getenv("SSH_CONNECTION")),
 		now:        time.Now,
 		login:      vendorLogin,
+		tokens:     func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
 	})
 }
 
@@ -183,6 +189,7 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		}
 		fmt.Fprintln(out, line)
 	}
+	writeTokenEnds(out, rows, deps, within, now)
 	if sealed > 0 {
 		fmt.Fprintf(out, "\nthe login Keychain is closed to this ssh session: the %d accounts marked above keep their\n"+
 			"login there, so it can be neither read nor renewed from here — a login made here would be\n"+
@@ -248,6 +255,36 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		return 1
 	}
 	return 0
+}
+
+// writeTokenEnds names the headless tokens that end inside the window or have
+// ended, under the plan that names the logins that do: a token is renewed by
+// minting it again, which takes an approval like a login's, and a person
+// learns that one is due where they learn that a login is. Quiet when none is.
+func writeTokenEnds(out io.Writer, rows []*loginRow, deps loginDeps, within time.Duration, now time.Time) {
+	if deps.tokens == nil {
+		return
+	}
+	tokens, err := deps.tokens()
+	if err != nil {
+		fmt.Fprintf(out, "\nheadless tokens: %v\n", err)
+		return
+	}
+	var lines []string
+	for _, r := range rows {
+		tok, ok := tokens[r.acct.Name]
+		if !ok || tok.EndsMS == 0 || time.UnixMilli(tok.EndsMS).Sub(now) >= within {
+			continue
+		}
+		verb := "ends"
+		if tok.Ended(now) {
+			verb = "ended"
+		}
+		lines = append(lines, fmt.Sprintf("  %-28s headless token %s %s — headroom headless mint %s", r.acct.Name, verb, when(tok.EndsMS, now), r.acct.Name))
+	}
+	if len(lines) > 0 {
+		fmt.Fprintf(out, "\n%s\n", strings.Join(lines, "\n"))
+	}
 }
 
 // assessLogins reads what the board reads about each account's access: the

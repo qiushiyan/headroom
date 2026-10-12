@@ -24,7 +24,9 @@ func (e *evaluator) decisions(rep *Report) {
 		s := e.rule(l.Rule)
 		s.Launches.Total++
 		mode := l.Mode
-		if l.automatic {
+		if l.automatic && mode != "headless" {
+			// A headless caller's placements are the rule's too, and stay
+			// apart from the person's own.
 			mode = "auto"
 		}
 		s.Launches.ByMode[mode]++

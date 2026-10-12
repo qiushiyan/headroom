@@ -172,6 +172,14 @@ type doc struct {
 	placements    placement.Ledger
 	badPlacements bool
 
+	// runs are the headless sessions' processes: a caller that starts its
+	// session itself, on a placement, reports the process (Started), and it
+	// counts as busy on the placed subscription for as long as it runs.
+	// Disposable like the placements: a section that will not decode is set
+	// aside at the next write and the record starts empty.
+	runs    []Run
+	badRuns bool
+
 	// members are the homes that spend against this ledger, keyed by accounts
 	// root: where each keeps its account dirs, so another home can read their
 	// live-session registries and count those sessions against the same
@@ -326,6 +334,13 @@ func read(accountsRoot string) *doc {
 			d.problems = append(d.problems, Problem{"placements", "unreadable — set aside at the next launch; placement starts from an empty record"})
 		}
 	}
+	if b, ok := d.raw["runs"]; ok {
+		if err := json.Unmarshal(b, &d.runs); err != nil || !validRuns(d.runs) {
+			d.runs = nil
+			d.badRuns = true
+			d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
+		}
+	}
 	d.adoptHomeless()
 	if b, ok := d.raw["members"]; ok {
 		if err := json.Unmarshal(b, &d.members); err != nil {
@@ -422,7 +437,7 @@ type Document struct {
 	ReadOnly bool // written by a newer headroom: read, never written
 	Problems []Problem
 
-	Ledger  bool // holds the request ledger, the responses and the placements
+	Ledger  bool // holds the request ledger, the responses, the placements and the runs
 	ReHomes bool // holds this home's re-homes
 }
 
@@ -438,7 +453,7 @@ func (s Snapshot) Documents() []Document {
 	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true}
 	for _, p := range s.h.problems {
 		switch p.Section {
-		case "accounts", "placements", "members":
+		case "accounts", "placements", "runs", "members":
 			// Left from before this home shared a ledger; nothing reads them.
 		default:
 			home.Problems = append(home.Problems, p)
@@ -543,6 +558,11 @@ func (s Snapshot) Owners() map[string]sessions.OwnerRec {
 // only Place — under the lock — may record one.
 func (s Snapshot) Placements() placement.Ledger { return s.d.placements.Clone() }
 
+// Runs is every headless session process recorded in the ledger, in every
+// home that spends against it. A record says a process was started; whether
+// it still runs is the reader's to verify, by its pid and start instant.
+func (s Snapshot) Runs() []Run { return slices.Clone(s.d.runs) }
+
 // OwnersReadable reports whether the sessions section decoded. False means
 // routing falls back to derived evidence, which the resume picker says out
 // loud on open and `check` reports — rather than silently behaving as though
@@ -639,6 +659,17 @@ func (d *doc) marshal() ([]byte, error) {
 				return nil, err
 			}
 			out["members"] = b
+		}
+	}
+	if !d.badRuns {
+		if len(d.runs) == 0 {
+			delete(out, "runs")
+		} else {
+			b, err := json.Marshal(d.runs)
+			if err != nil {
+				return nil, err
+			}
+			out["runs"] = b
 		}
 	}
 	if !d.badPlacements {

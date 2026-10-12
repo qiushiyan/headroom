@@ -20,6 +20,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/tui"
@@ -445,6 +446,14 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 		return 1
 	}
 	fmt.Fprintf(out, "removed %s\n", dir)
+	if cfg.Vendor == config.Claude {
+		// A secret for an account that no longer exists is no use to anyone.
+		if forgot, err := headless.Remove(cfg.AccountsRoot, name); err != nil {
+			fmt.Fprintf(errw, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
+		} else if forgot {
+			fmt.Fprintln(out, "forgot its headless token — headroom does not revoke it with the vendor")
+		}
+	}
 	fmt.Fprintln(out, "transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed")
 	if cur, err := os.ReadFile(cfg.CurrentFile()); err == nil && strings.TrimSpace(string(cur)) == name {
 		fmt.Fprintln(out, "note: .current pointed here — launches refuse until `headroom accounts` repicks")
