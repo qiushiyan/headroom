@@ -278,10 +278,12 @@ the decision. What it rests on, measured on 2.1.296:
   profile it was approved in; `mint` records the dir's identity at that
   moment, and a placement excludes the account once its dir names another.
 
-A placement is the automatic launch's rule over the accounts holding a token,
-with one intent the launch never sets: `CanWait` refuses when every account
-left is near a limit, and says when the first has room again, instead of
-taking the least spent — an eval can wait; the owner's sessions on that
+A placement is the automatic launch's rule over the accounts that hold a
+token and that the caller has not excluded, both decided inside the locked
+step that records the choice, so nothing is placed on an account the caller
+would veto. One intent the launch never sets, `CanWait`, refuses when every
+account left is near a limit and says when the first has room again, instead
+of taking the least spent: an eval can wait; the owner's sessions on that
 account cannot. The caller reports the session's process, and that *run*,
 kept in the subscription ledger, is a busy session of its subscription on
 every surface for as long as its pid runs with its recorded start — the

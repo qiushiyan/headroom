@@ -86,7 +86,7 @@ A token-shaped string printed by the vendor is stored: value, mint time, end
 the account's ledger key and email at mint. A second mint replaces the first;
 the first is not revoked.
 
-### `headroom headless place [--prefer <account>] [--dry-run]`
+### `headroom headless place [--prefer <account>] [--exclude <account>]… [--dry-run]`
 
 Prints one JSON document on stdout. Exit 0: placed. Exit 3: refused — read
 `refusal` and `retry_at`. Exit 1: headroom could not decide or record (stderr
@@ -97,7 +97,13 @@ figures, verified-live busy sessions (headless runs included) and launches of
 the last fifteen minutes, from every home sharing the ledger. An account is
 excluded, on positive evidence only, when it has no token, its token's end has
 passed, its dir is now logged in to another subscription or to none, its
-identity could not be read just now, or the vendor says it is blocked. The
+identity could not be read just now, or the vendor says it is blocked — and
+when the caller names it with `--exclude`, repeatable, read as `excluded by
+the caller`. The caller knows what headroom cannot: a session that ended on
+the account's usage limit, or a token the vendor refused, whose account reads
+idle to the rule. Excluding it inside the placement keeps the choice the
+rule's and records nothing on an account the caller would veto. A name
+nothing answers to exits 1; an account both preferred and excluded exits 2. The
 rule is `placement.Choose`, the automatic launch's, with `CanWait`: when every
 account left is near a limit (any figure at 80% or more) it refuses instead of
 taking the least spent one. An account at its limit with extra usage on would
@@ -155,9 +161,12 @@ observed), `owner` (`--prefer` followed) or `moved` (`--prefer` near a
 limit). A figure's `basis` is `observed`, `stale` (older than fifteen
 minutes: a lower bound), `ended` (its window has reset: counted as 0) or
 `bad`. `retry_at` is when the first account set aside near a limit has room
-again: the latest reset among its rows at 80% or more. It is `null` when no
-such account names its resets — and when every account is excluded, since
-then waiting alone changes nothing: an account needs a token, or a person.
+again: the latest reset among its rows at 80% or more; an excluded account's
+resets never count. It is `null` when no such account names its resets — and
+when every account is excluded, since then waiting alone changes nothing: an
+account needs a token, or a person. With every account excluded the refusal
+names each with its reason: `no account can take a launch: qiushi (no
+headless token), yan@planlab.ai (excluded by the caller), …`.
 `notes` warns when the chosen token ends within seven days.
 
 ### `headroom headless started <placement> <pid>`
@@ -243,6 +252,10 @@ out, err = p.communicate(timeout=...)
   `--prefer <the account the first turn ran on>`: the session's transcript is
   in the caller's config dir, so any account can continue it, and the
   preference only keeps its prompt cache warm.
+- A session that ended on an API error — a usage limit, a revoked or invalid
+  token — is retried with `--exclude <its account>`, and every account
+  excluded earlier for that slot, instead of vetoing an answer and placing
+  again.
 - `run_claude` changes from `subprocess.run` to `Popen` so `started` can be
   sent between spawn and wait.
 - Workers may place at once: placements serialize on the ledger's lock, and
