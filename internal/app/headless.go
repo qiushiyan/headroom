@@ -84,13 +84,23 @@ func runHeadless(scope config.Scope, args []string) int {
 // the ledger — with each account's eligibility decided by its token instead
 // of by whether its dir can be launched. A token is a grant of its own: the
 // dir's login expiring, or its topology, says nothing about it.
-func gatherHeadless(set accounts.Set, st *state.Store, tokens map[string]headless.Token, now time.Time) placeFacts {
+//
+// The caller's own exclusions join them as candidates' exclusions, so the
+// rule decides among the rest in the same locked step that records the
+// choice, and an account the caller will not take is never placed on: a
+// session that ended on an account's usage limit or a token the vendor
+// refused is the caller's to know, and that account reads idle to the rule.
+func gatherHeadless(set accounts.Set, st *state.Store, tokens map[string]headless.Token, exclude map[string]bool, now time.Time) placeFacts {
 	f := gatherPlacement(set, st, os.Environ(), true, now)
 	for i := range f.cands {
 		c := &f.cands[i]
 		a, _ := f.account(c.Name)
 		tok, ok := tokens[c.Name]
 		c.Unlaunchable = false
+		if exclude[c.Name] {
+			c.Excluded = "excluded by the caller"
+			continue
+		}
 		c.Excluded = headlessExclusion(a, f.keys[i], tok, ok, f.obs[i], now)
 	}
 	return f
@@ -215,17 +225,22 @@ func newPlacementID() string {
 // blocked, and says when room returns.
 func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) int {
 	prefer, dryRun := "", false
+	var excluded []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
 		case "--dry-run":
 			dryRun = true
-		case "--prefer":
+		case "--prefer", "--exclude":
 			if i+1 >= len(args) || args[i+1] == "" {
-				fmt.Fprintln(errw, "headroom headless place: --prefer needs an account name")
+				fmt.Fprintf(errw, "headroom headless place: %s needs an account name\n", a)
 				return 2
 			}
 			i++
-			prefer = args[i]
+			if a == "--prefer" {
+				prefer = args[i]
+			} else {
+				excluded = append(excluded, args[i])
+			}
 		default:
 			fmt.Fprintf(errw, "headroom headless place: unknown argument %q\n", a)
 			return 2
@@ -249,10 +264,25 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 		}
 		intent.Owner = a.Name
 	}
+	// Names the caller was handed by an earlier placement: one nothing
+	// answers to is a caller's mistake, said rather than silently ignored.
+	exclude := map[string]bool{}
+	for _, name := range excluded {
+		a, err := set.Select(name)
+		if err != nil {
+			fmt.Fprintf(errw, "headroom headless place: --exclude: %v\n", err)
+			return 1
+		}
+		exclude[a.Name] = true
+	}
+	if exclude[intent.Owner] {
+		fmt.Fprintf(errw, "headroom headless place: %s is both preferred and excluded\n", intent.Owner)
+		return 2
+	}
 	now := time.Now()
 	st := state.Open(scope)
 	intent.Home = st.Home()
-	facts := gatherHeadless(set, st, tokens, now)
+	facts := gatherHeadless(set, st, tokens, exclude, now)
 
 	doc := headlessDoc{Schema: headlessSchema, DryRun: dryRun}
 	var d placement.Decision
