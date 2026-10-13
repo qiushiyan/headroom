@@ -474,3 +474,59 @@ func TestMintEndsAVendorThatDoesNotExit(t *testing.T) {
 		t.Errorf("scratch dirs left: %v", left)
 	}
 }
+
+// An account the caller will not take is excluded inside the placement: the
+// rule decides among the rest, the account reads ineligible with its reason,
+// its resets say nothing about when room returns, and with every account
+// excluded the refusal records nothing and gives no instant to wait for.
+func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com", "b@x.com", "c@x.com")
+	f.observe("a@x.com", 0, 0, time.Minute)                     // the rule's choice, until excluded
+	f.observe("b@x.com", 20, 10, time.Minute)                   // what is left
+	f.observeWeek("c@x.com", 90, 10, 72*time.Hour, time.Minute) // near a limit, back in two hours
+	for _, n := range []string{"a@x.com", "b@x.com", "c@x.com"} {
+		f.mint(n, 300*24*time.Hour)
+	}
+	doc, code, _ := f.place("--exclude", "a@x.com")
+	if code != exitPlaced || doc.Account != "b@x.com" {
+		t.Fatalf("placed %q (%d), want the best of the rest", doc.Account, code)
+	}
+	if a := doc.find("a@x.com"); a.Eligible || a.Excluded != "excluded by the caller" {
+		t.Errorf("a: %+v", a)
+	}
+	if rec := f.st.Load().Placements().Recent; len(rec) != 1 || rec[0].Name != "b@x.com" {
+		t.Fatalf("recorded %+v", rec)
+	}
+	if l := f.log(); len(l) != 1 || loggedCandidate(l[0], "a@x.com").Excluded != "excluded by the caller" {
+		t.Errorf("the log does not carry the exclusion: %+v", l)
+	}
+
+	// Excluding the near account leaves no instant: what is left is open or
+	// excluded, and an excluded account's reset is no reason to wait.
+	doc, code, _ = f.place("--exclude", "a@x.com", "--exclude", "b@x.com", "--dry-run")
+	if code != exitRefused || doc.RetryAt == nil {
+		t.Fatalf("c is near a limit and left: %d %+v", code, doc)
+	}
+	doc, code, _ = f.place("--exclude", "a@x.com", "--exclude", "b@x.com", "--exclude", "c@x.com")
+	if code != exitRefused || doc.RetryAt != nil || doc.Placement != "" {
+		t.Fatalf("all excluded: %d %+v", code, doc)
+	}
+	for _, want := range []string{"a@x.com (excluded by the caller)", "c@x.com (excluded by the caller)", "qiushi (no headless token)"} {
+		if !strings.Contains(doc.Refusal, want) {
+			t.Errorf("refusal %q lacks %q", doc.Refusal, want)
+		}
+	}
+	if n := len(f.st.Load().Placements().Recent); n != 1 {
+		t.Errorf("a refusal recorded a placement: %d", n)
+	}
+
+	if _, code, errw := f.place("--exclude", "nobody@x.com"); code != 1 || !strings.Contains(errw, "nobody@x.com") {
+		t.Errorf("unknown exclusion: %d %s", code, errw)
+	}
+	if _, code, _ := f.place("--exclude"); code != 2 {
+		t.Errorf("--exclude with no name: %d", code)
+	}
+	if _, code, errw := f.place("--prefer", "b@x.com", "--exclude", "b@x.com"); code != 2 || !strings.Contains(errw, "both preferred and excluded") {
+		t.Errorf("preferred and excluded: %d %s", code, errw)
+	}
+}
