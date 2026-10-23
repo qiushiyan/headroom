@@ -33,11 +33,16 @@ func Run(args []string) int {
 	if len(args) > 0 {
 		cmd, rest = args[0], args[1:]
 	}
-	// headroom as a vendor's $BROWSER, set by `headroom login`: open the one
-	// URL in the profile it names and do nothing else. Before configuration,
-	// since the vendor's environment is not one headroom needs to accept.
-	if profileDir, ok := os.LookupEnv(browser.ProfileEnv); ok && browser.IsOpenRequest(args) {
-		return runOpen(profileDir, args[0])
+	// headroom as a vendor's $BROWSER, set by `headroom login`: record the
+	// sign-in the one URL belongs to, open it in the profile named if one is,
+	// and do nothing else. Before configuration, since the vendor's
+	// environment is not one headroom needs to accept.
+	if browser.IsOpenRequest(args) {
+		profileDir, open := os.LookupEnv(browser.ProfileEnv)
+		signin, record := os.LookupEnv(browser.SigninEnv)
+		if open || record {
+			return runOpen(args[0], signin, profileDir, open)
+		}
 	}
 	// retired 2026-08-04: see DESIGN.md § The session surface. The tombstone
 	// dispatches before configuration on purpose — the shell it diagnoses is

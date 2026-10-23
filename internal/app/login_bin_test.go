@@ -15,7 +15,8 @@ import (
 // ending, one extra whose login ends in three days, a Chrome profile named
 // after the extra, and stubs for the vendor (`claude`), `open` and `security`
 // that record what they were handed. The vendor stub does what Claude Code
-// does: exec $BROWSER with the URL, then store a new login in its dir.
+// does: exec $BROWSER with the URL, then store a new login in its dir — after
+// reading the code from its stdin when PASTE is set.
 type loginBin struct {
 	home, extra, stubs, record string
 }
@@ -59,6 +60,8 @@ case "$1 $2" in
 "auth login")
   { echo "login $*"; echo "dir=$CLAUDE_CONFIG_DIR"; echo "browser=$BROWSER"; } >> "$RECORD"
   "$BROWSER" "https://claude.com/cai/oauth/authorize?state=s"
+  echo browsed >> "$RECORD"
+  if [ -n "$PASTE" ]; then read -r code; echo "code=$code" >> "$RECORD"; fi
   printf '{"claudeAiOauth":{"accessToken":"new","expiresAt":1,"refreshTokenExpiresAt":` + fmt.Sprint(newEnd) + `}}' > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" ;;
 esac
 `,
@@ -125,8 +128,53 @@ func TestLoginBinaryOpensNothingForARemoteUser(t *testing.T) {
 	if !strings.Contains(out, "✓ a@x.com: logged in") || !strings.Contains(out, "paste the code it shows") {
 		t.Fatalf("remote login:\n%s\nrecord:\n%s", out, rec)
 	}
-	if strings.Contains(rec, "open ") || !strings.Contains(rec, "browser=/usr/bin/true") {
+	if strings.Contains(rec, "open ") || !strings.Contains(rec, "browsed") {
 		t.Errorf("a page was opened for a remote user:\n%s", rec)
+	}
+}
+
+// The code reaches the vendor through headroom, which learned the sign-in's
+// state from the URL the vendor handed its $BROWSER: a code another sign-in
+// issued is held back, and this sign-in's goes through.
+func TestLoginBinaryRelaysOnlyThisSigninsCode(t *testing.T) {
+	h := newLoginBin(t)
+	cmd := exec.Command(headroomBinary(t), "login")
+	cmd.Env = []string{
+		"HOME=" + h.home, "USER=" + os.Getenv("USER"),
+		"PATH=" + h.stubs + ":/usr/bin:/bin:/usr/sbin:/sbin",
+		"RECORD=" + h.record, "PASTE=1",
+		"SSH_CONNECTION=10.0.0.1 50000 10.0.0.2 22",
+	}
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Paste only once the page is up, as a person would.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if rec, _ := os.ReadFile(h.record); strings.Contains(string(rec), "browsed") {
+			break
+		}
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			t.Fatal("the vendor stub never opened its page")
+		}
+	}
+	fmt.Fprint(stdin, "stale#other\ngood#s\n")
+	stdin.Close()
+	cmd.Wait()
+	rec, _ := os.ReadFile(h.record)
+	if !strings.Contains(string(rec), "code=good#s") || strings.Contains(string(rec), "code=stale") {
+		t.Errorf("vendor got the wrong code:\n%s\noutput:\n%s", rec, out.String())
+	}
+	for _, s := range []string{"that code is from another sign-in", "code received, from this sign-in", "✓ a@x.com: logged in"} {
+		if !strings.Contains(out.String(), s) {
+			t.Errorf("output lacks %q:\n%s", s, out.String())
+		}
 	}
 }
 
