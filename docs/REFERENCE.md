@@ -152,7 +152,10 @@ naming a vendor this machine does not have fails saying so, except
   is due on this machine — and, when any did not take, one `headroom login`
   command naming just those. Exits 1 when any login did not take. Over ssh from another machine nothing
   opens on this one: open the printed URL where you are, in a browser signed
-  in as the account, and paste the code it shows. An ssh session cannot read
+  in as the account, and paste the code it shows. A pasted code shows as you
+  paste it and reaches Claude Code only when it is this sign-in's; one from
+  another page is refused and asked for again, and pasting the same line a
+  second time sends it anyway. An ssh session cannot read
   the login Keychain until `security unlock-keychain` runs in it, so accounts
   whose login lives there are marked unreadable and left alone, as is a
   primary whose logged-in identity cannot be read.

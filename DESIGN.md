@@ -192,17 +192,38 @@ click per account.
   runs `claude auth login --email <email>` under the environment
   `launch.Prepare` builds for it, so the login lands in that dir and its
   Keychain item exactly as a session's `/login` would. `--email` pre-fills
-  the sign-in page. stdio is the terminal's: when the browser cannot reach
-  the vendor's localhost callback, the vendor asks for the code there. A
-  session running on the account during its renewal keeps working.
+  the sign-in page. Its output is the terminal's; when the browser cannot
+  reach the vendor's localhost callback, the vendor asks there for the code,
+  which headroom reads (below). A session running on the account during its
+  renewal keeps working.
 - **headroom is the vendor's `$BROWSER`.** Claude Code opens the approval page
   by exec'ing `$BROWSER` with the URL as its only argument and its own
   environment; a value carrying arguments is not run at all (both measured on
   2.1.291). So `$BROWSER` is the headroom binary, with
   `HEADROOM_BROWSER_PROFILE` naming a Chrome profile directory (empty for the
-  default browser). Called that way with one https URL, headroom only runs
-  `open(1)` — dispatched before configuration, like `version`, since the
-  vendor's environment is not one headroom must accept.
+  default browser) and `HEADROOM_BROWSER_SIGNIN` a file for the URL's
+  `state`. Called that way with one https URL, headroom records the state,
+  runs `open(1)` and does nothing else — dispatched before configuration,
+  like `version`, since the vendor's environment is not one headroom must
+  accept.
+- **headroom reads the pasted code.** Claude Code reads its code prompt with
+  echo and line editing off, and sends whatever `code#state` it is given to
+  the token endpoint without matching the state to its own sign-in (2.1.309):
+  a paste never shows, a correction goes in as raw bytes, and a code from
+  another page — one left open by an earlier attempt — comes back as a bare
+  `Request failed with status code 400` that ends the attempt. So the
+  vendor's input is a pipe from headroom, which reads the terminal in its
+  normal mode, where a paste echoes and edits as a line, and passes a line
+  on only when it is shaped `code#state` and carries the recorded state; the
+  vendor builds the URL it opens and the URL it prints from one state. A
+  refused line gets the reason and a fresh prompt, and the sign-in stays
+  open. The same line again goes through as pasted: the check is headroom's
+  reading of the vendor, and must never stand between the owner and a
+  login. With no state recorded — off macOS at the machine, or no opener
+  call within a few seconds of the paste — a well-formed code goes through
+  without the state check, and headroom claims none. The pipe costs the vendor's
+  paste-only fallback for a localhost listener that cannot start, which it
+  offers only on a terminal.
 - **The profile is matched, never configured** (`internal/browser`, reading
   Chrome's `Local State`): the profile signed in to the account's email as a
   Google account; failing that, the one named by the email or its local part,
@@ -227,11 +248,12 @@ click per account.
   item are file-backed everywhere and renew normally.
 - **A remote user gets the URL, not a window.** When `SSH_CONNECTION` names
   another machine as the client, the page would open on a screen nobody is
-  at, so `$BROWSER` is `true(1)`: the vendor prints its URL, the user opens it
-  where they are, in a browser signed in as the account, and pastes the code
-  it shows. An ssh from a machine to itself — how the author's mini attaches
-  its own tmux — keeps the profile opener. Off macOS the vendor keeps its own
-  browser handling.
+  at, so headroom as `$BROWSER` records the sign-in and opens nothing: the
+  vendor prints its URL, the user opens it where they are, in a browser
+  signed in as the account, and pastes the code it shows. An ssh from a
+  machine to itself — how the author's mini attaches its own tmux — keeps the
+  profile opener. Off macOS, at the machine, the vendor keeps its own browser
+  handling.
 - **The result is read back**, against the credential as it stood just
   before that account's login. A login took only when the vendor command
   succeeded, the refresh expiry is a new one, and the dir's `.claude.json`
@@ -261,10 +283,11 @@ the decision. What it rests on, measured on 2.1.296:
 
 - **`claude setup-token` is `auth login`'s flow with a narrower grant**:
   scope `user:inference`, a lifetime of 365 days, no `--email`. It execs
-  `$BROWSER` with the URL as its only argument and takes the code at its own
-  paste prompt, so `mint` drives it as `login` drives the login. It stores
-  nothing — it prints the token — so `mint` runs it under a scratch config
-  dir and the account's dir, its login included, is never touched.
+  `$BROWSER` with the URL as its only argument, so `mint` opens its page as
+  `login` does; the code goes to the vendor's own paste prompt, since its
+  input must stay the terminal (below). It stores nothing — it prints the
+  token — so `mint` runs it under a scratch config dir and the account's
+  dir, its login included, is never touched.
 - **Its screen is read off a pipe.** With its output on a pipe it draws
   whole frames of plain lines, unwrapped; its input must stay the terminal.
   `headless.Scanner` is the one reader of that screen: it keeps the token and
@@ -1441,12 +1464,16 @@ read-back that fails an unchanged credential, an access-token refresh, a
 failed vendor command and a login as the wrong email — and through the
 built binary against stub `claude`, `open` and `security`: the login's dir,
 headroom as `$BROWSER`, the profile `open` receives, nothing opened for a
-remote user, and the opener answering under a configuration headroom
-refuses. The profile match is a table over the author's own `Local State`
-shape. `headless` is tested through its commands over the real store — a
-placement among token holders, the refusal near a limit and its retry
-instant, a run counted once, past fifteen minutes, then swept — and `mint`
-through the built binary under script(1) against a stub `setup-token`: the
+remote user, the opener answering under a configuration headroom refuses,
+and a pasted code reaching the vendor only when it carries the state the
+opener recorded. The relay is driven directly with scripted lines: what it
+refuses, what it says, the same line twice, and the vendor's input ending
+with the terminal's. The profile match and the code's shape are tables, the
+first over the author's own `Local State`. `headless` is tested through its
+commands over the real store — a placement among token holders, the
+refusal near a limit and its retry instant, a run counted once, past
+fifteen minutes, then swept — and `mint` through the built binary under
+script(1) against a stub `setup-token`: the
 scratch dir, gone after; headroom as `$BROWSER`; the token stored 0600 and
 never in the output. The scanner is a table over reads cut at every size.
 
