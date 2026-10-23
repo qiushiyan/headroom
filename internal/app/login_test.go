@@ -259,6 +259,89 @@ func TestLoginRemoteAsksForThePastedCode(t *testing.T) {
 	}
 }
 
+// vendorStdin is the vendor's end of the relay.
+type vendorStdin struct {
+	bytes.Buffer
+	closed bool
+}
+
+func (v *vendorStdin) Close() error { v.closed = true; return nil }
+
+// A paste is read before the vendor sees it: a line that is no code, or a
+// code another sign-in issued, is refused with what came in and a fresh
+// prompt, and the same line again goes through as pasted, since the check is
+// headroom's reading of the vendor. A code from this sign-in passes. The
+// vendor's input ends with the terminal's.
+func TestRelayCodesChecksEachPaste(t *testing.T) {
+	lines := make(chan string)
+	vendor, said := &vendorStdin{}, &bytes.Buffer{}
+	relayed := make(chan struct{})
+	go func() {
+		defer close(relayed)
+		relayCodes(lines, vendor, said, func() string { return "THISSTATE0123" }, make(chan struct{}))
+	}()
+	for _, l := range []string{"", "half a code", "abc#OTHERSTATE9", "abc#OTHERSTATE9", "  good#THISSTATE0123 \r"} {
+		lines <- l
+	}
+	close(lines)
+	<-relayed
+
+	if got, want := vendor.String(), "abc#OTHERSTATE9\ngood#THISSTATE0123\n"; got != want {
+		t.Errorf("vendor got %q, want %q", got, want)
+	}
+	if !vendor.closed {
+		t.Error("the vendor's input stayed open after the terminal's ended")
+	}
+	for _, s := range []string{
+		`headroom: "half a code" is not a sign-in code`,
+		"that code is from another sign-in (its state begins OTHERSTA…, this one's THISSTAT…)",
+		"headroom: passing it to claude as pasted",
+		"headroom: code received, from this sign-in — passing it to claude",
+	} {
+		if !strings.Contains(said.String(), s) {
+			t.Errorf("relay never said %q:\n%s", s, said.String())
+		}
+	}
+	if n := strings.Count(said.String(), "Paste code here > "); n != 3 {
+		t.Errorf("%d fresh prompts, want 3 (the empty line and the two refusals):\n%s", n, said.String())
+	}
+}
+
+// Ending the login stops the relay and leaves the vendor's input to the
+// vendor's exit; with no state recorded, a well-formed code passes unchecked
+// and says no more than that.
+func TestRelayCodesStopsWithTheLogin(t *testing.T) {
+	lines := make(chan string)
+	vendor, said := &vendorStdin{}, &bytes.Buffer{}
+	done, relayed := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(relayed)
+		relayCodes(lines, vendor, said, func() string { return "" }, done)
+	}()
+	lines <- "abc#anything"
+	close(done)
+	<-relayed
+	if vendor.String() != "abc#anything\n" || vendor.closed {
+		t.Errorf("vendor got %q (closed %v), want the code and an open pipe", vendor.String(), vendor.closed)
+	}
+	if !strings.Contains(said.String(), "headroom: code received — passing it to claude") || strings.Contains(said.String(), "this sign-in") {
+		t.Errorf("an unchecked code was described as checked:\n%s", said.String())
+	}
+}
+
+// Lines entered before a login began were meant for an earlier one.
+func TestDrainLinesDropsWhatCameBefore(t *testing.T) {
+	lines := make(chan string, 2)
+	lines <- "old#one"
+	lines <- "old#two"
+	drainLines(lines)
+	if len(lines) != 0 {
+		t.Errorf("%d lines left for the new login", len(lines))
+	}
+	close(lines)
+	drainLines(lines) // an ended input is drained, not waited on
+}
+
 func TestSSHRemote(t *testing.T) {
 	for conn, want := range map[string]bool{
 		"":                                     false, // not over ssh

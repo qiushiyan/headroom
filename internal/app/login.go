@@ -8,14 +8,17 @@ package app
 // docs/specs/login.md.
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -449,11 +452,14 @@ func orNobody(email string) string {
 }
 
 // vendorLogin runs `claude auth login` for acct in the foreground, under the
-// environment launch builds for it, with this binary as $BROWSER so the
-// approval page opens in the matched profile — or, for a remote user,
-// true(1), so nothing opens on a screen nobody is at. stdio is the
-// terminal's: the vendor always prints the URL, and asks for the code there
-// when the browser cannot reach its localhost callback.
+// environment launch builds for it, with this binary as $BROWSER on macOS
+// and for a remote user: it records which sign-in the vendor started and
+// opens the approval page in the matched profile — or, for a remote user,
+// opens nothing, since a page opened here would land on a screen nobody is
+// at. stdout and stderr are the
+// terminal's: the vendor always prints the URL, and asks there for the code
+// when the browser cannot reach its localhost callback. The code itself
+// comes in through headroom (relayCodes).
 func vendorLogin(acct accounts.Account, set accounts.Set, email string, page approvalPage) error {
 	p, err := launch.Prepare(acct, set, os.Environ())
 	if err != nil {
@@ -462,22 +468,26 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email string, page app
 	for _, n := range p.Notices {
 		fmt.Fprintln(os.Stderr, "headroom: "+n)
 	}
+	dir, err := os.MkdirTemp("", "headroom-login")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	signin := filepath.Join(dir, "state")
+	recorded := page.remote || runtime.GOOS == "darwin"
 	env := p.Env
-	switch {
-	case page.remote:
-		opener, err := exec.LookPath("true")
-		if err != nil {
-			return fmt.Errorf("no browser command: %w", err)
-		}
-		env = append(withoutVars(env, "BROWSER", browser.ProfileEnv), "BROWSER="+opener)
-	case runtime.GOOS == "darwin":
-		// Profiles are opened with open(1); elsewhere the vendor's own
-		// browser handling stays.
+	if recorded {
+		// Profiles are opened with open(1); elsewhere, at the machine, the
+		// vendor's own browser handling stays and a pasted code goes
+		// unchecked.
 		self, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("no browser command: %w", err)
 		}
-		env = append(withoutVars(env, "BROWSER", browser.ProfileEnv), "BROWSER="+self, browser.ProfileEnv+"="+page.profileDir)
+		env = append(withoutVars(env, "BROWSER", browser.ProfileEnv, browser.SigninEnv), "BROWSER="+self, browser.SigninEnv+"="+signin)
+		if !page.remote {
+			env = append(env, browser.ProfileEnv+"="+page.profileDir)
+		}
 	}
 	args := []string{"auth", "login"}
 	if email != "" {
@@ -486,8 +496,136 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email string, page app
 	cmd := exec.Command(p.Path, args...)
 	cmd.Args[0] = p.Binary
 	cmd.Env = env
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	vendorIn, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	lines := pastedLines()
+	drainLines(lines)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done, relayed := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(relayed)
+		relayCodes(lines, vendorIn, os.Stderr, func() string {
+			// The vendor hands $BROWSER the URL just after printing it, so
+			// only a paste typed ahead can beat the record; give it a
+			// moment before calling the state unknown.
+			for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+				state, err := os.ReadFile(signin)
+				if err == nil || !recorded || time.Now().After(deadline) {
+					return string(state)
+				}
+			}
+		}, done)
+	}()
+	err = cmd.Wait()
+	close(done)
+	<-relayed
+	return err
+}
+
+// pastedLines is the terminal's input, line by line, read from the first
+// login that asks until the input ends. One reader serves the whole batch:
+// a read cannot be called off, so a reader per login would leave the last
+// one holding the next login's paste.
+var pastedLines = sync.OnceValue(func() <-chan string {
+	lines := make(chan string)
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(os.Stdin)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+	return lines
+})
+
+// drainLines drops the lines entered before a login began: they were meant
+// for an earlier one.
+func drainLines(lines <-chan string) {
+	for {
+		select {
+		case _, ok := <-lines:
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// relayCodes hands the vendor the codes pasted at its prompt, until done.
+// headroom reads them rather than the vendor: Claude Code reads its prompt
+// with echo and line editing off (2.1.309), so a paste never showed and a
+// correction went in as raw bytes, and it sends any code#state to the token
+// endpoint without asking whether the code is this sign-in's — a code from
+// another page came back as a bare "Request failed with status code 400"
+// and ended the attempt. Read here, a paste echoes and edits as a line, and
+// a code that is not this sign-in's is refused before it is spent. state
+// reports this sign-in's state, "" while unknown. A refused line pasted
+// again as it was goes through: the check rests on a reading of the vendor
+// and must never be what stands between the owner and a login.
+func relayCodes(lines <-chan string, vendor io.WriteCloser, say io.Writer, state func() string, done <-chan struct{}) {
+	refused := ""
+	for {
+		select {
+		case <-done:
+			return
+		case line, ok := <-lines:
+			if !ok {
+				// The terminal's input ended, and with it the vendor's.
+				vendor.Close()
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				fmt.Fprint(say, "Paste code here > ")
+				continue
+			}
+			problem, note := judgeCode(line, state())
+			switch {
+			case problem == "":
+				fmt.Fprintf(say, "headroom: %s — passing it to claude\n", note)
+			case line == refused:
+				fmt.Fprintln(say, "headroom: passing it to claude as pasted")
+			default:
+				refused = line
+				fmt.Fprintf(say, "headroom: %s — or paste the same again to send it as it is\nPaste code here > ", problem)
+				continue
+			}
+			refused = ""
+			io.WriteString(vendor, line+"\n")
+		}
+	}
+}
+
+// judgeCode reads one trimmed line pasted at the vendor's prompt against the
+// sign-in whose state is want ("" unknown): problem is why it should not be
+// sent, and otherwise note says what was checked.
+func judgeCode(line, want string) (problem, note string) {
+	c, ok := browser.ParseCode(line)
+	switch {
+	case !ok:
+		return fmt.Sprintf("%q is not a sign-in code: the page shows one shaped code#state, copy all of it", line), ""
+	case want == "":
+		return "", "code received"
+	case c.State != want:
+		return fmt.Sprintf("that code is from another sign-in (its state begins %s, this one's %s): paste the code from the page this login opened or from the URL above",
+			statePrefix(c.State), statePrefix(want)), ""
+	}
+	return "", "code received, from this sign-in"
+}
+
+// statePrefix is enough of a state to tell two apart by eye.
+func statePrefix(s string) string {
+	if len(s) > 8 {
+		return s[:8] + "…"
+	}
+	return s
 }
 
 func withoutVars(env []string, names ...string) []string {
@@ -506,9 +644,18 @@ func withoutVars(env []string, names ...string) []string {
 	return out
 }
 
-// runOpen is the whole of headroom as a vendor's $BROWSER: show url in the
-// profile `headroom login` chose, and nothing else.
-func runOpen(profileDir, url string) int {
+// runOpen is the whole of headroom as a vendor's $BROWSER: record in the
+// file signin names which sign-in url belongs to, show url in the profile
+// `headroom login` chose when open, and nothing else.
+func runOpen(url, signin, profileDir string, open bool) int {
+	if signin != "" {
+		// Best effort: an unrecorded sign-in leaves its code unchecked, never
+		// its page unopened.
+		recordSignin(signin, browser.SigninState(url))
+	}
+	if !open {
+		return 0
+	}
 	out, err := exec.Command("open", browser.OpenArgs(profileDir, url)...).CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -520,4 +667,13 @@ func runOpen(profileDir, url string) int {
 		return 1
 	}
 	return 0
+}
+
+// recordSignin writes state whole, by rename: a code pasted while it is
+// written is never checked against part of it.
+func recordSignin(path, state string) {
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, []byte(state), 0o600) == nil {
+		os.Rename(tmp, path)
+	}
 }
