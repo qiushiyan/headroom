@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
@@ -74,8 +73,8 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if doc.TokenEndsAt == nil || doc.RetryAt != nil || doc.Rule != placement.Rule {
 		t.Errorf("ends %v retry %v rule %q", doc.TokenEndsAt, doc.RetryAt, doc.Rule)
 	}
-	for name, why := range map[string]string{"c@x.com": "no headless token", "qiushi": "no headless token"} {
-		if a := doc.find(name); a.Eligible || a.Excluded != why {
+	for _, name := range []string{"c@x.com", "qiushi"} {
+		if a := doc.find(name); a.Eligible || !strings.HasPrefix(a.Excluded, "no headless token") || !strings.Contains(a.Excluded, "headroom headless mint "+name) {
 			t.Errorf("%s: %+v", name, a)
 		}
 	}
@@ -144,6 +143,22 @@ func TestAHeadlessPlacementWaitsRatherThanTakeAnAccountNearALimit(t *testing.T) 
 	doc, code, _ = g.place()
 	if code != exitRefused || doc.RetryAt != nil || !strings.Contains(doc.Refusal, "no headless token") {
 		t.Fatalf("no tokens: %d %+v", code, doc)
+	}
+}
+
+// A placement that cannot be recorded is not handed out: a session nobody
+// can see is one the owner's launches cannot steer around. Handing out the
+// decision when state.Place fails must fail this test.
+func TestAnUnrecordedPlacementIsNotHandedOut(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.mint("a@x.com", 300*24*time.Hour)
+	if err := os.Chmod(f.cfg.AccountsRoot, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(f.cfg.AccountsRoot, 0o755) })
+	doc, code, errw := f.place()
+	if code != 1 || doc.Placed || doc.Account != "" || doc.Placement != "" || doc.Refusal == "" || errw == "" {
+		t.Fatalf("code %d doc %+v stderr %q", code, doc, errw)
 	}
 }
 
@@ -259,15 +274,23 @@ func TestAPreferredAccountIsFollowedWhileItHasRoom(t *testing.T) {
 // The token leaves its file only on a request naming its account, and only
 // when it still works for that account.
 func TestTheTokenIsPrintedOnlyWhenAsked(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com", "b@x.com", "c@x.com")
-	f.mint("a@x.com", 300*24*time.Hour)
+	f := newAutoFixture(t, "a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com")
+	for _, n := range []string{"a@x.com", "c@x.com", "d@x.com", "e@x.com"} {
+		f.mint(n, 300*24*time.Hour)
+	}
 	f.mint("b@x.com", -time.Hour)
-	f.mint("c@x.com", 300*24*time.Hour)
 	writeJSON(t, f.cfg.AccountsRoot+"/c@x.com/.claude.json", `{"oauthAccount":{"emailAddress":"c@x.com","accountUuid":"u-other"}}`)
+	// Positive evidence only: a dir logged out, or whose identity cannot be
+	// read just now, still holds the subscription its token was minted for.
+	writeJSON(t, f.cfg.AccountsRoot+"/d@x.com/.claude.json", `{}`)
+	writeJSON(t, f.cfg.AccountsRoot+"/e@x.com/.claude.json", `{torn`)
 
 	var out, errw bytes.Buffer
-	if code := runHeadlessToken(&out, &errw, f.cfg, []string{"a@x.com"}); code != 0 || out.String() != testToken+tokenSuffix("a@x.com")+"\n" {
-		t.Fatalf("token: %d %q %s", code, out.String(), errw.String())
+	for _, n := range []string{"a@x.com", "d@x.com", "e@x.com"} {
+		out.Reset()
+		if code := runHeadlessToken(&out, &errw, f.cfg, []string{n}); code != 0 || out.String() != testToken+tokenSuffix(n)+"\n" {
+			t.Fatalf("token %s: %d %q %s", n, code, out.String(), errw.String())
+		}
 	}
 	for name, want := range map[string]string{
 		"b@x.com": "ended", "c@x.com": "another subscription", "qiushi": "no headless token", "nobody@x.com": "nobody@x.com",
@@ -312,7 +335,7 @@ type mintWorld struct {
 func (w *mintWorld) deps(now time.Time) mintDeps {
 	return mintDeps{
 		terminal: true,
-		profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}},
+		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}},
 		now:      func() time.Time { return now },
 		setupToken: func(_ config.Scope, page approvalPage, out *headless.Scanner) error {
 			w.pages = append(w.pages, page)
@@ -342,7 +365,7 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	if strings.Contains(out.String(), "sk-ant-") || !strings.Contains(out.String(), headless.Withheld) || !strings.Contains(out.String(), "✓ a@x.com: headless token stored") {
 		t.Fatalf("output:\n%s", out.String())
 	}
-	if len(w.pages) != 1 || w.pages[0].profileDir != "Profile 2" || w.pages[0].remote {
+	if len(w.pages) != 1 || w.pages[0].profile.Dir != "Profile 2" || w.pages[0].remote {
 		t.Errorf("page %+v", w.pages)
 	}
 	tokens, err := headless.Read(f.cfg.AccountsRoot)
@@ -352,6 +375,16 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	}
 	if got := tok.EndsMS - now.UnixMilli(); got != (365 * 24 * time.Hour).Milliseconds() {
 		t.Errorf("ends in %v", time.Duration(got)*time.Millisecond)
+	}
+
+	// The primary's dir is not named by its email: its login is whoever its
+	// identity says, and the token is counted against that.
+	wp := &mintWorld{frames: []string{frameSuccess}}
+	if code := runHeadlessMintTo(io.Discard, &errw, f.cfg, []string{"qiushi"}, wp.deps(now)); code != 0 {
+		t.Fatalf("mint for the primary: %d %s", code, errw.String())
+	}
+	if tokens, err := headless.Read(f.cfg.AccountsRoot); err != nil || tokens["qiushi"].Key != f.key("qiushi").ID() || tokens["qiushi"].Email != "qiushi@x.com" {
+		t.Fatalf("the primary's token: %+v %v", tokens["qiushi"], err)
 	}
 
 	// A run that printed no token stores nothing and replaces nothing.
@@ -403,9 +436,9 @@ func TestMintRefusalsAndARemoteUser(t *testing.T) {
 		t.Errorf("off a terminal: %d %s", code, errw.String())
 	}
 	deps = w.deps(now)
-	deps.remote = true
+	deps.approver.remote = true
 	var out bytes.Buffer
-	if code := runHeadlessMintTo(&out, io.Discard, f.cfg, []string{"a@x.com"}, deps); code != 0 || !w.pages[0].remote || w.pages[0].profileDir != "" || !strings.Contains(out.String(), "paste the code it shows") {
+	if code := runHeadlessMintTo(&out, io.Discard, f.cfg, []string{"a@x.com"}, deps); code != 0 || !w.pages[0].remote || w.pages[0].profile.Dir != "" || !strings.Contains(out.String(), "paste the code it shows") {
 		t.Errorf("remote: %d %+v\n%s", code, w.pages, out.String())
 	}
 }
@@ -415,7 +448,6 @@ func TestMintRefusalsAndARemoteUser(t *testing.T) {
 func TestTheLoginPlanNamesTokensEndingSoon(t *testing.T) {
 	cfg, w := renewFixture(t)
 	deps := w.deps()
-	deps.health = func([]accounts.Account) auth.QueryFunc { return func(string) auth.Status { return auth.Status{} } }
 	deps.tokens = func() (map[string]headless.Token, error) {
 		return map[string]headless.Token{
 			"a@x.com": {Value: testToken, EndsMS: w.now.Add(3 * 24 * time.Hour).UnixMilli()},
@@ -425,17 +457,21 @@ func TestTheLoginPlanNamesTokensEndingSoon(t *testing.T) {
 	}
 	var out bytes.Buffer
 	runLoginTo(&out, io.Discard, cfg, []string{"--dry-run"}, deps)
-	for _, want := range []string{
-		"a@x.com                      headless token ends",
-		"c@x.com                      headless token ended",
-		"headroom headless mint a@x.com",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("plan lacks %q:\n%s", want, out.String())
+	tokenLine := func(name string) string {
+		for _, l := range accountLines(out.String(), name) {
+			if strings.Contains(l, "headless token") {
+				return l
+			}
+		}
+		return ""
+	}
+	for name, want := range map[string]string{"a@x.com": "ends", "c@x.com": "ended"} {
+		if l := tokenLine(name); !strings.Contains(l, want) || !strings.Contains(l, "headroom headless mint "+name) {
+			t.Errorf("%s's token line %q, want it %s with the mint command:\n%s", name, l, want, out.String())
 		}
 	}
-	if strings.Contains(out.String(), "b@x.com                      headless") {
-		t.Errorf("a token far from its end was named:\n%s", out.String())
+	if l := tokenLine("b@x.com"); l != "" {
+		t.Errorf("a token far from its end was named: %q", l)
 	}
 }
 
@@ -516,7 +552,7 @@ func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
 	if code != exitRefused || doc.RetryAt != nil || doc.Placement != "" {
 		t.Fatalf("all excluded: %d %+v", code, doc)
 	}
-	for _, want := range []string{"a@x.com (excluded by the caller)", "c@x.com (excluded by the caller)", "qiushi (no headless token)"} {
+	for _, want := range []string{"a@x.com (excluded by the caller)", "c@x.com (excluded by the caller)", "qiushi (no headless token"} {
 		if !strings.Contains(doc.Refusal, want) {
 			t.Errorf("refusal %q lacks %q", doc.Refusal, want)
 		}

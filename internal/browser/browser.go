@@ -1,8 +1,9 @@
 // Package browser finds the Chrome profile signed in to an account and opens
-// a URL in it. `headroom login` uses it to put a vendor's approval page in
-// front of the browser profile that holds that account's web session, so the
-// owner's part of a login is one click. Chrome's `Local State` is read, never
-// written; nothing here drives the browser beyond `open`.
+// a URL in it. `headroom login` and `headroom headless mint` use it (through
+// app/approval.go) to put a vendor's approval page in front of the browser
+// profile that holds that account's web session, so the owner's part of an
+// approval is one click. Chrome's `Local State` is read, never written;
+// nothing here drives the browser beyond `open`.
 package browser
 
 import (
@@ -13,10 +14,10 @@ import (
 	"strings"
 )
 
-// ProfileEnv carries the chosen profile directory from `headroom login` to
-// the headroom process the vendor runs as $BROWSER. Present (even empty)
-// with a single https URL argument, it makes headroom an opener and nothing
-// else; empty means the default browser.
+// ProfileEnv carries the chosen profile directory from the command that runs
+// a vendor with headroom as its $BROWSER to the headroom process the vendor
+// runs. Present (even empty) with a single https URL argument, it makes
+// headroom an opener and nothing else; empty means the default browser.
 const ProfileEnv = "HEADROOM_BROWSER_PROFILE"
 
 // Profile is one entry of Chrome's profile cache.
