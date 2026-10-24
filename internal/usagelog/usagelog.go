@@ -40,12 +40,12 @@ import (
 // Version is the record shape this binary writes.
 const Version = 1
 
-// The file is bounded by age once it has grown past MaxBytes. It keeps less
+// The file is bounded by age once it has grown past maxBytes. It keeps less
 // than the launch log: figures from a quarter ago describe a rule long
-// replaced. Variables so a test can make a small file "large".
-var (
-	MaxBytes int64 = 16 << 20
-	Keep           = 90 * 24 * time.Hour
+// replaced.
+const (
+	maxBytes = 16 << 20
+	keep     = 90 * 24 * time.Hour
 )
 
 // Heartbeat is how old the last line of an unchanged account may grow before
@@ -147,7 +147,7 @@ func (r Row) Usage() usage.Row {
 }
 
 func file(ledgerRoot string) jsonl.Log {
-	return jsonl.Log{Path: Path(ledgerRoot), MaxBytes: MaxBytes, Keep: Keep, Slack: Keep / 10}
+	return jsonl.Log{Path: Path(ledgerRoot), MaxBytes: maxBytes, Keep: keep, Slack: keep / 10}
 }
 
 // logged is the last line this process wrote per log and account: what an

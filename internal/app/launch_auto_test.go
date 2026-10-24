@@ -166,7 +166,7 @@ func (f autoFixture) launch(args ...string) launched {
 
 func (f autoFixture) log() []launchlog.Record {
 	f.t.Helper()
-	recs, skipped, err := launchlog.Read(f.cfg.AccountsRoot, 0)
+	recs, skipped, err := launchlog.Read(f.cfg.AccountsRoot)
 	if err != nil || skipped != 0 {
 		f.t.Fatalf("log: %d skipped, %v", skipped, err)
 	}
@@ -724,7 +724,7 @@ func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto · 5h 0% · week 30%, resets in 20.0h") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
-	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot)
 	if len(recs) != 1 {
 		t.Fatalf("%d records", len(recs))
 	}
@@ -754,7 +754,7 @@ func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
 	if got := f.launch(); got.code != 0 || !strings.Contains(got.stderr, "qiushi · auto") || strings.Contains(got.stderr, "resets in") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
-	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot)
 	if len(recs) != 1 {
 		t.Fatalf("%d records", len(recs))
 	}
@@ -1108,7 +1108,7 @@ func rehome(st *state.Store, id, account string, at time.Time) error {
 
 func readLog(t *testing.T, scope config.Scope) ([]launchlog.Record, int, error) {
 	t.Helper()
-	recs, skipped, err := launchlog.Read(scope.AccountsRoot, 0)
+	recs, skipped, err := launchlog.Read(scope.AccountsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

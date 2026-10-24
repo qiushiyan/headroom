@@ -199,13 +199,7 @@ func (e *evaluator) episode(w *window) (Episode, bool) {
 		if l.at > nearAt {
 			break
 		}
-		mode := l.Mode
-		if l.automatic && mode != "headless" {
-			// A headless caller's placements are the rule's too, and stay
-			// apart from the person's own.
-			mode = "auto"
-		}
-		ep.Launches[mode]++
+		ep.Launches[l.mode]++
 		ep.ByHome[l.Home]++
 	}
 	end := min(w.reset, e.now)

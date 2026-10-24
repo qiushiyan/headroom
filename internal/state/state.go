@@ -195,7 +195,8 @@ type doc struct {
 	members    map[string]Member
 	badMembers bool
 
-	// A section that failed to decode is nil above and true here. The two
+	// A section that failed to decode is empty above and true here, and the
+	// empty value is what a set-aside section is rebuilt from. The two
 	// failures are handled differently on purpose: the ledger is disposable,
 	// so it is quarantined and rebuilt conservatively, while re-homes are user
 	// decisions, so they are never written over.
@@ -308,63 +309,50 @@ func read(accountsRoot string) *doc {
 		return d
 	}
 
-	if v, ok := d.raw["version"]; ok {
-		if err := json.Unmarshal(v, &d.version); err != nil {
-			d.version = Version
-			d.problems = append(d.problems, Problem{"version", "unreadable"})
-		}
-	} else {
+	// Each section decodes on its own, and one that will not is left empty,
+	// marked and reported while the rest read on. An absent section decodes
+	// and keeps the value it started from: an empty record, this version.
+	decoded := func(section string, v any) bool {
+		b, ok := d.raw[section]
+		return !ok || json.Unmarshal(b, v) == nil
+	}
+	if !decoded("version", &d.version) {
 		d.version = Version
+		d.problems = append(d.problems, Problem{"version", "unreadable"})
 	}
-
-	if b, ok := d.raw["accounts"]; ok {
-		if err := json.Unmarshal(b, &d.accounts); err != nil {
-			d.accounts = map[string]accountRec{}
-			d.badAccounts = true
-			d.problems = append(d.problems, Problem{"accounts", "unreadable — quarantined; the request ledger rebuilds conservatively"})
-		}
+	if !decoded("accounts", &d.accounts) {
+		d.accounts, d.badAccounts = map[string]accountRec{}, true
+		d.problems = append(d.problems, Problem{"accounts", "unreadable — quarantined; the request ledger rebuilds conservatively"})
 	}
-	if b, ok := d.raw["sessions"]; ok {
-		// Validated whole, exactly as the .owners reader this replaced did: a
-		// section that decodes *around* a hollow record would have check report
-		// it readable while routing silently ignores what it holds.
-		if err := json.Unmarshal(b, &d.sessions); err != nil || !validOwners(d.sessions) {
-			d.sessions = map[string]sessions.OwnerRec{}
-			d.badSessions = true
-			d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
-		}
+	// Validated whole, exactly as the .owners reader this replaced did: a
+	// section that decodes *around* a hollow record would have check report it
+	// readable while routing silently ignores what it holds.
+	if !decoded("sessions", &d.sessions) || !validOwners(d.sessions) {
+		d.sessions, d.badSessions = map[string]sessions.OwnerRec{}, true
+		d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
 	}
-	if b, ok := d.raw["placements"]; ok {
-		if err := json.Unmarshal(b, &d.placements); err != nil {
-			d.placements = placement.Ledger{}
-			d.badPlacements = true
-			d.problems = append(d.problems, Problem{"placements", "unreadable — set aside at the next launch; placement starts from an empty record"})
-		}
+	if !decoded("placements", &d.placements) {
+		d.placements, d.badPlacements = placement.Ledger{}, true
+		d.problems = append(d.problems, Problem{"placements", "unreadable — set aside at the next launch; placement starts from an empty record"})
 	}
-	if b, ok := d.raw["runs"]; ok {
-		if err := json.Unmarshal(b, &d.runs); err != nil || !validRuns(d.runs) {
-			d.runs = nil
-			d.badRuns = true
-			d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
-		}
+	if !decoded("runs", &d.runs) || !validRuns(d.runs) {
+		d.runs, d.badRuns = nil, true
+		d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
 	}
 	d.adoptHomeless()
-	if b, ok := d.raw["members"]; ok {
-		if err := json.Unmarshal(b, &d.members); err != nil {
-			d.members = map[string]Member{}
-			d.badMembers = true
-			d.problems = append(d.problems, Problem{"members", "unreadable — set aside at the next request; every home registers again"})
+	if !decoded("members", &d.members) {
+		d.members, d.badMembers = map[string]Member{}, true
+		d.problems = append(d.problems, Problem{"members", "unreadable — set aside at the next request; every home registers again"})
+	}
+	for root, m := range d.members {
+		// A record that cannot locate its home is no use to anyone, and
+		// nothing but this code writes one.
+		if !filepath.IsAbs(root) || !filepath.IsAbs(m.Home) {
+			delete(d.members, root)
+			continue
 		}
-		for root, m := range d.members {
-			// A record that cannot locate its home is no use to anyone, and
-			// nothing but this code writes one.
-			if !filepath.IsAbs(root) || !filepath.IsAbs(m.Home) {
-				delete(d.members, root)
-				continue
-			}
-			m.Root = root
-			d.members[root] = m
-		}
+		m.Root = root
+		d.members[root] = m
 	}
 	// A JSON null decodes into a map without error and leaves it nil. Nothing
 	// here writes one, but a foreign or hand-edited document may, and a nil map
@@ -411,12 +399,7 @@ func (d *doc) register(m Member, now time.Time) {
 		// A home that cannot be located is no use to the others.
 		return
 	}
-	if d.badMembers {
-		d.quarantine("members")
-		d.badMembers = false
-		d.members = map[string]Member{}
-		d.dirty = true
-	}
+	d.setAside("members", &d.badMembers)
 	for root, cur := range d.members {
 		if root != m.Root && cur.SeenAtMS < now.Add(-retention).UnixMilli() {
 			delete(d.members, root)
@@ -659,62 +642,45 @@ func (d *doc) marshal() ([]byte, error) {
 	if d.imported != nil {
 		out["legacy_import"], _ = json.Marshal(d.imported)
 	}
-	if !d.badAccounts {
-		b, err := json.Marshal(d.accounts)
-		if err != nil {
-			return nil, err
-		}
-		out["accounts"] = b
-	}
-	if !d.badSessions {
-		b, err := json.Marshal(d.sessions)
-		if err != nil {
-			return nil, err
-		}
-		out["sessions"] = b
-	}
-	if !d.badMembers {
-		if len(d.members) == 0 {
-			delete(out, "members")
-		} else {
-			b, err := json.Marshal(d.members)
-			if err != nil {
-				return nil, err
-			}
-			out["members"] = b
+	// A section that decoded is written from what it now holds, and one that
+	// is gone — emptied, where its rule says empty means absent — leaves the
+	// file. One that did not decode is not touched: its raw bytes above go
+	// back as they were read.
+	put := func(section string, bad, gone bool, val any) {
+		switch {
+		case bad || err != nil:
+			// Carried raw, or the write has already failed.
+		case gone:
+			delete(out, section)
+		default:
+			out[section], err = json.Marshal(val)
 		}
 	}
-	if !d.badRuns {
-		if len(d.runs) == 0 {
-			delete(out, "runs")
-		} else {
-			b, err := json.Marshal(d.runs)
-			if err != nil {
-				return nil, err
-			}
-			out["runs"] = b
-		}
-	}
-	if !d.badPlacements {
-		if len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0 {
-			delete(out, "placements")
-		} else {
-			b, err := json.Marshal(d.placements)
-			if err != nil {
-				return nil, err
-			}
-			out["placements"] = b
-		}
+	put("accounts", d.badAccounts, false, d.accounts)
+	put("sessions", d.badSessions, false, d.sessions)
+	put("members", d.badMembers, len(d.members) == 0, d.members)
+	put("runs", d.badRuns, len(d.runs) == 0, d.runs)
+	put("placements", d.badPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0, d.placements)
+	if err != nil {
+		return nil, err
 	}
 	return json.MarshalIndent(out, "", "  ")
 }
 
-// quarantine moves a section's unreadable bytes aside under a name nothing
-// reads, so the next write can rebuild the section without destroying what
-// was there. Only the disposable ledger is ever quarantined.
-func (d *doc) quarantine(section string) {
+// setAside quarantines a disposable section that did not decode: its bytes
+// move aside under a name nothing reads, and the document is marked for the
+// write that rebuilds the section from the empty value read left in its
+// place — so nothing that was there is destroyed. Only the disposable ledger's
+// sections are ever set aside; the re-homes are human decisions, never
+// written over. A section that decoded is left alone.
+func (d *doc) setAside(section string, bad *bool) {
+	if !*bad {
+		return
+	}
 	if b, ok := d.raw[section]; ok {
 		d.raw[fmt.Sprintf("%s_unreadable", section)] = b
 		delete(d.raw, section)
 	}
+	*bad = false
+	d.dirty = true
 }
