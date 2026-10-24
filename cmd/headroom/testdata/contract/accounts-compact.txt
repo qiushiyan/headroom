@@ -1,0 +1,14 @@
+$ headroom accounts --compact
+exit 0
+--- stdout
+Claude Code
+account     All models (7d)  5h session
+p@x.com ●    40% 4.2d         12% 2.5h   stale · access token stale — any headroom launch --account p session refreshes it · observed 10m ago
+a@x.com      22% 2.1d          3% 3.3h   stale · access token stale — any headroom launch --account a@x.com session refreshes it · observed 10m ago
+b@x.com      61% 5.4d         85% 0.5h   stale · access token stale — any headroom launch --account b@x.com session refreshes it · observed 10m ago
+
+Codex
+account     weekly
+q@x.com ●    30% 3.0d  stale · access token stale — any headroom launch --vendor codex --account q session refreshes it · observed 10m ago
+c@x.com      70% 3.0d  stale · access token stale — any headroom launch --vendor codex --account c@x.com session refreshes it · observed 10m ago
+--- stderr

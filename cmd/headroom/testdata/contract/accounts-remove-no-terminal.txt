@@ -1,0 +1,9 @@
+$ headroom accounts remove
+exit 2
+--- stdout
+--- stderr
+usage: headroom accounts remove [<email | name.lock>] [--yes]
+removable:
+  a@x.com  (logged in)
+  b@x.com  (logged in)
+  d@x.com  (never logged in)

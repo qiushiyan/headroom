@@ -1,0 +1,5 @@
+$ headroom launch fix it
+exit 2
+--- stdout
+--- stderr
+headroom launch: unknown argument "fix" (claude args go after --)

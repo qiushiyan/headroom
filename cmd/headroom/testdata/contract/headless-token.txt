@@ -1,0 +1,5 @@
+$ headroom headless token a@x.com
+exit 0
+--- stdout
+sk-ant-oat01-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa_x_com
+--- stderr

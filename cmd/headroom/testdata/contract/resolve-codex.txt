@@ -1,0 +1,5 @@
+$ headroom resolve --vendor codex c@x.com
+exit 0
+--- stdout
+c@x.com	$BASE/home/.codex-accounts/c@x.com	extra
+--- stderr

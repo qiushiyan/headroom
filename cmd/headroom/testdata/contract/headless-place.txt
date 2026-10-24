@@ -1,0 +1,78 @@
+$ headroom headless place --prefer a@x.com --exclude b@x.com
+exit 0
+--- stdout
+{
+  "schema": 1,
+  "placed": true,
+  "account": "a@x.com",
+  "placement": "<id>",
+  "reason": "owner",
+  "rule": "load-2",
+  "token_ends_at": "<time>",
+  "retry_at": null,
+  "accounts": [
+    {
+      "account": "p",
+      "eligible": false,
+      "excluded": "no headless token — headroom headless mint p",
+      "near_limit": false,
+      "load": 2,
+      "busy": 0,
+      "pending": 1,
+      "observed_at": "<time>",
+      "stale": false,
+      "session": {
+        "percent": 12,
+        "basis": "observed",
+        "resets_at": "<time>"
+      },
+      "week": {
+        "percent": 40,
+        "basis": "observed",
+        "resets_at": "<time>"
+      }
+    },
+    {
+      "account": "a@x.com",
+      "eligible": true,
+      "near_limit": false,
+      "load": 3,
+      "busy": 0,
+      "pending": 3,
+      "observed_at": "<time>",
+      "stale": false,
+      "session": {
+        "percent": 3,
+        "basis": "observed",
+        "resets_at": "<time>"
+      },
+      "week": {
+        "percent": 22,
+        "basis": "observed",
+        "resets_at": "<time>"
+      }
+    },
+    {
+      "account": "b@x.com",
+      "eligible": false,
+      "excluded": "excluded by the caller",
+      "near_limit": true,
+      "load": 8,
+      "busy": 0,
+      "pending": 0,
+      "observed_at": "<time>",
+      "stale": false,
+      "session": {
+        "percent": 85,
+        "basis": "observed",
+        "resets_at": "<time>"
+      },
+      "week": {
+        "percent": 61,
+        "basis": "observed",
+        "resets_at": "<time>"
+      }
+    }
+  ]
+}
+--- stderr

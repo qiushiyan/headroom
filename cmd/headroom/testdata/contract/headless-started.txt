@@ -1,0 +1,4 @@
+$ headroom headless started <id> <pid>
+exit 0
+--- stdout
+--- stderr

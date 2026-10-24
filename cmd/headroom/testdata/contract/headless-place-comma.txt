@@ -1,0 +1,5 @@
+$ headroom headless place --dry-run --exclude a@x.com,b@x.com
+exit 1
+--- stdout
+--- stderr
+headroom headless place: --exclude: "a@x.com,b@x.com" is not a discovered account — run headroom accounts

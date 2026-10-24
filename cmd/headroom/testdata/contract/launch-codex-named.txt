@@ -1,0 +1,9 @@
+$ headroom launch --vendor codex --account c@x.com -- resume --all
+exit 0
+--- stdout
+--- stderr
+headroom launch: c@x.com · named
+--- vendor
+codex resume --all
+CODEX_HOME=$BASE/home/.codex-accounts/c@x.com
+---

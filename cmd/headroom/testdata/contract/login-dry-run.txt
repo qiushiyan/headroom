@@ -1,0 +1,8 @@
+$ headroom login --dry-run
+exit 0
+--- stdout
+  p                            login ends Nov 18 (in 24d)
+  a@x.com                      login ends Nov 18 (in 24d)
+  b@x.com                      login ends Nov 18 (in 24d)
+nothing to renew within 7d; name an account or pass --all to renew anyway
+--- stderr

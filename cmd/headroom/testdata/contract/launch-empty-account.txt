@@ -1,0 +1,5 @@
+$ headroom launch --account "" --
+exit 2
+--- stdout
+--- stderr
+headroom launch: --account needs a non-empty name

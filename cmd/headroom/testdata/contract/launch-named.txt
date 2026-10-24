@@ -1,0 +1,9 @@
+$ headroom launch --account a@x.com --
+exit 0
+--- stdout
+--- stderr
+headroom launch: a@x.com · named
+--- vendor
+claude 
+CLAUDE_CONFIG_DIR=$BASE/home/.claude-accounts/a@x.com
+---

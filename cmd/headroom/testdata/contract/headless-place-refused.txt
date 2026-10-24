@@ -1,0 +1,76 @@
+$ headroom headless place --exclude a@x.com --exclude b@x.com
+exit 3
+--- stdout
+{
+  "schema": 1,
+  "placed": false,
+  "rule": "load-2",
+  "refusal": "no account can take a launch: p (no headless token — headroom headless mint p), a@x.com (excluded by the caller), b@x.com (excluded by the caller)",
+  "retry_at": null,
+  "accounts": [
+    {
+      "account": "p",
+      "eligible": false,
+      "excluded": "no headless token — headroom headless mint p",
+      "near_limit": false,
+      "load": 2,
+      "busy": 0,
+      "pending": 1,
+      "observed_at": "<time>",
+      "stale": false,
+      "session": {
+        "percent": 12,
+        "basis": "observed",
+        "resets_at": "<time>"
+      },
+      "week": {
+        "percent": 40,
+        "basis": "observed",
+        "resets_at": "<time>"
+      }
+    },
+    {
+      "account": "a@x.com",
+      "eligible": false,
+      "excluded": "excluded by the caller",
+      "near_limit": false,
+      "load": 4,
+      "busy": 1,
+      "pending": 3,
+      "observed_at": "<time>",
+      "stale": false,
+      "session": {
+        "percent": 3,
+        "basis": "observed",
+        "resets_at": "<time>"
+      },
+      "week": {
+        "percent": 22,
+        "basis": "observed",
+        "resets_at": "<time>"
+      }
+    },
+    {
+      "account": "b@x.com",
+      "eligible": false,
+      "excluded": "excluded by the caller",
+      "near_limit": true,
+      "load": 8,
+      "busy": 0,
+      "pending": 0,
+      "observed_at": "<time>",
+      "stale": false,
+      "session": {
+        "percent": 85,
+        "basis": "observed",
+        "resets_at": "<time>"
+      },
+      "week": {
+        "percent": 61,
+        "basis": "observed",
+        "resets_at": "<time>"
+      }
+    }
+  ]
+}
+--- stderr

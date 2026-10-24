@@ -1,0 +1,5 @@
+$ headroom launches --eval -n 0
+exit 2
+--- stdout
+--- stderr
+headroom launches: --eval reads every line — -n does not apply; --since narrows it

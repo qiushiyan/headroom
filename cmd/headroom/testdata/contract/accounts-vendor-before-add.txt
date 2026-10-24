@@ -1,0 +1,8 @@
+$ headroom accounts --vendor codex add g@x.com
+exit 0
+--- stdout
+seeded $BASE/home/.codex-accounts/g@x.com
+  sessions → $BASE/home/.codex/sessions (sessions are machine-global)
+next: headroom launch --vendor codex --account g@x.com -- login   and log in as g@x.com
+      (the board warns if the login does not match the dir name; new accounts sort last until listed in $BASE/home/.codex-accounts/.order)
+--- stderr

@@ -1,0 +1,47 @@
+$ headroom check
+exit 1
+--- stdout
+FAIL  binary (claude): endpoint + config-dir + credential seams present — missing: api/oauth/usage CLAUDE_SECURESTORAGE_CONFIG_DIR -credentials
+ ok   credential[primary]: .credentials.json (no keychain item)
+ ??   api[primary]: not tested — access token stale — any headroom launch --account p session refreshes it
+ ok   credential[a@x.com]: .credentials.json (no keychain item)
+ ??   api[a@x.com]: not tested — access token stale — any headroom launch --account a@x.com session refreshes it
+ ok   credential[b@x.com]: .credentials.json (no keychain item)
+ ??   api[b@x.com]: not tested — access token stale — any headroom launch --account b@x.com session refreshes it
+ ok   claude.json: .oauthAccount.emailAddress present
+ ok   auth[primary]: claude auth status parses via shared contract
+ ok   auth[a@x.com]: claude auth status parses via shared contract
+ ok   auth[b@x.com]: claude auth status parses via shared contract
+ ok   state: every section readable
+ ok   state[sessions]: re-home records readable
+ ok   state[a@x.com]: stored usage response parses via shared contract
+ ok   state[b@x.com]: stored usage response parses via shared contract
+ ok   state[p]: stored usage response parses via shared contract
+ ok   current: .current resolves to a launchable account (p)
+ ok   dirs: every account config dir is absolute
+ ok   topology[a@x.com]: projects/ resolves to the canonical store
+ ok   topology[b@x.com]: projects/ resolves to the canonical store
+ ok   home: HOME is not this user's login home — the primary is launched by its dir ($BASE/home/.claude), never by absence
+ ok   logins: every account dir keeps its own login, history and session registry
+FAIL  settings: every account sharing the session store reads one settings.json — primary has no settings.json; a@x.com has no settings.json; b@x.com has no settings.json — each account's cleanup sweep prunes the shared store with its own file's cleanupPeriodDays, and separate files drift apart; make every account's settings.json a symlink to one file (`accounts add --share-config` seeds it linked to the primary's)
+FAIL  retention: every account sharing the session store prunes it after 30 days (cleanupPeriodDays unset — Claude Code's default) — cleanupPeriodDays unset (primary, a@x.com, b@x.com) — the shared store is then pruned on Claude Code's default (30 days as of 2.1.287), which any release may change; set cleanupPeriodDays explicitly in the settings.json every account reads
+ ??   registry: not tested — no live-session records right now
+ ??   sessions: not tested — store is empty
+ ??   codex binary: seams not searched — codex is a launcher script, not the native binary
+ ok   codex auth[primary]: auth.json parses via shared contract (ChatGPT login, identity decodable)
+ ??   codex api[primary]: not tested — access token stale — any headroom launch --vendor codex --account q session refreshes it
+ ok   codex auth[c@x.com]: auth.json parses via shared contract (ChatGPT login, identity decodable)
+ ??   codex api[c@x.com]: not tested — access token stale — any headroom launch --vendor codex --account c@x.com session refreshes it
+FAIL  codex isolation: CODEX_HOME set to an empty dir answers not logged in — an empty home reports a login — CODEX_HOME no longer selects the credentials, or they moved out of the home (keyring?)
+ ok   codex credentials[primary]: codex login status agrees with auth.json
+ ok   codex credentials[c@x.com]: codex login status agrees with auth.json
+ ok   codex state: every section readable
+ ok   codex state[sessions]: re-home records readable
+ ok   codex state[q]: stored usage response parses via shared contract
+ ok   codex state[c@x.com]: stored usage response parses via shared contract
+ ok   codex current: .current resolves to a launchable account (q)
+ ok   codex dirs: every account config dir is absolute
+ ok   codex topology[c@x.com]: sessions/ resolves to the canonical store
+
+4 check(s) failed — Claude Code and Codex likely changed a format
+--- stderr

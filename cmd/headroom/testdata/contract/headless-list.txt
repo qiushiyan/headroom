@@ -1,0 +1,8 @@
+$ headroom headless
+exit 0
+--- stdout
+  account  headless token
+  p        none — headroom headless mint p
+  a@x.com  ends Aug 20 (in 299d)
+  b@x.com  ends Aug 20 (in 299d)
+--- stderr

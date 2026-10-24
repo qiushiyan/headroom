@@ -1,0 +1,9 @@
+$ headroom accounts add --vendor codex --share-config e@x.com
+exit 0
+--- stdout
+seeded $BASE/home/.codex-accounts/e@x.com
+  sessions → $BASE/home/.codex/sessions (sessions are machine-global)
+  shared nothing from $BASE/home/.codex (no matching entries)
+next: headroom launch --vendor codex --account e@x.com -- login   and log in as e@x.com
+      (the board warns if the login does not match the dir name; new accounts sort last until listed in $BASE/home/.codex-accounts/.order)
+--- stderr

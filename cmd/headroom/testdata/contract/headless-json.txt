@@ -1,0 +1,26 @@
+$ headroom headless --json
+exit 0
+--- stdout
+{
+  "schema": 1,
+  "accounts": [
+    {
+      "account": "p",
+      "token": false,
+      "excluded": "no headless token — headroom headless mint p"
+    },
+    {
+      "account": "a@x.com",
+      "token": true,
+      "minted_at": "<time>",
+      "ends_at": "<time>"
+    },
+    {
+      "account": "b@x.com",
+      "token": true,
+      "minted_at": "<time>",
+      "ends_at": "<time>"
+    }
+  ]
+}
+--- stderr

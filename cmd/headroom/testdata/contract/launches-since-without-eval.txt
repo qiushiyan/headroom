@@ -1,0 +1,5 @@
+$ headroom launches --since 7d
+exit 2
+--- stdout
+--- stderr
+headroom launches: --since narrows --eval

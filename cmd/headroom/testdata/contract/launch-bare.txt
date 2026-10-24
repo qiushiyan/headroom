@@ -1,0 +1,9 @@
+$ headroom launch -- --dangerously-skip-permissions --settings "{\"fastMode\":true}"
+exit 0
+--- stdout
+--- stderr
+headroom launch: p · pinned (a on the board turns auto on)
+--- vendor
+claude --dangerously-skip-permissions --settings {"fastMode":true}
+CLAUDE_CONFIG_DIR=$BASE/home/.claude
+---

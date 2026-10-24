@@ -1,0 +1,340 @@
+$ headroom launches --eval --json
+exit 0
+--- stdout
+{
+  "schema": 1,
+  "generated_at": "<time>",
+  "vendors": [
+    {
+      "vendor": "claude",
+      "home": "$BASE/home/.claude-accounts",
+      "rule": "load-2",
+      "since": null,
+      "until": "<time>",
+      "thresholds": {
+        "near_percent": 80,
+        "room_below_percent": 50,
+        "stale_after_s": <s>,
+        "fresh_for_s": <s>,
+        "step_s": <s>,
+        "follow_s": <s>
+      },
+      "sources": {
+        "launches": 4,
+        "homes": 1,
+        "usage_log_readings": 0,
+        "readings_from_launches": 3,
+        "unkeyed_accounts": 0,
+        "skipped_lines": 0,
+        "problems": [],
+        "first": "<time>",
+        "last": "<time>"
+      },
+      "rules": [
+        {
+          "rule": "load-2",
+          "from": "<time>",
+          "to": "<time>",
+          "launches": {
+            "total": 4,
+            "by_mode": {
+              "auto": 1,
+              "named": 2,
+              "pinned": 1
+            },
+            "automatic": 1,
+            "by_reason": {
+              "least-load": 1
+            },
+            "by_account": {
+              "a@x.com": 1
+            },
+            "longest_run": 1,
+            "chosen_stale": 0,
+            "chosen_unobserved": 0,
+            "chosen_age_p50_s": <s>,
+            "chosen_age_p90_s": <s>
+          },
+          "outcomes": {
+            "followed": 0,
+            "reached_near": 0,
+            "exhausted": 0,
+            "mean_rise": 0,
+            "runner_up_followed": 0,
+            "runner_up_reached_near": 0
+          },
+          "session_windows": {
+            "reached_near": 0,
+            "exhausted": 0,
+            "room_elsewhere": 0,
+            "near_s": <s>,
+            "squeezed_s": <s>
+          },
+          "weekly_windows": {
+            "reached_near": 0,
+            "exhausted": 0,
+            "room_elsewhere": 0,
+            "near_s": <s>,
+            "squeezed_s": <s>,
+            "renewals": 0,
+            "mean_used_min": 0,
+            "lapsed_max_pts": 0,
+            "lapsed_while_squeezed": 0
+          },
+          "replay": {
+            "replayed": 1,
+            "agreed": 1,
+            "inexact": 0,
+            "faults": 0,
+            "same_rule": true
+          }
+        }
+      ],
+      "unplaced": {
+        "rule": "",
+        "from": "",
+        "to": "",
+        "launches": {
+          "total": 0,
+          "by_mode": {},
+          "automatic": 0,
+          "by_reason": {},
+          "by_account": {},
+          "longest_run": 0,
+          "chosen_stale": 0,
+          "chosen_unobserved": 0,
+          "chosen_age_p50_s": <s>,
+          "chosen_age_p90_s": <s>
+        },
+        "outcomes": {
+          "followed": 0,
+          "reached_near": 0,
+          "exhausted": 0,
+          "mean_rise": 0,
+          "runner_up_followed": 0,
+          "runner_up_reached_near": 0
+        },
+        "session_windows": {
+          "reached_near": 1,
+          "exhausted": 0,
+          "room_elsewhere": 1,
+          "near_s": <s>,
+          "squeezed_s": <s>
+        },
+        "weekly_windows": {
+          "reached_near": 0,
+          "exhausted": 0,
+          "room_elsewhere": 0,
+          "near_s": <s>,
+          "squeezed_s": <s>,
+          "renewals": 0,
+          "mean_used_min": 0,
+          "lapsed_max_pts": 0,
+          "lapsed_while_squeezed": 0
+        },
+        "replay": {
+          "replayed": 0,
+          "agreed": 0,
+          "inexact": 0,
+          "faults": 0,
+          "same_rule": false
+        }
+      },
+      "fleet": {
+        "observed_s": <s>,
+        "near_s": <s>,
+        "squeezed_s": <s>,
+        "mean_spread_pts": 82,
+        "unobserved_renewals": 0
+      },
+      "episodes": [
+        {
+          "account": "b@x.com",
+          "key": "uuid:uuid-b@x.com",
+          "limit": "5h session",
+          "session": true,
+          "rule": "",
+          "placed": false,
+          "near_at": "<time>",
+          "exhausted_at": null,
+          "peak": 85,
+          "resets_at": "<time>",
+          "near_s": <s>,
+          "squeezed_s": <s>,
+          "launches": {},
+          "launches_by_home": {},
+          "room_elsewhere": {
+            "account": "a@x.com",
+            "session": 3,
+            "highest": 22,
+            "age_s": <s>,
+            "basis": "fresh"
+          }
+        }
+      ],
+      "renewals": [],
+      "decisions": [
+        {
+          "at": "<time>",
+          "home": "$BASE/home/.claude-accounts",
+          "rule": "load-2",
+          "mode": "auto",
+          "reason": "least-load",
+          "chosen": "a@x.com",
+          "runner_up": "p",
+          "chosen_after": null,
+          "runner_up_after": null,
+          "replay": {
+            "chosen": "a@x.com",
+            "reason": "least-load",
+            "agrees": true,
+            "exact": true,
+            "fault": false
+          }
+        }
+      ]
+    },
+    {
+      "vendor": "codex",
+      "home": "$BASE/home/.codex-accounts",
+      "rule": "load-2",
+      "since": null,
+      "until": "<time>",
+      "thresholds": {
+        "near_percent": 80,
+        "room_below_percent": 50,
+        "stale_after_s": <s>,
+        "fresh_for_s": <s>,
+        "step_s": <s>,
+        "follow_s": <s>
+      },
+      "sources": {
+        "launches": 3,
+        "homes": 1,
+        "usage_log_readings": 0,
+        "readings_from_launches": 2,
+        "unkeyed_accounts": 0,
+        "skipped_lines": 0,
+        "problems": [],
+        "first": "<time>",
+        "last": "<time>"
+      },
+      "rules": [
+        {
+          "rule": "load-2",
+          "from": "<time>",
+          "to": "<time>",
+          "launches": {
+            "total": 3,
+            "by_mode": {
+              "named": 1,
+              "pinned": 2
+            },
+            "automatic": 0,
+            "by_reason": {},
+            "by_account": {},
+            "longest_run": 0,
+            "chosen_stale": 0,
+            "chosen_unobserved": 0,
+            "chosen_age_p50_s": <s>,
+            "chosen_age_p90_s": <s>
+          },
+          "outcomes": {
+            "followed": 0,
+            "reached_near": 0,
+            "exhausted": 0,
+            "mean_rise": 0,
+            "runner_up_followed": 0,
+            "runner_up_reached_near": 0
+          },
+          "session_windows": {
+            "reached_near": 0,
+            "exhausted": 0,
+            "room_elsewhere": 0,
+            "near_s": <s>,
+            "squeezed_s": <s>
+          },
+          "weekly_windows": {
+            "reached_near": 0,
+            "exhausted": 0,
+            "room_elsewhere": 0,
+            "near_s": <s>,
+            "squeezed_s": <s>,
+            "renewals": 0,
+            "mean_used_min": 0,
+            "lapsed_max_pts": 0,
+            "lapsed_while_squeezed": 0
+          },
+          "replay": {
+            "replayed": 0,
+            "agreed": 0,
+            "inexact": 0,
+            "faults": 0,
+            "same_rule": true
+          }
+        }
+      ],
+      "unplaced": {
+        "rule": "",
+        "from": "",
+        "to": "",
+        "launches": {
+          "total": 0,
+          "by_mode": {},
+          "automatic": 0,
+          "by_reason": {},
+          "by_account": {},
+          "longest_run": 0,
+          "chosen_stale": 0,
+          "chosen_unobserved": 0,
+          "chosen_age_p50_s": <s>,
+          "chosen_age_p90_s": <s>
+        },
+        "outcomes": {
+          "followed": 0,
+          "reached_near": 0,
+          "exhausted": 0,
+          "mean_rise": 0,
+          "runner_up_followed": 0,
+          "runner_up_reached_near": 0
+        },
+        "session_windows": {
+          "reached_near": 0,
+          "exhausted": 0,
+          "room_elsewhere": 0,
+          "near_s": <s>,
+          "squeezed_s": <s>
+        },
+        "weekly_windows": {
+          "reached_near": 0,
+          "exhausted": 0,
+          "room_elsewhere": 0,
+          "near_s": <s>,
+          "squeezed_s": <s>,
+          "renewals": 0,
+          "mean_used_min": 0,
+          "lapsed_max_pts": 0,
+          "lapsed_while_squeezed": 0
+        },
+        "replay": {
+          "replayed": 0,
+          "agreed": 0,
+          "inexact": 0,
+          "faults": 0,
+          "same_rule": false
+        }
+      },
+      "fleet": {
+        "observed_s": <s>,
+        "near_s": <s>,
+        "squeezed_s": <s>,
+        "mean_spread_pts": 40,
+        "unobserved_renewals": 0
+      },
+      "episodes": [],
+      "renewals": [],
+      "decisions": []
+    }
+  ]
+}
+--- stderr

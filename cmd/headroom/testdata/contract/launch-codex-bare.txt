@@ -1,0 +1,9 @@
+$ headroom launch --vendor codex --
+exit 0
+--- stdout
+--- stderr
+headroom launch: q · pinned (a on the board turns auto on)
+--- vendor
+codex 
+CODEX_HOME=<unset>
+---

@@ -1,0 +1,5 @@
+$ headroom launch --auto --last --
+exit 2
+--- stdout
+--- stderr
+headroom launch: --auto, --last and --account each decide the account — give one

@@ -1,0 +1,5 @@
+$ headroom resolve a@x.com
+exit 0
+--- stdout
+a@x.com	$BASE/home/.claude-accounts/a@x.com	extra
+--- stderr

@@ -1,0 +1,5 @@
+$ headroom resolve
+exit 0
+--- stdout
+p	$BASE/home/.claude	primary
+--- stderr

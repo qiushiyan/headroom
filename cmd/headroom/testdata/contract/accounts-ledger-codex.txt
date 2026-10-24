@@ -1,0 +1,5 @@
+$ headroom accounts ledger --vendor codex
+exit 2
+--- stdout
+--- stderr
+headroom accounts ledger: only Claude Code homes share a ledger

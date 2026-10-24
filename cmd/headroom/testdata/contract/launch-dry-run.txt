@@ -1,0 +1,11 @@
+$ headroom launch --dry-run
+exit 0
+--- stdout
+headroom launch --dry-run: would start claude on p (pinned)
+rule load-2 — nothing was recorded, logged or started
+
+  account  session   week  resets  busy  pending  load  note
+→ p            12%    40%    4.2d     0        0     1  observed 10m ago
+  a@x.com       3%    22%    2.1d     0        0     0  observed 10m ago
+  b@x.com      85%    61%    5.4d     0        0     8  near a limit (5h 85%) · observed 10m ago
+--- stderr

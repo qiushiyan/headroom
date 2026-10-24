@@ -1,0 +1,210 @@
+$ headroom limits
+exit 0
+--- stdout
+{
+  "schema": 7,
+  "generated_at": "<time>",
+  "current": {
+    "claude": "p",
+    "codex": "q"
+  },
+  "mode": {
+    "claude": "pinned",
+    "codex": "pinned"
+  },
+  "accounts": [
+    {
+      "vendor": "claude",
+      "name": "p",
+      "email": "p@x.com",
+      "launcher": "headroom launch --account p",
+      "current": true,
+      "health": "unprobed",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "headroom_cache",
+        "fresh": false,
+        "allowance": "unknown",
+        "limits": [
+          {
+            "label": "5h session",
+            "kind": "session",
+            "group": "session",
+            "percent": 12,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "All models (7d)",
+            "kind": "weekly_all",
+            "group": "weekly",
+            "percent": 40,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          }
+        ]
+      },
+      "attempt": {
+        "state": "none"
+      },
+      "load": null
+    },
+    {
+      "vendor": "claude",
+      "name": "a@x.com",
+      "email": "a@x.com",
+      "launcher": "headroom launch --account a@x.com",
+      "current": false,
+      "health": "unprobed",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "headroom_cache",
+        "fresh": false,
+        "allowance": "unknown",
+        "limits": [
+          {
+            "label": "5h session",
+            "kind": "session",
+            "group": "session",
+            "percent": 3,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "All models (7d)",
+            "kind": "weekly_all",
+            "group": "weekly",
+            "percent": 22,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          }
+        ]
+      },
+      "attempt": {
+        "state": "none"
+      },
+      "load": null
+    },
+    {
+      "vendor": "claude",
+      "name": "b@x.com",
+      "email": "b@x.com",
+      "launcher": "headroom launch --account b@x.com",
+      "current": false,
+      "health": "unprobed",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "headroom_cache",
+        "fresh": false,
+        "allowance": "unknown",
+        "limits": [
+          {
+            "label": "5h session",
+            "kind": "session",
+            "group": "session",
+            "percent": 85,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "All models (7d)",
+            "kind": "weekly_all",
+            "group": "weekly",
+            "percent": 61,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          }
+        ]
+      },
+      "attempt": {
+        "state": "none"
+      },
+      "load": null
+    },
+    {
+      "vendor": "codex",
+      "name": "q",
+      "email": "q@x.com",
+      "launcher": "headroom launch --vendor codex --account q",
+      "plan": "plus",
+      "current": true,
+      "health": "unprobed",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "headroom_cache",
+        "fresh": false,
+        "allowance": "allowed",
+        "limits": [
+          {
+            "label": "weekly",
+            "kind": "primary",
+            "group": "rate_limit",
+            "window_seconds": 604800,
+            "percent": 30,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          }
+        ]
+      },
+      "attempt": {
+        "state": "none"
+      },
+      "load": null
+    },
+    {
+      "vendor": "codex",
+      "name": "c@x.com",
+      "email": "c@x.com",
+      "launcher": "headroom launch --vendor codex --account c@x.com",
+      "plan": "plus",
+      "current": false,
+      "health": "unprobed",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "headroom_cache",
+        "fresh": false,
+        "allowance": "allowed",
+        "limits": [
+          {
+            "label": "weekly",
+            "kind": "primary",
+            "group": "rate_limit",
+            "window_seconds": 604800,
+            "percent": 70,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          }
+        ]
+      },
+      "attempt": {
+        "state": "none"
+      },
+      "load": null
+    }
+  ]
+}
+--- stderr

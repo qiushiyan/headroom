@@ -1,0 +1,5 @@
+$ headroom headless forget b@x.com
+exit 0
+--- stdout
+forgot b@x.com's headless token — headroom does not revoke it with the vendor
+--- stderr

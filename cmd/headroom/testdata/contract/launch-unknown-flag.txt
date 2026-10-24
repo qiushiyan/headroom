@@ -1,0 +1,5 @@
+$ headroom launch --resume abc
+exit 2
+--- stdout
+--- stderr
+headroom launch: unknown argument "--resume" (claude args go after --)

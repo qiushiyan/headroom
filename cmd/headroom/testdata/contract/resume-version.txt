@@ -1,0 +1,9 @@
+$ headroom resume --version
+exit 2
+--- stdout
+--- stderr
+headroom: `resume` was retired. Its stdout was a decision protocol, and a
+shell function loaded before this binary can misread it — that produced a
+session on the wrong account.
+Your shell integration is stale. Fix it:  exec zsh
+The session picker is now `headroom sessions` (listing: `headroom sessions --json`).
