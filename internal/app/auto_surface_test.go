@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/codexauth/codexauthtest"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -244,7 +245,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// No evidence: placed like a new session, on the least-loaded account.
 	ui, _ := newUI("", sessions.OwnerNone)
 	keepWorkingDir(t)
-	_, env, called := capturedExec(t)
+	_, _, env, called := recordExec(t)
 	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
 		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, *called, ui.message)
 	}
@@ -258,7 +259,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// An owner that exists is followed, auto or not.
 	ui, _ = newUI("b@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
-	_, env, _ = capturedExec(t)
+	_, _, env, _ = recordExec(t)
 	if done, _ := ui.commitResume(false); !done || account(*env) != "b@x.com" {
 		t.Fatalf("enter on an owned session went to %s", account(*env))
 	}
@@ -274,7 +275,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// The override: the least-loaded of the *other* accounts, re-homed, logged.
 	ui, s := newUI("a@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
-	_, env, _ = capturedExec(t)
+	_, _, env, _ = recordExec(t)
 	if done, code := ui.commitResume(true); !done || code != 0 {
 		t.Fatalf("x: (%v, %d) — %s", done, code, ui.message)
 	}
@@ -300,7 +301,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	ui.listing.Sessions = []*sessions.Session{sess}
 	ui.rows = ui.listing.Sessions
 	keepWorkingDir(t)
-	_, _, called = capturedExec(t)
+	_, _, _, called = recordExec(t)
 	if done, _ := ui.commitResume(true); done || *called || !strings.Contains(ui.message, "already there") {
 		t.Fatalf("x with one account: done %v called %v message %q", done, *called, ui.message)
 	}
@@ -316,12 +317,16 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	prevRefresh := startRefresh
-	startRefresh = func(config.Scope) error { return nil }
+	refreshes := 0
+	startRefresh = func(config.Scope) error { refreshes++; return nil }
 	t.Cleanup(func() { startRefresh = prevRefresh })
 
 	f.extra(t, login(1))
 	f.extra(t, login(2))
 	f.extra(t, login(3))
+	// A home whose auth.json holds no tokens: never observed, so the emptiest
+	// of all, and no login a launch could run on.
+	codexauthtest.WriteRaw(t, f.extra(t, login(4)), []byte(`{"auth_mode":"chatgpt"}`))
 	st := state.Open(f.scope)
 	store := func(n, percent int, edit ...[2]string) {
 		t.Helper()
@@ -339,7 +344,8 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 				k = state.Key{UUID: a.AccountID, Name: a.Name}
 			}
 		}
-		at := time.Now().Add(-time.Minute)
+		// Past the quiet period, so a launch's refresh has someone to ask.
+		at := time.Now().Add(-3 * time.Minute)
 		dec, err := st.Claim([]state.Key{k}, at)
 		if err != nil || !dec[0].Permit {
 			t.Fatalf("claim: %+v %v", dec, err)
@@ -397,6 +403,9 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 		if c.Name == "u3@x.com" && c.Excluded != "blocked by the vendor" {
 			t.Errorf("u3 excluded %q", c.Excluded)
 		}
+		if c.Name == "u4@x.com" && c.Excluded != "login unreadable" {
+			t.Errorf("u4 excluded %q", c.Excluded)
+		}
 		if c.Busy != 0 || len(c.Statuses) != 0 {
 			t.Errorf("%s carries busy sessions Codex cannot report: %+v", c.Name, c)
 		}
@@ -411,6 +420,14 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	if recs[0].Vendor != "codex" || recs[0].Reason != placement.ReasonLeastLoad {
 		t.Errorf("log = %+v", recs[0])
 	}
+	// Each choice the rule made leaves a refresh for the next one, as a
+	// Claude Code launch's does; a launch on a named account chose nothing.
+	if refreshes != 2 {
+		t.Errorf("%d refreshes after two automatic launches, want 2", refreshes)
+	}
+	if named, stderr := launch("--account", "u1@x.com"); named != "u1@x.com" || refreshes != 2 {
+		t.Errorf("a named launch went to %q and left %d refreshes in all:\n%s", named, refreshes, stderr)
+	}
 	if _, err := os.Stat(claudeCurrent); err == nil {
 		t.Error("a Codex launch wrote Claude Code's .current")
 	}
@@ -419,13 +436,21 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	}
 }
 
+// The one line a launch prints, by the tokens a person and an agent read: the
+// account and how it was decided, then — when the rule decided — each figure
+// said as what it rests on. A figure the rule counted as a bound, or as an
+// ended window, is said as one: "5h 0%" over a window that was at 97% a minute
+// ago and has since reset is a measured-looking number nobody measured.
 func TestLaunchLineWording(t *testing.T) {
 	now := time.Unix(1_790_848_000, 0)
+	limit := func(session bool, kind, label string, percent int, reset time.Duration) placement.Limit {
+		return placement.Limit{Kind: kind, Label: label, Percent: percent, ResetAt: now.Add(reset).Unix(), Session: session}
+	}
+	rows := func(name string, age time.Duration, limits ...placement.Limit) placement.Candidate {
+		return placement.Candidate{Name: name, Key: name, ObservedAt: now.Add(-age).Unix(), Limits: limits}
+	}
 	obs := func(name string, session, weekly int, age time.Duration) placement.Candidate {
-		return placement.Candidate{Name: name, Key: name, ObservedAt: now.Add(-age).Unix(), Limits: []placement.Limit{
-			{Kind: "session", Label: "5h session", Percent: session, ResetAt: now.Add(time.Hour).Unix(), Session: true},
-			{Kind: "weekly_all", Label: "All models (7d)", Percent: weekly, ResetAt: now.Add(29 * time.Hour).Unix()},
-		}}
+		return rows(name, age, limit(true, "session", "5h session", session, time.Hour), limit(false, "weekly_all", "All models (7d)", weekly, 29*time.Hour))
 	}
 	choose := func(intent placement.Intent, cands ...placement.Candidate) placement.Decision {
 		return placement.Choose(cands, placement.Ledger{}, intent, now)
@@ -440,21 +465,50 @@ func TestLaunchLineWording(t *testing.T) {
 		not   []string
 	}{
 		{"least load", choose(placement.Intent{}, obs("a", 12, 3, time.Minute), obs("b", 40, 3, time.Minute)), true, sessionRef{}, "",
-			[]string{"a · auto · 5h 12% · week 3%, resets in 1.2d · load 1 (next: b)"}, []string{"old"}},
+			[]string{"a · auto", "5h 12%", "week 3%", "resets in 1.2d", "load 1", "(next: b)"}, []string{"old"}},
 		{"stale", choose(placement.Intent{}, obs("a", 0, 18, 40*time.Hour)), true, sessionRef{}, "",
-			[]string{"a · auto · 5h ≥0% · week ≥18%, resets in 1.2d · figures 1d old · load 0"}, []string{"next"}},
+			[]string{"a · auto", "5h ≥0%", "week ≥18%", "figures 1d old", "load 0"}, []string{"next"}},
 		{"never observed", choose(placement.Intent{}, placement.Candidate{Name: "a", Key: "a"}), true, sessionRef{}, "",
-			[]string{"a · auto · never observed · load 0"}, nil},
+			[]string{"a · auto", "never observed", "load 0"}, nil},
+		{"an ended session window", choose(placement.Intent{}, rows("b", time.Minute,
+			limit(true, "session", "5h session", 97, -30*time.Second), limit(false, "weekly_all", "All models (7d)", 12, 48*time.Hour))), true, sessionRef{}, "",
+			[]string{"5h window ended"}, []string{"5h 0%"}},
+		// A weekly window that has ended is counted whole from now: there is
+		// no reset instant to count down to, and none is printed.
+		{"an ended week", choose(placement.Intent{}, rows("b", time.Minute,
+			limit(true, "session", "5h session", 3, time.Hour), limit(false, "weekly_all", "All models (7d)", 64, -time.Minute))), true, sessionRef{}, "",
+			[]string{"week window ended"}, []string{"resets in"}},
+		{"an unparseable percent", choose(placement.Intent{}, rows("b", time.Minute,
+			placement.Limit{Kind: "session", Label: "5h session", Bad: true, Session: true})), true, sessionRef{}, "",
+			[]string{"5h ?%"}, []string{"100%"}},
 		{"near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute)), true, sessionRef{}, "",
-			[]string{"a · auto · every account is near a limit · All models (7d) 84%, resets in 1.2d"}, []string{"load"}},
+			[]string{"a · auto", "every account is near a limit", "All models (7d) 84%", "resets in 1.2d"}, []string{"load"}},
+		{"near a limit on old figures", choose(placement.Intent{}, obs("b", 10, 91, 40*time.Hour)), true, sessionRef{}, "",
+			[]string{"every account is near a limit", "≥91%", "figures 1d old"}, nil},
 		{"owner", choose(placement.Intent{Owner: "a"}, obs("a", 30, 30, time.Minute), obs("b", 0, 0, time.Minute)), true, sessionRef{Route: sessA}, "a",
-			[]string{"a · auto · this session's account"}, nil},
+			[]string{"a · auto", "this session's account"}, nil},
 		{"moved", choose(placement.Intent{Owner: "a"}, obs("a", 30, 95, time.Minute), obs("b", 0, 0, time.Minute)), true, sessionRef{Route: sessA}, "a",
-			[]string{"b · auto · session moved from a"}, nil},
+			[]string{"b · auto", "session moved from a"}, nil},
+		{"unowned", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, sessionRef{Route: sessA, Record: sessA}, "",
+			[]string{"session had no known account"}, nil},
 		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, sessionRef{Unidentified: true}, "",
 			[]string{"session not identified"}, nil},
 		{"pinned", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "pinned"}, obs("a", 0, 0, time.Minute)), false, sessionRef{}, "",
-			[]string{"a · pinned (a on the board turns auto on)"}, []string{"auto ·"}},
+			[]string{"a · pinned", "turns auto on"}, []string{"auto ·", "load"}},
+	}
+	// The other ways of deciding say which they were, and no figures: the
+	// rule chose nothing.
+	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
+		cases = append(cases, struct {
+			name  string
+			d     placement.Decision
+			auto  bool
+			ref   sessionRef
+			owner string
+			want  []string
+			not   []string
+		}{reason, choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: reason}, obs("a", 0, 0, time.Minute)), false, sessionRef{}, "",
+			[]string{want}, []string{"auto", "load"}})
 	}
 	for _, c := range cases {
 		line := launchLine(c.d, c.auto, c.ref, c.owner, "", now)
@@ -469,17 +523,4 @@ func TestLaunchLineWording(t *testing.T) {
 			}
 		}
 	}
-	// A session nobody owned yet, named by id.
-	d := choose(placement.Intent{}, obs("a", 0, 0, time.Minute))
-	if line := launchLine(d, true, sessionRef{Route: sessA, Record: sessA}, "", "", now); !strings.Contains(line, "session had no known account") {
-		t.Errorf("unowned: %q", line)
-	}
-	// The other ways of deciding say which they were.
-	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
-		forced := choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: reason}, obs("a", 0, 0, time.Minute))
-		if line := launchLine(forced, false, sessionRef{}, "", "", now); line != want {
-			t.Errorf("%s: %q, want %q", reason, line, want)
-		}
-	}
-	_ = fmt.Sprint
 }

@@ -16,7 +16,7 @@ import (
 
 // keepWorkingDir puts the test's working directory back afterwards: a
 // committed resume chdirs into the session's project before it execs, as the
-// real one does. The exec itself is captured by capturedExec.
+// real one does. The exec itself is captured by recordExec.
 func keepWorkingDir(t *testing.T) {
 	t.Helper()
 	orig, err := os.Getwd()
@@ -82,7 +82,7 @@ func claimSession(t *testing.T, accountDir, id string, pid int, started time.Tim
 func TestSessionsCommitExecsOnOwner(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	keepWorkingDir(t)
-	argv, env, called := capturedExec(t)
+	_, argv, env, called := recordExec(t)
 
 	cd := filepath.Join(t.TempDir(), "cwd")
 	if f, err := os.Create(cd); err != nil {
@@ -178,7 +178,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ui, s := sessionsFixture(t)
 			keepWorkingDir(t)
-			_, _, called := capturedExec(t)
+			_, _, _, called := recordExec(t)
 			cd := filepath.Join(t.TempDir(), "cwd")
 			if f, err := os.Create(cd); err != nil {
 				t.Fatal(err)
@@ -268,7 +268,7 @@ func TestSessionsArgContract(t *testing.T) {
 func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	keepWorkingDir(t)
-	_, _, called := capturedExec(t)
+	_, _, _, called := recordExec(t)
 	s.CWD = filepath.Join(ui.set.Scope.Home, "project\nname")
 	if err := os.Mkdir(s.CWD, 0755); err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	keepWorkingDir(t)
-	capturedExec(t) // restores the edge afterwards; the exec fails here
+	recordExec(t) // restores the edge afterwards; the exec fails here
 	ui.st = state.Open(ui.set.Scope)
 	execVendor = func(string, string, []string, []string) error { return os.ErrPermission }
 	output := captureStderr(t, func() {

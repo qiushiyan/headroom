@@ -1,15 +1,17 @@
 package app
 
-// The launch surface: resolving "which account" into a running Claude Code
-// process is headroom's job, not the shell's. The wrong-account incident this
-// replaces: the zsh wrapper set CLAUDE_CONFIG_DIR for extra accounts but left
-// the ambient environment alone for the primary, so a tmux server started
-// inside a Claude Code session silently routed every "primary" launch to
-// whatever account that session ran on. Here the child environment is
-// constructed from the validated decision alone (launch.Target), the
-// selection fails closed on corrupt state (accounts.Select), and a
+// The launch surface: resolving "which account" into a running vendor
+// process — Claude Code, or Codex under --vendor codex — is headroom's job,
+// not the shell's. The wrong-account incident this replaces: the zsh wrapper
+// set CLAUDE_CONFIG_DIR for extra accounts but left the ambient environment
+// alone for the primary, so a tmux server started inside a Claude Code session
+// silently routed every "primary" launch to whatever account that session ran
+// on. Here the child environment is constructed from the validated decision
+// alone (launch.Target), a bare launch's routing fails closed on corrupt state
+// (set.Bare) as a named one does on an unknown name (set.Select), and a
 // neutralized ambient value is said out loud — the shell wrappers shrink to
-// personal preflight and flags.
+// personal preflight and flags. This file parses and dispatches; the launch
+// itself is one operation the session picker shares (launch_operation.go).
 
 import (
 	"errors"
@@ -88,9 +90,10 @@ func runResolve(cfg config.Scope, args []string) int {
 //
 // The account is decided one of four ways: named (`--account`), the last one
 // used (`--last`), pinned (`.current` names it) or automatic (`.current` says
-// auto, or `--auto`). Every one of them takes the same path from there —
-// placeLaunch, which the session picker shares: prepare, place, log, announce
-// — so a named launch is recorded as load the automatic ones can see, says
+// auto, or `--auto`). Every one of them takes the same path from there — the
+// facts gathered for a launch, every account prepared, and placeLaunch, which
+// the session picker shares: refuse what is known to refuse, remember, place,
+// log — so a named launch is recorded as load the automatic ones can see, says
 // where it went like any other, and the child environment is built by
 // launch.Prepare from the validated account whichever way it was chosen.
 //
@@ -200,51 +203,26 @@ parse:
 		}
 	}
 
+	cwd, _ := os.Getwd()
+	req := launchRequest{st: st, intent: intent, mode: mode, ref: ref, owner: owner, remember: remember, cwd: cwd, now: now}
 	if dryRun {
-		if intent.Kind == placement.Forced {
-			if err := facts.prepareErr[intent.Account]; err != nil {
-				fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
-				return 1
-			}
+		// What the launch would refuse before writing anything is said as the
+		// launch says it; what it would decide is the table.
+		if err := preflight(req, facts); err != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
+			return 1
 		}
-		d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now)
-		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now, facts.home, homeLabels(facts.snap, facts.home))
+		d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
+		writeDryRun(os.Stdout, cfg.Binary(), d, mode, now, facts.home, homeLabels(facts.snap))
 		if d.Chosen == "" {
 			return 1
 		}
 		return 0
 	}
 
-	if remember {
-		// Before the placement and before the exec, necessarily — and a
-		// failure refuses the launch: "chosen and recorded" is one step to
-		// the user, and launching on a choice that could not be recorded
-		// would have the next bare `x` go somewhere else. A launch that no
-		// account can take records nothing either.
-		var err error
-		switch {
-		case automatic:
-			if d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now); d.Chosen == "" {
-				fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
-				return 1
-			}
-			err = set.SetAuto()
-		case facts.prepareErr[intent.Account] != nil:
-			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", facts.prepareErr[intent.Account])
-			return 1
-		default:
-			if a, ok := facts.account(intent.Account); ok {
-				err = set.SetCurrent(a)
-			}
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launch: could not record .current (%v) — not launching\n", err)
-			return 1
-		}
-	}
-
-	cwd, _ := os.Getwd()
-	out, err := placeLaunch(launchRequest{st: st, intent: intent, mode: mode, ref: ref, owner: owner, cwd: cwd, now: now}, facts)
+	// --remember is written by the operation, after what it would refuse and
+	// before the placement and the exec.
+	out, err := placeLaunch(req, facts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1

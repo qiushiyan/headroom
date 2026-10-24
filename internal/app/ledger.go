@@ -56,7 +56,7 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 	}
 	fmt.Fprintf(out, "ledger  %s — %s\n", filepath.Join(st.Ledger(), "state.json"), whose)
 	members := snap.Members()
-	labels := homeLabels(snap, st.Home())
+	labels := homeLabels(snap)
 	counted := map[string]bool{st.Home(): true}
 	for _, h := range otherHomes(scope, snap) {
 		counted[h.Root] = true

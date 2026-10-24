@@ -164,18 +164,14 @@ type Ledger struct {
 	ByHome map[string]Last `json:"by_home,omitempty"`
 }
 
-// Clone is a copy that a later Record or Prune on the original leaves alone.
+// Clone is a copy that a later RecordAs or Prune on the original leaves alone.
 func (l Ledger) Clone() Ledger {
 	return Ledger{Recent: slices.Clone(l.Recent), Last: maps.Clone(l.Last), ByHome: maps.Clone(l.ByHome)}
 }
 
-// Record adds a launch on an account, made by the home at that accounts root.
-func (l *Ledger) Record(key, name string, pid int, home string, now time.Time) {
-	l.RecordAs("", key, name, pid, home, now)
-}
-
-// RecordAs is Record for a placement that carries an id: a headless one,
-// whose session process is attached to it later.
+// RecordAs adds a launch on an account, made by the home at that accounts
+// root. id names a headless placement, whose session process is attached to
+// it later (Attach); it is "" for a launch, whose process is pid.
 func (l *Ledger) RecordAs(id, key, name string, pid int, home string, now time.Time) {
 	at := now.UnixMilli()
 	l.Recent = append(l.Recent, Pending{Key: key, Name: name, PID: pid, AtMS: at, Home: home, ID: id})
@@ -347,11 +343,11 @@ type Week struct {
 	LeftBasis TimeBasis
 }
 
-// Pressing compares two weeks by room per second left: positive when a has
+// pressing compares two weeks by room per second left: positive when a has
 // more of its room to spend per second than b, which is the order an
 // automatic choice prefers. The products are taken in 128 bits, so no figure
 // or window a vendor reports can overflow them.
-func (a Week) Pressing(b Week) int {
+func (a Week) pressing(b Week) int {
 	ah, al := bits.Mul64(uint64(a.Room), uint64(b.Left))
 	bh, bl := bits.Mul64(uint64(b.Room), uint64(a.Left))
 	return cmp.Or(cmp.Compare(ah, bh), cmp.Compare(al, bl))
@@ -473,7 +469,7 @@ func (d *Decision) auto(intent Intent) {
 	var open, near []Counted
 	observed := false
 	for _, c := range d.Candidates {
-		if c.Excluded != "" || c.Name == intent.Exclude {
+		if whyNot(c, intent) != "" {
 			continue
 		}
 		if c.ObservedAt > 0 {
@@ -488,7 +484,7 @@ func (d *Decision) auto(intent Intent) {
 	slices.SortStableFunc(open, func(a, b Counted) int {
 		return cmp.Or(
 			cmp.Compare(a.Load, b.Load),
-			b.Week.Pressing(a.Week),
+			b.Week.pressing(a.Week),
 			cmp.Compare(a.LastPlacedMS, b.LastPlacedMS),
 			cmp.Compare(a.order, b.order),
 		)
@@ -551,11 +547,8 @@ func (d Decision) nearRefusal(near []Counted, intent Intent) string {
 	why := "every account that could take it is near a limit: " + strings.Join(parts, ", ")
 	var others []string
 	for _, c := range d.Candidates {
-		switch {
-		case c.Excluded != "":
-			others = append(others, fmt.Sprintf("%s (%s)", c.Name, c.Excluded))
-		case c.Name == intent.Exclude:
-			others = append(others, fmt.Sprintf("%s (the session is already there)", c.Name))
+		if not := whyNot(c, intent); not != "" {
+			others = append(others, fmt.Sprintf("%s (%s)", c.Name, not))
 		}
 	}
 	if len(others) > 0 {
@@ -615,13 +608,22 @@ func (d Decision) exclusions(intent Intent) string {
 	}
 	parts := make([]string, 0, len(d.Candidates))
 	for _, c := range d.Candidates {
-		why := c.Excluded
-		if why == "" && c.Name == intent.Exclude {
-			why = "the session is already there"
-		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", c.Name, why))
+		parts = append(parts, fmt.Sprintf("%s (%s)", c.Name, whyNot(c, intent)))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// whyNot is why an automatic choice cannot land on this candidate, or "": its
+// own exclusion, or the intent's — moving a session means somewhere other than
+// where it is. Every refusal names a candidate by this one reason.
+func whyNot(c Counted, intent Intent) string {
+	switch {
+	case c.Excluded != "":
+		return c.Excluded
+	case c.Name == intent.Exclude:
+		return "the session is already there"
+	}
+	return ""
 }
 
 func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
@@ -655,7 +657,7 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 		}
 		if l.Session {
 			session = cl.Counted
-		} else if w := week(l, cl.Counted, cl.Basis, nowS); out.Week.Basis == "" || w.Pressing(out.Week) < 0 {
+		} else if w := week(l, cl.Counted, cl.Basis, nowS); out.Week.Basis == "" || w.pressing(out.Week) < 0 {
 			out.Week = w
 		}
 	}
