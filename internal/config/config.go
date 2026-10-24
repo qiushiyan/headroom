@@ -173,9 +173,7 @@ type Scope struct {
 // Config holds one Scope per vendor. Load is the only door: every directory
 // that crosses into a launch is absolute because it was established here.
 type Config struct {
-	Home             string
-	PrimaryRelocated bool
-	Claude, Codex    Scope
+	Claude, Codex Scope
 }
 
 // Scope returns the vendor's scope; both are always resolved.
@@ -201,7 +199,6 @@ func (c Config) Present() []Scope {
 // environment override. Load is this plus the overrides and the refusals.
 func ForHome(home string) Config {
 	c := Config{
-		Home: home,
 		Claude: Scope{
 			Vendor:         Claude,
 			Home:           home,
@@ -263,8 +260,8 @@ func Load() (Config, error) {
 		home = v
 	}
 	c := ForHome(home)
-	c.PrimaryRelocated = filepath.Clean(home) != filepath.Clean(realHome)
-	c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated = c.PrimaryRelocated, c.PrimaryRelocated
+	relocated := filepath.Clean(home) != filepath.Clean(realHome)
+	c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated = relocated, relocated
 
 	for _, o := range []struct {
 		scope                          *Scope
@@ -499,10 +496,6 @@ func (s Scope) Ledger() string {
 	}
 	return s.LedgerRoot
 }
-
-// SharesLedger reports that the subscription ledger lives in another home's
-// accounts root.
-func (s Scope) SharesLedger() bool { return s.LedgerRoot != "" && s.LedgerRoot != s.AccountsRoot }
 
 // PrimaryDir is the primary account's state dir. Accounts carry "" for it
 // (the vendor's home variable absent), so readers of per-account files
