@@ -2,6 +2,7 @@ package usage
 
 import (
 	"cmp"
+	"slices"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
@@ -73,17 +74,8 @@ func (r Reading) BelongsTo(accountID, userID string) bool {
 
 // Drifted reports whether anything in the reading was present but no longer
 // parses: a row's field, or the allowance.
-func (r Reading) Drifted() int {
-	n := 0
-	for _, row := range r.Rows {
-		if row.Drifted() {
-			n++
-		}
-	}
-	if r.Allowance.State == AllowanceBad {
-		n++
-	}
-	return n
+func (r Reading) Drifted() bool {
+	return r.Allowance.State == AllowanceBad || slices.ContainsFunc(r.Rows, Row.Drifted)
 }
 
 // SessionWindow is the index of the vendor's shortest limit among rows: Claude

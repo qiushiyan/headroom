@@ -72,7 +72,7 @@ func auditResponses(snap state.Snapshot, r *report) {
 		// is second-hand evidence next to it.
 		label := fmt.Sprintf("state[%s]: stored usage response parses via shared contract", rec.Name)
 		reading, err := usage.Parse(snap.Vendor(), rec.Body)
-		r.check(err == nil && reading.Drifted() == 0, label,
+		r.check(err == nil && !reading.Drifted(), label,
 			"the response headroom itself stored no longer parses — shape drifted")
 	}
 }

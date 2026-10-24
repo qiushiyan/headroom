@@ -61,7 +61,7 @@ func TestCodexObservedBody(t *testing.T) {
 	if r.Rows[0] != want {
 		t.Errorf("row = %+v\nwant  %+v", r.Rows[0], want)
 	}
-	if r.Drifted() != 0 {
+	if r.Drifted() {
 		t.Error("the observed body reads as drifted")
 	}
 }
@@ -147,7 +147,7 @@ func TestCodexEnvelopeAndDegradation(t *testing.T) {
 	// Null windows, a null limit object and null additional limits add no rows.
 	r := mustCodex(t, codexBody(`{"allowed":true,"limit_reached":false,"primary_window":null,"secondary_window":null}`,
 		`"code_review_rate_limit":null,"additional_rate_limits":null`))
-	if len(r.Rows) != 0 || r.Drifted() != 0 {
+	if len(r.Rows) != 0 || r.Drifted() {
 		t.Errorf("null windows: %+v", r.Rows)
 	}
 
@@ -230,8 +230,8 @@ func TestCodexAllowance(t *testing.T) {
 		if r.Allowance.State != c.want || r.Allowance.Reason != c.reason {
 			t.Errorf("%s: allowance = %+v, want %v %q", c.name, r.Allowance, c.want, c.reason)
 		}
-		if (c.want == AllowanceBad) != (r.Drifted() > 0) {
-			t.Errorf("%s: drifted = %d", c.name, r.Drifted())
+		if (c.want == AllowanceBad) != r.Drifted() {
+			t.Errorf("%s: drifted = %v", c.name, r.Drifted())
 		}
 	}
 	// Every Claude Code response is unknown — and unknown never blocks.
