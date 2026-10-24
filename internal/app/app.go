@@ -429,12 +429,6 @@ type sources struct {
 	now     time.Time
 }
 
-// prepare walks accounts and assembles what is known about each one before
-// any request goes out: whether Claude Code considers it usable, the newest
-// quota figures already on disk, and whether a live refresh is affordable.
-// It also returns the current-target name it marked the views with —
-// consumers that report the current account must use this value, not re-read
-// the state file, or a concurrent `select` could make the two disagree.
 // prepared is one local half of a round. The discovered set stays with the
 // list built from it: selection, recording the current account and the
 // known-extra-dir question are asked of the set, never of one reconstructed
@@ -446,25 +440,22 @@ type prepared struct {
 	snap    state.Snapshot
 }
 
-func prepare(scope config.Scope, st *state.Store) prepared {
-	return prepareVia(context.Background(), scope, st, queryHealthParallel)
-}
-
-// prepareUnprobed is prepare without the vendor's health probe: health falls
-// back to credential evidence, as it does whenever the probe has no answer.
-// It is what the detached refresh runs — a process nobody is watching has no
-// use for a `claude auth status` spawn per account, and must not lean on
-// whatever that command does as a side effect.
+// prepare is the local half of a round: it walks the accounts and assembles
+// what is known about each one before any request goes out — whether Claude
+// Code considers it usable, the newest quota figures already on disk, and
+// either a candidate for a live refresh or the attempt state that blocks one.
+// Mode, current and the marks all come from its one read of `.current`.
 //
-// It stops when ctx does: the detached refresh is ended with the job that
-// launched it, and its credential reads are where it can stall.
-func prepareUnprobed(ctx context.Context, scope config.Scope, st *state.Store) prepared {
-	return prepareVia(ctx, scope, st, func([]accounts.Account) auth.QueryFunc {
-		return func(string) auth.Status { return auth.Status{} }
-	})
-}
-
-func prepareVia(ctx context.Context, scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
+// probe says whether Claude Code's own health probe runs (`claude auth
+// status` per account, side by side). Without it health falls back to
+// credential evidence, as it does whenever the probe has no answer: the
+// detached refresh runs that way, since a process nobody is watching has no
+// use for a spawn per account, and must not lean on whatever that command
+// does as a side effect.
+//
+// ctx reaches the credential reads, which are where a round can stall: the
+// picker's cancel and the detached refresh's signals stop them there.
+func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe bool) prepared {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -475,7 +466,10 @@ func prepareVia(ctx context.Context, scope config.Scope, st *state.Store, health
 			raw, _ := creds.ReadRawContext(ctx, a.ConfigDir, a.Dir())
 			return raw
 		}
-		src.health = health(set.Accounts)
+		src.health = func(string) auth.Status { return auth.Status{} }
+		if probe {
+			src.health = queryHealthParallel(set.Accounts)
+		}
 	}
 	list, routing := prepareWith(set, snap, src)
 	return prepared{set, list, routing, snap}

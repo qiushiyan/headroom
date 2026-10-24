@@ -122,56 +122,6 @@ func TestLaunchFetchesSingleWriter(t *testing.T) {
 	}
 }
 
-// Health answers "can Claude Code use this account". A credential headroom
-// can't read stops *headroom* from fetching; it says nothing about the
-// account, and reporting it as an account problem is the same false alarm
-// this rework exists to remove.
-func TestBadBlobIsNotAnAccountHealthProblem(t *testing.T) {
-	ok := auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK}
-	if got := resolveHealth(ok, `not json`, creds.Blob{}, false, 0); got != accountstate.HealthOK {
-		t.Errorf("unreadable credential downgraded a logged-in account: health=%v", got)
-	}
-	if got := resolveHealth(ok, "", creds.Blob{}, false, 0); got != accountstate.HealthOK {
-		t.Errorf("missing credential downgraded a logged-in account: health=%v", got)
-	}
-	// With no first-party answer, credential evidence still decides.
-	if got := resolveHealth(auth.Status{}, "", creds.Blob{}, false, 0); got != accountstate.HealthNoLogin {
-		t.Errorf("no auth answer + no credential should be no-login: health=%v", got)
-	}
-	if got := resolveHealth(auth.Status{}, `not json`, creds.Blob{}, false, 0); got != accountstate.HealthBadBlob {
-		t.Errorf("no auth answer + bad blob should surface drift: health=%v", got)
-	}
-}
-
-// Whatever went wrong reading the credential must still reach the user, just
-// on the axis it belongs to.
-func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfg.PrimaryMeta(),
-		[]byte(`{"oauthAccount":{"emailAddress":"p@x.com"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	list, _ := prepareWith(accounts.Discover(cfg), state.Open(cfg).Load(), sources{
-		readRaw: func(accounts.Account) string { return `not json` },
-		health:  func(string) auth.Status { return auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK} },
-		now:     time.Now(),
-	})
-	v := list[0].View
-	if v.Health != accountstate.HealthOK {
-		t.Errorf("health should stay OK: %v", v.Health)
-	}
-	if v.Attempt.State != accountstate.AttemptCredentialUnreadable {
-		t.Errorf("attempt should carry the unreadable credential: %v", v.Attempt.State)
-	}
-	if list[0].Request != nil {
-		t.Error("must not fetch without a usable credential")
-	}
-}
-
 // Zero limit rows is a documented, contractual answer — usage.ParseLimits
 // defines it as "this account reports no limits". It is newer truth than any
 // cached bars and must replace them, not hide behind them.

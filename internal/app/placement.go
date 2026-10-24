@@ -536,7 +536,7 @@ func runRefresh(scopes []config.Scope) int {
 		go func(scope config.Scope) {
 			defer wg.Done()
 			st := state.Open(scope)
-			p := prepareUnprobed(ctx, scope, st)
+			p := prepare(ctx, scope, st, false)
 			for range launchFetches(ctx, p.list, st) {
 			}
 		}(scope)

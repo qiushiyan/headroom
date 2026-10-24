@@ -409,7 +409,7 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	begin := ui.begin
 	if begin == nil {
 		begin = func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result) {
-			p := prepare(pg.scope, pg.st)
+			p := prepare(ctx, pg.scope, pg.st, true)
 			// The mode comes from the same read of `.current` that marked
 			// the rows, so the header and the marks are one statement.
 			pg.mode = p.routing.Mode

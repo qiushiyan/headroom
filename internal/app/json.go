@@ -294,7 +294,7 @@ func fetchBoards(scopes []config.Scope) []vendorBoard {
 			// current comes from prepare's snapshot: envelope and per-account
 			// flags must agree even if a concurrent select rewrites .current
 			// mid-fetch.
-			p := prepare(scope, st)
+			p := prepare(context.Background(), scope, st, true)
 			for u := range launchFetches(context.Background(), p.list, st) {
 				resolve(p.list[u.Index], u)
 			}
