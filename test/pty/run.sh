@@ -413,6 +413,22 @@ if command -v tmux >/dev/null 2>&1; then
         fi
     fi
     tmx kill-server 2>/dev/null || true
+
+    # The session picker fills the alternate screen exactly; a frame whose
+    # last row ended in a newline scrolled the header off on every draw.
+    # Only the screen shows that, not the bytes, so this reads the pane.
+    tmx new-session -d -x 100 -y 12 -s picker "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN' sessions"
+    sleep 3
+    top=$(tmx capture-pane -t picker -p 2>/dev/null | head -1)
+    case "$top" in
+    "resume ·"*) echo "ok   sessions-header" ;;
+    *)
+        echo "FAIL sessions-header: the picker's first row is not its header:"
+        tmx capture-pane -t picker -p 2>/dev/null | sed 's/^/     /'
+        fail=1
+        ;;
+    esac
+    tmx kill-server 2>/dev/null || true
 else
     echo "skip scrollback (tmux not installed)"
 fi

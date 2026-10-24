@@ -518,12 +518,12 @@ func (ui *resumeUI) draw() {
 	lines = append(lines, ui.inputLine())
 	lines = append(lines, p.Dim+ui.hintLine()+p.Rst)
 
+	if len(lines) > h {
+		lines = lines[:h]
+	}
 	var b strings.Builder
 	b.WriteString("\x1b[H")
-	for _, s := range lines {
-		b.WriteString("\x1b[2K" + render.Clip(s, w) + "\r\n")
-	}
-	b.WriteString("\x1b[J")
+	writeRows(&b, lines, w)
 	fmt.Fprint(ui.t.Out(), b.String())
 }
 

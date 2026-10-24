@@ -101,6 +101,18 @@ func (f *framePrinter) print(lines []string, width, height int) {
 	if f.prev > 1 {
 		fmt.Fprintf(&b, "\x1b[%dA", f.prev-1)
 	}
+	writeRows(&b, lines, width)
+	io.WriteString(out, b.String())
+	f.prev = len(lines)
+}
+
+// writeRows writes lines as physical rows from where the cursor stands: each
+// clipped to width and cleared before it is written, and every row but the
+// last ending in a newline. The last carries none — a newline after it would
+// scroll a frame of exactly the screen's height by one row on every draw,
+// and its top row with it. Both full-screen surfaces draw through it: the
+// board moving up over its previous frame, the session picker from home.
+func writeRows(b *strings.Builder, lines []string, width int) {
 	for i, s := range lines {
 		s = render.Clip(s, width)
 		if i == len(lines)-1 {
@@ -114,8 +126,6 @@ func (f *framePrinter) print(lines []string, width, height int) {
 			b.WriteString("\x1b[2K" + s + "\r\n")
 		}
 	}
-	io.WriteString(out, b.String())
-	f.prev = len(lines)
 }
 
 // finish steps below the frame so cooked-mode output — the selection line,
