@@ -1,14 +1,16 @@
 package app
 
-// What a placement reads before the rule chooses: discovery, each account's
-// preparation, the stored observations, the session registries of this home
-// and of every home that shares its ledger, the headless runs, and — for an
-// automatic choice — the credentials. The launch, the board's mark and a
-// headless placement all read through here, so they cannot hold two opinions
-// of one account. Nothing here writes a file or asks the network: the launch
-// operation records the choice (launch_operation.go), and figures are
-// refreshed for the *next* launch by a detached round (refresh.go), so the
-// command typed most never waits on an endpoint.
+// What a placement reads before the rule chooses: discovery, the stored
+// observations, the session registries of this home and of every home that
+// shares its ledger, the headless runs, and — for an automatic choice — the
+// credentials; then which accounts may be chosen, by the caller's own policy —
+// an ordinary launch's preparation and positive evidence, or a headless
+// token. The launch, the board's mark and a headless placement all read
+// through here, so they cannot hold two opinions of one account. Nothing here
+// writes a file or asks the network: the launch operation records the choice
+// (launch_operation.go), and figures are refreshed for the *next* launch by a
+// detached round (refresh.go), so the command typed most never waits on an
+// endpoint.
 
 import (
 	"fmt"
@@ -44,10 +46,11 @@ var (
 	pidProbe sessions.PIDProbe = psProbe
 )
 
-// placeCandidate is one account as a placement read it: what the rule is handed,
-// and beside it what the operation around the rule needs of the same account.
-// It is one value, built once per account, so a candidate's figures can never
-// be read under another's key or launched with another's preparation.
+// placeCandidate is one account as a placement read it: what the rule is
+// handed, and beside it what the operation around the rule needs of the same
+// account. It is one value, built once per account, so a candidate's figures
+// can never be read under another's key or launched with another's
+// preparation.
 type placeCandidate struct {
 	placement.Candidate
 

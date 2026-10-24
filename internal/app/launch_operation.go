@@ -3,7 +3,9 @@ package app
 // The launch operation: one decision, recorded, logged and announced,
 // whichever surface asked for it. `headroom launch` and the session picker
 // each build a launchRequest and hand it here with the facts gathered for it
-// (launch_facts.go). The store decides the account and records it, with what
+// (launch_facts.go). What can be refused before anything is written is
+// refused first (preflight), then `.current` is written if the launch was
+// asked to remember; the store decides the account and records it, with what
 // the launch means for a session, in one locked section; the log line follows;
 // and what a launch owes the next one — the refresh behind an automatic
 // choice, the sweep of re-homes whose transcripts are gone — is decided here
