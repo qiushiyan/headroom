@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -263,5 +264,35 @@ func TestFooterCountsBlockedApartFromStale(t *testing.T) {
 	}
 	if blocked, stale := notActionable(list, now); blocked != 1 || stale != 1 {
 		t.Errorf("blocked=%d stale=%d, want 1 and 1", blocked, stale)
+	}
+}
+
+// The footer names an inherited home the current account's launch would
+// neutralize, and stays quiet for the ordinary case: the shell lives inside a
+// managed session, on a discovered account's own dir. It asks launch's
+// classifier, so the board and the launch's notice cannot disagree; dropping
+// the note, or the quieting, must fail this.
+func TestFooterSaysAnUnexplainedInheritedHome(t *testing.T) {
+	root := t.TempDir()
+	scope := config.Scope{Vendor: config.Claude, AccountsRoot: root}
+	a := accounts.Account{Scope: scope, Name: "a@x.com", ConfigDir: filepath.Join(root, "a@x.com")}
+	b := accounts.Account{Scope: scope, Name: "b@x.com", ConfigDir: filepath.Join(root, "b@x.com")}
+	pg := newPage(scope)
+	pg.board = board{scope: scope, st: pg.st, set: accounts.Set{Scope: scope, Accounts: []accounts.Account{a, b}},
+		list: []*accountData{{Acct: a, View: accountstate.Facts{Label: a.Name, Current: true}}}}
+	ui := &picker{pages: []*page{pg}}
+	now := time.Now()
+	for _, c := range []struct {
+		inherited string
+		said      bool
+	}{
+		{"/somewhere/else", true},
+		{b.ConfigDir, false}, // a managed session's shell: the ordinary case
+		{a.ConfigDir, false}, // what the launch sets anyway
+	} {
+		t.Setenv("CLAUDE_CONFIG_DIR", c.inherited)
+		if got := strings.Contains(ui.status(now), "ambient CLAUDE_CONFIG_DIR neutralized"); got != c.said {
+			t.Errorf("inherited %s: note said=%v, want %v — %q", c.inherited, got, c.said, ui.status(now))
+		}
 	}
 }

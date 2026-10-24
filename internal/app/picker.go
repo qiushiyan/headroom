@@ -329,14 +329,11 @@ func (ui *picker) status(now time.Time) string {
 		}
 		// An inherited value that disagrees with `← current` would re-route a
 		// bare launch; managed launches neutralize it, and the board must not
-		// silently rely on that. The classifier is launch's, so this note
-		// and the environment actually built cannot disagree. A value that
-		// names a discovered extra's dir stays silent, though: it means only
-		// "this shell lives inside a managed session", which is this
-		// machine's ordinary environment — check reports it, the board does
-		// not caption the normal case.
+		// silently rely on that. The classifier is launch's own, so this note
+		// and the launch's notice cannot disagree about which values go
+		// unsaid.
 		if tgt, err := launch.For(pg.scope.Vendor, d.Acct.ConfigDir); err == nil {
-			if v, conflicting := tgt.Conflicts(os.Environ()); conflicting && !pg.set.KnownDir(v) {
+			if _, unexplained := launch.Unexplained(tgt, pg.set, os.Environ()); unexplained {
 				parts = append(parts, "ambient "+pg.scope.Env().HomeVar+" neutralized")
 			}
 		}
