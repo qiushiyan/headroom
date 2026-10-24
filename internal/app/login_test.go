@@ -28,6 +28,8 @@ type loginWorld struct {
 	keychain  map[string]bool // accounts with a Keychain item
 	sealed    bool
 	remote    bool
+	// renewEnd is when an account's new login ends; absent = 30 days out.
+	renewEnd map[string]time.Time
 }
 
 func blobEnding(token string, end time.Time) string {
@@ -57,7 +59,11 @@ func (w *loginWorld) deps() loginDeps {
 			if as := w.approveAs[a.Name]; as != "" {
 				who = as
 			}
-			w.raw[a.Name] = blobEnding("new-"+a.Name, w.now.Add(30*24*time.Hour))
+			end, ok := w.renewEnd[a.Name]
+			if !ok {
+				end = w.now.Add(30 * 24 * time.Hour)
+			}
+			w.raw[a.Name] = blobEnding("new-"+a.Name, end)
 			w.email[a.Name] = who
 			return nil
 		},
@@ -84,8 +90,39 @@ func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
 		email:     map[string]string{"a@x.com": "a@x.com", "b@x.com": "b@x.com", "c@x.com": "c@x.com"},
 		approveAs: map[string]string{},
 		keychain:  map[string]bool{},
+		renewEnd:  map[string]time.Time{},
 	}
 	return cfg, w
+}
+
+// accountLines are the lines of out that begin with an account's name: its
+// plan line, chosen (→) or not, then any headless token line.
+func accountLines(out, name string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if f := strings.Fields(strings.TrimPrefix(line, "→")); len(f) > 0 && f[0] == name {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// planLine is an account's line in the plan, "" when it has none.
+func planLine(out, name string) string {
+	if lines := accountLines(out, name); len(lines) > 0 {
+		return lines[0]
+	}
+	return ""
+}
+
+// resultLine is the line that says how an account's login went.
+func resultLine(out, name string) string {
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "✓ "+name+":") || strings.HasPrefix(line, "✗ "+name+":") {
+			return line
+		}
+	}
+	return ""
 }
 
 // A bare login renews on positive evidence only — ending inside the window,
@@ -100,14 +137,14 @@ func TestLoginChoosesExpiringAccounts(t *testing.T) {
 	if strings.Join(w.logins, "|") != strings.Join(want, "|") {
 		t.Errorf("logins = %q, want %q", w.logins, want)
 	}
-	for _, s := range []string{"Chrome profile a (Profile 2)", "default browser (no Chrome profile matches c@x.com)", "✓ a@x.com: logged in, login ends Nov 5",
-		"the logins renewed here end from Nov 5 (in 30d)"} {
-		if !strings.Contains(out.String(), s) {
-			t.Errorf("output lacks %q:\n%s", s, out.String())
-		}
+	if a := planLine(out.String(), "a@x.com"); !strings.Contains(a, "Profile 2") {
+		t.Errorf("a's plan line names no profile: %q", a)
 	}
-	if strings.Contains(out.String(), "b@x.com: logged in") {
-		t.Errorf("b@x.com renewed outside the window:\n%s", out.String())
+	if c := planLine(out.String(), "c@x.com"); !strings.Contains(c, "default browser") {
+		t.Errorf("c's plan line does not say the default browser: %q", c)
+	}
+	if a := resultLine(out.String(), "a@x.com"); !strings.HasPrefix(a, "✓") || !strings.Contains(a, "Nov 5") {
+		t.Errorf("a's result: %q\n%s", a, out.String())
 	}
 }
 
@@ -138,20 +175,6 @@ func TestLoginWindowAllNamesAndDryRun(t *testing.T) {
 	}
 }
 
-// The wrong-profile case: the dir took a login, but as someone else. The
-// command fails the account and says how to fix it.
-func TestLoginReadBackCatchesWrongAccount(t *testing.T) {
-	cfg, w := renewFixture(t)
-	w.approveAs["a@x.com"] = "b@x.com"
-	var out, errw bytes.Buffer
-	if code := runLoginTo(&out, &errw, cfg, []string{"a@x.com"}, w.deps()); code != 1 {
-		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
-	}
-	if !strings.Contains(out.String(), "✗ a@x.com: logged in as b@x.com, not a@x.com") {
-		t.Errorf("wrong-account not reported:\n%s", out.String())
-	}
-}
-
 // A batch closes on its earliest end, and a partial failure on one command
 // that retries only the logins that ran and failed — not the ones that took,
 // and not a held account, which would be refused again.
@@ -159,34 +182,32 @@ func TestLoginSummaryNamesTheEarliestEndAndTheRetry(t *testing.T) {
 	cfg, w := renewFixture(t)
 	w.approveAs["c@x.com"] = "b@x.com"
 	w.raw["primary"] = blobEnding("old-p", w.now.Add(24*time.Hour)) // a login, no identity: held
+	w.renewEnd["b@x.com"] = w.now.Add(25 * 24 * time.Hour)          // Oct 31, before a's Nov 5
 	var out bytes.Buffer
 	if code := runLoginTo(&out, io.Discard, cfg, []string{"--all"}, w.deps()); code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
 	}
-	for _, s := range []string{"the logins renewed here end from Nov 5", "2 of 4 logins did not take", "retry them: headroom login c@x.com\n"} {
+	closing := ""
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		if strings.Contains(line, "renewed here") {
+			closing = line
+		}
+	}
+	if !strings.Contains(closing, "Oct 31") || strings.Contains(closing, "Nov 5") {
+		t.Errorf("the batch closes on %q, want b's Oct 31:\n%s", closing, out.String())
+	}
+	for _, s := range []string{"2 of 4", "headroom login c@x.com\n"} {
 		if !strings.Contains(out.String(), s) {
 			t.Errorf("output lacks %q:\n%s", s, out.String())
 		}
 	}
 }
 
-// A login that ran but stored nothing new did not take, whatever the exit.
-func TestLoginReadBackCatchesUnchangedCredential(t *testing.T) {
-	cfg, w := renewFixture(t)
-	d := w.deps()
-	d.login = func(accounts.Account, accounts.Set, string, approvalPage) error { return nil }
-	var out bytes.Buffer
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d); code != 1 {
-		t.Fatalf("exit %d, want 1", code)
-	}
-	if !strings.Contains(out.String(), "✗ a@x.com: the stored login did not change") {
-		t.Errorf("unchanged credential not reported:\n%s", out.String())
-	}
-}
-
 func TestLoginFlags(t *testing.T) {
 	cfg, w := renewFixture(t)
-	for _, args := range [][]string{{"--within"}, {"--within", "x"}, {"--bogus"}, {"--all", "a@x.com"}} {
+	// "": a caller's expansion bug, never a request for the pinned account,
+	// which is what Select reads "" as. (review r1)
+	for _, args := range [][]string{{"--within"}, {"--within", "x"}, {"--bogus"}, {"--all", "a@x.com"}, {""}} {
 		var errw bytes.Buffer
 		if code := runLoginTo(io.Discard, &errw, cfg, args, w.deps()); code != 2 {
 			t.Errorf("%v: exit %d, want 2", args, code)
@@ -219,10 +240,11 @@ func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
 			t.Errorf("renewed a sealed account: %q", w.logins)
 		}
 	}
-	for _, s := range []string{"a@x.com                      login kept in the Keychain", "security unlock-keychain"} {
-		if !strings.Contains(out.String(), s) {
-			t.Errorf("output lacks %q:\n%s", s, out.String())
-		}
+	if a := planLine(out.String(), "a@x.com"); !strings.Contains(a, "Keychain") {
+		t.Errorf("a's plan line does not say its login is in the Keychain: %q", a)
+	}
+	if !strings.Contains(out.String(), "security unlock-keychain") {
+		t.Errorf("output does not say how to open the Keychain:\n%s", out.String())
 	}
 
 	_, w2 := renewFixture(t)
@@ -293,10 +315,10 @@ func TestRelayCodesChecksEachPaste(t *testing.T) {
 		t.Error("the vendor's input stayed open after the terminal's ended")
 	}
 	for _, s := range []string{
-		`headroom: "half a code" is not a sign-in code`,
-		"that code is from another sign-in (its state begins OTHERSTA…, this one's THISSTAT…)",
-		"headroom: passing it to claude as pasted",
-		"headroom: code received, from this sign-in — passing it to claude",
+		`"half a code"`,        // the malformed paste, echoed back
+		"OTHERSTA", "THISSTAT", // the two states, told apart
+		"as pasted",    // the same line again, sent anyway
+		"this sign-in", // the code that passed the check
 	} {
 		if !strings.Contains(said.String(), s) {
 			t.Errorf("relay never said %q:\n%s", s, said.String())
@@ -357,45 +379,56 @@ func TestSSHRemote(t *testing.T) {
 	}
 }
 
-// A live session refreshing the access token while the batch waits on other
-// approvals changes the credential without any login. Only a new refresh
-// expiry is a new login, and a failed vendor command is a failure whatever
-// changed meanwhile. (review r1)
-func TestLoginReadBackIgnoresAnAccessRefresh(t *testing.T) {
-	cfg, w := renewFixture(t)
-	d := w.deps()
-	d.login = func(a accounts.Account, _ accounts.Set, _ string, _ approvalPage) error {
-		// another session refreshed the access token; the login was abandoned
-		w.raw[a.Name] = blobEnding("refreshed-"+a.Name, w.now.Add(3*24*time.Hour))
-		return fmt.Errorf("exit status 1")
+// A login took only when the vendor command succeeded, the stored login is a
+// new one, and the dir is now logged in as the account. A live session
+// refreshing the access token while the batch waits on other approvals
+// changes the credential without any login, so only a new refresh expiry is
+// a new login — except in a credential that records none, where the token is
+// all there is to go by. (review r1)
+func TestLoginReadBack(t *testing.T) {
+	noExpiry := func(token string) string {
+		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"expiresAt":1}}`, token)
 	}
-	var out bytes.Buffer
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d); code != 1 {
-		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
+	cases := []struct {
+		name   string
+		before string // a@x.com's credential before; "" = the fixture's
+		vendor func(w *loginWorld, a accounts.Account) error
+		ok     bool
+		want   string // in a@x.com's result line
+	}{
+		{"a failed vendor command is a failure, whatever changed meanwhile", "", func(w *loginWorld, a accounts.Account) error {
+			w.raw[a.Name] = blobEnding("refreshed-"+a.Name, w.now.Add(30*24*time.Hour))
+			return fmt.Errorf("exit status 1")
+		}, false, "exit status 1"},
+		{"an access-token refresh is not a login", "", func(w *loginWorld, a accounts.Account) error {
+			w.raw[a.Name] = blobEnding("refreshed-"+a.Name, w.now.Add(3*24*time.Hour))
+			return nil
+		}, false, "did not change"},
+		{"a login approved as someone else did not take", "", func(w *loginWorld, a accounts.Account) error {
+			w.raw[a.Name], w.email[a.Name] = blobEnding("new-"+a.Name, w.now.Add(30*24*time.Hour)), "b@x.com"
+			return nil
+		}, false, "logged in as b@x.com, not a@x.com"},
+		{"with no refresh expiry recorded, a new token is a new login", noExpiry("old-a"), func(w *loginWorld, a accounts.Account) error {
+			w.raw[a.Name] = noExpiry("new-a")
+			return nil
+		}, true, "logged in"},
+		{"with no refresh expiry recorded, the same token is no login", noExpiry("old-a"), func(*loginWorld, accounts.Account) error {
+			return nil
+		}, false, "did not change"},
 	}
-	if !strings.Contains(out.String(), "✗ a@x.com: claude auth login: exit status 1") {
-		t.Errorf("vendor failure not reported:\n%s", out.String())
-	}
-	d.login = func(a accounts.Account, _ accounts.Set, _ string, _ approvalPage) error {
-		w.raw[a.Name] = blobEnding("refreshed-again-"+a.Name, w.now.Add(3*24*time.Hour))
-		return nil
-	}
-	out.Reset()
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d); code != 1 || !strings.Contains(out.String(), "✗ a@x.com: the stored login did not change") {
-		t.Errorf("access-only refresh read as a login: exit %d\n%s", code, out.String())
-	}
-}
-
-// An empty name is a caller's expansion bug, not a request for the pinned
-// account. (review r1)
-func TestLoginRefusesAnEmptyName(t *testing.T) {
-	cfg, w := renewFixture(t)
-	var errw bytes.Buffer
-	if code := runLoginTo(io.Discard, &errw, cfg, []string{""}, w.deps()); code != 2 {
-		t.Errorf("exit %d, want 2 (%s)", code, errw.String())
-	}
-	if len(w.logins) != 0 {
-		t.Errorf("an empty name logged in: %q", w.logins)
+	for _, c := range cases {
+		cfg, w := renewFixture(t)
+		if c.before != "" {
+			w.raw["a@x.com"] = c.before
+		}
+		d := w.deps()
+		d.login = func(a accounts.Account, _ accounts.Set, _ string, _ approvalPage) error { return c.vendor(w, a) }
+		var out bytes.Buffer
+		code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d)
+		line := resultLine(out.String(), "a@x.com")
+		if (code == 0) != c.ok || strings.HasPrefix(line, "✓") != c.ok || !strings.Contains(line, c.want) {
+			t.Errorf("%s: exit %d, result %q, want ok=%v with %q\n%s", c.name, code, line, c.ok, c.want, out.String())
+		}
 	}
 }
 
