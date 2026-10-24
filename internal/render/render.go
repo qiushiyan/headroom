@@ -416,34 +416,91 @@ func loadCounts(busy, launched int) string {
 	return strings.Join(parts, ", ")
 }
 
+// A limit row's display state, in two layers that degrade independently:
+// what its percent can say, and what its reset can. Both layouts draw the
+// same state — the block as a bar and a phrase, the compact row as a cell —
+// so the state is decided once, by rowState, and each layout only spells it.
+// Deciding it per layout is how the two came to disagree: a percent that
+// failed to parse over a window that had ended read "resetting…" in the
+// block and a negative clock in the compact row.
+type pctState uint8
+
+const (
+	pctFigure      pctState = iota // a number that answers "how much is left"
+	pctUnparseable                 // present and no longer a number: drift
+	pctRolled                      // parsed, but about a window that has ended
+)
+
+type resetState uint8
+
+const (
+	resetAt          resetState = iota // a future instant: a clock
+	resetAbsent                        // legitimately none — a window nobody has opened
+	resetUnparseable                   // present and no longer parses: drift
+	resetUnstarted                     // Codex: nobody has spent; the vendor's instant slides
+	resetRolled                        // the instant has passed: the window ended
+)
+
+// rowState classifies a row once, with one precedence. The window having
+// ended outranks every other reset reading, because a passed instant is a
+// fact about the window whatever else the row says, and an unstarted window
+// is one that has not ended. A percent that failed to parse outranks the
+// window having ended — drift is the louder fact and the one `check` must
+// see — while the reset layer still says the window ended, so neither layer
+// draws a clock for a window that is over.
+func rowState(r usage.Row, now int64) (pctState, resetState) {
+	reset := resetAt
+	switch {
+	case r.RolledOver(now):
+		reset = resetRolled
+	case r.ResetState == tag.Bad:
+		reset = resetUnparseable
+	case r.Unstarted:
+		reset = resetUnstarted
+	case r.ResetAt == 0:
+		reset = resetAbsent
+	}
+	switch {
+	case r.PercentState == tag.Bad:
+		return pctUnparseable, reset
+	case reset == resetRolled:
+		return pctRolled, reset
+	}
+	return pctFigure, reset
+}
+
 // LimitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4.8d)`
 // Bars and percentages retain their severity colour regardless of observation
 // age; the provenance caption carries staleness separately.
 func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
-	color := p.severity(r, now)
-	bar := Bar(r.Percent)
-	pct := fmt.Sprintf("%3d%%", r.Percent)
-	phrase := ResetPhrase(r.ResetAt, now)
-	if r.Unstarted {
-		// Nobody has spent against this window yet, so the vendor's reset
-		// instant slides with every request and means nothing.
-		phrase = "not started"
-	}
-	switch {
-	case r.PercentState == tag.Bad:
+	pct, reset := rowState(r, now)
+	bar, figure := Bar(r.Percent), fmt.Sprintf("%3d%%", r.Percent)
+	switch pct {
+	case pctUnparseable:
 		// A percent that no longer parses must not read as real headroom.
-		bar = strings.Repeat("?", BarWidth)
-		pct = "  ?%"
-	case r.RolledOver(now):
+		bar, figure = strings.Repeat("?", BarWidth), "  ?%"
+	case pctRolled:
 		// The window ended; whatever is being spent against the new one is
 		// unknown. Showing the old number here is the same lie as showing a
 		// drifted one — smaller, and in the direction that invites a choice.
-		bar = strings.Repeat("·", BarWidth)
-		pct = "  ?%"
+		bar, figure = strings.Repeat("·", BarWidth), "  ?%"
+	}
+	var phrase string
+	switch reset {
+	case resetAt:
+		phrase = ResetPhrase(r.ResetAt, now)
+	case resetUnstarted:
+		// Nobody has spent against this window yet, so the vendor's reset
+		// instant slides with every request and means nothing.
+		phrase = "not started"
+	case resetRolled:
 		phrase = "window rolled over"
+	default:
+		// Absent or unparseable: the drift marker is what tells them apart.
+		phrase = "resets ?"
 	}
 	line := fmt.Sprintf("  %-*s %s[%s] %s%s  %s%s%s",
-		labelWidth, r.Label, color, bar, pct, p.Rst, p.Dim, phrase, p.Rst)
+		labelWidth, r.Label, p.severity(r, pct), bar, figure, p.Rst, p.Dim, phrase, p.Rst)
 	if r.Drifted() {
 		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
 	}
@@ -453,21 +510,18 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
 // severity is the one colour rule for bars and percentages in both layouts.
 // Observation age does not change severity. A percent that failed to parse
 // is red, and a rolled-over window is dim whatever it once read.
-func (p Palette) severity(r usage.Row, now int64) string {
-	color := p.Grn
-	if r.Percent >= 50 {
-		color = p.Yel
-	}
-	if r.Percent >= 80 || r.Severity != "normal" {
-		color = p.Red
-	}
+func (p Palette) severity(r usage.Row, pct pctState) string {
 	switch {
-	case r.PercentState == tag.Bad:
-		color = p.Red
-	case r.RolledOver(now):
-		color = p.Dim
+	case pct == pctUnparseable:
+		return p.Red
+	case pct == pctRolled:
+		return p.Dim
+	case r.Percent >= 80 || r.Severity != "normal":
+		return p.Red
+	case r.Percent >= 50:
+		return p.Yel
 	}
-	return color
+	return p.Grn
 }
 
 // Clip truncates s to at most width display cells, passing ANSI escape
@@ -507,14 +561,11 @@ func Bar(pct int) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", BarWidth-filled)
 }
 
+// ResetPhrase is the block's clock for a reset still ahead — the one reset
+// state that has one: the instant, with the weekday once it is a day or more
+// away, and the time left.
 func ResetPhrase(resetAt, now int64) string {
-	if resetAt == 0 {
-		return "resets ?"
-	}
 	rem := resetAt - now
-	if rem <= 0 {
-		return "resetting…"
-	}
 	t := time.Unix(resetAt, 0)
 	if rem < 86400 {
 		return fmt.Sprintf("resets %s (in %s)", t.Format("15:04"), Remaining(rem))
@@ -527,7 +578,10 @@ func ResetPhrase(resetAt, now int64) string {
 // up (4.8d). One number with one decimal reads faster than a pair of units,
 // and the tenth is the precision a choice between accounts actually uses.
 // The unit turns over on the rounded value, so 23h58m reads 1.0d rather
-// than 24.0h. Only called with a positive remainder.
+// than 24.0h. It is a remainder still to run: here only a reset rowState
+// found ahead is given one — a reset that has passed is a rolled-over
+// window, which has no clock — and placement's callers pass a window's time
+// left.
 func Remaining(rem int64) string {
 	if h := float64(rem) / 3600; math.Round(h*10)/10 < 24 {
 		return fmt.Sprintf("%.1fh", h)

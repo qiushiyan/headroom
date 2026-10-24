@@ -139,32 +139,29 @@ const pctWidth = 4
 
 func (c cell) width() int { return pctWidth + 1 + Cells(c.reset) }
 
-// cellFor is the compact counterpart of LimitRow, and keeps its states apart
-// with distinct tokens rather than a legend: a valid future reset, a reset
+// cellFor is the compact counterpart of LimitRow: the same rowState, spelled
+// as distinct tokens rather than a legend — a valid future reset, a reset
 // legitimately absent (a 5h window nobody has opened), a reset that failed
-// to parse, a window that has since ended, and a percent that is not a
-// number. The percent's colour precedence is severity's, shared with the
-// bar; the reset is dim except when it is the thing that drifted.
+// to parse, a window nobody has started, a window that has since ended, and
+// a percent that is not a number. The percent's colour is severity's, shared
+// with the bar; the reset is dim except when it is the thing that drifted.
 func (p Palette) cellFor(r usage.Row, now int64) cell {
-	c := cell{
-		pct:        fmt.Sprintf("%d%%", r.Percent),
-		pctColor:   p.severity(r, now),
-		reset:      Remaining(r.ResetAt - now),
-		resetColor: p.Dim,
-	}
-	switch {
-	case r.ResetState == tag.Bad:
-		c.reset, c.resetColor = "reset?", p.Red
-	case r.Unstarted:
-		c.reset = "not started"
-	case r.ResetAt == 0:
-		c.reset = "—"
-	}
-	switch {
-	case r.PercentState == tag.Bad:
+	pct, reset := rowState(r, now)
+	c := cell{pct: fmt.Sprintf("%d%%", r.Percent), pctColor: p.severity(r, pct), resetColor: p.Dim}
+	if pct != pctFigure {
 		c.pct = "?%"
-	case r.RolledOver(now):
-		c.pct, c.reset = "?%", "rolled"
+	}
+	switch reset {
+	case resetAt:
+		c.reset = Remaining(r.ResetAt - now)
+	case resetAbsent:
+		c.reset = "—"
+	case resetUnparseable:
+		c.reset, c.resetColor = "reset?", p.Red
+	case resetUnstarted:
+		c.reset = "not started"
+	case resetRolled:
+		c.reset = "rolled"
 	}
 	return c
 }

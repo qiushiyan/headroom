@@ -31,35 +31,27 @@ func TestBar(t *testing.T) {
 	}
 }
 
+// The block's reset phrase: a reset still ahead is a clock — the time left in
+// Remaining's spelling, with the weekday once it is a day or more away — and
+// a reset nobody stated is never one. (The rolled-over and unstarted phrases
+// are owned by TestRolledOverRowIsNotAnAnswer and TestCodexUnstartedWindow.)
 func TestResetPhrase(t *testing.T) {
+	p := NewPalette(false)
 	now := int64(1_754_000_000)
-	if got := ResetPhrase(0, now); got != "resets ?" {
-		t.Errorf("unknown: %q", got)
+	row := func(resetAt int64) string {
+		return p.LimitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetAt: resetAt}, now, 16)
 	}
-	if got := ResetPhrase(now-10, now); got != "resetting…" {
-		t.Errorf("past: %q", got)
+	if got := row(0); !strings.Contains(got, "resets ?") || strings.Contains(got, "(in ") {
+		t.Errorf("absent reset drew a clock: %q", got)
 	}
-	sameDay := regexp.MustCompile(`^resets \d{2}:\d{2} \(in (.+)\)$`)
-	withDay := regexp.MustCompile(`^resets [A-Z][a-z]{2} \d{2}:\d{2} \(in (.+)\)$`)
-	cases := []struct {
-		rem int64
-		re  *regexp.Regexp
-		in  string
-	}{
-		{90, sameDay, "0.0h"},
-		{3*3600 + 120, sameDay, "3.0h"},
-		{3*3600 + 6*60, sameDay, "3.1h"},
-		{2*86400 + 3*3600, withDay, "2.1d"},
-	}
-	for _, c := range cases {
-		got := ResetPhrase(now+c.rem, now)
-		m := c.re.FindStringSubmatch(got)
-		if m == nil {
-			t.Errorf("ResetPhrase(+%d) = %q, want match %v", c.rem, got, c.re)
-			continue
+	for _, rem := range []int64{90, 3*3600 + 6*60, 23 * 3600, 86400, 2*86400 + 3*3600} {
+		got := row(now + rem)
+		if !strings.Contains(got, "(in "+Remaining(rem)+")") {
+			t.Errorf("+%ds: %q lacks the time left %q", rem, got, Remaining(rem))
 		}
-		if m[1] != c.in {
-			t.Errorf("ResetPhrase(+%d) = %q, want remaining %q", c.rem, got, c.in)
+		day := time.Unix(now+rem, 0).Format("Mon")
+		if want := rem >= 86400; strings.Contains(got, day) != want {
+			t.Errorf("+%ds: weekday %s shown should be %v: %q", rem, day, want, got)
 		}
 	}
 }
@@ -105,6 +97,14 @@ func TestLimitRowDrift(t *testing.T) {
 		ResetState: tag.Bad}, 0, 16)
 	if !strings.Contains(badReset, "drift") {
 		t.Errorf("bad reset should carry the drift marker: %q", badReset)
+	}
+
+	// A bad percent whose window has since ended says both, as the compact
+	// cell does: the percent is drift, and the window rolled over.
+	now := int64(1_800_000_000)
+	ended := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: tag.Bad, ResetAt: now - 1800}, now, 16)
+	if !strings.Contains(ended, "?%") || !strings.Contains(ended, "rolled over") || !strings.Contains(ended, "drift") {
+		t.Errorf("bad percent over an ended window: %q", ended)
 	}
 }
 

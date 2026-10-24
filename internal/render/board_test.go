@@ -113,6 +113,9 @@ func TestCompactCellStates(t *testing.T) {
 		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: tag.Bad}, cell{"12%", "reset?", p.Grn, p.Red}},
 		{"rolled over is dim and not a number", session(12, now-60), cell{"?%", "rolled", p.Dim, p.Dim}},
 		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: tag.Bad, ResetAt: now + 3600}, cell{"?%", "1.0h", p.Red, p.Dim}},
+		// Both states at once, each in its own layer: the percent is drift
+		// (red), the window has ended (rolled) — never a negative clock.
+		{"bad percent whose window has ended", usage.Row{Kind: "session", Severity: "normal", PercentState: tag.Bad, ResetAt: now - 1800}, cell{"?%", "rolled", p.Red, p.Dim}},
 		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, cell{"3%", "1.0h", p.Red, p.Dim}},
 	}
 	for _, tc := range cases {
