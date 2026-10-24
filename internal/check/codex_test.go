@@ -300,6 +300,25 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	if !strings.Contains(text, "— Codex likely changed a format") || strings.Contains(text, "Claude Code likely") || strings.Contains(text, "Claude Code and Codex") {
 		t.Errorf("closing line blames the wrong vendor:\n%s", text)
 	}
+
+	// A failure against headroom's own files in Claude Code's group — a
+	// corrupt .current — is no evidence against Claude Code: the blame stays
+	// with Codex alone.
+	if err := os.MkdirAll(claude.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claude.CurrentFile(), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	code = Run(cfg, &out, false, nil)
+	text = out.String()
+	if code != ExitFail || !strings.Contains(text, "FAIL  current:") {
+		t.Fatalf("own failure beside Codex drift: exit %d\n%s", code, text)
+	}
+	if !strings.Contains(text, "— Codex likely changed a format") || strings.Contains(text, "Claude Code and Codex") {
+		t.Errorf("an own failure was blamed on Claude Code:\n%s", text)
+	}
 }
 
 // A wedged `codex login status` costs one timeout, not one per home and not

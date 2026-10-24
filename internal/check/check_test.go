@@ -336,30 +336,67 @@ func TestRequestVerdictsSeparateStateFailureAndVendorEvidence(t *testing.T) {
 
 // Real command, credential and HTTP boundaries use local fixtures so this
 // pins exit status and user-facing evidence together without personal state.
+// The closing line says whose files a failure is against: a corrupt state
+// file or a config dir the launch seam refuses is headroom's own, and must
+// never read as the vendor having changed a format; output the vendor's own
+// health command no longer shapes, and a cache it wrote that can no longer be
+// attributed, are the vendor's. Every row also proves checkRetention ran —
+// even when the state file is newer and its audit short-circuits.
 func TestRunVerdicts(t *testing.T) {
+	const own = "all against headroom's own files"
+	const drift = "Claude Code likely changed a format"
+	type fixture struct {
+		cfg   *config.Scope
+		bin   string
+		write func(path, body string, mode os.FileMode)
+	}
 	for _, tc := range []struct {
-		name         string
-		status       int
-		brokenOwners bool
-		want         int
-		phrase       string
+		name      string
+		status    int
+		setup     func(t *testing.T, f fixture)
+		noRequest bool // the endpoint must not be asked
+		want      int
+		fail      string // a FAIL line carrying this
+		phrase    string // the output carries this
+		absent    string // and not this
 	}{
-		{"pass", 200, false, ExitPass, "passed"},
-		{"refused", 429, false, ExitInconclusive, "rate limited"},
-		{"state failure", 200, true, ExitFail, "api[primary]: not tested"},
-		{"newer state", 200, false, ExitInconclusive, "api[primary]: not tested"},
+		{name: "pass", status: 200, want: ExitPass, phrase: "all checks passed"},
+		{name: "refused", status: 429, want: ExitInconclusive, phrase: "rate limited"},
+		{name: "state failure", status: 200, setup: func(t *testing.T, f fixture) {
+			f.write(filepath.Join(f.cfg.AccountsRoot, ".owners"), "broken", 0600)
+		}, noRequest: true, want: ExitFail, fail: "state[primary]: request bookkeeping", phrase: own, absent: "likely changed a format"},
+		{name: "newer state", status: 200, setup: func(t *testing.T, f fixture) {
+			f.write(filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":999}`, 0600)
+		}, want: ExitInconclusive, phrase: "api[primary]: not tested"},
+		{name: "auth output drifted", status: 200, setup: func(t *testing.T, f fixture) {
+			f.write(filepath.Join(f.bin, "claude"), "#!/bin/sh\n# api/oauth/usage CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR -credentials\necho '{\"other\":1}'\n", 0755)
+		}, want: ExitFail, fail: "auth[primary]: claude auth status parses via shared contract", phrase: drift},
+		// A relative config dir is a construction headroom refuses, so the
+		// probe is never built: that failure is the launch seam's, not drift.
+		{name: "auth probe unbuildable", status: 200, setup: func(t *testing.T, f fixture) {
+			home := filepath.Dir(f.cfg.AccountsRoot)
+			t.Chdir(home)
+			f.cfg.AccountsRoot = "accounts"
+			dir := filepath.Join(home, "accounts", "a@x.com")
+			f.write(filepath.Join(dir, ".claude.json"), `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u-a"}}`, 0600)
+			if err := os.Symlink(f.cfg.StoreDir(), filepath.Join(dir, "projects")); err != nil {
+				t.Fatal(err)
+			}
+		}, want: ExitFail, fail: "auth[a@x.com]: probe environment could not be constructed", phrase: own, absent: "likely changed a format"},
+		// Present but unattributable: the offline fallback silently went away.
+		{name: "cache rejected", status: 200, setup: func(t *testing.T, f fixture) {
+			f.write(f.cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"},
+			  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"a previous login","utilization":{"limits":[]}}}`, 0600)
+		}, want: ExitFail, fail: "cache[primary]: Claude Code's cached usage parses via shared contract", phrase: drift},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cfg, write := soundClaudeTree(t, home)
-			if tc.name == "newer state" {
-				write(filepath.Join(cfg.AccountsRoot, "state.json"), `{"version":999}`, 0600)
-			}
-			if tc.brokenOwners {
-				write(filepath.Join(cfg.AccountsRoot, ".owners"), "broken", 0600)
+			if tc.setup != nil {
+				tc.setup(t, fixture{&cfg, os.Getenv("PATH"), write})
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if tc.brokenOwners {
+				if tc.noRequest {
 					t.Error("unclaimable request reached endpoint")
 				}
 				w.WriteHeader(tc.status)
@@ -369,8 +406,11 @@ func TestRunVerdicts(t *testing.T) {
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
 			code := Run(config.Config{Claude: cfg}, &out, false, nil)
-			if code != tc.want || !strings.Contains(out.String(), tc.phrase) || !strings.Contains(out.String(), "retention:") {
-				t.Fatalf("exit=%d want=%d\n%s", code, tc.want, out.String())
+			_, fails, _ := printed(&out)
+			text := out.String()
+			if code != tc.want || !strings.Contains(text, tc.phrase) || !strings.Contains(text, "retention:") ||
+				(tc.fail != "" && !hasLine(fails, tc.fail)) || (tc.absent != "" && strings.Contains(text, tc.absent)) {
+				t.Fatalf("exit=%d want=%d, FAIL %q, carrying %q and not %q:\n%s", code, tc.want, tc.fail, tc.phrase, tc.absent, text)
 			}
 		})
 	}
@@ -379,11 +419,16 @@ func TestRunVerdicts(t *testing.T) {
 func TestRunPrimaryCredentialSource(t *testing.T) {
 	for _, tc := range []struct {
 		name, credential string
+		status           int
 		wantCode         int
 		wantLine         string
 	}{
-		{"file only", `{"claudeAiOauth":{"accessToken":"fixture"}}`, ExitPass, "credential[primary]: .credentials.json (no keychain item)"},
-		{"neither", "", ExitFail, "credential[primary]: no credential source — not logged in"},
+		{"file only", `{"claudeAiOauth":{"accessToken":"fixture"}}`, 200, ExitPass, "credential[primary]: .credentials.json (no keychain item)"},
+		// The 401 re-check reads the primary's real dir, as the first read
+		// did: the token there is unchanged, so the rejection is drift — not
+		// an unreadable credential that would leave it untested.
+		{"file only, token rejected", `{"claudeAiOauth":{"accessToken":"fixture"}}`, 401, ExitFail, "api[primary]: HTTP 401 — unexpected status"},
+		{"neither", "", 200, ExitFail, "credential[primary]: no credential source — not logged in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -393,6 +438,7 @@ func TestRunPrimaryCredentialSource(t *testing.T) {
 				write(filepath.Join(cfg.PrimaryDir(), ".credentials.json"), tc.credential, 0600)
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
 				w.Write([]byte(`{"limits":[]}`))
 			}))
 			defer srv.Close()
@@ -488,6 +534,65 @@ func TestCheckRegistryStatus(t *testing.T) {
 	if len(fails) != 0 || len(oks) != 1 || len(skips) != 1 ||
 		!strings.Contains(skips[0], `"compacting", "thinking"`) {
 		t.Errorf("an unfamiliar status is untested, not drift: fails %v skips %v", fails, skips)
+	}
+}
+
+// The session store's two drift assertions that can actually fire. History
+// with lines but no parseable claim means attribution silently fell back to
+// the current account. A transcript larger than the tail budget must resolve
+// through the tail to what a full parse resolves: a rename beyond the budget,
+// with newer prompts inside it, renders the wrong title while "some title
+// exists" still passes.
+func TestCheckSessionStore(t *testing.T) {
+	const tailLine = "sessions: the adaptive tail reader resolves the same title/cwd/model as a full parse"
+	transcript := func(cwd, rename string) string {
+		var b strings.Builder
+		if rename != "" {
+			fmt.Fprintf(&b, "{\"type\":\"custom-title\",\"sessionId\":\"s\",\"customTitle\":%q}\n", rename)
+		}
+		for b.Len() <= sessions.TailBudget {
+			fmt.Fprintf(&b, "{\"type\":\"user\",\"sessionId\":\"s\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":%q}}\n", cwd, strings.Repeat("x", 1000))
+		}
+		fmt.Fprintf(&b, "{\"type\":\"assistant\",\"sessionId\":\"s\",\"cwd\":%q,\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":\"hi\"}}\n", cwd)
+		return b.String()
+	}
+	for _, tc := range []struct {
+		name, history string
+		rename        string
+		wantOK        string
+		wantFail      string
+	}{
+		{name: "history that parses", history: `{"sessionId":"s","timestamp":1}` + "\n", wantOK: "history[primary]"},
+		{name: "history with lines but no parseable claim", history: `{"display":"a prompt"}` + "\n", wantFail: "history[primary]: prompt records carry sessionId + timestamp"},
+		{name: "a large transcript the tail resolves", wantOK: tailLine},
+		{name: "a rename beyond the tail budget", rename: "renamed long ago", wantFail: tailLine},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := claudeScope(home, "qiushi")
+			project := filepath.Join(home, "project")
+			path := filepath.Join(cfg.StoreDir(), sessions.Munge(project), "s.jsonl")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(transcript(project, tc.rename)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.history != "" {
+				if err := os.WriteFile(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), []byte(tc.history), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r, out := testReport()
+			checkSessionStore(cfg, accounts.Discover(cfg).Accounts, state.Open(cfg).Load(), nil, r)
+			oks, fails, _ := printed(out)
+			if tc.wantOK != "" && !hasLine(oks, tc.wantOK) {
+				t.Errorf("no ok line %q in:\n%s", tc.wantOK, out)
+			}
+			if (tc.wantFail == "") != (len(fails) == 0) || (tc.wantFail != "" && (!hasLine(fails, tc.wantFail) || len(fails) != 1)) {
+				t.Errorf("want FAIL %q alone, got:\n%s", tc.wantFail, out)
+			}
+		})
 	}
 }
 
