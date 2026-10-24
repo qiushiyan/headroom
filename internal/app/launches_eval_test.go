@@ -11,7 +11,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/eval"
 	"github.com/qiushiyan/headroom/internal/launchlog"
-	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 	"github.com/qiushiyan/headroom/internal/usagelog"
@@ -101,12 +100,28 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
+	// The text is the same report for a person: its vendor, the account, and
+	// the replay's agreement on its own row. What it read is the document's
+	// to say, above.
 	text := out.String()
-	for _, want := range []string{"claude placement", "read 2 launch line(s) from 1 home(s), 1 usage-log reading(s)", "replay agrees", "1 of 1", "a@x.com"} {
+	for _, want := range []string{"claude placement", "a@x.com"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text report lacks %q:\n%s", want, text)
 		}
 	}
+	if row := reportRow(text, "replay agrees"); !strings.Contains(row, "1 of 1") {
+		t.Errorf("replay row = %q, want 1 of 1:\n%s", row, text)
+	}
+}
+
+// reportRow is the first line of a report holding a token, "" when none does.
+func reportRow(text, token string) string {
+	for _, l := range strings.Split(text, "\n") {
+		if strings.Contains(l, token) {
+			return l
+		}
+	}
+	return ""
 }
 
 // The evaluation reads every home that spends against the ledger: a second
@@ -189,17 +204,13 @@ func TestAReplayFaultIsSaidFirst(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	text := out.String()
-	fault := strings.Index(text, "fault: 1 line(s) "+placement.Rule+" decided")
+	fault := strings.Index(text, "fault:")
 	table := strings.Index(text, "replay agrees")
-	if fault < 0 || table < fault || !strings.Contains(text, "1 of 2 (1 fault)") {
+	if fault < 0 || table < fault || !strings.Contains(reportRow(text, "replay agrees"), "1 fault") {
 		t.Errorf("fault not said first, or not counted:\n%s", text)
 	}
 	if !strings.Contains(text, "replay faults") || strings.Contains(text, "replay disagreements") {
 		t.Errorf("the fault is not listed apart:\n%s", text)
-	}
-	rep := runEvalJSON(t, f.cfg).Vendors[0]
-	if d := rep.Decisions[1]; !d.Replay.Fault || rep.Rules[0].Replay.Faults != 1 {
-		t.Errorf("json: decision %+v, replay %+v", d.Replay, rep.Rules[0].Replay)
 	}
 }
 

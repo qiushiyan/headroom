@@ -124,10 +124,7 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 // launchesLine is one record on one line: when, where, how it was decided, the
 // load it was decided on, and the account that would have been next.
 func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
-	when := r.At
-	if t, err := time.Parse(time.RFC3339, r.At); err == nil {
-		when = t.Local().Format("01-02 15:04")
-	}
+	when := logWhen(r.At)
 	how := r.Mode
 	if r.Reason != "" && r.Reason != r.Mode {
 		how += "/" + r.Reason
@@ -158,4 +155,14 @@ func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
 		line += "  (not recorded)"
 	}
 	return line
+}
+
+// logWhen is one of the logs' RFC3339 instants as both launches surfaces
+// print it: the local date and minute. A time that does not parse is printed
+// as it stands.
+func logWhen(s string) string {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Local().Format("01-02 15:04")
+	}
+	return s
 }
