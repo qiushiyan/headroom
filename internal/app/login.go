@@ -503,16 +503,12 @@ func drainLines(lines <-chan string) {
 }
 
 // relayCodes hands the vendor the codes pasted at its prompt, until done.
-// headroom reads them rather than the vendor: Claude Code reads its prompt
-// with echo and line editing off (2.1.309), so a paste never showed and a
-// correction went in as raw bytes, and it sends any code#state to the token
-// endpoint without asking whether the code is this sign-in's — a code from
-// another page came back as a bare "Request failed with status code 400"
-// and ended the attempt. Read here, a paste echoes and edits as a line, and
-// a code that is not this sign-in's is refused before it is spent. state
-// reports this sign-in's state, "" while unknown. A refused line pasted
-// again as it was goes through: the check rests on a reading of the vendor
-// and must never be what stands between the owner and a login.
+// headroom reads them rather than the vendor, so that a paste echoes and
+// edits as a line and a code that is not this sign-in's is refused before it
+// is spent — why, in DESIGN.md § Renewing logins ("headroom reads the pasted
+// code"). state reports this sign-in's state, "" while unknown. A refused
+// line pasted again as it was goes through: the check rests on a reading of
+// the vendor and must never be what stands between the owner and a login.
 func relayCodes(lines <-chan string, vendor io.WriteCloser, say io.Writer, state func() string, done <-chan struct{}) {
 	refused := ""
 	for {

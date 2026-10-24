@@ -144,25 +144,16 @@ func span(d time.Duration) string {
 }
 
 // vendorSetupToken runs `claude setup-token` with the terminal on its input,
-// its output on scan, and headroom as its $BROWSER, as `headroom login` runs
-// the vendor's login.
+// its output on scan, and page's opener as its $BROWSER — the vendor facts
+// behind each, in DESIGN.md § Headless tokens.
 //
-// It runs under a config dir of its own, made for the run and removed after:
-// the vendor stores nothing from a setup-token — it prints the token — so the
-// account's dir has no part in it, and a scratch dir guarantees that nothing
+// It runs under a config dir made for the run and removed after, so nothing
 // in the account's dir, its login above all, is touched. The environment is
 // launch's constructor applied to that dir, so no inherited CLAUDE_CONFIG_DIR
-// or credential redirect reaches the vendor, and inherited credentials are
-// left out, which would only have the vendor warn that one is configured.
-//
-// Its output goes to a pipe, not the terminal: the vendor then draws its
-// screen as whole frames of plain lines, which is what lets the scanner keep
-// the token and withhold it from the terminal (see headless.Scanner). Its
-// input must be the terminal: on a pipe it draws nothing and waits.
-//
-// The vendor ignores every key while it waits for the approval, so headroom
-// ends it: after mintWait without one, or mintGrace after it has printed the
-// token, should it still be running then.
+// or credential redirect reaches the vendor, less the inherited credentials,
+// which would only have the vendor warn that one is configured. headroom
+// ends the vendor, which ignores every key while it waits: after mintWait
+// with no approval, or mintGrace after it has printed the token.
 func vendorSetupToken(scope config.Scope, page approvalPage, scan *headless.Scanner) error {
 	path, err := exec.LookPath(scope.Binary())
 	if err != nil {
