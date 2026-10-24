@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -66,12 +67,7 @@ type EnvPolicy struct {
 
 // IsSecret reports whether name's value must never reach a notice.
 func (p EnvPolicy) IsSecret(name string) bool {
-	for _, s := range p.Secret {
-		if s == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.Secret, name)
 }
 
 // EnvPolicy is the vendor's row of the environment policy table. The zero
@@ -475,6 +471,17 @@ func (s Scope) PrimaryMeta() string {
 		return filepath.Join(s.PrimaryDir(), ".claude.json")
 	}
 	return filepath.Join(s.Home, ".claude.json")
+}
+
+// RequirePresent is why a command acting on this vendor cannot: the vendor
+// was not found on this machine. Only Codex can be absent, and `accounts
+// add` is how its first directory comes to exist.
+func (s Scope) RequirePresent() error {
+	if s.Present {
+		return nil
+	}
+	return fmt.Errorf("%s was not found on this machine (no %s, no %s) — `headroom accounts add --vendor %s <email>` seeds the first account",
+		s.Vendor.Title(), s.PrimaryDir(), s.AccountsRoot, s.Vendor)
 }
 
 // PrimaryLaunchRefused reports that a primary launch must refuse: the home is

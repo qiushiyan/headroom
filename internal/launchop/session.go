@@ -1,8 +1,8 @@
-package app
+package launchop
 
 import "regexp"
 
-// sessionRef is what a launch's pass-through arguments say about which
+// Session is what a launch's pass-through arguments say about which
 // session it is for. It is read, never rewritten: the arguments reach the
 // vendor exactly as they were given.
 //
@@ -17,7 +17,7 @@ import "regexp"
 // session those choose is the vendor's rule, unverified here, so nothing is
 // inferred and nothing is recorded: a guessed id written down as a routing
 // record would misattribute a session for as long as the record lived.
-type sessionRef struct {
+type Session struct {
 	Route        string
 	Record       string
 	Unidentified bool
@@ -25,7 +25,7 @@ type sessionRef struct {
 
 var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// sessionIntent is the one reader of the vendor's session flags in a launch's
+// SessionOf is the one reader of the vendor's session flags in a launch's
 // arguments. An id counts only when it has the shape of one: the token after
 // `--resume` may equally be a search term, and a value that merely follows the
 // flag is not thereby a session. It stops at a bare `--`, after which
@@ -35,9 +35,9 @@ var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 // session flag appearing *as* another option's value would be read as one. An
 // id-shaped token must still follow it, and the consequence of a false match
 // is a launch routed to that session's account — a valid account either way.
-func sessionIntent(args []string) sessionRef {
+func SessionOf(args []string) Session {
 	var resume, fresh string
-	var ref sessionRef
+	var ref Session
 	fork := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -79,16 +79,16 @@ func sessionIntent(args []string) sessionRef {
 	}
 	switch {
 	case ref.Unidentified:
-		return sessionRef{Unidentified: true}
+		return Session{Unidentified: true}
 	case resume != "" && fresh != "":
 		// A fork given its own id: follow the session it forks from.
-		return sessionRef{Route: resume}
+		return Session{Route: resume}
 	case resume != "" && fork:
-		return sessionRef{Route: resume}
+		return Session{Route: resume}
 	case resume != "":
-		return sessionRef{Route: resume, Record: resume}
+		return Session{Route: resume, Record: resume}
 	case fresh != "":
-		return sessionRef{Route: fresh, Record: fresh}
+		return Session{Route: fresh, Record: fresh}
 	}
-	return sessionRef{}
+	return Session{}
 }

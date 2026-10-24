@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -16,7 +18,7 @@ import (
 
 // keepWorkingDir puts the test's working directory back afterwards: a
 // committed resume chdirs into the session's project before it execs, as the
-// real one does. The exec itself is captured by recordExec.
+// real one does. The exec itself is recorded (execRecord).
 func keepWorkingDir(t *testing.T) {
 	t.Helper()
 	orig, err := os.Getwd()
@@ -37,12 +39,16 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	// picker carries is the one read a real run takes.
 	writeJSON(t, cfg.CurrentFile(), "yan@planlab.ai\n")
 	set := accounts.Discover(cfg)
-	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
+	// The real process table, through the ps(1) a test puts on PATH, and no
+	// refresh left behind.
+	place := LivePlace()
+	place.Refresh = func(config.Scope) error { return nil }
+	ui := &resumeUI{beforeLaunch: func() {},
 		st:         state.Open(cfg),
 		set:        set,
 		routing:    set.Routing(),
 		claudeArgs: []string{"--dangerously-skip-permissions"},
-	}}
+		place:      place, exec: (&execRecord{}).exec, errw: &bytes.Buffer{}}
 	s := &sessions.Session{
 		ID: "11111111-2222-3333-4444-555555555555", CWD: proj, DirOK: true,
 		Owner: "yan@planlab.ai", OwnerState: sessions.OwnerHistory,
@@ -82,7 +88,7 @@ func claimSession(t *testing.T, accountDir, id string, pid int, started time.Tim
 func TestSessionsCommitExecsOnOwner(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	keepWorkingDir(t)
-	_, argv, env, called := recordExec(t)
+	rec := rearm(ui)
 
 	cd := filepath.Join(t.TempDir(), "cwd")
 	if f, err := os.Create(cd); err != nil {
@@ -93,16 +99,16 @@ func TestSessionsCommitExecsOnOwner(t *testing.T) {
 	ui.cdFile = cd
 
 	done, code := ui.commitResume(false)
-	if !done || code != 0 || !*called {
-		t.Fatalf("commit = (%v,%d), exec called %v", done, code, *called)
+	if !done || code != 0 || !rec.called {
+		t.Fatalf("commit = (%v,%d), exec called %v", done, code, rec.called)
 	}
 	want := []string{"--dangerously-skip-permissions", "--resume", s.ID}
-	if strings.Join(*argv, " ") != strings.Join(want, " ") {
-		t.Errorf("argv = %v, want %v", *argv, want)
+	if strings.Join(rec.args, " ") != strings.Join(want, " ") {
+		t.Errorf("argv = %v, want %v", rec.args, want)
 	}
 	wantDir := "CLAUDE_CONFIG_DIR=" + filepath.Join(ui.set.Scope.AccountsRoot, "yan@planlab.ai")
 	nDir, pwd := 0, ""
-	for _, kv := range *env {
+	for _, kv := range rec.env {
 		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
 			nDir++
 			if kv != wantDir {
@@ -178,7 +184,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ui, s := sessionsFixture(t)
 			keepWorkingDir(t)
-			_, _, _, called := recordExec(t)
+			rec := rearm(ui)
 			cd := filepath.Join(t.TempDir(), "cwd")
 			if f, err := os.Create(cd); err != nil {
 				t.Fatal(err)
@@ -192,7 +198,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 			if done || code != 0 {
 				t.Errorf("refusal ended the picker: (%v,%d)", done, code)
 			}
-			if *called {
+			if rec.called {
 				t.Error("exec ran through a refusal")
 			}
 			if !strings.Contains(ui.message, c.want) {
@@ -240,7 +246,7 @@ func TestCollectSessionsRoutesByTheStoredReHomes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	listing, _, _ := collectSessions(cfg, st)
+	listing, _, _ := collectSessions(cfg, st, quietPlace().Probe)
 	if len(listing.Sessions) != 1 {
 		t.Fatalf("listed %d sessions, want 1", len(listing.Sessions))
 	}
@@ -252,15 +258,20 @@ func TestCollectSessionsRoutesByTheStoredReHomes(t *testing.T) {
 // The surface's own contract refusals, before any terminal is touched.
 func TestSessionsArgContract(t *testing.T) {
 	cfg := launchConfig(t)
-	if code := runSessions(cfg, []string{"--", "--resume", "x"}); code != 2 {
+	run := func(opts SessionsOptions) int {
+		return call(func(std Streams) error {
+			return Sessions(std, Terminal{}, cfg, opts, SessionsDeps{Place: quietPlace(), Exec: (&execRecord{}).exec})
+		}).code
+	}
+	if code := run(SessionsOptions{Args: []string{"--resume", "x"}}); code != 2 {
 		t.Errorf("--resume pass-through: exit %d, want 2 (the picker chooses the session)", code)
 	}
-	if code := runSessions(cfg, []string{"--cd-file", "relative/path"}); code != 2 {
+	if code := run(SessionsOptions{CDFile: "relative/path"}); code != 2 {
 		t.Errorf("relative --cd-file: exit %d, want 2", code)
 	}
-	// Under go test stdin is not a terminal: the TTY guard must refuse before
-	// a picker that would exec claude onto a pipe.
-	if code := runSessions(cfg, nil); code != 1 {
+	// Off a terminal the TTY guard must refuse before a picker that would
+	// exec claude onto a pipe.
+	if code := run(SessionsOptions{}); code != 1 {
 		t.Errorf("no terminal: exit %d, want 1", code)
 	}
 }
@@ -268,12 +279,12 @@ func TestSessionsArgContract(t *testing.T) {
 func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	keepWorkingDir(t)
-	_, _, _, called := recordExec(t)
+	rec := rearm(ui)
 	s.CWD = filepath.Join(ui.set.Scope.Home, "project\nname")
 	if err := os.Mkdir(s.CWD, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
+	if done, code := ui.commitResume(false); !done || code != 0 || !rec.called {
 		t.Fatalf("commit: %v %d %s", done, code, ui.message)
 	}
 }
@@ -281,14 +292,12 @@ func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	keepWorkingDir(t)
-	recordExec(t) // restores the edge afterwards; the exec fails here
 	ui.st = state.Open(ui.set.Scope)
-	execVendor = func(string, string, []string, []string) error { return os.ErrPermission }
-	output := captureStderr(t, func() {
-		if done, code := ui.commitResume(true); !done || code != 1 {
-			t.Fatalf("commit: %v %d %s", done, code, ui.message)
-		}
-	})
+	ui.exec = (&execRecord{err: os.ErrPermission}).exec
+	if done, code := ui.commitResume(true); !done || code != 1 {
+		t.Fatalf("commit: %v %d %s", done, code, ui.message)
+	}
+	output := ui.failed.Error()
 	if !strings.Contains(output, "re-home remains recorded for "+ui.routing.Current) {
 		t.Fatalf("missing persistence explanation: %s", output)
 	}

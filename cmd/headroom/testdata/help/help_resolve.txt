@@ -1,0 +1,25 @@
+Usage: headroom resolve [<account>] [flags]
+
+Print an account's name, dir and kind, for shell preflight.
+
+Prints one line for shell preflight: the account's canonical name, its config dir and its
+kind (primary or extra), separated by tabs. Bare, the pinned account; under automatic
+placement there is no one account to print, so a name is required.
+
+Arguments:
+  <account>              The account to resolve; the pinned one when absent (optional).
+
+Flags:
+      --vendor=VENDOR    The vendor whose account this acts on (default: claude; one of: claude,
+                         codex).
+
+Inherited flags:
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

@@ -1,0 +1,86 @@
+Usage: headroom [<command>] [flags]
+   or: headroom [flags]
+
+headroom shows which of this machine's Claude Code and Codex accounts has quota left, launches claude or codex on the account it decides, and continues any Claude Code session on the account that last drove it.
+
+Bare, headroom is the board (see headroom board --help). Two things decide where a bare
+headroom launch goes: the board's enter pins an account, and its a key turns automatic
+placement on, so each bare launch takes the least-loaded account instead.
+
+An account is a config dir: Claude Code's primary is ~/.claude and the others are
+~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
+that report — the board, limits, launches, refresh — cover every vendor on this machine
+unless --vendor names one. Commands that act on one account — launch, resolve, accounts
+add and remove — act on Claude Code unless --vendor says codex. login, sessions and
+headless are Claude Code only.
+
+Flags:
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Arguments and flags of board, the default command:
+      --vendor=VENDOR    Only this vendor's accounts; every vendor on this machine when absent (one
+                         of: claude, codex).
+      --compact          One row per account: each limit's percent and time to reset, every warning
+                         at the end of the row.
+      --json             Print the board as a JSON document after one refresh round.
+
+Constraints:
+  At most one of --compact, --json.
+
+Commands:
+  board                          The account board: every account's limits, live; also headroom
+                                 accounts (default).
+  accounts board                 The account board (default).
+  accounts add <email>           Seed the dir for a new subscription.
+  accounts remove [<account>]    Remove an extra account: its Keychain item and its dir.
+  accounts ledger [<root>]       Spend against another home's ledger, and list the homes that share
+                                 it.
+  launch [<args> ...]            Run claude, or codex, on the account headroom decides.
+  sessions [<args> ...]          Continue any Claude Code session on this machine, on the account
+                                 that last drove it.
+  limits                         Print what is known about every account's limits, read from disk
+                                 alone.
+  launches                       List the newest launches, or judge how automatic placement has
+                                 done.
+  login [<account> ...]          Renew the Claude Code logins that end soon.
+  headless list                  List every account's headless token: whether there is one, and when
+                                 it ends (default).
+  headless mint <account>        Mint a long-lived token for one account through claude setup-token.
+  headless place                 Decide which account the next headless session spends, and record
+                                 it.
+  headless started <placement> <pid>
+                                 Report the process a session placed by place runs as, so it counts
+                                 while it runs.
+  headless token <account>       Print one account's headless token, and nothing else.
+  headless forget <account>      Forget one account's headless token.
+  resolve [<account>]            Print an account's name, dir and kind, for shell preflight.
+  refresh                        Ask the usage endpoint about every account that may be asked, and
+                                 store the answers.
+  check                          Verify the vendor facts headroom relies on, and its own state.
+  version                        Print the build this binary is.
+
+Configuration:
+  Nothing needs configuring on a standard install. These variables re-point the defaults:
+
+    HEADROOM_HOME                    everything home-derived, for both vendors (test isolation)
+    HEADROOM_ACCOUNTS_ROOT           where Claude Code's extra account dirs live
+    HEADROOM_PRIMARY_NAME            the name ~/.claude answers to (default: its email's local part)
+    HEADROOM_LAUNCHER_FORMAT         how the board spells an account's launch command (%s = name)
+    HEADROOM_CODEX_ACCOUNTS_ROOT     where Codex's extra homes live
+    HEADROOM_CODEX_PRIMARY_NAME      the name ~/.codex answers to
+    HEADROOM_CODEX_LAUNCHER_FORMAT   the board's Codex launch command
+    HEADROOM_USAGE_URL, HEADROOM_CODEX_USAGE_URL   the usage endpoints
+
+  A relative HEADROOM_HOME or accounts root, or a ~/.claude-accounts/.ledger naming no
+  usable accounts root, makes every command refuse until it is fixed; headroom check says
+  which.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded
+
+Run "headroom <command> --help" for a command's details.

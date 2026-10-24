@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/codexauth/codexauthtest"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
@@ -36,7 +37,7 @@ func boardFixture(t *testing.T, extras ...string) autoFixture {
 	return f
 }
 
-func marks(list []*accountData) (current, next []string) {
+func marks(list []accountstate.Account) (current, next []string) {
 	for _, d := range list {
 		if d.View.Current {
 			current = append(current, d.Acct.Name)
@@ -57,18 +58,18 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	f.observe("a@x.com", 0, 40, time.Minute)
 	f.observe("b@x.com", 0, 10, time.Minute)
 
-	boards := fetchBoards([]config.Scope{f.cfg})
+	boards := fetchBoards([]config.Scope{f.cfg}, f.boardDeps())
 	board := boards[0]
-	if current, next := marks(board.list); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.routing.Mode != "pinned" {
-		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.routing.Mode)
+	if current, next := marks(board.Accounts); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.Routing.Mode != "pinned" {
+		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.Routing.Mode)
 	}
 
 	f.setCurrent("auto\n")
-	boards = fetchBoards([]config.Scope{f.cfg})
+	boards = fetchBoards([]config.Scope{f.cfg}, f.boardDeps())
 	board = boards[0]
-	current, next := marks(board.list)
-	if len(current) != 0 || len(next) != 1 || board.routing.Mode != "auto" {
-		t.Fatalf("auto: current %v next %v mode %q", current, next, board.routing.Mode)
+	current, next := marks(board.Accounts)
+	if len(current) != 0 || len(next) != 1 || board.Routing.Mode != "auto" {
+		t.Fatalf("auto: current %v next %v mode %q", current, next, board.Routing.Mode)
 	}
 	if got := f.launch(); got.account(f.cfg) != next[0] {
 		t.Fatalf("the board marked %s and the launch took %s:\n%s", next[0], got.account(f.cfg), got.stderr)
@@ -84,7 +85,7 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 			t.Errorf("layout %v does not say the mode:\n%s", layout, text)
 		}
 		marked := 0
-		for _, line := range strings.Split(text, "\n") {
+		for line := range strings.SplitSeq(text, "\n") {
 			if strings.Contains(line, next[0]) && strings.Contains(line, mark) {
 				marked++
 			}
@@ -105,13 +106,13 @@ func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
 	f.observeWeek("a@x.com", 0, 70, time.Hour, time.Minute)
 	f.observeWeek("b@x.com", 0, 0, 7*time.Hour, time.Minute)
 
-	pg := newPage(f.cfg)
+	pg := newPage(f.cfg, f.boardDeps())
 	var out strings.Builder
 	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now(),
 		fp: &framePrinter{out: &out, size: func() (int, int, error) { return 120, 60, nil }}}
 	ui.show(context.Background(), 0)
 	next := func() string {
-		_, n := marks(pg.list)
+		_, n := marks(pg.accounts())
 		if len(n) != 1 {
 			t.Fatalf("%d rows marked next", len(n))
 		}
@@ -134,7 +135,7 @@ func TestSchema6SaysTheMode(t *testing.T) {
 	f := boardFixture(t, "a@x.com")
 	doc := func() doc5 {
 		t.Helper()
-		data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}), time.Now())
+		data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}, f.boardDeps()), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -142,11 +143,11 @@ func TestSchema6SaysTheMode(t *testing.T) {
 	}
 	limits := func() doc5 {
 		t.Helper()
-		var buf bytes.Buffer
-		if code := runLimitsTo(&buf, []config.Scope{f.cfg}, nil); code != 0 {
-			t.Fatalf("limits: exit %d", code)
+		got := call(func(std Streams) error { return Limits(std, []config.Scope{f.cfg}, "") })
+		if got.code != 0 {
+			t.Fatalf("limits: exit %d", got.code)
 		}
-		return decode5(t, buf.Bytes())
+		return decode5(t, []byte(got.stdout))
 	}
 	check := func(name, mode, current string) {
 		t.Helper()
@@ -227,9 +228,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 	set := accounts.Discover(f.cfg)
 	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
-		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
-			st: f.st, set: set, routing: set.Routing(),
-		}}
+		ui, _, _ := f.picker(set, set.Routing())
 		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
 		ui.listing.Sessions = []*sessions.Session{s}
 		ui.rows = ui.listing.Sessions
@@ -245,11 +244,11 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// No evidence: placed like a new session, on the least-loaded account.
 	ui, _ := newUI("", sessions.OwnerNone)
 	keepWorkingDir(t)
-	_, _, env, called := recordExec(t)
-	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
-		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, *called, ui.message)
+	rec := rearm(ui)
+	if done, code := ui.commitResume(false); !done || code != 0 || !rec.called {
+		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, rec.called, ui.message)
 	}
-	if got := account(*env); got != "a@x.com" {
+	if got := account(rec.env); got != "a@x.com" {
 		t.Fatalf("placed on %s, want a@x.com", got)
 	}
 	if _, ok := f.st.Load().Owner(sessA); ok {
@@ -259,9 +258,9 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// An owner that exists is followed, auto or not.
 	ui, _ = newUI("b@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
-	_, _, env, _ = recordExec(t)
-	if done, _ := ui.commitResume(false); !done || account(*env) != "b@x.com" {
-		t.Fatalf("enter on an owned session went to %s", account(*env))
+	rec = rearm(ui)
+	if done, _ := ui.commitResume(false); !done || account(rec.env) != "b@x.com" {
+		t.Fatalf("enter on an owned session went to %s", account(rec.env))
 	}
 	// Every session headroom starts is a line in the log and load on its
 	// account, a resume on its owner included — once each.
@@ -275,11 +274,11 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// The override: the least-loaded of the *other* accounts, re-homed, logged.
 	ui, s := newUI("a@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
-	_, _, env, _ = recordExec(t)
+	rec = rearm(ui)
 	if done, code := ui.commitResume(true); !done || code != 0 {
 		t.Fatalf("x: (%v, %d) — %s", done, code, ui.message)
 	}
-	moved := account(*env)
+	moved := account(rec.env)
 	if moved == "a@x.com" {
 		t.Fatal("x left the session where it was")
 	}
@@ -296,14 +295,13 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	solo := newAutoFixture(t)
 	solo.setCurrent("auto\n")
 	soloSet := accounts.Discover(solo.cfg)
-	ui = &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, st: solo.st, set: soloSet, routing: accounts.Routing{Mode: "auto"}}}
+	ui, rec, _ = solo.picker(soloSet, accounts.Routing{Mode: "auto"})
 	sess := &sessions.Session{ID: sessB, CWD: proj, DirOK: true, Owner: "qiushi", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{sess}
 	ui.rows = ui.listing.Sessions
 	keepWorkingDir(t)
-	_, _, _, called = recordExec(t)
-	if done, _ := ui.commitResume(true); done || *called || !strings.Contains(ui.message, "already there") {
-		t.Fatalf("x with one account: done %v called %v message %q", done, *called, ui.message)
+	if done, _ := ui.commitResume(true); done || rec.called || !strings.Contains(ui.message, "already there") {
+		t.Fatalf("x with one account: done %v called %v message %q", done, rec.called, ui.message)
 	}
 }
 
@@ -316,10 +314,9 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	prevRefresh := startRefresh
 	refreshes := 0
-	startRefresh = func(config.Scope) error { refreshes++; return nil }
-	t.Cleanup(func() { startRefresh = prevRefresh })
+	place := quietPlace()
+	place.Refresh = func(config.Scope) error { refreshes++; return nil }
 
 	f.extra(t, login(1))
 	f.extra(t, login(2))
@@ -375,14 +372,12 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 
 	launch := func(args ...string) (string, string) {
 		t.Helper()
-		_, _, env, called := recordExec(t)
-		var code int
-		stderr := captureStderr(t, func() { code = runLaunch(f.scope, args) })
-		if code != 0 || !*called {
-			t.Fatalf("exit %d called %v: %s", code, *called, stderr)
+		got := launchOn(t, f.scope, place, args...)
+		if got.code != 0 || !got.called {
+			t.Fatalf("exit %d called %v: %s", got.code, got.called, got.stderr)
 		}
-		home, _ := envValue(*env, "CODEX_HOME")
-		return filepath.Base(home), stderr
+		home, _ := envValue(got.env, "CODEX_HOME")
+		return filepath.Base(home), got.stderr
 	}
 	first, stderr := launch("--", "resume", "--all")
 	if first != "u2@x.com" {
@@ -433,94 +428,5 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.cfg.Claude.AccountsRoot, "state.json")); err == nil {
 		t.Error("a Codex launch wrote Claude Code's state.json")
-	}
-}
-
-// The one line a launch prints, by the tokens a person and an agent read: the
-// account and how it was decided, then — when the rule decided — each figure
-// said as what it rests on. A figure the rule counted as a bound, or as an
-// ended window, is said as one: "5h 0%" over a window that was at 97% a minute
-// ago and has since reset is a measured-looking number nobody measured.
-func TestLaunchLineWording(t *testing.T) {
-	now := time.Unix(1_790_848_000, 0)
-	limit := func(session bool, kind, label string, percent int, reset time.Duration) placement.Limit {
-		return placement.Limit{Kind: kind, Label: label, Percent: percent, ResetAt: now.Add(reset).Unix(), Session: session}
-	}
-	rows := func(name string, age time.Duration, limits ...placement.Limit) placement.Candidate {
-		return placement.Candidate{Name: name, Key: name, ObservedAt: now.Add(-age).Unix(), Limits: limits}
-	}
-	obs := func(name string, session, weekly int, age time.Duration) placement.Candidate {
-		return rows(name, age, limit(true, "session", "5h session", session, time.Hour), limit(false, "weekly_all", "All models (7d)", weekly, 29*time.Hour))
-	}
-	choose := func(intent placement.Intent, cands ...placement.Candidate) placement.Decision {
-		return placement.Choose(cands, placement.Ledger{}, intent, now)
-	}
-	cases := []struct {
-		name  string
-		d     placement.Decision
-		auto  bool
-		ref   sessionRef
-		owner string
-		want  []string
-		not   []string
-	}{
-		{"least load", choose(placement.Intent{}, obs("a", 12, 3, time.Minute), obs("b", 40, 3, time.Minute)), true, sessionRef{}, "",
-			[]string{"a · auto", "5h 12%", "week 3%", "resets in 1.2d", "load 1", "(next: b)"}, []string{"old"}},
-		{"stale", choose(placement.Intent{}, obs("a", 0, 18, 40*time.Hour)), true, sessionRef{}, "",
-			[]string{"a · auto", "5h ≥0%", "week ≥18%", "figures 1d old", "load 0"}, []string{"next"}},
-		{"never observed", choose(placement.Intent{}, placement.Candidate{Name: "a", Key: "a"}), true, sessionRef{}, "",
-			[]string{"a · auto", "never observed", "load 0"}, nil},
-		{"an ended session window", choose(placement.Intent{}, rows("b", time.Minute,
-			limit(true, "session", "5h session", 97, -30*time.Second), limit(false, "weekly_all", "All models (7d)", 12, 48*time.Hour))), true, sessionRef{}, "",
-			[]string{"5h window ended"}, []string{"5h 0%"}},
-		// A weekly window that has ended is counted whole from now: there is
-		// no reset instant to count down to, and none is printed.
-		{"an ended week", choose(placement.Intent{}, rows("b", time.Minute,
-			limit(true, "session", "5h session", 3, time.Hour), limit(false, "weekly_all", "All models (7d)", 64, -time.Minute))), true, sessionRef{}, "",
-			[]string{"week window ended"}, []string{"resets in"}},
-		{"an unparseable percent", choose(placement.Intent{}, rows("b", time.Minute,
-			placement.Limit{Kind: "session", Label: "5h session", Bad: true, Session: true})), true, sessionRef{}, "",
-			[]string{"5h ?%"}, []string{"100%"}},
-		{"near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute)), true, sessionRef{}, "",
-			[]string{"a · auto", "every account is near a limit", "All models (7d) 84%", "resets in 1.2d"}, []string{"load"}},
-		{"near a limit on old figures", choose(placement.Intent{}, obs("b", 10, 91, 40*time.Hour)), true, sessionRef{}, "",
-			[]string{"every account is near a limit", "≥91%", "figures 1d old"}, nil},
-		{"owner", choose(placement.Intent{Owner: "a"}, obs("a", 30, 30, time.Minute), obs("b", 0, 0, time.Minute)), true, sessionRef{Route: sessA}, "a",
-			[]string{"a · auto", "this session's account"}, nil},
-		{"moved", choose(placement.Intent{Owner: "a"}, obs("a", 30, 95, time.Minute), obs("b", 0, 0, time.Minute)), true, sessionRef{Route: sessA}, "a",
-			[]string{"b · auto", "session moved from a"}, nil},
-		{"unowned", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, sessionRef{Route: sessA, Record: sessA}, "",
-			[]string{"session had no known account"}, nil},
-		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, sessionRef{Unidentified: true}, "",
-			[]string{"session not identified"}, nil},
-		{"pinned", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "pinned"}, obs("a", 0, 0, time.Minute)), false, sessionRef{}, "",
-			[]string{"a · pinned", "turns auto on"}, []string{"auto ·", "load"}},
-	}
-	// The other ways of deciding say which they were, and no figures: the
-	// rule chose nothing.
-	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
-		cases = append(cases, struct {
-			name  string
-			d     placement.Decision
-			auto  bool
-			ref   sessionRef
-			owner string
-			want  []string
-			not   []string
-		}{reason, choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: reason}, obs("a", 0, 0, time.Minute)), false, sessionRef{}, "",
-			[]string{want}, []string{"auto", "load"}})
-	}
-	for _, c := range cases {
-		line := launchLine(c.d, c.auto, c.ref, c.owner, "", now)
-		for _, w := range c.want {
-			if !strings.Contains(line, w) {
-				t.Errorf("%s: %q lacks %q", c.name, line, w)
-			}
-		}
-		for _, n := range c.not {
-			if strings.Contains(line, n) {
-				t.Errorf("%s: %q must not say %q", c.name, line, n)
-			}
-		}
 	}
 }

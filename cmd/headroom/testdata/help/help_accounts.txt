@@ -1,0 +1,39 @@
+Usage: headroom accounts [<command>] [flags]
+   or: headroom accounts [flags]
+
+The account board, and adding, removing and sharing accounts.
+
+Bare, the account board (see headroom board --help). Its subcommands change the set of
+accounts: add seeds a new account's dir, remove deletes one, ledger shares the request
+budget with a second home on this machine.
+
+Flags:
+      --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
+                         remove act on it, Claude Code when absent (one of: claude, codex).
+
+Inherited flags:
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Arguments and flags of board, the default command:
+      --compact          One row per account: each limit's percent and time to reset, every warning
+                         at the end of the row.
+      --json             Print the board as a JSON document after one refresh round.
+
+Constraints:
+  At most one of --compact, --json.
+
+Commands:
+  board                 The account board (default).
+  add <email>           Seed the dir for a new subscription.
+  remove [<account>]    Remove an extra account: its Keychain item and its dir.
+  ledger [<root>]       Spend against another home's ledger, and list the homes that share it.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded
+
+Run "headroom accounts <command> --help" for a command's details.

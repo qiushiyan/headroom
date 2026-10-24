@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -20,6 +19,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/eval"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usagelog"
@@ -31,9 +31,9 @@ const EvalSchema = 1
 // evalListed is how many of each kind of evidence the text report lists.
 const evalListed = 8
 
-// parseSince reads --since: a span back from now ("7d", "36h", "90m") or an
+// ParseSince reads --since: a span back from now ("7d", "36h", "90m") or an
 // instant ("2026-10-01", or RFC3339).
-func parseSince(s string, now time.Time) (time.Time, error) {
+func ParseSince(s string, now time.Time) (time.Time, error) {
 	if n, ok := strings.CutSuffix(s, "d"); ok {
 		if d, err := strconv.Atoi(n); err == nil && d >= 0 {
 			return now.Add(-time.Duration(d) * 24 * time.Hour), nil
@@ -73,7 +73,7 @@ func gatherEval(scope config.Scope, since, now time.Time) (eval.Input, error) {
 	}
 	known(in.Home, accounts.Discover(scope))
 	homes := []string{in.Home}
-	for _, o := range otherHomes(scope, snap) {
+	for _, o := range launchop.OtherHomes(scope, snap) {
 		homes = append(homes, o.Root)
 		known(o.Root, o.Set)
 	}
@@ -106,17 +106,20 @@ func gatherEval(scope config.Scope, since, now time.Time) (eval.Input, error) {
 	return in, nil
 }
 
-func runEval(w io.Writer, scopes []config.Scope, since time.Time, jsonMode bool, now time.Time) int {
+// LaunchesEval is how automatic placement has done, per rule version, from
+// the launch logs and the usage log since an instant (the zero time: every
+// line).
+func LaunchesEval(std Streams, scopes []config.Scope, since time.Time, asJSON bool, now time.Time) error {
+	w := std.Out
 	var reports []eval.Report
 	for _, scope := range scopes {
 		in, err := gatherEval(scope, since, now)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-			return 1
+			return err
 		}
 		reports = append(reports, eval.Build(in))
 	}
-	if jsonMode {
+	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		doc := struct {
@@ -124,11 +127,7 @@ func runEval(w io.Writer, scopes []config.Scope, since time.Time, jsonMode bool,
 			GeneratedAt string        `json:"generated_at"`
 			Vendors     []eval.Report `json:"vendors"`
 		}{EvalSchema, now.UTC().Format(time.RFC3339), reports}
-		if err := enc.Encode(doc); err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-			return 1
-		}
-		return 0
+		return enc.Encode(doc)
 	}
 	for i, rep := range reports {
 		if i > 0 {
@@ -136,7 +135,7 @@ func runEval(w io.Writer, scopes []config.Scope, since time.Time, jsonMode bool,
 		}
 		writeEval(w, rep)
 	}
-	return 0
+	return nil
 }
 
 // writeEval is one vendor's report for a person: a column per rule version
@@ -146,10 +145,10 @@ func writeEval(w io.Writer, rep eval.Report) {
 	src := rep.Sources
 	span := "nothing recorded yet"
 	if src.First != nil {
-		span = logWhen(*src.First) + " → " + logWhen(*src.Last)
+		span = render.LogWhen(*src.First) + " → " + render.LogWhen(*src.Last)
 	}
 	if rep.Since != nil {
-		span = "since " + logWhen(*rep.Since) + " · " + span
+		span = "since " + render.LogWhen(*rep.Since) + " · " + span
 	}
 	fmt.Fprintf(w, "%s placement · %s\n", rep.Vendor, span)
 	fmt.Fprintf(w, "  read %d launch line(s) from %d home(s), %d usage-log reading(s), %d reading(s) carried in launch lines",
@@ -322,30 +321,30 @@ func writeEval(w io.Writer, rep eval.Report) {
 	}
 
 	writeEvidence(w, "windows that reached "+strconv.Itoa(t.NearPercent)+"%", len(rep.Episodes), func(yield func(string) bool) {
-		for i := len(rep.Episodes) - 1; i >= 0; i-- {
-			if !yield(episodeLine(rep.Episodes[i], rep.Home)) {
+		for _, v := range slices.Backward(rep.Episodes) {
+			if !yield(episodeLine(v, rep.Home)) {
 				return
 			}
 		}
 	})
 	writeEvidence(w, "weekly renewals", len(rep.Renewals), func(yield func(string) bool) {
-		for i := len(rep.Renewals) - 1; i >= 0; i-- {
-			if !yield(renewalLine(rep.Renewals[i])) {
+		for _, v := range slices.Backward(rep.Renewals) {
+			if !yield(renewalLine(v)) {
 				return
 			}
 		}
 	})
 	writeEvidence(w, "replay faults — lines "+rep.Rule+" decided and now decides differently", len(faults), func(yield func(string) bool) {
-		for i := len(faults) - 1; i >= 0; i-- {
-			if !yield(disagreementLine(faults[i], rep.Rule, rep.Home)) {
+		for _, fault := range slices.Backward(faults) {
+			if !yield(disagreementLine(fault, rep.Rule, rep.Home)) {
 				return
 			}
 		}
 	})
 	writeEvidence(w, "replay disagreements — what "+rep.Rule+" would choose from the same input; each account's window as observed, not as the other choice would have left it",
 		len(differ), func(yield func(string) bool) {
-			for i := len(differ) - 1; i >= 0; i-- {
-				if !yield(disagreementLine(differ[i], rep.Rule, rep.Home)) {
+			for _, d := range slices.Backward(differ) {
+				if !yield(disagreementLine(d, rep.Rule, rep.Home)) {
 					return
 				}
 			}
@@ -371,9 +370,9 @@ func writeEvidence(w io.Writer, title string, n int, lines func(func(string) boo
 }
 
 func episodeLine(ep eval.Episode, home string) string {
-	line := logWhen(ep.NearAt) + "  " + render.Sanitize(ep.Account) + "  " + render.Sanitize(ep.Limit) + fmt.Sprintf(" peak %d%%", ep.Peak)
+	line := render.LogWhen(ep.NearAt) + "  " + render.Sanitize(ep.Account) + "  " + render.Sanitize(ep.Limit) + fmt.Sprintf(" peak %d%%", ep.Peak)
 	if ep.ExhaustedAt != nil {
-		line += " (full at " + logWhen(*ep.ExhaustedAt) + ")"
+		line += " (full at " + render.LogWhen(*ep.ExhaustedAt) + ")"
 	}
 	line += fmt.Sprintf(" · near %s, %s while another had room  %s", evalSpan(ep.NearS), evalSpan(ep.SqueezedS), evalCharged(ep.Rule))
 	if len(ep.Launches) > 0 {
@@ -408,7 +407,7 @@ func roomBasis(r eval.Room) string {
 }
 
 func renewalLine(r eval.Renewal) string {
-	line := logWhen(r.RenewedAt) + "  " + render.Sanitize(r.Account) + "  " + render.Sanitize(r.Limit) +
+	line := render.LogWhen(r.RenewedAt) + "  " + render.Sanitize(r.Account) + "  " + render.Sanitize(r.Limit) +
 		fmt.Sprintf(" used ≥%d%%, read %s before", r.UsedMin, render.Age(r.LastReadS))
 	if r.PeakElsewhere > 0 {
 		line += fmt.Sprintf(" · elsewhere peaked %d%%", r.PeakElsewhere)
@@ -433,9 +432,9 @@ func disagreementLine(d eval.Decision, rule, home string) string {
 	if d.Home != home {
 		// Named by its accounts root, as the launch line names a home with
 		// no registration to name it.
-		where = " on " + render.Sanitize(homeLabel(nil, d.Home))
+		where = " on " + render.Sanitize(state.HomeLabels(nil).Of(d.Home))
 	}
-	line := fmt.Sprintf("%s  %s%s chose %s (%s); %s chooses %s (%s)", logWhen(d.At), d.Rule, where, render.Sanitize(d.Chosen), d.Reason,
+	line := fmt.Sprintf("%s  %s%s chose %s (%s); %s chooses %s (%s)", render.LogWhen(d.At), d.Rule, where, render.Sanitize(d.Chosen), d.Reason,
 		rule, render.Sanitize(replayed), d.Replay.Reason)
 	var after []string
 	if a := d.ChosenAfter; a != nil {
@@ -465,7 +464,7 @@ func otherHomesSaid(byHome map[string]int, home string) string {
 	slices.Sort(roots)
 	var parts []string
 	for _, root := range roots {
-		parts = append(parts, fmt.Sprintf("%d from %s", byHome[root], render.Sanitize(homeLabel(nil, root))))
+		parts = append(parts, fmt.Sprintf("%d from %s", byHome[root], render.Sanitize(state.HomeLabels(nil).Of(root))))
 	}
 	return strings.Join(parts, ", ")
 }

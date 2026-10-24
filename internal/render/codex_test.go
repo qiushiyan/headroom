@@ -68,11 +68,11 @@ func TestCodexDifferentDurationsAreDifferentColumns(t *testing.T) {
 	header := b.Header[0]
 	// Columns are counted in cells, not bytes: the dash is a multi-byte rune.
 	cellIndex := func(s, sub string) int {
-		i := strings.Index(s, sub)
-		if i < 0 {
+		before, _, ok := strings.Cut(s, sub)
+		if !ok {
 			return -1
 		}
-		return len([]rune(s[:i]))
+		return len([]rune(before))
 	}
 	weekly, fiveHour := cellIndex(header, "weekly"), cellIndex(header, "5h")
 	if weekly < 0 || fiveHour < 0 || weekly > fiveHour {

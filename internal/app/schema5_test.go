@@ -92,7 +92,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no claude, no security: probes answer "unavailable"
 	both := []config.Scope{f.cfg.Claude, f.scope}
 
-	data, err := jsonDocument(fetchBoards(both), time.Now())
+	data, err := jsonDocument(fetchBoards(both, BoardDeps{Round: LiveRound(true), Place: quietPlace()}), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 
 	// limits emits the same document from disk alone, and replays the body.
 	var buf bytes.Buffer
-	if code := runLimitsTo(&buf, both, nil); code != 0 {
+	if code := limitsTo(&buf, both, ""); code != 0 {
 		t.Fatalf("limits exit %d", code)
 	}
 	ld := decode5(t, buf.Bytes())
@@ -176,7 +176,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 
 	// --vendor restricts accounts, current and problems to the one vendor.
 	buf.Reset()
-	if code := runLimitsTo(&buf, []config.Scope{f.scope}, nil); code != 0 {
+	if code := limitsTo(&buf, []config.Scope{f.scope}, ""); code != 0 {
 		t.Fatal("limits --vendor codex failed")
 	}
 	only := decode5(t, buf.Bytes())
@@ -192,7 +192,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	// --account filters by name inside the selected vendors: an email that is
 	// an account of both answers twice, each under its own vendor.
 	buf.Reset()
-	if code := runLimitsTo(&buf, both, []string{"--account", "u1@x.com"}); code != 0 {
+	if code := limitsTo(&buf, both, "u1@x.com"); code != 0 {
 		t.Fatal("limits --account failed")
 	}
 	named := decode5(t, buf.Bytes())
@@ -202,47 +202,15 @@ func TestSchema5TwoVendors(t *testing.T) {
 	// A name only one vendor has still answers, and the other vendor stays in
 	// the envelope — its `current` is still a fact — with no accounts.
 	buf.Reset()
-	if code := runLimitsTo(&buf, both, []string{"--account", "claude-only@x.com"}); code != 0 {
+	if code := limitsTo(&buf, both, "claude-only@x.com"); code != 0 {
 		t.Fatal("limits --account claude-only@x.com failed")
 	}
 	if p := decode5(t, buf.Bytes()); len(p.Accounts) != 1 || p.Accounts[0].Vendor != "claude" || p.Current["codex"] != "u1@x.com" {
 		t.Errorf("--account claude-only@x.com: %+v current %v", p.Accounts, p.Current)
 	}
 	buf.Reset()
-	if code := runLimitsTo(&buf, both, []string{"--account", "nobody@x.com"}); code != 1 || buf.Len() != 0 {
+	if code := limitsTo(&buf, both, "nobody@x.com"); code != 1 || buf.Len() != 0 {
 		t.Errorf("an unknown name: exit %d, wrote %q", code, buf.String())
-	}
-}
-
-func TestTakeVendor(t *testing.T) {
-	for _, c := range []struct {
-		args   []string
-		vendor config.Vendor
-		set    bool
-		rest   string
-		bad    bool
-	}{
-		{[]string{"--account", "a"}, config.Claude, false, "--account a", false},
-		{[]string{"--vendor", "codex", "--account", "a"}, config.Codex, true, "--account a", false},
-		{[]string{"--account", "a", "--vendor=codex"}, config.Codex, true, "--account a", false},
-		{[]string{"--vendor", "claude"}, config.Claude, true, "", false},
-		// Whatever follows -- belongs to the launched child.
-		{[]string{"--", "--vendor", "codex"}, config.Claude, false, "-- --vendor codex", false},
-		{[]string{"--vendor", "codex", "--", "resume", "--all"}, config.Codex, true, "-- resume --all", false},
-		{[]string{"--vendor"}, "", false, "", true},
-		{[]string{"--vendor", "gemini"}, "", false, "", true},
-	} {
-		v, set, rest, err := takeVendor(c.args)
-		if (err != nil) != c.bad {
-			t.Errorf("%v: err = %v", c.args, err)
-			continue
-		}
-		if c.bad {
-			continue
-		}
-		if v != c.vendor || set != c.set || join(rest) != c.rest {
-			t.Errorf("%v: (%q, %v, %q)", c.args, v, set, join(rest))
-		}
 	}
 }
 
@@ -272,14 +240,14 @@ func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
 	limits := func(scopes ...config.Scope) []byte {
 		t.Helper()
 		var buf bytes.Buffer
-		if code := runLimitsTo(&buf, scopes, nil); code != 0 {
+		if code := limitsTo(&buf, scopes, ""); code != 0 {
 			t.Fatal("limits failed")
 		}
 		return buf.Bytes()
 	}
 	board := func(scopes ...config.Scope) []byte {
 		t.Helper()
-		data, err := jsonDocument(fetchBoards(scopes), time.Now())
+		data, err := jsonDocument(fetchBoards(scopes, BoardDeps{Round: LiveRound(true), Place: quietPlace()}), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -339,4 +307,12 @@ func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
 			}
 		}
 	}
+}
+
+// limitsTo prints the limits document over scopes, narrowed to account when
+// it is set.
+func limitsTo(buf *bytes.Buffer, scopes []config.Scope, account string) int {
+	got := call(func(std Streams) error { return Limits(std, scopes, account) })
+	buf.WriteString(got.stdout)
+	return got.code
 }

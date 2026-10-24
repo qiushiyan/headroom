@@ -1,4 +1,4 @@
-package app
+package round
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -23,34 +24,30 @@ type prepareFixture struct {
 	store *state.Store
 }
 
-func (f prepareFixture) run(now time.Time) map[string]*accountData {
+func (f prepareFixture) run(now time.Time) map[string]*row {
 	return byName(f.prepare(now))
 }
 
-func (f prepareFixture) prepare(now time.Time) []*accountData {
-	list, _ := prepareWith(accounts.Discover(f.cfg), f.store.Load(), sources{
-		readRaw: func(a accounts.Account) string { return f.blobs[a.ConfigDir] },
-		health:  func(dir string) auth.Status { return f.auth[dir] },
-		now:     now,
+func (f prepareFixture) prepare(now time.Time) *Round {
+	return Prepare(context.Background(), f.cfg, f.store, now, Deps{
+		Creds:  func(_ context.Context, a accounts.Account) string { return f.blobs[a.ConfigDir] },
+		Health: func([]accounts.Account) auth.QueryFunc { return func(dir string) auth.Status { return f.auth[dir] } },
 	})
-	return list
 }
 
 // round is prepare followed by the claim, which is what every surface runs and
 // where a deferred account is actually decided. Tests about what the user sees
 // go through it: prepare alone now marks every spendable account pending,
 // because deciding earlier is exactly what let an account skip the claim.
-func (f prepareFixture) round(now time.Time) map[string]*accountData {
-	list := f.prepare(now)
-	for u := range launchFetches(context.Background(), list, f.store) {
-		resolve(list[u.Index], u)
-	}
-	return byName(list)
+func (f prepareFixture) round(now time.Time) map[string]*row {
+	r := f.prepare(now)
+	r.Complete(context.Background())
+	return byName(r)
 }
 
-func byName(list []*accountData) map[string]*accountData {
-	out := map[string]*accountData{}
-	for _, d := range list {
+func byName(r *Round) map[string]*row {
+	out := map[string]*row{}
+	for _, d := range r.rows {
 		out[d.Acct.Name] = d
 	}
 	return out
@@ -79,8 +76,11 @@ func TestPrepareFileBackedPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	list := prepare(context.Background(), cfg, state.Open(cfg), true).list
-	if len(list) == 0 || list[0].View.Plan != "max 20x" || list[0].Request == nil {
+	list := Prepare(context.Background(), cfg, state.Open(cfg), time.Now(), Deps{Creds: func(ctx context.Context, a accounts.Account) string {
+		raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
+		return raw
+	}, Health: ProbeHealth}).rows
+	if len(list) == 0 || list[0].View.Plan != "max 20x" || list[0].request == nil {
 		t.Fatalf("primary did not get a usable file-backed credential: %+v", list)
 	}
 }
@@ -150,7 +150,7 @@ func TestPrepareWith(t *testing.T) {
 		v.Attempt.State != accountstate.AttemptPending {
 		t.Errorf("good: %+v", v)
 	}
-	if good.Request == nil {
+	if good.request == nil {
 		t.Errorf("good not fetch-ready: %+v", good)
 	}
 	if v := byName["bad@x.com"].View; v.Health != accountstate.HealthBadBlob {
@@ -164,7 +164,7 @@ func TestPrepareWith(t *testing.T) {
 	if v := stale.View; v.Health != accountstate.HealthOK || v.Attempt.State != accountstate.AttemptTokenStale {
 		t.Errorf("stale access token misclassified: health=%v attempt=%v", v.Health, v.Attempt.State)
 	}
-	if stale.Request != nil {
+	if stale.request != nil {
 		t.Error("stale token must not be spent on a request")
 	}
 
@@ -241,9 +241,9 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 			auth:  map[string]auth.Status{"": c.oracle},
 		}
 		d := f.run(now)["primary"]
-		if d.View.Health != c.health || d.View.Attempt.State != c.attempt || (d.Request != nil) != c.request {
+		if d.View.Health != c.health || d.View.Attempt.State != c.attempt || (d.request != nil) != c.request {
 			t.Errorf("%s: health %v attempt %v request %v, want %v %v %v", c.name,
-				d.View.Health, d.View.Attempt.State, d.Request != nil, c.health, c.attempt, c.request)
+				d.View.Health, d.View.Attempt.State, d.request != nil, c.health, c.attempt, c.request)
 		}
 	}
 }
@@ -304,4 +304,12 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	if p := render.NewPalette(false).ProvenanceLine(d.View, now.Unix()); p != "" {
 		t.Errorf("a nag was printed over current figures: %q", p)
 	}
+}
+
+// claudeScope is the Claude Code scope under a fixture home, with the
+// primary's name pinned the way the fixtures expect it.
+func claudeScope(home, primary string) config.Scope {
+	s := config.ForHome(home).Claude
+	s.PrimaryName = primary
+	return s
 }

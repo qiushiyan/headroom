@@ -1,0 +1,7 @@
+$ headroom launches --eval -n 0
+exit 2
+--- stdout
+--- stderr
+headroom: error: --eval reads every line — -n does not apply; --since narrows it
+Usage: headroom launches [flags]
+Run "headroom launches --help" for details.

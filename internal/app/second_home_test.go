@@ -17,6 +17,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -32,6 +33,7 @@ type twoHomes struct {
 	owner, steward config.Scope
 	live           map[int]int64
 	refreshes      *int
+	edges          launchop.Deps // a launch's: credentials, the probe, the refresh
 }
 
 // The subscriptions both homes hold, by email; the owner's primary is a
@@ -75,19 +77,19 @@ func newTwoHomes(t *testing.T) *twoHomes {
 	writeJSON(t, steward.LedgerFile(), owner.AccountsRoot+"\n")
 
 	f := &twoHomes{t: t, owner: owner, steward: steward, live: map[int]int64{}, refreshes: new(int)}
-	prevCreds, prevProbe, prevRefresh := placementCreds, pidProbe, startRefresh
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
-	placementCreds = func(accounts.Account) string {
-		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
+	f.edges = launchop.Deps{
+		Creds: func(accounts.Account) string {
+			return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
+		},
+		Probe: func(pid int) (int64, error) {
+			if start, ok := f.live[pid]; ok {
+				return start, nil
+			}
+			return 0, os.ErrNotExist
+		},
+		Refresh: func(config.Scope) error { *f.refreshes++; return nil },
 	}
-	pidProbe = func(pid int) (int64, error) {
-		if start, ok := f.live[pid]; ok {
-			return start, nil
-		}
-		return 0, os.ErrNotExist
-	}
-	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
-	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 
 	for _, s := range []config.Scope{owner, steward} {
 		if err := state.Open(s).Register(time.Now()); err != nil {
@@ -131,15 +133,7 @@ func (f *twoHomes) busy(dir string, pid int) {
 
 func (f *twoHomes) launch(cfg config.Scope, args ...string) launched {
 	f.t.Helper()
-	var out launched
-	prev := execVendor
-	execVendor = func(path, binary string, vendorArgs, environ []string) error {
-		out.called, out.args, out.env = true, vendorArgs, environ
-		return nil
-	}
-	defer func() { execVendor = prev }()
-	out.stderr = captureStderr(f.t, func() { out.code = runLaunch(cfg, args) })
-	return out
+	return launchOn(f.t, cfg, f.edges, args...)
 }
 
 func (f *twoHomes) log(cfg config.Scope) []launchlog.Record {
@@ -274,10 +268,10 @@ func TestEachSubscriptionIsAskedOncePerSpacingAcrossHomes(t *testing.T) {
 		}
 	}
 
-	if code := runRefresh([]config.Scope{f.steward}); code != 0 {
+	if code := refreshCode(f.steward); code != 0 {
 		t.Fatalf("steward refresh: exit %d", code)
 	}
-	if code := runRefresh([]config.Scope{f.owner}); code != 0 {
+	if code := refreshCode(f.owner); code != 0 {
 		t.Fatalf("owner refresh: exit %d", code)
 	}
 	// Three subscriptions asked once by the second home, with its own logins;
@@ -392,7 +386,7 @@ func TestEachHomesSessionsStayInItsHome(t *testing.T) {
 	}
 
 	ids := func(s config.Scope) []string {
-		listing, _, _ := collectSessions(s, state.Open(s))
+		listing, _, _ := collectSessions(s, state.Open(s), f.edges.Probe)
 		var out []string
 		for _, sess := range listing.Sessions {
 			out = append(out, sess.ID)
@@ -467,14 +461,11 @@ func TestAHomeThatLeftIsNoLongerCounted(t *testing.T) {
 	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 802)
 	counted := func() int {
 		t.Helper()
-		facts := gatherPlacement(accounts.Discover(f.owner), state.Open(f.owner), os.Environ(), true, time.Now())
-		for _, c := range facts.cands {
-			if c.Name == "a@x.com" {
-				return len(c.Busy)
-			}
+		m, ok := placementView(accounts.Discover(f.owner), state.Open(f.owner), time.Now(), f.edges)["a@x.com"]
+		if !ok {
+			t.Fatal("no a@x.com candidate")
 		}
-		t.Fatal("no a@x.com candidate")
-		return -1
+		return m.Load.Busy
 	}
 	if n := counted(); n != 2 {
 		t.Fatalf("while sharing, the owner counts %d of the second home's sessions, want 2", n)
@@ -492,12 +483,11 @@ func TestAHomeThatLeftIsNoLongerCounted(t *testing.T) {
 func TestOneHomesTwoDirsOnOneSubscriptionShareTheirLoad(t *testing.T) {
 	f := newTwoHomes(t)
 	f.busy(f.steward.PrimaryDir(), 901) // the steward's primary is logged into yan@x.com
-	facts := gatherPlacement(accounts.Discover(f.steward), state.Open(f.steward), os.Environ(), true, time.Now())
-	for _, c := range facts.cands {
-		if (c.Name == "yan" || c.Name == "yan@x.com") && len(c.Busy) != 1 {
-			t.Errorf("%s carries %d busy sessions, want the one on its subscription", c.Name, len(c.Busy))
+	for name, m := range placementView(accounts.Discover(f.steward), state.Open(f.steward), time.Now(), f.edges) {
+		if (name == "yan" || name == "yan@x.com") && m.Load.Busy != 1 {
+			t.Errorf("%s carries %d busy sessions, want the one on its subscription", name, m.Load.Busy)
 		}
-		if c.Name == "a@x.com" && len(c.Busy) != 0 {
+		if name == "a@x.com" && m.Load.Busy != 0 {
 			t.Errorf("a@x.com carries another subscription's session")
 		}
 	}
@@ -521,9 +511,9 @@ func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
 	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 951)
 	f.busy(filepath.Join(f.owner.AccountsRoot, "a@x.com"), 952)
 
-	boards := fetchBoards([]config.Scope{f.owner})
-	if boards[0].routing.Mode != "pinned" {
-		t.Fatalf("mode %q", boards[0].routing.Mode)
+	boards := fetchBoards([]config.Scope{f.owner}, BoardDeps{Round: LiveRound(true), Place: f.edges})
+	if boards[0].Routing.Mode != "pinned" {
+		t.Fatalf("mode %q", boards[0].Routing.Mode)
 	}
 	for layout, want := range map[render.Layout][]string{
 		render.LayoutBlocks:  {"sessions: 2 busy (steward-home: 1 busy)", "sessions: 1 launched (steward-home: 1 launched)"},
@@ -595,9 +585,7 @@ func TestDryRunsSayWhoseLoadAndWhoseLast(t *testing.T) {
 	}
 	dry := func(cfg config.Scope, args ...string) string {
 		t.Helper()
-		var out string
-		out = captureStdout(t, func() { f.launch(cfg, append(args, "--dry-run")...) })
-		return out
+		return f.launch(cfg, append(args, "--dry-run")...).stdout
 	}
 	if out := dry(f.steward, "--last"); !strings.Contains(out, "would start claude on b@x.com") {
 		t.Errorf("the second home's last:\n%s", out)
@@ -618,4 +606,10 @@ func firstPath(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// refreshCode is the detached refresh's status over one scope, as the
+// command line reports it.
+func refreshCode(scope config.Scope) int {
+	return call(func(Streams) error { return Refresh([]config.Scope{scope}, LiveRound(false)) }).code
 }

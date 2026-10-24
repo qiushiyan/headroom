@@ -1,0 +1,7 @@
+$ headroom accounts ledger
+exit 0
+--- stdout
+ledger  $BASE/home/.claude-accounts/state.json — this home's own
+homes   1 registered
+  home  $BASE/home/.claude-accounts  this home · primary by its dir · seen 10m ago
+--- stderr

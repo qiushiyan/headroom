@@ -13,111 +13,48 @@ package app
 // claim.
 
 import (
-	"fmt"
-	"io"
-	"os"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/round"
 )
 
-func runLimits(scopes []config.Scope, args []string) int {
-	return runLimitsTo(os.Stdout, scopes, args)
-}
-
-// runLimitsTo is runLimits with the document's destination injected, so the
-// command — flag policy included — is testable without capturing the process's
-// stdout. Diagnostics still go to stderr: the document stream carries JSON or
-// nothing.
-func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
-	account, accountSet := "", false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--account":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom limits: --account needs a value")
-				return 2
-			}
-			i++
-			account, accountSet = args[i], true
-		default:
-			fmt.Fprintf(os.Stderr, "headroom limits: unknown argument %q\n", args[i])
-			return 2
-		}
-	}
-	if accountSet && account == "" {
-		// Same policy as launch and resolve: "" is not a name, and treating
-		// it as "all accounts" would let a caller's expansion bug silently
-		// widen a one-account question.
-		fmt.Fprintln(os.Stderr, "headroom limits: --account needs a non-empty name")
-		return 2
-	}
-
+// Limits is what is already known about limits, as the board's JSON
+// document, read from disk alone: no health probe, no network, never a
+// request spent. account, when set, keeps the accounts of that name: the same
+// email can be an account of both vendors, and then both answer, each under
+// its own vendor.
+func Limits(std Streams, scopes []config.Scope, account string) error {
+	accountSet := account != ""
 	// Every selected vendor, read from disk alone. --account filters by name
 	// inside them: the same email can be an account of both vendors, and then
 	// both rows answer, each under its own "vendor".
 	now := time.Now()
-	var boards []board
+	var boards []round.View
 	var selectErr error
 	matched := 0
 	for _, scope := range scopes {
-		b := diskBoard(scope, now)
+		r := round.FromDisk(scope, now)
 		if accountSet {
-			a, err := b.set.Select(account)
-			if err != nil {
+			if err := r.Narrow(account); err != nil {
+				// The vendor stays in the document — its `current` is still a
+				// fact — with no account of that name under it.
 				if selectErr == nil {
 					selectErr = err
 				}
-				// The vendor stays in the document — its `current` is still a
-				// fact — with no account of that name under it.
-				b.list = nil
 			} else {
-				b.list = filterAccount(b.list, a.Name)
 				matched++
 			}
 		}
-		boards = append(boards, b)
+		boards = append(boards, r.View())
 	}
 	if accountSet && matched == 0 {
-		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", selectErr)
-		return 1
+		return selectErr
 	}
 	data, err := jsonDocument(boards, now)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", err)
-		return 1
+		return err
 	}
-	w.Write(append(data, '\n'))
-	return 0
-}
-
-// diskBoard is a vendor's board read from disk alone, through accountstate:
-// discovery, `.current`, the newest stored observation and the store's
-// problems. Health is unprobed, no credential is read, and no row carries a
-// candidate, so the document built from it cannot spend a request.
-func diskBoard(scope config.Scope, now time.Time) board {
-	st := state.Open(scope)
-	disk := accountstate.Read(scope, st, now)
-	return board{scope: scope, st: st, set: disk.Set, list: accountList(disk.Accounts), routing: disk.Routing, problems: disk.Store.Problems()}
-}
-
-// accountList holds disk facts as rows, none of them carrying a candidate.
-func accountList(facts []accountstate.Account) []*accountData {
-	list := make([]*accountData, len(facts))
-	for i, a := range facts {
-		list[i] = &accountData{Account: a}
-	}
-	return list
-}
-
-func filterAccount(list []*accountData, name string) []*accountData {
-	out := make([]*accountData, 0, 1)
-	for _, d := range list {
-		if d.Acct.Name == name {
-			out = append(out, d)
-		}
-	}
-	return out
+	_, err = std.Out.Write(append(data, '\n'))
+	return err
 }

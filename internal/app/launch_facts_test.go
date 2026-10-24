@@ -28,7 +28,7 @@ func TestAHeadlessPlacementIgnoresWhatOnlyALaunchNeeds(t *testing.T) {
 	}
 
 	doc, code, errw := f.place("--dry-run")
-	if a := doc.find("a@x.com"); code != exitPlaced || doc.Account != "a@x.com" || !a.Eligible {
+	if a := doc.find("a@x.com"); code != 0 || doc.Account != "a@x.com" || !a.Eligible {
 		t.Fatalf("code %d placed on %q, a@x.com %+v: %s", code, doc.Account, a, errw)
 	}
 }

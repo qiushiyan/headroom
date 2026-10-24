@@ -1,0 +1,7 @@
+$ headroom accounts --compact remove --yes a@x.com
+exit 2
+--- stdout
+--- stderr
+headroom: error: --compact belongs to accounts board, which accounts remove does not run
+Usage: headroom accounts remove [<account>] [flags]
+Run "headroom accounts remove --help" for details.

@@ -2,199 +2,46 @@
 
 Commands, the model behind them, shell integration, configuration and the
 developer loop. The [README](../README.md) is the user-facing story; this is
-the rest. The mental model and the reverse-engineered vendor contracts are in
-[DESIGN.md](../DESIGN.md); the architecture for contributors in
-[CLAUDE.md](../CLAUDE.md).
+the rest. The mental model, the reverse-engineered vendor contracts and the
+code's ownership map are in [DESIGN.md](../DESIGN.md); what a change must
+keep, for contributors, in [AGENTS.md](../AGENTS.md).
 
 ## Commands
 
-`--vendor <claude|codex>` defaults to `claude` on the commands that act on
-one account — `launch`, `resolve`, `accounts add`, `accounts remove` — so an
-invocation without it means Claude Code. `login` is Claude Code only. The commands that report — the
-board, `--json`, `limits`, `launches` — and `refresh` cover every vendor
-present on the machine and take `--vendor` for one. `check` and `sessions` take no `--vendor`. A command
-naming a vendor this machine does not have fails saying so, except
-`accounts add`.
+`headroom --help` lists every command, and `headroom <command> --help` is that
+command's reference: what it does, its flags with their defaults and allowed
+values, what it prints, and its exit codes. The pages are generated from the
+grammar the binary parses, and print whatever the configuration says. What
+holds across commands:
 
-- **`headroom` / `headroom accounts`:** the board. Live limit bars for every
-  account, refreshing itself while it is open; enter pins the account a bare
-  `headroom launch` targets, and `a` turns automatic placement on instead
-  (below). Under auto no row is `← current`: a header line says bare launches
-  are automatic, and `← next` marks the account one would take now from
-  the figures on screen, kept current as time passes. With Codex present the board has a page per
-  vendor: tab switches, each page keeps its own selection and refresh
-  schedule, only the visible page fetches, and enter and `a` record that
-  vendor's routing alone. An account with sessions busy on it or launches
-  made in the last fifteen minutes gets a `sessions:` line — `2 busy, 1
-  launched (steward-home: 1 busy)` names the share of another home that
-  spends against the same ledger (below). Off a terminal it prints one
-  frame — each vendor under a heading when there are two — and exits.
-- **`headroom accounts --compact`:** the same board, one row per account: the
-  email, then one cell per limit window in priority order (Claude Code:
-  all models, 5h session, model-scoped 7d; Codex: the main limit, then code
-  review, then additional limits, longer window first) — the percent in the
-  bar's colour with the time to reset dim beside it (`52% 4.8d`; tenths of an
-  hour under a day, `2.1h`; `not started` for a Codex window nobody has spent
-  against) — then every warning the block would have shown (health, a vendor
-  block, `stale`, provenance, drift, then the sessions and launches on it)
-  at the end of the row. `●` marks the
-  current account (`→` the next one, under auto), a red `!` (and a `dir says …` clause) a dir/login
-  mismatch, a red name an account that cannot be used. On a narrow terminal
-  headings shorten first, then the email; warnings lead the caption so the
-  clip takes explanations before signals. Same keys, same refresh, same enter.
-- **`headroom --json`:** the board as a versioned JSON document (schema 7) —
-  probes and, budget permitting, fetches, for scripts that want a refresh.
-  `accounts[]` is one flat list with a `vendor` on every account; `current`
-  and `mode` are objects keyed by vendor. `mode` is `"pinned"`, `"auto"`, or
-  `""` when `.current` cannot be resolved; under `"auto"` that vendor's
-  `current` is `""` and no account carries `current: true`. Limits carry decoded identity (`kind`, `group`,
-  `model`, and for Codex `feature`, `window_seconds`) and `unstarted`; `usage`
-  carries `allowance` (`unknown` | `allowed` | `blocked` | `bad`) with
-  `allowance_reason` and `blocked_features` when present. Every account
-  carries `load`: `value` (what an automatic launch ranks by), `busy`,
-  `launched` (launches of the last fifteen minutes not yet busy) and `homes`,
-  one entry per home they came from (`home` its accounts root, `label`,
-  `this` for the home the document was made in).
-- **`headroom limits`:** what is already known, as the same JSON document,
-  read from disk alone: no health probe, no network, never spends a request —
-  ~10ms against the board's ~300ms, and no process sample either, so every
-  account's `load` is `null`. `--account <name>` filters by name inside the
-  selected vendors.
-- **`headroom sessions`:** interactive picker over every Claude Code session
-  on the machine; enter resumes in its own project dir on the account that
-  last drove it, `x` resumes on the current account and re-homes it there —
-  under auto, on the least-loaded of the other accounts
-  (`--json` lists instead, with `current` and `mode` as in the board's
-  document: under `"auto"` `current` is `""`, and `mode` is `""` only when
-  `.current` cannot be resolved; `--cd-file <path>` writes the entered dir
-  for the shell). Codex sessions are reached through Codex's own `resume`,
-  below.
-- **`headroom launch`:** exec `claude` — or `codex` under `--vendor codex` —
-  on the decided account, with the child environment built from that
-  decision: an inherited `CLAUDE_CONFIG_DIR`, or for Codex `CODEX_HOME`,
-  `CODEX_SQLITE_HOME`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`, is stripped,
-  never obeyed. Everything after `--` goes to the vendor's binary unchanged.
-  How the launch is spelled decides the account:
-  - bare — what the board recorded: the pinned account, or under auto the
-    least-loaded one;
-  - `--account <name>` — that account, whatever the mode;
-  - `--auto` — this one launch placed automatically, the pin untouched;
-  - `--last` — the account of the newest recorded launch.
-
-  Every launch says on stderr which account it took and why, before the
-  vendor starts: `<account> · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: …)`,
-  `· pinned`, `· named`, `· the last account used`; `load 3 (2 from steward-home)` says how
-  much of it another home put there. A figure that is not a fresh measurement
-  says so: `≥12%` is a lower bound from an observation older than fifteen
-  minutes, `window ended` a window whose reset has passed, `?%` a percent
-  that did not parse. A launch whose placement or log line could not be
-  written still starts, and says so on a second line.
-  `--remember` records the account for later bare launches, or with `--auto`
-  the mode. `--dry-run` prints the choice and one row per account — figures,
-  their age, how long the weekly window has left (`≈` for a renewal
-  projected from its schedule), busy sessions, pending launches, load, why
-  an account was left out — and records, logs and starts nothing. Codex's sessions are shared
-  across its accounts, so `headroom launch --vendor codex --account <other>
-  -- resume` continues one on another account (`-- resume --all` lists every
-  project's).
-- **`headroom launches [-n <count>] [--json]`:** the newest launches from the
-  log, one line each: when, which account, how it was decided, the load and
-  weekly figure it was decided on, how long that week had left, and the
-  runner-up. `--json` emits the records unchanged, one per
-  line, with every account's figures as they were counted.
-- **`headroom launches --eval [--since <7d | 36h | 2026-10-01>] [--json]`:**
-  how automatic placement has done, a column per rule version and one for
-  windows no automatic launch went into: the decisions and how old their
-  figures were, how high the chosen account's session window (and the
-  runner-up's) went after each launch, windows that reached 80% and how long
-  another account had room meanwhile, weekly room that may have renewed
-  unspent (a figure read before a renewal is a lower bound, so the room is
-  an upper one), and every automatic launch replayed through this binary's
-  rule with the choices it would make differently. Time across every account
-  follows, owned by no rule; a home or file that could not be read is named
-  on a `partial:` line. It reads the launch logs of every home on the ledger
-  and the usage log, asks nothing and writes nothing. These are observed
-  outcomes — a replayed choice's window is shown as it was, not as it would
-  have been. A `fault:` line before the table counts the launches this
-  binary's rule decided, whole input on record, that it now decides
-  differently: a line is missing an input the rule reads, or the rule
-  changed without a new name, and that rule's column mixes both. `--json`
-  carries every decision, window and renewal (schema 1); a fault is
-  `replay.fault`.
-- **`headroom refresh`:** asks the usage endpoint about every account that may
-  be asked, stores the answers and prints nothing — the round `--json` runs,
-  without the health probes or the document. An automatic launch leaves one
-  running in the background for the next launch: usually done in a second or
-  two, never past about twelve seconds plus the write; SIGTERM, SIGINT or
-  SIGHUP stop it within a second, with the request it abandoned recorded.
-- **`headroom resolve [<name>]`:** prints the account's
-  name/dir/kind for shell preflight. Under auto a name is required: there is
-  no one account to print.
-- **`headroom accounts add <email> [--share-config[=<dir>]]`:** seed the dir
-  for a new subscription, its session store linked to the machine-global one
-  (`projects/` for Claude Code, `sessions/` for Codex); `--share-config`
-  symlinks a whitelist of the primary's config, or every entry of `<dir>` —
-  never a login, history or session registry (`.credentials.json`,
-  `.claude.json`, `history.jsonl`, `sessions/`), which stay per dir whatever
-  the source holds and are named when skipped.
-  Then log in once: Claude Code — `headroom launch --account <email>` and
-  `/login`; Codex — `headroom launch --vendor codex --account <email> --
-  login`.
-- **`headroom login [<name>…] [--all] [--within <days>] [--dry-run]`:**
-  renews Claude Code logins, one `claude auth login` per account in turn,
-  each approval page opened in the Chrome profile matched to the account's
-  email — the profile signed in to that Google account, or the one named by
-  the email or its local part — and the default browser when none matches.
-  Bare, it renews each login that ends within 7 days (`--within`), has ended,
-  or was never made; names renew exactly those, `--all` every account, so
-  their logins end together. It first prints every account's login end and
-  the profile each chosen one opens in (all `--dry-run` prints), then after
-  each login reads the credential back: `✓` with the new end date, or `✗`
-  when nothing changed or the dir is now logged in as another email. It
-  closes on the earliest end among the logins renewed — when the next pass
-  is due on this machine — and, when any did not take, one `headroom login`
-  command naming just those. Exits 1 when any login did not take. Over ssh from another machine nothing
-  opens on this one: open the printed URL where you are, in a browser signed
-  in as the account, and paste the code it shows. A pasted code shows as you
-  paste it and reaches Claude Code only when it is this sign-in's; one from
-  another page is refused and asked for again, and pasting the same line a
-  second time sends it anyway. An ssh session cannot read
-  the login Keychain until `security unlock-keychain` runs in it, so accounts
-  whose login lives there are marked unreadable and left alone, as is a
-  primary whose logged-in identity cannot be read.
-- **`headroom accounts remove [<email>] [--yes]`:** bare, on a terminal, it
-  offers a picker of the removable accounts; a name nobody answers to gets
-  that list too. Confirms with `y/N`. Refuses while the account has a live
-  session; deletes its Keychain item and its dir, scrubs `.order`, never
-  touches `.current`. Also removes stranded `<name>.lock` debris. Codex
-  accounts are never removed — headroom cannot tell whether a Codex session is
-  running on a home — and the refusal names the directory to delete by hand.
-- **`headroom accounts ledger [<accounts root>]`:** Claude Code only. With a
-  root, this home spends against that root's ledger from now on (it writes
-  `.ledger`; naming this home's own root stops sharing) — for a second home
-  on the machine holding its own logins of the same subscriptions. Either
-  way it registers this home in the ledger and lists the homes registered
-  there.
-- **`headroom check`:** verifies vendor contracts and headroom's own state,
-  for every vendor present (run after a Claude Code or Codex update, or when
-  the board looks wrong). Its `credential[...]` line names the Keychain or
-  `.credentials.json` source and fails when no parseable login exists. It
-  also fails when an account dir's login, history or session registry is a
-  link, when an account dir belongs to two homes sharing a ledger, or when a
-  re-pointed `HEADROOM_HOME` leaves a vendor's primary unlaunchable, and it
-  says when this home's primary is spelled out and which homes share its
-  ledger. Its `retention:` line prints how long the shared session store is
-  kept and fails when accounts sharing it disagree on `cleanupPeriodDays`:
-  every account's cleanup sweep prunes the one store, so the shortest wins.
-  Once a second account shares the store it also fails when any sharing
-  account leaves `cleanupPeriodDays` unset (Claude Code's default is the
-  vendor's to change), and its `settings:` line fails unless every sharing
-  account, the primary included, reads one `settings.json`. A configuration headroom refuses (a relative `HEADROOM_*`
-  override, an unusable `.ledger`) exits 1 with a `config:` FAIL.
-- **`headroom headless mint|place|started|token|forget`:** sessions a headless runner starts itself on per-account setup-tokens, placed by the automatic rule; the caller's contract is `docs/specs/headless.md`.
-- **`headroom version`:** one line, `headroom <commit>[+dirty] <commit time>`
-  — the commit the binary was built from. Answers whatever the environment
-  or the files say.
+- **Which vendor.** Commands that act on one account — `launch`, `resolve`,
+  `accounts add`, `accounts remove` — act on Claude Code unless `--vendor
+  codex` says otherwise, so an invocation without it means what it always
+  meant. Commands that report — the board, `limits`, `launches`, `refresh` —
+  cover every vendor on the machine unless `--vendor` names one. `login`,
+  `sessions` and `headless` are Claude Code only. A command naming a vendor
+  this machine does not have fails saying so, except `accounts add`, which is
+  how the first Codex home comes to exist.
+- **Arguments for the vendor.** `launch` and `sessions` pass their arguments to
+  `claude` (or `codex`) unchanged. headroom's flags come first and end at the
+  first argument or at `--`: `headroom launch fix it` and `headroom launch --
+  --resume <id>` both reach the vendor, and a vendor flag before any argument
+  needs the `--`.
+- **Errors and exit codes.** A failure prints `headroom: error: <what failed>`
+  on stderr and exits 1. Arguments headroom cannot accept also print the
+  command's usage line and exit 2, having run nothing. `check` exits 2 for
+  INCONCLUSIVE, and `headless place` exits 3 when every account it could take
+  is refused. A configuration headroom refuses — a relative `HEADROOM_*`
+  override, an unusable `.ledger` — makes every command except help,
+  `version`, `check` and the retired `resume` exit 1 until it is fixed;
+  `check` reports it as a `config:` FAIL.
+- **The board, three ways.** `headroom`, `headroom board` and `headroom
+  accounts` are the same board; `--compact` draws one row per account and
+  `--json` prints the document after one refresh round. `headroom limits`
+  prints that document from disk alone, for a script or a status line.
+- **The retired `resume`** answers with how to fix the stale shell that called
+  it, on stderr, and exits 2: its stdout was a protocol a stale shell
+  function misread, so the name never comes back with another meaning.
 
 ## How it works
 
@@ -416,10 +263,13 @@ its own; one that names no usable directory refuses every command.
 ## Developing
 
 ```bash
-make check       # vet + tests (race detector on)
+make check       # vet, go fix -diff, the race-enabled suite, gofmt
 make test-pty    # the interactive surface, through a real pty (expect(1))
+make golden      # rewrite the help pages after an intended change; review the diff
+make install     # build into ~/.local/bin, renamed into place
 ```
 
-[CLAUDE.md](../CLAUDE.md) is the architecture; [DESIGN.md](../DESIGN.md) the
-mental model and the reverse-engineered vendor contracts — read it before
-touching parsers, `check`, the session store, or anything Keychain-related.
+[AGENTS.md](../AGENTS.md) is what a change must keep;
+[DESIGN.md](../DESIGN.md) the mental model, the reverse-engineered vendor
+contracts and which package owns what — read it before touching parsers,
+`check`, the session store, or anything Keychain-related.

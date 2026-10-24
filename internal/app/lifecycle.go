@@ -9,13 +9,12 @@ package app
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
@@ -26,50 +25,41 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-func runAccountsAdd(cfg config.Scope, args []string) int {
-	return runAccountsAddTo(os.Stdout, os.Stderr, cfg, args)
+// AddOptions are a new account: its email, and what of a config to link
+// into its dir.
+type AddOptions struct {
+	Email string
+	// ShareConfig links the primary's config (settings, skills, …) into the
+	// new dir; with ShareFrom, every entry of that dir instead.
+	ShareConfig bool
+	ShareFrom   string
 }
 
-func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int {
-	var name string
+// AccountsAdd seeds the dir for a new subscription: its session store linked
+// to the machine-global one, and, when asked, a config linked from another
+// dir. It is the one command that works while a vendor is absent: it is how
+// the first Codex directory comes to exist.
+func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
+	out, name := std.Out, opts.Email
 	opt := accounts.SeedOptions{}
-	for i := range args {
-		a := args[i]
-		switch {
-		case a == "--share-config":
-			// Bare: the primary's config, whitelisted. With a value: that dir,
-			// every entry (a config package holds config and nothing else).
-			opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), accounts.SharedConfigEntries(cfg.Vendor)
-		case strings.HasPrefix(a, "--share-config="):
-			v := strings.TrimPrefix(a, "--share-config=")
-			if v == "" {
-				fmt.Fprintln(errw, "headroom accounts add: --share-config= needs a directory")
-				return 2
+	switch {
+	case opts.ShareFrom != "":
+		// That dir, every entry: a config package holds config and nothing
+		// else.
+		from := opts.ShareFrom
+		if !filepath.IsAbs(from) {
+			if abs, err := filepath.Abs(from); err == nil {
+				from = abs
 			}
-			if !filepath.IsAbs(v) {
-				if abs, err := filepath.Abs(v); err == nil {
-					v = abs
-				}
-			}
-			opt.ShareFrom, opt.ShareNames = v, nil
-		case strings.HasPrefix(a, "-"):
-			fmt.Fprintf(errw, "headroom accounts add: unknown flag %q\n", a)
-			return 2
-		case name != "":
-			fmt.Fprintf(errw, "headroom accounts add: unexpected argument %q\n", a)
-			return 2
-		default:
-			name = a
 		}
-	}
-	if name == "" {
-		fmt.Fprintln(errw, "usage: headroom accounts add [--vendor <claude|codex>] <email> [--share-config[=<dir>]]")
-		return 2
+		opt.ShareFrom, opt.ShareNames = from, nil
+	case opts.ShareConfig:
+		// The primary's config, whitelisted.
+		opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), accounts.SharedConfigEntries(cfg.Vendor)
 	}
 	dir, shared, kept, err := accounts.Seed(cfg, name, opt)
 	if err != nil {
-		fmt.Fprintf(errw, "headroom accounts add: %v\n", err)
-		return 1
+		return err
 	}
 	fmt.Fprintf(out, "seeded %s\n", dir)
 	fmt.Fprintf(out, "  %s → %s (sessions are machine-global)\n", cfg.StoreLink(), cfg.StoreDir())
@@ -100,7 +90,7 @@ func runAccountsAddTo(out, errw io.Writer, cfg config.Scope, args []string) int 
 		fmt.Fprintf(out, "next: %sheadroom launch --account %s   then /login as %s\n", under, name, name)
 	}
 	fmt.Fprintf(out, "      (the board warns if the login does not match the dir name; new accounts sort last until listed in %s)\n", cfg.OrderFile())
-	return 0
+	return nil
 }
 
 // removeDeps are the two edges removal crosses, injected so the command's
@@ -112,47 +102,46 @@ type removeDeps struct {
 	stdin          io.Reader
 	interactive    bool
 	// pick chooses among the removable candidates when the command was
-	// given no name, and confirms the choice; ok=false is a cancel. nil
-	// means the terminal picker.
+	// given no name, and confirms the choice; ok=false is a cancel.
 	pick func(cands []removeCandidate) (name string, ok bool)
 }
 
-func runAccountsRemove(cfg config.Scope, args []string) int {
+// AccountsRemove removes one extra account: its Keychain item and its dir,
+// refused while a session is live on it or its liveness cannot be verified,
+// after a confirmation unless yes. A bare removal on a terminal picks from
+// what is removable. It never touches .current. Codex accounts are never
+// removed: headroom cannot tell whether a codex session is running on a home.
+func AccountsRemove(std Streams, term Terminal, cfg config.Scope, name string, yes bool, probe sessions.PIDProbe) error {
 	if cfg.Vendor == config.Codex {
-		return refuseCodexRemove(os.Stderr, cfg, args)
+		return codexRemoveRefusal(cfg, name)
 	}
-	return runAccountsRemoveTo(os.Stdout, os.Stderr, cfg, args, removeDeps{
-		probe:          pidProbe,
+	return accountsRemove(std, cfg, name, yes, removeDeps{
+		probe:          probe,
 		deleteKeychain: creds.DeleteKeychainItem,
-		stdin:          os.Stdin,
+		stdin:          std.In,
 		// Both ends, as the board requires: the picker draws on stdout and
 		// the y/N prompt is printed there, so a redirected stdout with a
 		// tty stdin would wait on a question nobody can see.
-		interactive: term.IsTerminal(int(os.Stdin.Fd())) && stdoutIsTTY(),
+		interactive: term.In && term.Out,
+		pick: func(cands []removeCandidate) (string, bool) {
+			return pickRemovable(std, term, cands)
+		},
 	})
 }
 
-// refuseCodexRemove is the whole of Codex removal in this version. Claude
+// codexRemoveRefusal is the whole of Codex removal in this version. Claude
 // Code's removal is gated on a live-session registry; Codex has none headroom
 // can read, and an empty read must not pass as proof of inactivity — deleting
 // a home under a running codex orphans its login and its index. So the
 // refusal is decided here, in plain sight, before any of the removal
 // machinery runs, with and without --yes, and it names the directory so the
 // cleanup can be done by hand.
-func refuseCodexRemove(errw io.Writer, cfg config.Scope, args []string) int {
-	name := ""
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") && name == "" {
-			name = a
-		}
-	}
+func codexRemoveRefusal(cfg config.Scope, name string) error {
 	const why = "headroom cannot tell whether a Codex session is running on a home, so it never removes one"
 	if name == "" || name != filepath.Base(name) {
-		fmt.Fprintf(errw, "headroom accounts remove: %s — delete the account's directory under %s by hand once no codex process runs\n", why, cfg.AccountsRoot)
-		return 1
+		return fmt.Errorf("%s — delete the account's directory under %s by hand once no codex process runs", why, cfg.AccountsRoot)
 	}
-	fmt.Fprintf(errw, "headroom accounts remove: %s — delete %s by hand once no codex process runs\n", why, filepath.Join(cfg.AccountsRoot, name))
-	return 1
+	return fmt.Errorf("%s — delete %s by hand once no codex process runs", why, filepath.Join(cfg.AccountsRoot, name))
 }
 
 // removeCandidate is one thing `accounts remove` will accept by name: an
@@ -212,15 +201,15 @@ func (c removeCandidate) describe() string {
 // stays one key away and an unrelated key is ignored rather than read as
 // either answer. ok=true means the user has confirmed. The frame draws in
 // place on stdout like the board and stays on screen.
-func pickRemovable(cands []removeCandidate) (string, bool) {
+func pickRemovable(std Streams, term Terminal, cands []removeCandidate) (string, bool) {
 	t, err := tui.Open()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom accounts remove: %v\n", err)
+		fmt.Fprintf(std.Err, "headroom accounts remove: %v\n", err)
 		return "", false
 	}
 	defer t.Close()
 	p := render.NewPalette(true)
-	fp := &framePrinter{}
+	fp := &framePrinter{out: std.Out, size: term.Size}
 	t.OnClose(fp.finish)
 	sel := 0
 	width := 0
@@ -280,56 +269,36 @@ func pickRemovable(cands []removeCandidate) (string, bool) {
 	return "", false
 }
 
-func listRemovable(w io.Writer, cands []removeCandidate, err error) {
+// removable says what a removal could name: the candidates, or why there
+// are none to name.
+func removable(cands []removeCandidate, err error) string {
 	if err != nil {
-		fmt.Fprintf(w, "headroom accounts remove: %v\n", err)
-		return
+		return err.Error()
 	}
 	if len(cands) == 0 {
-		fmt.Fprintln(w, "nothing to remove: no extra accounts under the accounts root")
-		return
+		return "nothing to remove: no extra accounts under the accounts root"
 	}
-	fmt.Fprintln(w, "removable:")
+	var b strings.Builder
+	b.WriteString("removable:")
 	for _, c := range cands {
-		fmt.Fprintf(w, "  %s  (%s)\n", c.Name, c.describe())
+		fmt.Fprintf(&b, "\n  %s  (%s)", c.Name, c.describe())
 	}
+	return b.String()
 }
 
-func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, deps removeDeps) int {
-	var name string
-	yes := false
-	for _, a := range args {
-		switch {
-		case a == "--yes" || a == "-y":
-			yes = true
-		case strings.HasPrefix(a, "-"):
-			fmt.Fprintf(errw, "headroom accounts remove: unknown flag %q\n", a)
-			return 2
-		case name != "":
-			fmt.Fprintf(errw, "headroom accounts remove: unexpected argument %q\n", a)
-			return 2
-		default:
-			name = a
-		}
-	}
+func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps removeDeps) error {
+	out := std.Out
 	if name == "" {
 		// Bare invocation on a terminal: choose from what is removable.
 		// Off a terminal there is nobody to choose, so it is a usage error
 		// that at least names the choices.
 		cands, err := removeCandidates(cfg)
 		if !deps.interactive || len(cands) == 0 || err != nil {
-			fmt.Fprintln(errw, "usage: headroom accounts remove [<email | name.lock>] [--yes]")
-			listRemovable(errw, cands, err)
-			return 2
+			return usagef("name the account to remove — %s", removable(cands, err))
 		}
-		pick := deps.pick
-		if pick == nil {
-			pick = pickRemovable
-		}
-		chosen, ok := pick(cands)
+		chosen, ok := deps.pick(cands)
 		if !ok {
-			fmt.Fprintln(errw, "aborted")
-			return 1
+			return errors.New("aborted")
 		}
 		name = chosen
 		// The picker confirmed; from here the path is --yes's: every
@@ -347,24 +316,20 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 		}
 	}
 	if target != nil && target.IsPrimary() {
-		fmt.Fprintf(errw, "headroom accounts remove: %q is the primary ~/.claude — Claude Code's own default dir is never removed by headroom\n", name)
-		return 1
+		return fmt.Errorf("%q is the primary ~/.claude — Claude Code's own default dir is never removed by headroom", name)
 	}
 	dir := filepath.Join(cfg.AccountsRoot, name)
 	// A name nothing answers to — a typo, or an account already gone — gets
 	// the list of what would have worked, not just a missing-path error.
 	if _, err := os.Lstat(dir); err != nil && os.IsNotExist(err) {
-		fmt.Fprintf(errw, "headroom accounts remove: no account named %q\n", name)
 		cands, err := removeCandidates(cfg)
-		listRemovable(errw, cands, err)
-		return 1
+		return fmt.Errorf("no account named %q — %s", name, removable(cands, err))
 	}
 	// Every filesystem refusal RemoveDir will make, before anything else —
 	// including the one that guards data: a real projects/ directory holds
 	// sessions never migrated into the store.
 	if err := accounts.CheckRemovable(cfg, name); err != nil {
-		fmt.Fprintf(errw, "headroom accounts remove: %v\n", err)
-		return 1
+		return err
 	}
 
 	// Gate: a session this dir is driving right now. Same rule as the
@@ -372,27 +337,24 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 	// deleting a config dir under a running claude orphans its login state.
 	// Strict read: a registry file that does not parse, or a sessions/ dir
 	// that cannot be listed, is "could not verify", not "nothing there".
-	gate := func() bool {
+	gate := func() error {
 		reg := sessions.ReadRegistry(name, dir)
 		if len(reg.Problems) > 0 {
-			fmt.Fprintf(errw, "headroom accounts remove: %s: live-session registry unreadable (%v) — refusing while liveness cannot be verified\n", name, reg.Problems)
-			return false
+			return fmt.Errorf("%s: live-session registry unreadable (%v) — refusing while liveness cannot be verified", name, reg.Problems)
 		}
 		claims, _ := sessions.InspectClaims(reg.Entries, deps.probe)
 		for id, evidence := range claims {
 			switch evidence.State {
 			case sessions.Live:
-				fmt.Fprintf(errw, "headroom accounts remove: %s has a live session (%s) — quit it first\n", name, id)
-				return false
+				return fmt.Errorf("%s has a live session (%s) — quit it first", name, id)
 			case sessions.LiveUnknown:
-				fmt.Fprintf(errw, "headroom accounts remove: %s has a registered session (%s) whose liveness could not be verified — quit any claude on this account and retry\n", name, id)
-				return false
+				return fmt.Errorf("%s has a registered session (%s) whose liveness could not be verified — quit any claude on this account and retry", name, id)
 			}
 		}
-		return true
+		return nil
 	}
-	if !gate() {
-		return 1
+	if err := gate(); err != nil {
+		return err
 	}
 
 	login := ""
@@ -401,8 +363,7 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 	}
 	if !yes {
 		if !deps.interactive {
-			fmt.Fprintln(errw, "headroom accounts remove: refusing without confirmation off a terminal — pass --yes")
-			return 2
+			return usagef("refusing without confirmation off a terminal — pass --yes")
 		}
 		if login != "" {
 			fmt.Fprintf(out, "remove %s (logged in as %s)?\n", name, login)
@@ -415,16 +376,17 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 		switch strings.ToLower(strings.TrimSpace(reply)) {
 		case "y", "yes":
 		default:
-			fmt.Fprintln(errw, "aborted")
-			return 1
+			return errors.New("aborted")
 		}
 	}
 
 	// The prompt may have stayed open for minutes; a session started
 	// meanwhile must refuse the same way. The gate runs again immediately
 	// before the first irreversible step.
-	if !yes && !gate() {
-		return 1
+	if !yes {
+		if err := gate(); err != nil {
+			return err
+		}
 	}
 
 	// Keychain before dir: the service name is derived from the dir's
@@ -433,22 +395,20 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 	deleted, err := deps.deleteKeychain(dir)
 	switch {
 	case err != nil:
-		fmt.Fprintf(errw, "headroom accounts remove: %v — dir left in place\n", err)
-		return 1
+		return fmt.Errorf("%v — dir left in place", err)
 	case deleted:
 		fmt.Fprintf(out, "deleted Keychain item (%s)\n", creds.ServiceName(dir))
 	default:
 		fmt.Fprintf(out, "no Keychain item (%s) — never logged in, or already gone\n", creds.ServiceName(dir))
 	}
 	if err := accounts.RemoveDir(cfg, name); err != nil {
-		fmt.Fprintf(errw, "headroom accounts remove: %v\n", err)
-		return 1
+		return err
 	}
 	fmt.Fprintf(out, "removed %s\n", dir)
 	// A secret for an account that no longer exists is no use to anyone.
 	// (Only Claude Code accounts reach here: Codex removal refuses up front.)
 	if forgot, err := headless.Remove(cfg.AccountsRoot, name); err != nil {
-		fmt.Fprintf(errw, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
+		fmt.Fprintf(std.Err, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
 	} else if forgot {
 		fmt.Fprintln(out, "forgot its headless token — headroom does not revoke it with the vendor")
 	}
@@ -456,5 +416,5 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 	if cur, err := os.ReadFile(cfg.CurrentFile()); err == nil && strings.TrimSpace(string(cur)) == name {
 		fmt.Fprintln(out, "note: .current pointed here — launches refuse until `headroom accounts` repicks")
 	}
-	return 0
+	return nil
 }

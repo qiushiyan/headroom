@@ -25,7 +25,7 @@ func lifecycleConfig(t *testing.T) config.Scope {
 func TestAccountsAddCommand(t *testing.T) {
 	cfg := lifecycleConfig(t)
 	var out, errw bytes.Buffer
-	if code := runAccountsAddTo(&out, &errw, cfg, []string{"a@x.com"}); code != 0 {
+	if code := addTo(&out, &errw, cfg, "a@x.com"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errw.String())
 	}
 	if !strings.Contains(out.String(), "headroom launch --account a@x.com") || !strings.Contains(out.String(), "/login") {
@@ -34,23 +34,17 @@ func TestAccountsAddCommand(t *testing.T) {
 	if err := accounts.VerifyTopology(accounts.Account{Scope: cfg, ConfigDir: filepath.Join(cfg.AccountsRoot, "a@x.com"), Name: "a@x.com"}); err != nil {
 		t.Fatal(err)
 	}
-	// Flag policy: no name, unknown flag, extra arg, empty --share-config=.
-	for _, args := range [][]string{{}, {"a@x.com", "--bogus"}, {"a@x.com", "b@x.com"}, {"b@x.com", "--share-config="}} {
-		errw.Reset()
-		if code := runAccountsAddTo(&out, &errw, cfg, args); code != 2 {
-			t.Errorf("args %v: exit %d, want 2 (%s)", args, code, errw.String())
-		}
-	}
+	// What the flags accept is the command line's: cmd/headroom's TestGrammar.
 	// A seeding failure is exit 1, and says why.
 	errw.Reset()
-	if code := runAccountsAddTo(&out, &errw, cfg, []string{"a@x.com"}); code != 1 || !strings.Contains(errw.String(), "already exists") {
+	if code := addTo(&out, &errw, cfg, "a@x.com"); code != 1 || !strings.Contains(errw.String(), "already exists") {
 		t.Errorf("re-seed: exit %d, %s", code, errw.String())
 	}
 	// Bare --share-config uses the primary's whitelist.
 	os.WriteFile(filepath.Join(cfg.PrimaryDir(), "settings.json"), []byte("{}"), 0o644)
 	os.WriteFile(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), []byte(""), 0o644)
 	out.Reset()
-	if code := runAccountsAddTo(&out, &errw, cfg, []string{"--share-config", "c@x.com"}); code != 0 {
+	if code := addTo(&out, &errw, cfg, "--share-config", "c@x.com"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errw.String())
 	}
 	if !strings.Contains(out.String(), "shared from "+cfg.PrimaryDir()+": settings.json") {
@@ -65,7 +59,7 @@ func TestAccountsAddCommand(t *testing.T) {
 	os.MkdirAll(filepath.Join(pkg, "hooks"), 0o755)
 	os.WriteFile(filepath.Join(pkg, "anything.md"), []byte(""), 0o644)
 	out.Reset()
-	if code := runAccountsAddTo(&out, &errw, cfg, []string{"d@x.com", "--share-config=" + pkg}); code != 0 {
+	if code := addTo(&out, &errw, cfg, "d@x.com", "--share-config="+pkg); code != 0 {
 		t.Fatalf("exit %d: %s", code, errw.String())
 	}
 	if !strings.Contains(out.String(), "anything.md") || !strings.Contains(out.String(), "hooks") {
@@ -75,7 +69,7 @@ func TestAccountsAddCommand(t *testing.T) {
 	os.Chdir(cfg.Home)
 	defer os.Chdir(wd)
 	out.Reset()
-	if code := runAccountsAddTo(&out, &errw, cfg, []string{"e@x.com", "--share-config=pkg"}); code != 0 {
+	if code := addTo(&out, &errw, cfg, "e@x.com", "--share-config=pkg"); code != 0 {
 		t.Fatalf("relative --share-config: exit %d: %s", code, errw.String())
 	}
 	// Compared by identity: t.TempDir lives under /var, which is itself a
@@ -84,34 +78,6 @@ func TestAccountsAddCommand(t *testing.T) {
 	got, err := os.Stat(filepath.Join(cfg.AccountsRoot, "e@x.com", "anything.md"))
 	if err != nil || !os.SameFile(want, got) {
 		t.Errorf("relative share source did not resolve to the package file (%v)", err)
-	}
-}
-
-// The dispatch: `accounts add|remove` route to the lifecycle commands, and
-// the board (`accounts`, bare, `select`) still refuses any argument.
-func TestAccountsDispatch(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HEADROOM_HOME", home)
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
-	t.Setenv("HEADROOM_PRIMARY_NAME", "")
-	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
-	if code := Run([]string{"accounts", "add"}); code != 2 {
-		t.Errorf("accounts add (no name): exit %d, want usage 2", code)
-	}
-	if code := Run([]string{"accounts", "add", "a@x.com"}); code != 0 {
-		t.Errorf("accounts add: exit %d", code)
-	}
-	if _, err := os.Lstat(filepath.Join(home, ".claude-accounts", "a@x.com", "projects")); err != nil {
-		t.Errorf("accounts add did not seed through the dispatch: %v", err)
-	}
-	if code := Run([]string{"accounts", "remove"}); code != 2 {
-		t.Errorf("accounts remove (no name): exit %d, want usage 2", code)
-	}
-	if code := Run([]string{"accounts", "bogus"}); code != 2 {
-		t.Errorf("accounts bogus: exit %d, want 2", code)
-	}
-	if code := Run([]string{"select", "add", "a@x.com"}); code != 2 {
-		t.Errorf("select add: exit %d, want 2 — only `accounts` carries subcommands", code)
 	}
 }
 
@@ -138,9 +104,20 @@ func TestAccountsRemoveCommand(t *testing.T) {
 		interactive:    false,
 	}
 	run := func(d removeDeps, args ...string) int {
+		name, yes := "", false
+		for _, a := range args {
+			if a == "--yes" {
+				yes = true
+			} else {
+				name = a
+			}
+		}
+		r := call(func(std Streams) error { return accountsRemove(std, cfg, name, yes, d) })
 		out.Reset()
 		errw.Reset()
-		return runAccountsRemoveTo(&out, &errw, cfg, args, d)
+		out.WriteString(r.stdout)
+		errw.WriteString(r.stderr)
+		return r.code
 	}
 
 	// The primary refuses by name; a missing dir refuses; flag policy.
@@ -151,7 +128,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 		t.Errorf("missing: exit %d", code)
 	}
 	listed := func(name, state string) bool {
-		for _, l := range strings.Split(errw.String(), "\n") {
+		for l := range strings.SplitSeq(errw.String(), "\n") {
 			if strings.Contains(l, name) && strings.Contains(l, state) {
 				return true
 			}
@@ -164,9 +141,6 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	// A typo names what would have worked.
 	if code := run(deps, "a@x.con", "--yes"); code != 1 || !strings.Contains(errw.String(), `no account named "a@x.con"`) || !strings.Contains(errw.String(), "a@x.com") {
 		t.Errorf("typo: exit %d %s", code, errw.String())
-	}
-	if code := run(deps, "a@x.com", "--bogus"); code != 2 {
-		t.Errorf("bogus flag: exit %d", code)
 	}
 	// Off a terminal without --yes: refuse, touch nothing.
 	if code := run(deps, "a@x.com"); code != 2 || len(keychainCalls) != 0 {
@@ -356,4 +330,24 @@ func TestAccountsRemoveCommand(t *testing.T) {
 		t.Errorf("unreadable root: exit %d %s", code, errw.String())
 	}
 	os.Chmod(cfg.AccountsRoot, 0o755)
+}
+
+// addTo seeds name through the add surface, the way the command line spells
+// its flags: --share-config bare, or --share-config=<dir>.
+func addTo(out, errw *bytes.Buffer, cfg config.Scope, args ...string) int {
+	opts := AddOptions{}
+	for _, a := range args {
+		switch {
+		case a == "--share-config":
+			opts.ShareConfig = true
+		case strings.HasPrefix(a, "--share-config="):
+			opts.ShareConfig, opts.ShareFrom = true, strings.TrimPrefix(a, "--share-config=")
+		default:
+			opts.Email = a
+		}
+	}
+	r := call(func(std Streams) error { return AccountsAdd(std, cfg, opts) })
+	out.WriteString(r.stdout)
+	errw.WriteString(r.stderr)
+	return r.code
 }

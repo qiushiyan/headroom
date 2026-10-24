@@ -1,0 +1,11 @@
+$ headroom launches
+exit 0
+--- stdout
+<mm-dd> <clock>  claude  a@x.com  named             load 0  week  22%, 2.1d left
+<mm-dd> <clock>  claude  a@x.com  named             load 1  week  22%, 2.1d left
+<mm-dd> <clock>  claude  p        pinned            load 1  week  40%, 4.2d left
+<mm-dd> <clock>  claude  a@x.com  auto/least-load   load 2  week  22%, 2.1d left  next p
+<mm-dd> <clock>  codex   c@x.com  named             load 7  week   0%
+<mm-dd> <clock>  codex   q        pinned            load 3  week   0%
+<mm-dd> <clock>  codex   q        pinned            load 4  week   0%
+--- stderr

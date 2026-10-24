@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -29,6 +31,7 @@ type autoFixture struct {
 	st        *state.Store
 	refreshes *int
 	live      map[int]int64 // pid → kernel start, for the registry probe
+	edges     launchop.Deps // the launch path's edges: credentials, the probe, the refresh
 }
 
 const (
@@ -63,20 +66,28 @@ func newAutoFixture(t *testing.T, extras ...string) autoFixture {
 	}
 
 	f := autoFixture{t: t, cfg: cfg, st: state.Open(cfg), refreshes: new(int), live: map[int]int64{}}
-	prevCreds, prevProbe, prevRefresh := placementCreds, pidProbe, startRefresh
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
-	placementCreds = func(accounts.Account) string {
-		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
+	live, refreshes := f.live, f.refreshes
+	f.edges = launchop.Deps{
+		Creds: func(accounts.Account) string {
+			return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
+		},
+		Probe: func(pid int) (int64, error) {
+			if start, ok := live[pid]; ok {
+				return start, nil
+			}
+			return 0, os.ErrNotExist
+		},
+		Refresh: func(config.Scope) error { *refreshes++; return nil },
 	}
-	pidProbe = func(pid int) (int64, error) {
-		if start, ok := f.live[pid]; ok {
-			return start, nil
-		}
-		return 0, os.ErrNotExist
-	}
-	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
-	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 	return f
+}
+
+// placementView is what an automatic launch would count and choose at now,
+// read the way the board's marks are: every account's mark, by name.
+func placementView(set accounts.Set, st *state.Store, now time.Time, place launchop.Deps) map[string]accountstate.Mark {
+	accts, _ := accountstate.Assemble(set, st.Load(), now)
+	return launchop.Mark(set, st, accts, "auto", os.Environ(), now, place).At(now)
 }
 
 func (f autoFixture) key(name string) state.Key {
@@ -124,8 +135,10 @@ func (f autoFixture) setCurrent(content string) {
 type launched struct {
 	code   int
 	called bool
+	binary string
 	args   []string
 	env    []string
+	stdout string
 	stderr string
 }
 
@@ -153,15 +166,16 @@ func (l launched) account(cfg config.Scope) string {
 
 func (f autoFixture) launch(args ...string) launched {
 	f.t.Helper()
-	var out launched
-	prev := execVendor
-	execVendor = func(path, binary string, vendorArgs, environ []string) error {
-		out.called, out.args, out.env = true, vendorArgs, environ
-		return nil
-	}
-	defer func() { execVendor = prev }()
-	out.stderr = captureStderr(f.t, func() { out.code = runLaunch(f.cfg, args) })
-	return out
+	return launchOn(f.t, f.cfg, f.edges, args...)
+}
+
+// launchOn launches on scope through the launch surface, with the exec
+// recorded instead of run.
+func launchOn(t *testing.T, scope config.Scope, place launchop.Deps, args ...string) launched {
+	t.Helper()
+	rec := &execRecord{}
+	r := call(func(std Streams) error { return Launch(std, scope, launchOptions(t, args...), place, rec.exec) })
+	return launched{code: r.code, called: rec.called, binary: rec.binary, args: rec.args, env: rec.env, stdout: r.stdout, stderr: r.stderr}
 }
 
 func (f autoFixture) log() []launchlog.Record {
@@ -236,7 +250,7 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	stale.observe("a@x.com", 0, 0, time.Hour)
 	past := time.Now().Add(-time.Hour).UnixMilli()
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
-	placementCreds = func(accounts.Account) string {
+	stale.edges.Creds = func(accounts.Account) string {
 		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, past, far)
 	}
 	if got := stale.launch(); got.code != 0 {
@@ -372,7 +386,7 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	// Parsed, and names nobody: never logged in.
 	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "out@x.com", ".claude.json"), `{}`)
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
-	placementCreds = func(a accounts.Account) string {
+	f.edges.Creds = func(a accounts.Account) string {
 		refresh := far
 		if a.Name == "expired@x.com" {
 			refresh = time.Now().Add(-time.Hour).UnixMilli()
@@ -537,43 +551,6 @@ func TestUnidentifiedSessionsArePlacedAndNothingIsRecorded(t *testing.T) {
 	}
 }
 
-func TestSessionIntent(t *testing.T) {
-	cases := []struct {
-		args []string
-		want sessionRef
-	}{
-		{nil, sessionRef{}},
-		{[]string{"-p", "hello"}, sessionRef{}},
-		{[]string{"--resume", sessA}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"-r", sessA, "--model", "x"}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"--resume=" + sessA}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"--session-id", sessA}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"--session-id=" + sessA}, sessionRef{Route: sessA, Record: sessA}},
-		// A fork follows the session it forks from and creates another: the
-		// original is never recorded as having moved.
-		{[]string{"--resume", sessA, "--fork-session"}, sessionRef{Route: sessA}},
-		{[]string{"--resume", sessA, "--fork-session", "--session-id", sessB}, sessionRef{Route: sessA}},
-		{[]string{"--continue"}, sessionRef{Unidentified: true}},
-		{[]string{"-c"}, sessionRef{Unidentified: true}},
-		{[]string{"--resume"}, sessionRef{Unidentified: true}},
-		{[]string{"--resume", "a search term"}, sessionRef{Unidentified: true}},
-		{[]string{"--resume="}, sessionRef{}},
-		{[]string{"--resume=term"}, sessionRef{Unidentified: true}},
-		// Conflicting selectors name nothing headroom can stand behind.
-		{[]string{"--continue", "--resume", sessA}, sessionRef{Unidentified: true}},
-		// After a bare `--` everything is the vendor's positional text.
-		{[]string{"--", "--resume", sessA}, sessionRef{}},
-		{[]string{"-p", "--", "--continue"}, sessionRef{}},
-		// A value that merely follows the flag is not thereby a session id.
-		{[]string{"--session-id", "nope"}, sessionRef{}},
-	}
-	for _, c := range cases {
-		if got := sessionIntent(c.args); got != c.want {
-			t.Errorf("%v → %+v, want %+v", c.args, got, c.want)
-		}
-	}
-}
-
 // Degraded bookkeeping costs the launch its record and a line on stderr. It
 // never refuses, and it never writes over what it could not read.
 func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
@@ -696,7 +673,7 @@ func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 	f.observeWeek("qiushi", 0, 5, 6*24*time.Hour, time.Minute)
 	f.observeWeek("a@x.com", 0, 30, 20*time.Hour, time.Minute)
 
-	table := captureStdout(t, func() { f.launch("--dry-run") })
+	table := f.launch("--dry-run").stdout
 	for _, want := range []string{"resets", "→ a@x.com", "20.0h"} {
 		if !strings.Contains(table, want) {
 			t.Errorf("table lacks %q:\n%s", want, table)
@@ -727,7 +704,7 @@ func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
 	f.observeWeek("qiushi", 0, 60, -13*time.Hour, 14*time.Hour)
 	f.observeWeek("a@x.com", 0, 0, 166*time.Hour, time.Minute)
 
-	table := captureStdout(t, func() { f.launch("--dry-run") })
+	table := f.launch("--dry-run").stdout
 	for _, want := range []string{"→ qiushi", "ended", "≈6.5d"} {
 		if !strings.Contains(table, want) {
 			t.Errorf("table lacks %q:\n%s", want, table)
@@ -774,15 +751,8 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	}
 	before, refreshes := read(), *f.refreshes
 
-	r, w, _ := os.Pipe()
-	prev := os.Stdout
-	os.Stdout = w
 	got := f.launch("--dry-run")
-	w.Close()
-	os.Stdout = prev
-	buf := make([]byte, 8192)
-	n, _ := r.Read(buf)
-	table := string(buf[:n])
+	table := got.stdout
 
 	if got.code != 0 || got.called {
 		t.Fatalf("dry run: exit %d called %v", got.code, got.called)
@@ -800,15 +770,13 @@ func TestDryRunHasNoEffects(t *testing.T) {
 			t.Errorf("table lacks %q:\n%s", want, table)
 		}
 	}
-	// It previews whatever the launch would decide, forced included.
-	if got := f.launch("--dry-run", "--remember"); got.code != 2 {
-		t.Errorf("--dry-run --remember: exit %d, want 2", got.code)
-	}
+	// --dry-run --remember is the grammar's refusal: cmd/headroom's TestGrammar.
 	// A launch that would refuse is a dry run that fails: a script asking
 	// "would this launch?" reads the exit status.
 	g := newAutoFixture(t)
 	var refused launched
-	table = captureStdout(t, func() { refused = g.launch("--dry-run", "--last") })
+	refused = g.launch("--dry-run", "--last")
+	table = refused.stdout
 	if refused.code != 1 || refused.called || !strings.Contains(table, "would refuse") {
 		t.Errorf("a dry run that would refuse: exit %d, called %v:\n%s", refused.code, refused.called, table)
 	}
@@ -872,18 +840,8 @@ func TestOverrides(t *testing.T) {
 		t.Errorf("a refused --last left %d placement(s) and %d log line(s) behind", n-recent, m-logged)
 	}
 
-	for _, args := range [][]string{
-		{"--auto", "--last"}, {"--auto", "--account", "a@x.com"}, {"--last", "--account", "a@x.com"}, {"--last", "--remember"},
-		// An explicitly empty --account is a malformed name, not "the recorded
-		// choice": collapsing the two lets a caller's expansion bug launch the
-		// recorded account instead of refusing. Red against the pre-fix binary,
-		// which launched the primary here.
-		{"--account", ""},
-	} {
-		if got := f.launch(args...); got.code != 2 || got.called {
-			t.Errorf("%q: exit %d called %v, want a usage error", args, got.code, got.called)
-		}
-	}
+	// The flag combinations that cannot be decided, and an empty --account,
+	// are the grammar's refusals: cmd/headroom's TestGrammar.
 }
 
 func TestRememberRecordsTheMode(t *testing.T) {
@@ -910,15 +868,14 @@ func TestRememberRecordsTheMode(t *testing.T) {
 	}
 
 	// A failed exec leaves the recorded mode, and says so.
-	prev := execVendor
-	execVendor = func(string, string, []string, []string) error { return os.ErrPermission }
-	t.Cleanup(func() { execVendor = prev })
-	out := captureStderr(t, func() {
-		if code := runLaunch(f.cfg, []string{"--auto", "--remember"}); code != 1 {
-			t.Fatalf("exit %d", code)
-		}
+	rec := &execRecord{err: os.ErrPermission}
+	failed := call(func(std Streams) error {
+		return Launch(std, f.cfg, launchOptions(t, "--auto", "--remember"), f.edges, rec.exec)
 	})
-	if !strings.Contains(out, ".current remains auto") {
+	if failed.code != 1 {
+		t.Fatalf("exit %d", failed.code)
+	}
+	if out := failed.stderr; !strings.Contains(out, ".current remains auto") {
 		t.Errorf("missing persistence explanation: %s", out)
 	}
 
@@ -938,16 +895,15 @@ func TestRememberRecordsTheMode(t *testing.T) {
 func TestResolveRefusesUnderAuto(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
 	f.setCurrent("auto\n")
-	out := captureStderr(t, func() {
-		if code := runResolve(f.cfg, nil); code != 1 {
-			t.Errorf("bare resolve under auto: exit %d, want 1", code)
-		}
-	})
-	if !strings.Contains(out, "--dry-run") {
-		t.Errorf("the refusal does not point to --dry-run: %s", out)
+	bare := call(func(std Streams) error { return Resolve(std, f.cfg, "") })
+	if bare.code != 1 {
+		t.Errorf("bare resolve under auto: exit %d, want 1", bare.code)
 	}
-	if code := runResolve(f.cfg, []string{"a@x.com"}); code != 0 {
-		t.Errorf("a name still resolves: exit %d", code)
+	if !strings.Contains(bare.stderr, "--dry-run") {
+		t.Errorf("the refusal does not point to --dry-run: %s", bare.stderr)
+	}
+	if named := call(func(std Streams) error { return Resolve(std, f.cfg, "a@x.com") }); named.code != 0 {
+		t.Errorf("a name still resolves: exit %d", named.code)
 	}
 }
 
@@ -1012,8 +968,8 @@ func TestRefreshAsksThroughTheClaimAndRecords(t *testing.T) {
 			fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"tok-%s","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, name, far, far))
 	}
 
-	if code := runRefresh([]config.Scope{f.cfg}); code != 0 {
-		t.Fatalf("exit %d", code)
+	if err := Refresh([]config.Scope{f.cfg}, LiveRound(false)); err != nil {
+		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("%d requests, want one per account that can be asked", got)
@@ -1028,8 +984,8 @@ func TestRefreshAsksThroughTheClaimAndRecords(t *testing.T) {
 		t.Error("the unattended round ran the vendor's health probe")
 	}
 
-	if code := runRefresh([]config.Scope{f.cfg}); code != 0 {
-		t.Fatalf("exit %d", code)
+	if err := Refresh([]config.Scope{f.cfg}, LiveRound(false)); err != nil {
+		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 2 {
 		t.Errorf("a second round inside the quiet period made %d more request(s)", got-2)
@@ -1069,13 +1025,13 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 	f.launch("--account", "qiushi")
 	f.launch()
 
-	var out bytes.Buffer
-	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, nil); code != 0 {
-		t.Fatalf("exit %d", code)
+	listed := call(func(std Streams) error { return Launches(std, []config.Scope{f.cfg}, DefaultLaunches, false) })
+	if listed.code != 0 {
+		t.Fatalf("exit %d", listed.code)
 	}
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	lines := strings.Split(strings.TrimSpace(listed.stdout), "\n")
 	if len(lines) != 3 {
-		t.Fatalf("%d lines:\n%s", len(lines), out.String())
+		t.Fatalf("%d lines:\n%s", len(lines), listed.stdout)
 	}
 	if !strings.Contains(lines[0], "a@x.com") || !strings.Contains(lines[0], "auto/least-load") || !strings.Contains(lines[0], "next qiushi") {
 		t.Errorf("first line: %s", lines[0])
@@ -1084,23 +1040,15 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 		t.Errorf("second line: %s", lines[1])
 	}
 
-	out.Reset()
-	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"-n", "1", "--json"}); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
+	newest := call(func(std Streams) error { return Launches(std, []config.Scope{f.cfg}, 1, true) })
 	var rec launchlog.Record
-	if err := json.Unmarshal(out.Bytes(), &rec); err != nil || rec.Mode != "auto" || len(rec.Candidates) != 2 {
-		t.Errorf("--json -n 1: %v\n%s", err, out.String())
+	if err := json.Unmarshal([]byte(newest.stdout), &rec); newest.code != 0 || err != nil || rec.Mode != "auto" || len(rec.Candidates) != 2 {
+		t.Errorf("--json -n 1: exit %d, %v\n%s", newest.code, err, newest.stdout)
 	}
-	for _, args := range [][]string{{"-n"}, {"-n", "many"}, {"--nope"}} {
-		if code := runLaunchesTo(&out, []config.Scope{f.cfg}, args); code != 2 {
-			t.Errorf("%v: exit %d, want 2", args, code)
-		}
-	}
-	out.Reset()
+	// What -n accepts is the command line's (cmd/headroom's TestGrammar).
 	empty := newAutoFixture(t)
-	if code := runLaunchesTo(&out, []config.Scope{empty.cfg}, nil); code != 0 || !strings.Contains(out.String(), "no launches recorded") {
-		t.Errorf("empty log: exit %d, %q", code, out.String())
+	if got := call(func(std Streams) error { return Launches(std, []config.Scope{empty.cfg}, DefaultLaunches, false) }); got.code != 0 || !strings.Contains(got.stdout, "no launches recorded") {
+		t.Errorf("empty log: exit %d, %q", got.code, got.stdout)
 	}
 }
 

@@ -1,4 +1,4 @@
-package app
+package launchop
 
 // How a launch says its choice: the one line every launch prints before the
 // vendor starts, and the dry run's table. Each figure is said as what it rests
@@ -14,6 +14,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 // launchLine is the one line a launch prints before the vendor starts: the
@@ -21,7 +22,7 @@ import (
 // decided on, each said as what it is. automatic says the rule chose; ref and
 // owner are the session the launch is for and the account that last drove it;
 // others is how much of the chosen account's load other homes put there.
-func launchLine(d placement.Decision, automatic bool, ref sessionRef, owner, others string, now time.Time) string {
+func launchLine(d placement.Decision, automatic bool, ref Session, owner, others string, now time.Time) string {
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
@@ -76,11 +77,11 @@ func launchLine(d placement.Decision, automatic bool, ref sessionRef, owner, oth
 // elsewhere says how much of a counted account's busy sessions and recent
 // launches came from homes other than this one, by name: "2 from
 // steward-home". "" when none did.
-func elsewhere(c placement.Counted, home string, labels map[string]string) string {
+func elsewhere(c placement.Counted, home string, labels state.HomeLabels) string {
 	var parts []string
 	for _, sh := range c.Elsewhere(home) {
 		if n := sh.Busy + sh.Pending; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d from %s", n, render.Sanitize(homeLabel(labels, sh.Home))))
+			parts = append(parts, fmt.Sprintf("%d from %s", n, render.Sanitize(labels.Of(sh.Home))))
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -141,7 +142,7 @@ func shortLabel(label string) string {
 // account, with what was counted and why an account was left out. busy and
 // pending count every home sharing the ledger; a note says whose were not
 // this home's.
-func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, home string, labels map[string]string) {
+func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, home string, labels state.HomeLabels) {
 	if d.Chosen == "" {
 		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
 	} else {
@@ -168,21 +169,21 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 		}
 		session, week := "—", "—"
 		if s, ok := c.Session(); ok {
-			session = cell(s.Counted, s.Basis)
+			session = Cell(s.Counted, s.Basis)
 		}
 		if c.Week.Basis != "" {
-			week = cell(c.Week.Counted, c.Week.Basis)
+			week = Cell(c.Week.Counted, c.Week.Basis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, weekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
+			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
 	}
 }
 
-// weekLeft is how long a counted week has left, said as what it rests on: the
+// WeekLeft is how long a counted week has left, said as what it rests on: the
 // vendor's reset as a countdown, a renewal its schedule projects as an
 // approximate one, and "—" for a window counted whole because nothing dates
 // it — there is no instant to print.
-func weekLeft(w placement.Week) string {
+func WeekLeft(w placement.Week) string {
 	switch w.LeftBasis {
 	case placement.TimeReset:
 		return render.Remaining(w.Left)
@@ -193,21 +194,21 @@ func weekLeft(w placement.Week) string {
 	}
 }
 
-// cell is figure for a table column: the same distinctions, in fewer cells.
-func cell(counted int, basis placement.Basis) string {
+// Cell is figure for a table column: the same distinctions, in fewer cells.
+func Cell(counted int, basis placement.Basis) string {
 	if basis == placement.BasisEnded {
 		return "ended"
 	}
 	return figure(counted, basis)
 }
 
-func dryRunNote(c placement.Counted, now time.Time, home string, labels map[string]string) string {
+func dryRunNote(c placement.Counted, now time.Time, home string, labels state.HomeLabels) string {
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
 	}
 	for _, sh := range c.Elsewhere(home) {
-		notes = append(notes, fmt.Sprintf("%s: %d busy, %d pending", render.Sanitize(homeLabel(labels, sh.Home)), sh.Busy, sh.Pending))
+		notes = append(notes, fmt.Sprintf("%s: %d busy, %d pending", render.Sanitize(labels.Of(sh.Home)), sh.Busy, sh.Pending))
 	}
 	if c.NearLimit {
 		notes = append(notes, fmt.Sprintf("near a limit (%s %d%%)", shortLabel(c.HighestLabel), c.Highest))

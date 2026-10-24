@@ -1,0 +1,7 @@
+$ headroom --json sessions
+exit 2
+--- stdout
+--- stderr
+headroom: error: --json belongs to board, which sessions does not run
+Usage: headroom sessions [<args> ...] [flags]
+Run "headroom sessions --help" for details.

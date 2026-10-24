@@ -1,0 +1,12 @@
+$ headroom sessions --json
+exit 0
+--- stdout
+{
+  "schema": 4,
+  "generated_at": "<time>",
+  "current": "p",
+  "mode": "pinned",
+  "local_key": "$BASE/home",
+  "sessions": null
+}
+--- stderr

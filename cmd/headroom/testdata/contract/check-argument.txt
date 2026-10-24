@@ -1,0 +1,7 @@
+$ headroom check extra
+exit 2
+--- stdout
+--- stderr
+headroom: error: unexpected argument extra
+Usage: headroom check [flags]
+Run "headroom check --help" for details.

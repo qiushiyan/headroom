@@ -1,0 +1,16 @@
+Usage: headroom headless token <account> [flags]
+
+Print one account's headless token, and nothing else.
+
+Arguments:
+  <account>        The account whose token to print.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

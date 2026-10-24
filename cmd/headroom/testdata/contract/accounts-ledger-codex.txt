@@ -1,0 +1,7 @@
+$ headroom accounts ledger --vendor codex
+exit 2
+--- stdout
+--- stderr
+headroom: error: only Claude Code homes share a ledger
+Usage: headroom accounts ledger [<root>] [flags]
+Run "headroom accounts ledger --help" for details.

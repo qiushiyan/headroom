@@ -1,0 +1,39 @@
+Usage: headroom sessions [<args> ...] [flags]
+
+Continue any Claude Code session on this machine, on the account that last drove it.
+
+An interactive picker over every Claude Code session on this machine — transcripts are
+machine-global — that enters the chosen session's project dir and continues it, by exec, on
+the account that last drove it. x continues it on the current account instead and records
+the move (under auto, on the least-loaded of the others); r renames, dd deletes; both are
+refused while the session is open. It needs a terminal on stdin and stdout: claude takes
+them over.
+
+--json lists the sessions instead, with no terminal: each one's id, title, project dir,
+branch, owner and whether it is live now, beside "current" and "mode" as in the board's
+document. --cd-file is for a shell wrapper: it is created empty first and holds the entered
+dir only once a session was committed, so the shell can cd there after claude exits.
+
+Arguments go to claude before the picker's own --resume; --resume and --continue are
+refused, since the picker chooses the session.
+
+Arguments:
+  <args> ...            Arguments for claude, before the picker's own --resume; put them after --
+                        (optional; flags are parsed up to its first value; everything after that is
+                        passed on unparsed).
+
+Flags:
+      --json            List the sessions as JSON instead of picking one; takes nothing else.
+      --cd-file=PATH    An absolute path to write the entered project dir to, for the shell's own cd
+                        once claude exits.
+
+Inherited flags:
+  -h, --help            Show context-sensitive help.
+      --version         Print the build this binary is — its commit and the commit's time — and
+                        exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

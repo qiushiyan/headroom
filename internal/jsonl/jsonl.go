@@ -151,7 +151,7 @@ func (l Log) prune(lock *os.File, now time.Time) {
 	cutoff := now.Add(-l.Keep)
 	var kept bytes.Buffer
 	dropped := false
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -191,7 +191,7 @@ func (l Log) due(now time.Time) bool {
 		}
 	}
 	cutoff := now.Add(-l.Keep - l.Slack)
-	for _, line := range bytes.Split(head, []byte("\n")) {
+	for line := range bytes.SplitSeq(head, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -224,7 +224,7 @@ func Read[T any](path string, valid func(T) bool) (records []T, skipped int, err
 		}
 		return nil, 0, err
 	}
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}

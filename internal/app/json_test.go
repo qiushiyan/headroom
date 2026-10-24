@@ -17,7 +17,7 @@ import (
 
 func TestJSONDocument(t *testing.T) {
 	generatedAt := time.Unix(1754121000, 0)
-	list := []*accountData{
+	list := []accountstate.Account{
 		{
 			Acct: accounts.Account{Name: "primary", Email: "p@x.com"},
 			View: accountstate.Facts{
@@ -211,7 +211,7 @@ func TestEveryAttemptStateHasAWireName(t *testing.T) {
 		}
 	}
 	for i := range declared(t, "Source") {
-		if sourceNames[accountstate.Source(i)] == "" {
+		if accountstate.Source(i).Name() == "" {
 			t.Errorf("source %d has no wire name", i)
 		}
 	}

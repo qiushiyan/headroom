@@ -1,0 +1,7 @@
+$ headroom lauch
+exit 2
+--- stdout
+--- stderr
+headroom: error: unexpected argument lauch
+Usage: headroom board [flags]
+Run "headroom board --help" for details.

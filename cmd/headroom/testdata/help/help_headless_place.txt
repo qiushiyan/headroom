@@ -1,0 +1,32 @@
+Usage: headroom headless place [flags]
+
+Decide which account the next headless session spends, and record it.
+
+Decides which account the caller's next headless session spends, records the decision as
+load the person's own launches steer around, and prints it as JSON on stdout:
+  {"schema": 1, "placed": bool, "account", "placement", "reason", "rule", "token_ends_at",
+   "refusal", "retry_at", "notes": [...], "accounts": [{"account", "eligible", "excluded",
+   "near_limit", "room_at", "load", "busy", "pending", "observed_at", "stale",
+   "session", "week"}]}
+It exits 0 placed, and 3 refused — every account it could take is near a limit or
+excluded — with the document saying why and, in retry_at, when room returns (null when
+waiting alone will not help). Report the session's process with headroom headless started
+<placement> <pid>, and fetch the token with headroom headless token <account>.
+
+Flags:
+      --prefer=NAME     The account the session ran on last, followed while it has room so its
+                        prompt cache stays warm.
+      --exclude=NAME    An account not to take — one whose session ended on a usage limit, or whose
+                        token the vendor refused; repeat for more (repeatable).
+      --dry-run         Decide, and record nothing.
+
+Inherited flags:
+  -h, --help            Show context-sensitive help.
+      --version         Print the build this binary is — its commit and the commit's time — and
+                        exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

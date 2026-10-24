@@ -1,0 +1,7 @@
+$ headroom login --dry-run --within -1
+exit 2
+--- stdout
+--- stderr
+headroom: error: --within: expected int value but got "-1" (short flag); perhaps try --within="-1"?
+Usage: headroom login [<account> ...] [flags]
+Run "headroom login --help" for details.

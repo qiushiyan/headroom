@@ -14,19 +14,23 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/codexauth"
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/launchop"
+	"github.com/qiushiyan/headroom/internal/round"
+	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// startRefresh starts one detached refresh round for the scope's vendor and
-// returns at once. The launching process is about to be replaced by the
-// vendor, so it cannot wait for a response — and a request whose answer nobody
-// stays to record would spend the account's budget for nothing. The child is
-// an ordinary headroom running the ordinary round: the claim authorizes, the
+// DetachRefresh starts one detached refresh round for the scope's vendor and
+// returns at once: `headroom refresh --vendor <v>`, an invocation pinned with
+// the callers'. The launching process is about to be replaced by the vendor,
+// so it cannot wait for a response — and a request whose answer nobody stays
+// to record would spend the account's budget for nothing. The child is an
+// ordinary headroom running the ordinary round: the claim authorizes, the
 // completion records, and it has no terminal to disturb.
-var startRefresh = func(scope config.Scope) error {
+func DetachRefresh(scope config.Scope) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -39,33 +43,31 @@ var startRefresh = func(scope config.Scope) error {
 	return cmd.Process.Release()
 }
 
-// refreshWorthStarting reports whether any account could be asked right now:
-// its quiet period has passed and its stored token is usable. The claim still
-// decides; this only keeps a launch from spawning a process that could ask
-// nobody — which, on a machine whose idle accounts' tokens have aged out,
-// would otherwise be every launch. Whether a launch leaves a refresh at all is
-// the launch operation's to decide (a choice the rule made); this is only
-// whether one would find anybody to ask.
-func refreshWorthStarting(f placeFacts, now time.Time) bool {
-	for _, c := range f.cands {
-		if c.askable(now) && !f.snap.NextEligible(c.key, now).After(now) {
-			return true
-		}
+// LivePlace is the edges a placement reads through on this machine: the
+// Keychain (or the credential file), ps(1), and the detached refresh.
+func LivePlace() launchop.Deps {
+	return launchop.Deps{
+		Creds: func(a accounts.Account) string {
+			raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
+			return raw
+		},
+		Probe:   sessions.PS,
+		Refresh: DetachRefresh,
 	}
-	return false
 }
 
-// askable reports whether the account's stored login could carry a usage
-// request right now. For Claude Code that is the credential the placement
-// read, which an unread or unreadable one never is; Codex's is the auth.json
-// snapshot discovery took.
-func (c placeCandidate) askable(now time.Time) bool {
-	a := c.acct
-	if a.Scope.Vendor == config.Codex {
-		return a.Auth.State == codexauth.OK && !a.Auth.TokenStale(now.Unix())
+// LiveRound is the edges a round reads through on this machine: the
+// credential reader and, when probe is set, Claude Code's own health probe
+// (`claude auth status` per account, side by side).
+func LiveRound(probe bool) round.Deps {
+	d := round.Deps{Creds: func(ctx context.Context, a accounts.Account) string {
+		raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
+		return raw
+	}}
+	if probe {
+		d.Health = round.ProbeHealth
 	}
-	blob, ok := creds.Parse(c.cred)
-	return ok && a.Readable && blob.TokenUsable(now.UnixMilli())
+	return d
 }
 
 // refreshDeadline bounds the round a launch leaves behind: the claim, and a
@@ -75,7 +77,7 @@ func (c placeCandidate) askable(now time.Time) bool {
 // so it must be short, and must stop cleanly when told to.
 const refreshDeadline = 12 * time.Second
 
-// runRefresh is the round with nobody watching: ask about every account the
+// Refresh is the round with nobody watching: ask about every account the
 // claim permits, record the answers, print nothing. It is what an automatic
 // launch leaves running behind it.
 //
@@ -88,22 +90,17 @@ const refreshDeadline = 12 * time.Second
 // mid-request, it leaves a claim that simply expires at its spacing: a claim
 // is a reservation with a deadline, which no reader waits on, and the lock
 // dies with the process.
-func runRefresh(scopes []config.Scope) int {
+func Refresh(scopes []config.Scope, deps round.Deps) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, refreshDeadline)
 	defer cancel()
 	var wg sync.WaitGroup
 	for _, scope := range scopes {
-		wg.Add(1)
-		go func(scope config.Scope) {
-			defer wg.Done()
-			st := state.Open(scope)
-			p := prepare(ctx, scope, st, false)
-			for range launchFetches(ctx, p.list, st) {
-			}
-		}(scope)
+		wg.Go(func() {
+			round.Prepare(ctx, scope, state.Open(scope), time.Now(), deps).Complete(ctx)
+		})
 	}
 	wg.Wait()
-	return 0
+	return nil
 }

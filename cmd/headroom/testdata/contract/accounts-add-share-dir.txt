@@ -1,0 +1,9 @@
+$ headroom accounts add --share-config=$BASE/shared-config d@x.com
+exit 0
+--- stdout
+seeded $BASE/home/.claude-accounts/d@x.com
+  projects → $BASE/home/.claude/projects (sessions are machine-global)
+  shared from $BASE/shared-config: skills
+next: HOME=$BASE/home headroom launch --account d@x.com   then /login as d@x.com
+      (the board warns if the login does not match the dir name; new accounts sort last until listed in $BASE/home/.claude-accounts/.order)
+--- stderr

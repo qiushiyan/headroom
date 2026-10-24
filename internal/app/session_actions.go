@@ -3,11 +3,13 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -27,6 +29,14 @@ type sessionActions struct {
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
+
+	// The edges a commit crosses, and where it reports what went wrong after
+	// the picker has closed.
+	place launchop.Deps
+	exec  ExecFunc
+	errw  io.Writer
+	// failed is why a committed launch did not start.
+	failed error
 }
 
 // auto says bare launches choose for themselves: there is then no current
@@ -57,38 +67,41 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	// From here the resume is a launch like any other: one operation decides
 	// the account, records the launch as load and — for the override — the
 	// re-home with it, and logs it. A refusal there has recorded nothing.
-	now := time.Now()
-	req := launchRequest{st: actions.st, intent: intent, mode: "picker", ref: sessionRef{Route: s.ID}, owner: s.Owner, cwd: s.CWD, now: now}
+	req := launchop.Request{
+		Set: actions.set, Store: actions.st, Intent: intent, Mode: "picker",
+		Session: launchop.Session{Route: s.ID}, Owner: s.Owner,
+		CWD: s.CWD, Environ: os.Environ(), Now: time.Now(),
+	}
 	if override {
 		// The override moves the session, so its routing is part of the
 		// launch: written with it, or the launch does not happen.
-		req.ref.Record, req.mustReHome = s.ID, true
+		req.Session.Record, req.MustReHome = s.ID, true
 	}
-	facts := gatherPlacement(actions.set, actions.st, os.Environ(), intent.Kind == placement.Auto, now)
-	out, err := placeLaunch(req, facts)
+	out, err := launchop.Gather(req, actions.place).Commit()
 	if err != nil {
 		return false, err
 	}
 
 	actions.beforeLaunch()
-	out.announce(os.Stderr, "headroom sessions: ")
+	out.Announce(actions.errw, "headroom sessions: ")
 	recorded := ""
 	if override {
-		recorded = "; re-home remains recorded for " + out.account.Name
+		recorded = "; re-home remains recorded for " + out.Account().Name
 	}
 	if err := os.Chdir(s.CWD); err != nil {
 		return true, fmt.Errorf("cd %s: %v%s", s.CWD, err, recorded)
 	}
 	if actions.cdFile != "" {
 		if err := writeCDFile(actions.cdFile, s.CWD); err != nil {
-			fmt.Fprintf(os.Stderr, "headroom sessions: cd file: %v (continuing)\n", err)
+			fmt.Fprintf(actions.errw, "headroom sessions: cd file: %v (continuing)\n", err)
 		}
 	}
 	argv := append(append([]string{}, actions.claudeArgs...), "--resume", s.ID)
 	// The launch surface's exec edge, which execs the path Prepare resolved
 	// before the chdir above — so a relative PATH entry in the project
 	// directory can never supply the binary.
-	if err := execVendor(out.prepared.Path, out.prepared.Binary, argv, envWithPWD(out.prepared.Env, s.CWD)); err != nil {
+	p := out.Prepared()
+	if err := actions.exec(p.Path, p.Binary, argv, envWithPWD(p.Env, s.CWD)); err != nil {
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil
@@ -139,7 +152,7 @@ func accountNamed(set accounts.Set, name string) (accounts.Account, bool) {
 // picker drew must still gate every mutation and the resume refusal. The
 // fresh answer also lands back on the row so the display tells the truth.
 func (actions *sessionActions) liveNow(s *sessions.Session) sessions.LiveState {
-	s.Live = sessions.LiveNow(s.ID, accountRefs(actions.set), pidProbe)
+	s.Live = sessions.LiveNow(s.ID, launchop.Refs(actions.set), actions.place.Probe)
 	return s.Live
 }
 

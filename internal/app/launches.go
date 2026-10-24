@@ -7,81 +7,30 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"sort"
-	"strconv"
-	"time"
+	"strings"
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 )
 
-const defaultLaunches = 20
+// DefaultLaunches is how many of the newest launches the log lists unless
+// asked for another count.
+const DefaultLaunches = 20
 
-func runLaunches(scopes []config.Scope, args []string) int {
-	return runLaunchesTo(os.Stdout, scopes, args)
-}
-
-func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
-	n, jsonMode, evaluate, nSet := defaultLaunches, false, false, false
-	var since time.Time
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonMode = true
-		case "--eval":
-			evaluate = true
-		case "--since":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom launches: --since needs a span or a date")
-				return 2
-			}
-			i++
-			t, err := parseSince(args[i], time.Now())
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-				return 2
-			}
-			since = t
-		case "-n":
-			nSet = true
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom launches: -n needs a count")
-				return 2
-			}
-			i++
-			v, err := strconv.Atoi(args[i])
-			if err != nil || v < 0 {
-				fmt.Fprintf(os.Stderr, "headroom launches: -n %q is not a count\n", args[i])
-				return 2
-			}
-			n = v // 0 = every record
-		default:
-			fmt.Fprintf(os.Stderr, "headroom launches: unknown argument %q\n", args[i])
-			return 2
-		}
-	}
-	switch {
-	case evaluate && nSet:
-		fmt.Fprintln(os.Stderr, "headroom launches: --eval reads every line — -n does not apply; --since narrows it")
-		return 2
-	case !evaluate && !since.IsZero():
-		fmt.Fprintln(os.Stderr, "headroom launches: --since narrows --eval")
-		return 2
-	case evaluate:
-		return runEval(w, scopes, since, jsonMode, time.Now())
-	}
-
+// Launches lists the newest n launches across the vendors' logs, one line
+// each — or every one, when n is 0 — or, with asJSON, one record per line.
+func Launches(std Streams, scopes []config.Scope, n int, asJSON bool) error {
+	w := std.Out
 	var all []launchlog.Record
 	skipped := 0
 	for _, scope := range scopes {
 		recs, bad, err := launchlog.Read(scope.AccountsRoot)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-			return 1
+			return err
 		}
 		all = append(all, recs...)
 		skipped += bad
@@ -93,19 +42,18 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 		all = all[len(all)-n:]
 	}
 
-	if jsonMode {
+	if asJSON {
 		enc := json.NewEncoder(w)
 		for _, r := range all {
 			if err := enc.Encode(r); err != nil {
-				fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-				return 1
+				return err
 			}
 		}
-		return 0
+		return nil
 	}
 	if len(all) == 0 {
 		fmt.Fprintln(w, "no launches recorded yet")
-		return 0
+		return nil
 	}
 	multi := len(scopes) > 1
 	nameW := 0
@@ -116,53 +64,44 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 		fmt.Fprintln(w, launchesLine(r, nameW, multi))
 	}
 	if skipped > 0 {
-		fmt.Fprintf(os.Stderr, "headroom launches: %d unreadable line(s) skipped\n", skipped)
+		fmt.Fprintf(std.Err, "headroom launches: %d unreadable line(s) skipped\n", skipped)
 	}
-	return 0
+	return nil
 }
 
 // launchesLine is one record on one line: when, where, how it was decided, the
 // load it was decided on, and the account that would have been next.
 func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
-	when := logWhen(r.At)
+	when := render.LogWhen(r.At)
 	how := r.Mode
 	if r.Reason != "" && r.Reason != r.Mode {
 		how += "/" + r.Reason
 	}
-	line := when + "  "
+	var line strings.Builder
+	line.WriteString(when + "  ")
 	if vendor {
-		line += render.PadCell(r.Vendor, 6) + "  "
+		line.WriteString(render.PadCell(r.Vendor, 6) + "  ")
 	}
-	line += render.PadCell(render.Sanitize(r.Chosen), nameW) + "  " + render.PadCell(how, 16)
+	line.WriteString(render.PadCell(render.Sanitize(r.Chosen), nameW) + "  " + render.PadCell(how, 16))
 	for _, c := range r.Candidates {
 		if c.Name == r.Chosen {
-			line += fmt.Sprintf("  load %d  week %3d%%", c.Load, c.Weekly)
+			line.WriteString(fmt.Sprintf("  load %d  week %3d%%", c.Load, c.Weekly))
 			// How long that week had left at the launch: what decides
 			// between equally loaded accounts, so a choice of the fuller one
 			// reads as what it was. A record from before the field, or a
 			// window nothing dated, says nothing.
 			week := placement.Week{Left: c.Week.LeftS, LeftBasis: placement.TimeBasis(c.Week.LeftBasis)}
-			if left := weekLeft(week); left != "—" {
-				line += ", " + left + " left"
+			if left := launchop.WeekLeft(week); left != "—" {
+				line.WriteString(", " + left + " left")
 			}
 			break
 		}
 	}
 	if r.RunnerUp != "" {
-		line += "  next " + render.Sanitize(r.RunnerUp)
+		line.WriteString("  next " + render.Sanitize(r.RunnerUp))
 	}
 	if !r.Recorded {
-		line += "  (not recorded)"
+		line.WriteString("  (not recorded)")
 	}
-	return line
-}
-
-// logWhen is one of the logs' RFC3339 instants as both launches surfaces
-// print it: the local date and minute. A time that does not parse is printed
-// as it stands.
-func logWhen(s string) string {
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.Local().Format("01-02 15:04")
-	}
-	return s
+	return line.String()
 }

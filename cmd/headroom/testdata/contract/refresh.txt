@@ -1,0 +1,4 @@
+$ headroom refresh --vendor claude
+exit 0
+--- stdout
+--- stderr

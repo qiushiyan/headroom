@@ -1,0 +1,30 @@
+$ headroom accounts
+exit 0
+--- stdout
+Claude Code
+
+p@x.com (max · headroom launch --account p)  ← current
+  5h session       [██░░░░░░░░░░░░░░░░░░]  12%  resets <clock> (in 2.5h)
+  All models (7d)  [████████░░░░░░░░░░░░]  40%  resets <day> <clock> (in 4.2d)
+  stale · observed 10m ago · access token stale — any headroom launch --account p session refreshes it
+
+a@x.com (max · headroom launch --account a@x.com)
+  5h session       [█░░░░░░░░░░░░░░░░░░░]   3%  resets <clock> (in 3.3h)
+  All models (7d)  [████░░░░░░░░░░░░░░░░]  22%  resets <day> <clock> (in 2.1d)
+  stale · observed 10m ago · access token stale — any headroom launch --account a@x.com session refreshes it
+
+b@x.com (max · headroom launch --account b@x.com)
+  5h session       [█████████████████░░░]  85%  resets <clock> (in 0.5h)
+  All models (7d)  [████████████░░░░░░░░]  61%  resets <day> <clock> (in 5.4d)
+  stale · observed 10m ago · access token stale — any headroom launch --account b@x.com session refreshes it
+
+Codex
+
+q@x.com (plus · headroom launch --vendor codex --account q)  ← current
+  weekly           [██████░░░░░░░░░░░░░░]  30%  resets <day> <clock> (in 3.0d)
+  stale · observed 10m ago · access token stale — any headroom launch --vendor codex --account q session refreshes it
+
+c@x.com (plus · headroom launch --vendor codex --account c@x.com)
+  weekly           [██████████████░░░░░░]  70%  resets <day> <clock> (in 3.0d)
+  stale · observed 10m ago · access token stale — any headroom launch --vendor codex --account c@x.com session refreshes it
+--- stderr

@@ -1,0 +1,17 @@
+Usage: headroom headless started <placement> <pid> [flags]
+
+Report the process a session placed by place runs as, so it counts while it runs.
+
+Arguments:
+  <placement>      The placement id place printed.
+  <pid>            The process the session runs as.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

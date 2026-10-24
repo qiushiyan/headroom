@@ -108,8 +108,8 @@ func TestLabelWidth(t *testing.T) {
 		var cols []int
 		for _, g := range p.Board(views, now, LayoutBlocks, 0).Groups {
 			for _, line := range g {
-				if i := strings.Index(line, "["); i >= 0 {
-					cols = append(cols, Cells(line[:i]))
+				if before, _, ok := strings.Cut(line, "["); ok {
+					cols = append(cols, Cells(before))
 				}
 			}
 		}

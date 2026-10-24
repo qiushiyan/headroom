@@ -141,7 +141,8 @@ macOS is the primary target. Headroom reads Claude Code's Keychain credential
 first, then its `.credentials.json` file when the Keychain cannot supply one
 (including SSH sessions with a locked login Keychain and Linux). Codex's
 login is read from its `auth.json`; a Codex login kept in the keyring store
-shows as not logged in. Go and `golang.org/x/term` only.
+shows as not logged in. Go, `golang.org/x/term`, and clikit with Kong for the
+command line.
 
 ## Set up your accounts
 
@@ -174,8 +175,9 @@ headroom never removes a Codex home: it cannot tell whether a Codex session
 is running on one, so `accounts remove --vendor codex` names the directory to
 delete by hand.
 
-**Shell shortcuts** (`x`, `xa`, `xs`, …) and the full command reference live
-in [docs/REFERENCE.md](docs/REFERENCE.md).
+Every command's reference is `headroom <command> --help`. **Shell shortcuts**
+(`x`, `xa`, `xs`, …) and what holds across commands live in
+[docs/REFERENCE.md](docs/REFERENCE.md).
 
 ## For your agent
 
@@ -199,6 +201,6 @@ own usage screens do and never writes login or quota state. Install it as a read
 instrument you understand, not as a supported product — there are no
 releases; `go install` from source is the distribution.
 
-How it works, every command, configuration, developing:
+How it works, shell integration, configuration, developing:
 [docs/REFERENCE.md](docs/REFERENCE.md) · design and vendor contracts:
 [DESIGN.md](DESIGN.md).

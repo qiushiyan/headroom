@@ -13,7 +13,8 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/refresh"
+	"github.com/qiushiyan/headroom/internal/launchop"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -27,13 +28,16 @@ const presenceWindow = 5 * time.Minute
 // drains — so a result can only ever land on the page that started the round,
 // never on whichever page happens to be visible when it arrives.
 type page struct {
-	// board is the newest round's: the rows on screen, the set they were
+	scope config.Scope
+	st    *state.Store
+	deps  BoardDeps
+	// round is the newest round's: the accounts on screen, the set they were
 	// discovered as and the read of `.current` that marked them — "pinned",
 	// "auto", or "" when the file will not resolve — under the page's scope
-	// and store, which every round keeps.
-	board
+	// and store, which every round keeps. nil until the first round.
+	round *round.Round
 
-	updates <-chan refresh.Result // non-nil while this page's round is in flight
+	updates <-chan round.Result // non-nil while this page's round is in flight
 	sel     int
 	selName string // survives a round that reorders or re-discovers accounts
 	opened  bool   // the first visit has chosen the initial selection
@@ -48,25 +52,34 @@ type page struct {
 
 	// placed is what the last round gathered for the marks, from which every
 	// frame marks again at its own time; nil until a round has marked.
-	placed *placeMark
+	placed *launchop.Marks
 
 	// begin starts a round under the page's scope and store: the local half,
-	// then the claim and whatever fetches it permits. The board it returns
+	// then the claim and whatever fetches it permits. The round it returns
 	// replaces the page's. nil means beginRound; tests inject channels.
-	begin func(ctx context.Context, pg *page) (board, <-chan refresh.Result)
+	begin func(ctx context.Context, pg *page) (*round.Round, <-chan round.Result)
 }
 
 const ackTTL = 4 * time.Second
 
-func newPage(scope config.Scope) *page {
-	return &page{board: board{scope: scope, st: state.Open(scope)}}
+func newPage(scope config.Scope, deps BoardDeps) *page {
+	return &page{scope: scope, st: state.Open(scope), deps: deps}
+}
+
+// accounts is the newest round's accounts, as they stand; none before the
+// first round.
+func (pg *page) accounts() []accountstate.Account {
+	if pg.round == nil {
+		return nil
+	}
+	return pg.round.Accounts()
 }
 
 // receive applies one result of this page's own round, or closes the round
 // out when its channel has drained. Only this receiving path updates facts.
-func (pg *page) receive(u refresh.Result, open bool, now time.Time) {
+func (pg *page) receive(u round.Result, open bool, now time.Time) {
 	if open {
-		resolve(pg.list[u.Index], u)
+		pg.round.Apply(u)
 		return
 	}
 	pg.updates = nil
@@ -97,8 +110,8 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	if begin == nil {
 		begin = beginRound
 	}
-	b, updates := begin(ctx, ui)
-	ui.board = b
+	r, updates := begin(ctx, ui)
+	ui.round = r
 	ui.mark(time.Now())
 	ui.restoreSelection()
 	ui.lastLocal = time.Now()
@@ -110,9 +123,9 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 // beginRound is a round as the picker runs it, under the picker's ctx: the
 // local half with the health probe, then the claim and whatever fetches it
 // permits, against the page's own store.
-func beginRound(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
-	b := prepare(ctx, pg.scope, pg.st, true)
-	return b, launchFetches(ctx, b.list, b.st)
+func beginRound(ctx context.Context, pg *page) (*round.Round, <-chan round.Result) {
+	r := round.Prepare(ctx, pg.scope, pg.st, time.Now(), pg.deps.Round)
+	return r, r.Fetch(ctx)
 }
 
 // mark gathers what the marks are decided from and sets every row's load and,
@@ -121,7 +134,7 @@ func beginRound(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
 // and again when its results have landed. The mode is the round's own reading
 // of `.current`, never a second one.
 func (ui *page) mark(now time.Time) {
-	ui.placed = markPlacement(ui.set, ui.list, ui.routing.Mode, ui.st, now)
+	ui.placed = markBoard(ui.round, now, ui.deps.Place)
 }
 
 // markAt marks the rows again from what the last round gathered, at now. A
@@ -129,7 +142,7 @@ func (ui *page) mark(now time.Time) {
 // alone can change the choice; the frame that shows a mark decides it.
 func (ui *page) markAt(now time.Time) {
 	if ui.placed != nil {
-		ui.placed.mark(ui.list, now)
+		ui.round.Mark(ui.placed.At(now))
 	}
 }
 
@@ -139,7 +152,7 @@ func (ui *page) markAt(now time.Time) {
 // (which account, why) is already on the rows via their attempt captions.
 func (ui *page) ackString(now time.Time) string {
 	var next time.Time
-	for _, d := range ui.list {
+	for _, d := range ui.accounts() {
 		if d.View.Attempt.State == accountstate.AttemptOK || d.View.Attempt.State == accountstate.AttemptNoLimits {
 			continue
 		}
@@ -162,12 +175,15 @@ func (ui *page) ackString(now time.Time) string {
 // configure: sooner is refused by the endpoint's budget, later would leave the
 // board saying less than it could.
 func (ui *page) schedule() {
-	now := time.Now()
-	snap := ui.st.Load()
+	ui.nextAt = nextRound(ui.st.Load(), ui.accounts(), ui.round != nil && ui.round.Asking(), ui.scope.RequestSpacing(), time.Now())
+}
+
+// nextRound is the instant the next round is due, from the store as it now
+// stands: the soonest any account becomes eligible again, never sooner than
+// the floor. asking says the round had anything to ask about.
+func nextRound(snap state.Snapshot, accts []accountstate.Account, asking bool, spacing time.Duration, now time.Time) time.Time {
 	var next time.Time
-	asking := false // the round had anything to ask about
-	for _, d := range ui.list {
-		asking = asking || d.Request != nil
+	for _, d := range accts {
 		if e := snap.NextEligible(d.Key, now); e.After(now) && (next.IsZero() || e.Before(next)) {
 			next = e
 		}
@@ -188,9 +204,9 @@ func (ui *page) schedule() {
 	// otherwise have expired by the time the round came due — a poll scheduled
 	// past its own gate never fires at all.
 	if !asking {
-		next = now.Add(ui.scope.RequestSpacing())
+		next = now.Add(spacing)
 	}
-	ui.nextAt = next
+	return next
 }
 
 // refreshFloor is the minimum spacing between rounds, and it exists for the
@@ -236,12 +252,13 @@ func (ui *page) refresh(ctx context.Context) {
 }
 
 func (ui *page) move(delta int) {
+	accts := ui.accounts()
 	n := ui.sel + delta
-	if n < 0 || n >= len(ui.list) {
+	if n < 0 || n >= len(accts) {
 		return
 	}
 	ui.sel = n
-	ui.selName = ui.list[n].Acct.Name
+	ui.selName = accts[n].Acct.Name
 }
 
 // restoreSelection re-finds the selected account by name. Rediscovery can
@@ -252,14 +269,15 @@ func (ui *page) restoreSelection() {
 	if ui.selName == "" {
 		return
 	}
-	for i, d := range ui.list {
+	accts := ui.accounts()
+	for i, d := range accts {
 		if d.Acct.Name == ui.selName {
 			ui.sel = i
 			return
 		}
 	}
-	if ui.sel >= len(ui.list) {
-		ui.sel = len(ui.list) - 1
+	if ui.sel >= len(accts) {
+		ui.sel = len(accts) - 1
 	}
 	if ui.sel < 0 {
 		ui.sel = 0

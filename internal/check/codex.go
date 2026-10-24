@@ -153,11 +153,9 @@ func checkCodex(scope config.Scope, environ []string, r *report) {
 			}(i, a.ConfigDir)
 		}
 		if err == nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				isolation = probeLogin(bin, empty, environ)
-			}()
+			})
 		}
 		wg.Wait()
 		if err == nil {

@@ -462,6 +462,30 @@ func (s Snapshot) Members() []Member {
 	return out
 }
 
+// HomeLabels names every registered home by accounts root: the home dir's
+// last element ("steward-home" for ~/.steward-home), which is what a person
+// calls it. Read it through Of, which also names a home that has not
+// registered — this one, before its first write.
+func (s Snapshot) HomeLabels() HomeLabels {
+	out := HomeLabels{}
+	for _, m := range s.Members() {
+		out[m.Root] = strings.TrimPrefix(filepath.Base(m.Home), ".")
+	}
+	return out
+}
+
+// HomeLabels maps an accounts root to the name of the home it belongs to.
+type HomeLabels map[string]string
+
+// Of is root's home name: its registered label, or for a home that has not
+// registered, its root's parent.
+func (l HomeLabels) Of(root string) string {
+	if name, ok := l[root]; ok && name != "" {
+		return name
+	}
+	return strings.TrimPrefix(filepath.Base(filepath.Dir(root)), ".")
+}
+
 // OtherHomes is every other home spending against this ledger today: the
 // homes registered in it, resolved by accounts.OtherHomes, which keeps only
 // those whose own .ledger still names it. Their accounts are read for live
@@ -571,10 +595,12 @@ type AuditRecord struct {
 	NextEligibleMS int64
 }
 
-// Audit lists every ledger entry in the document.
+// Audit lists every ledger entry in the document, in key order, so a report
+// built from it reads the same on every run.
 func (s Snapshot) Audit() []AuditRecord {
 	out := make([]AuditRecord, 0, len(s.d.accounts))
-	for id, r := range s.d.accounts {
+	for _, id := range slices.Sorted(maps.Keys(s.d.accounts)) {
+		r := s.d.accounts[id]
 		rec := AuditRecord{
 			ID:             id,
 			Name:           r.Name,

@@ -1,0 +1,6 @@
+$ headroom launches -n 2
+exit 0
+--- stdout
+<mm-dd> <clock>  codex   q  pinned            load 3  week   0%
+<mm-dd> <clock>  codex   q  pinned            load 4  week   0%
+--- stderr

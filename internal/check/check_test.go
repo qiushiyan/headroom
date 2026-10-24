@@ -31,7 +31,7 @@ func testReport() (*report, *strings.Builder) {
 // printed splits what a report printed into its ok, FAIL and ?? lines, each
 // without its marker: "label" for an ok line, "label — hint" otherwise.
 func printed(out *strings.Builder) (oks, fails, skips []string) {
-	for _, l := range strings.Split(out.String(), "\n") {
+	for l := range strings.SplitSeq(out.String(), "\n") {
 		switch {
 		case strings.HasPrefix(l, " ok   "):
 			oks = append(oks, strings.TrimPrefix(l, " ok   "))
@@ -48,7 +48,7 @@ func printed(out *strings.Builder) (oks, fails, skips []string) {
 // by " … ".
 func hasLine(lines []string, want string) bool {
 	return slices.ContainsFunc(lines, func(l string) bool {
-		for _, tok := range strings.Split(want, " … ") {
+		for tok := range strings.SplitSeq(want, " … ") {
 			if !strings.Contains(l, tok) {
 				return false
 			}
@@ -653,7 +653,7 @@ func TestRunJudgesRegistryStatusOverVerifiedLiveSessions(t *testing.T) {
 			var out strings.Builder
 			code := Run(config.Config{Claude: cfg}, &out, false, tc.probe)
 			failed := false
-			for _, line := range strings.Split(out.String(), "\n") {
+			for line := range strings.SplitSeq(out.String(), "\n") {
 				if strings.Contains(line, label) && strings.Contains(line, "FAIL") {
 					failed = true
 				}

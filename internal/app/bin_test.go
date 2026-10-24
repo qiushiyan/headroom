@@ -41,10 +41,6 @@ func TestMain(m *testing.M) {
 	for _, v := range ambient {
 		os.Unsetenv(v)
 	}
-	// A launch under auto leaves a detached refresh behind; in a test binary
-	// that would re-execute the suite. The tests that observe the edge set
-	// their own.
-	startRefresh = func(config.Scope) error { return nil }
 	code := m.Run()
 	if built.dir != "" {
 		os.RemoveAll(built.dir)

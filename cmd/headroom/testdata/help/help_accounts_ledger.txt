@@ -1,0 +1,26 @@
+Usage: headroom accounts ledger [<root>] [flags]
+
+Spend against another home's ledger, and list the homes that share it.
+
+Claude Code only. With a root, this home spends against that accounts root's ledger from
+now on — for a second home on this machine holding its own logins of the same
+subscriptions: both then ask each subscription once per request spacing and count each
+other's sessions and launches. Naming this home's own root stops sharing. Either way it
+registers this home in the ledger and lists the homes registered there.
+
+Arguments:
+  <root>                 The accounts root whose ledger this home spends against; this home's own
+                         stops sharing (optional).
+
+Inherited flags:
+      --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
+                         remove act on it, Claude Code when absent (one of: claude, codex).
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

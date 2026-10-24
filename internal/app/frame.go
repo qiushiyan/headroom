@@ -3,11 +3,8 @@ package app
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
-
-	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/render"
 )
@@ -48,7 +45,7 @@ type framePrinter struct {
 	w      int // width the previous frame was printed at
 	closed bool
 
-	// Test seams; nil means the real stdout terminal.
+	// out is the terminal frames are drawn on, and size its geometry.
 	out  io.Writer
 	size func() (w, h int, err error)
 }
@@ -60,11 +57,7 @@ type framePrinter struct {
 // the assumed geometry is the safety net for a size that goes unreadable
 // mid-session, bounding the damage instead of trusting an unknown screen.
 func (f *framePrinter) geometry() (w, h int) {
-	getSize := f.size
-	if getSize == nil {
-		getSize = func() (int, int, error) { return term.GetSize(int(os.Stdout.Fd())) }
-	}
-	w, h, err := getSize()
+	w, h, err := f.size()
 	if err != nil || w <= 0 || h <= 0 {
 		return assumeWidth, assumeHeight
 	}
@@ -78,9 +71,6 @@ func (f *framePrinter) print(lines []string, width, height int) {
 		return
 	}
 	out := f.out
-	if out == nil {
-		out = os.Stdout
-	}
 	var b strings.Builder
 	// prev counts physical rows, and only these two resizes can change how
 	// many rows the old frame occupies: narrowing rewraps them in a
@@ -142,11 +132,7 @@ func (f *framePrinter) finish() {
 	if f.prev == 0 {
 		return
 	}
-	out := f.out
-	if out == nil {
-		out = os.Stdout
-	}
-	io.WriteString(out, "\r\n")
+	io.WriteString(f.out, "\r\n")
 	f.prev = 0
 }
 

@@ -8,13 +8,12 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -155,21 +154,11 @@ var attemptNames = map[accountstate.AttemptState]string{
 	accountstate.AttemptIdentityUnknown:      "identity_unknown",
 }
 
-// A consumer must be able to tell "this run asked the endpoint" from "a
-// previous run asked and this one replayed the answer" — both are headroom's
-// own reading, but only the first was made now. observed_at already carries
-// the age; source carries who.
-var sourceNames = map[accountstate.Source]string{
-	accountstate.SourceLive:  "live",
-	accountstate.SourceStore: "headroom_cache",
-	accountstate.SourceCache: "claude_cache",
-}
-
 // jsonDocument serializes one board per vendor. Each vendor's `current` and
 // `mode` are its board's routing — the read of `.current` that marked the
 // rows — so the envelope and the per-account flags say one thing even if the
 // file is rewritten while a round is in flight.
-func jsonDocument(boards []board, generatedAt time.Time) ([]byte, error) {
+func jsonDocument(boards []round.View, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
 		// 7: `load` on every account — busy sessions and recent launches,
@@ -188,21 +177,21 @@ func jsonDocument(boards []board, generatedAt time.Time) ([]byte, error) {
 		Accounts:    []jsonAccount{},
 	}
 	for _, b := range boards {
-		doc.Current[string(b.scope.Vendor)] = b.routing.Current
-		doc.Mode[string(b.scope.Vendor)] = b.routing.Mode
-		for _, p := range b.problems {
-			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.scope.Vendor), Section: p.Section, Detail: p.Detail})
+		doc.Current[string(b.Scope.Vendor)] = b.Routing.Current
+		doc.Mode[string(b.Scope.Vendor)] = b.Routing.Mode
+		for _, p := range b.Problems {
+			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.Scope.Vendor), Section: p.Section, Detail: p.Detail})
 		}
 		doc.appendAccounts(b, now)
 	}
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-func (doc *jsonDoc) appendAccounts(b board, now int64) {
-	for _, d := range b.list {
+func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
+	for _, d := range b.Accounts {
 		v := d.View
 		a := jsonAccount{
-			Vendor:      string(b.scope.Vendor),
+			Vendor:      string(b.Scope.Vendor),
 			Name:        d.Acct.Name,
 			Email:       d.Acct.Email,
 			Launcher:    v.Launcher,
@@ -218,7 +207,7 @@ func (doc *jsonDoc) appendAccounts(b board, now int64) {
 			a.Attempt.HTTPStatus = v.Attempt.HTTPCode
 		}
 		if v.Attempt.StoreError != "" {
-			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.scope.Vendor), Section: "request[" + d.Acct.Name + "]", Detail: v.Attempt.StoreError})
+			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.Scope.Vendor), Section: "request[" + d.Acct.Name + "]", Detail: v.Attempt.StoreError})
 		}
 		if v.Attempt.State != accountstate.AttemptOK && v.Attempt.NextEligibleAt > now {
 			ts := time.Unix(v.Attempt.NextEligibleAt, 0).UTC().Format(time.RFC3339)
@@ -234,7 +223,7 @@ func (doc *jsonDoc) appendAccounts(b board, now int64) {
 		if v.Obs != nil {
 			u := &jsonUsage{
 				ObservedAt: time.Unix(v.Obs.ObservedAt, 0).UTC().Format(time.RFC3339),
-				Source:     sourceNames[v.Obs.Source],
+				Source:     v.Obs.Source.Name(),
 				Fresh:      v.Fresh(now),
 
 				Allowance:       v.Obs.Allowance.State.Name(),
@@ -271,32 +260,30 @@ func (doc *jsonDoc) appendAccounts(b board, now int64) {
 
 // fetchBoards runs one full round per scope — prepare, the claim and whatever
 // fetches it permits, then the marks — the rounds side by side: each owns its
-// own board and channel, so the two vendors' results never meet.
-func fetchBoards(scopes []config.Scope) []board {
-	boards := make([]board, len(scopes))
+// own rows and channel, so the two vendors' results never meet.
+func fetchBoards(scopes []config.Scope, deps BoardDeps) []round.View {
+	boards := make([]round.View, len(scopes))
 	var wg sync.WaitGroup
 	for i, scope := range scopes {
-		wg.Add(1)
-		go func(i int, scope config.Scope) {
-			defer wg.Done()
-			b := prepare(context.Background(), scope, state.Open(scope), true)
-			for u := range launchFetches(context.Background(), b.list, b.st) {
-				resolve(b.list[u.Index], u)
-			}
-			markPlacement(b.set, b.list, b.routing.Mode, b.st, time.Now())
-			boards[i] = b
-		}(i, scope)
+		wg.Go(func() {
+			r := round.Prepare(context.Background(), scope, state.Open(scope), time.Now(), deps.Round)
+			r.Complete(context.Background())
+			markBoard(r, time.Now(), deps.Place)
+			boards[i] = r.View()
+		})
 	}
 	wg.Wait()
 	return boards
 }
 
-func runDashboardJSON(scopes []config.Scope) int {
-	data, err := jsonDocument(fetchBoards(scopes), time.Now())
+// BoardJSON is the board as a versioned document: one full round per vendor
+// — probes and, budget permitting, fetches — for scripts that want a
+// refresh.
+func BoardJSON(std Streams, scopes []config.Scope, deps BoardDeps) error {
+	data, err := jsonDocument(fetchBoards(scopes, deps), time.Now())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
-		return 1
+		return err
 	}
-	os.Stdout.Write(append(data, '\n'))
-	return 0
+	_, err = std.Out.Write(append(data, '\n'))
+	return err
 }
