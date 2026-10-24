@@ -131,8 +131,8 @@ func (ui *resumeUI) handle(k tui.Key) (bool, int) {
 		ui.mode = modeNormal
 		if k == (tui.Key{Kind: tui.KeyRune, Rune: 'd'}) && time.Now().Before(ui.deadline) {
 			if s := ui.selected(); s != nil {
-				if ui.liveNow(s) != sessions.NotLive {
-					ui.message = "session is open elsewhere — not deleting"
+				if err := ui.mutable(s, errOpenDelete); err != nil {
+					ui.message = err.Error()
 				} else {
 					ui.mode = modeConfirmD
 				}
@@ -263,11 +263,12 @@ func (ui *resumeUI) startRename() {
 	if s == nil {
 		return
 	}
-	if ui.liveNow(s) != sessions.NotLive {
+	if err := ui.mutable(s, errOpenRename); err != nil {
 		// The vendor's writer may hold this file open; interleaving with a
-		// buffered append could land our record mid-line. The one mutation
-		// exception stays bounded to files nobody else has open.
-		ui.message = "session is open elsewhere — rename there (Ctrl+R)"
+		// buffered append could land our record mid-line. A vendor mutation
+		// stays bounded to files nobody else has open — refused before a
+		// title is typed, not only at the commit.
+		ui.message = err.Error()
 		return
 	}
 	ui.mode = modeRename

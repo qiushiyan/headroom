@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -39,12 +40,12 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if actions.liveNow(s) == sessions.Live {
 		return false, fmt.Errorf("open in another terminal — switch there instead")
 	}
-	if !s.DirOK {
-		return false, fmt.Errorf("project directory is gone — dd deletes the session")
-	}
 	if actions.cdFile != "" && strings.Contains(s.CWD, "\n") {
 		return false, fmt.Errorf("project path contains a newline — not representable in the cd file")
 	}
+	// Asked now, not taken from the listing: a dir gone since it was drawn
+	// refuses, one back since resumes, and an unrecovered cwd ("") fails the
+	// stat like any other missing dir.
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
@@ -174,11 +175,28 @@ func writeCDFile(path, cwd string) error {
 	return f.Close()
 }
 
-// A fresh registry sample gates each vendor mutation, including the commit
-// after the user has spent time editing a title or confirming deletion.
-func (actions *sessionActions) rename(s *sessions.Session, title string) error {
+// The two vendor mutations' refusals while the session may be open, said in
+// the same words by the gate when the key is pressed and by the commit.
+var (
+	errOpenRename = errors.New("session is open elsewhere — rename there (Ctrl+R)")
+	errOpenDelete = errors.New("session is open elsewhere — not deleting")
+)
+
+// mutable is the one gate on r and dd: a fresh registry sample, and refusal
+// unless the session is verifiably not open — the vendor's writer may hold the
+// file, and "could not tell" is not "closed". The picker asks when the key is
+// pressed, and the commit asks again after the user has spent time editing a
+// title or confirming deletion. refusal is the mutation's own word for it.
+func (actions *sessionActions) mutable(s *sessions.Session, refusal error) error {
 	if actions.liveNow(s) != sessions.NotLive {
-		return fmt.Errorf("session is open elsewhere — rename there (Ctrl+R)")
+		return refusal
+	}
+	return nil
+}
+
+func (actions *sessionActions) rename(s *sessions.Session, title string) error {
+	if err := actions.mutable(s, errOpenRename); err != nil {
+		return err
 	}
 	if err := sessions.AppendCustomTitle(s.Path, s.ID, title); err != nil {
 		return fmt.Errorf("rename failed: %w", err)
@@ -187,8 +205,8 @@ func (actions *sessionActions) rename(s *sessions.Session, title string) error {
 }
 
 func (actions *sessionActions) delete(s *sessions.Session) (bool, error) {
-	if actions.liveNow(s) != sessions.NotLive {
-		return false, fmt.Errorf("session is open elsewhere — not deleting")
+	if err := actions.mutable(s, errOpenDelete); err != nil {
+		return false, err
 	}
 	if err := sessions.DeleteTranscript(s); err != nil {
 		return false, fmt.Errorf("delete failed: %w", err)
