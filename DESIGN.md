@@ -1442,10 +1442,7 @@ ledger in its `.ledger` (see A second home).
   reviewed through the golden help pages. Two inputs bypass the grammar.
   `main` hands the `$BROWSER` call to `app.Open` before argv is parsed (see
   Renewing logins), and the retired `resume` is a hidden command that takes
-  anything, `--help` included. A default command's flags (the board's
-  `--compact`, `--json`) parse at its parent's level, so the root refuses one
-  given with another command (`(*CLI).AfterApply`, `cmd/headroom/grammar.go`)
-  rather than letting it drop silently.
+  anything, `--help` included.
 - **Surfaces** are `internal/app`: one typed entry per surface — `Board`,
   `Sessions`, `Launch`, `Login`, `HeadlessPlace`, `AccountsRemove`, … — each
   taking its streams (`Streams`), the terminal facts it reads (`Terminal`,

@@ -2,9 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/alecthomas/kong"
 	"github.com/qiushiyan/clikit"
@@ -35,31 +33,6 @@ type CLI struct {
 func (CLI) Help() string { return rootHelp }
 
 func (CLI) HelpSections() []clikit.Section { return []clikit.Section{configuration} }
-
-// AfterApply refuses a flag that belongs to a default command another
-// command was chosen over. Kong parses a withargs default's flags at its
-// parent's level, so `accounts --compact remove x` would reach remove with
-// --compact silently dropped; refused here, before anything runs, it is the
-// usage error it is.
-func (*CLI) AfterApply(ctx *kong.Context) error {
-	var chosen []*kong.Node // the selected command up to the root
-	for n := ctx.Selected(); n != nil; n = n.Parent {
-		chosen = append(chosen, n)
-	}
-	for _, n := range chosen {
-		d := n.DefaultCmd
-		if d == nil || slices.Contains(chosen, d) {
-			continue
-		}
-		for _, p := range ctx.Path {
-			if p.Flag != nil && slices.Contains(d.Flags, p.Flag) {
-				return clikit.Usage(fmt.Errorf("--%s belongs to %s, which %s does not run", p.Flag.Name,
-					strings.TrimPrefix(d.Path(), ctx.Model.Name+" "), strings.TrimPrefix(ctx.Selected().Path(), ctx.Model.Name+" ")))
-			}
-		}
-	}
-	return nil
-}
 
 // vendorFilter narrows a report to one vendor.
 type vendorFilter struct {

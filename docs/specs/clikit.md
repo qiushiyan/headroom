@@ -1,6 +1,10 @@
 # The command line on clikit
 
-Status: shipped from the `clikit` branch, 2026-10-24; § Owed is what remains.
+Status: shipped from the `clikit` branch, 2026-10-24. clikit v0.5.0 then took
+over two of its workarounds: it refuses a default's flag before another
+command itself (the root hook below is deleted), and reports a mistyped
+command under the root's usage, so difference 6 reads `unexpected argument
+<word>, did you mean "<command>"?` under `Usage: headroom [<command>]`.
 The record of what the migration was built from: what the grammar is, which
 differences callers see, how the code is reshaped around it, and the cases
 that hold it. Written against `main` at dd103a3, clikit v0.4.1 and Kong
@@ -96,7 +100,7 @@ headroom check | version | --version
 5. `select` and `--check` are retired.
 6. A mistyped command reports `unexpected argument <word>` under the board's
    synopsis: Kong hands unknown words to the default command. A clikit release
-   that restates it is a separate change (see Owed).
+   that restates it is a separate change (shipped as v0.5.0; see Status).
 7. Kong's wording for flag conflicts, the reason moving to the command's help;
    and for a negative number given to a flag as its own word: `--within -1`
    and `-n -1` read as a short flag (`expected int value but got "-1" (short
@@ -203,9 +207,3 @@ Planned cases, each a trap the consult named:
   cannot stand in for what a clean checkout builds.
 
 Unless you know better ones.
-
-## Owed
-
-- A clikit release restating the unknown-command error at a `withargs`
-  default, and refusing a default's flags under another command in the engine
-  rather than in each tool; then a `go.mod` bump and the root hook deleted.

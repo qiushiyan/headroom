@@ -360,7 +360,7 @@ func quoteArgs(args []string) string {
 func pinFile(t *testing.T, name, got string) {
 	t.Helper()
 	path := filepath.Join("testdata", "contract", name+".txt")
-	if os.Getenv("HEADROOM_CONTRACT_UPDATE") != "" {
+	if updatePins {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -439,6 +439,10 @@ func headroomBinary(t *testing.T) string {
 // own machine — headroom's variables, the vendors' home and credential
 // variables, a browser, an ssh session — before any test reads it. The
 // contract runs set their environment whole.
+// updatePins is the rewrite switch, read when the package initializes:
+// TestMain clears every HEADROOM_ variable before any test runs.
+var updatePins = os.Getenv("HEADROOM_CONTRACT_UPDATE") != ""
+
 func TestMain(m *testing.M) {
 	ambient := []string{"BROWSER", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"}
 	for _, v := range []config.Vendor{config.Claude, config.Codex} {
