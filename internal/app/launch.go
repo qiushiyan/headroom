@@ -1,15 +1,17 @@
 package app
 
-// The launch surface: resolving "which account" into a running Claude Code
-// process is headroom's job, not the shell's. The wrong-account incident this
-// replaces: the zsh wrapper set CLAUDE_CONFIG_DIR for extra accounts but left
-// the ambient environment alone for the primary, so a tmux server started
-// inside a Claude Code session silently routed every "primary" launch to
-// whatever account that session ran on. Here the child environment is
-// constructed from the validated decision alone (launch.Target), the
-// selection fails closed on corrupt state (accounts.Select), and a
+// The launch surface: resolving "which account" into a running vendor
+// process — Claude Code, or Codex under --vendor codex — is headroom's job,
+// not the shell's. The wrong-account incident this replaces: the zsh wrapper
+// set CLAUDE_CONFIG_DIR for extra accounts but left the ambient environment
+// alone for the primary, so a tmux server started inside a Claude Code session
+// silently routed every "primary" launch to whatever account that session ran
+// on. Here the child environment is constructed from the validated decision
+// alone (launch.Target), a bare launch's routing fails closed on corrupt state
+// (set.Bare) as a named one does on an unknown name (set.Select), and a
 // neutralized ambient value is said out loud — the shell wrappers shrink to
-// personal preflight and flags.
+// personal preflight and flags. This file parses and dispatches; the launch
+// itself is one operation the session picker shares (launch_operation.go).
 
 import (
 	"errors"
