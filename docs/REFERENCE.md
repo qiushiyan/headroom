@@ -64,8 +64,11 @@ naming a vendor this machine does not have fails saying so, except
   on the machine; enter resumes in its own project dir on the account that
   last drove it, `x` resumes on the current account and re-homes it there —
   under auto, on the least-loaded of the other accounts
-  (`--json` lists instead; `--cd-file <path>` writes the entered dir for the
-  shell). Codex sessions are reached through Codex's own `resume`, below.
+  (`--json` lists instead, with `current` and `mode` as in the board's
+  document: under `"auto"` `current` is `""`, and `mode` is `""` only when
+  `.current` cannot be resolved; `--cd-file <path>` writes the entered dir
+  for the shell). Codex sessions are reached through Codex's own `resume`,
+  below.
 - **`headroom launch`:** exec `claude` — or `codex` under `--vendor codex` —
   on the decided account, with the child environment built from that
   decision: an inherited `CLAUDE_CONFIG_DIR`, or for Codex `CODEX_HOME`,
@@ -307,12 +310,6 @@ an account is blocked (a reached limit, spend control), the board says so
 whatever the percentages read, and does not count it as a choice. Only Codex's
 file credential store is read; a keyring login shows as not logged in, and
 `check` says why.
-
-On upgrade, legacy re-homes and outstanding cooldowns are imported into
-`state.json` once, checkpointed before the inputs are archived as `.imported`
-recovery copies. The longest imported cooldown briefly applies to all accounts,
-bounded by 16 minutes. A damaged legacy request ledger waits that full interval;
-unreadable legacy re-homes require repair before migration can commit.
 
 `check` exits 0 for PASS, 1 for failed assertions, or 2 for INCONCLUSIVE.
 Failures identify vendor drift or headroom's own state problems, and name the

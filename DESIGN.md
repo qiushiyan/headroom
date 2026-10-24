@@ -550,24 +550,10 @@ headless runs.
   decision under the ledger's corruption policy or vice versa. `.order` is
   configuration a human edits, comments included.
 
-The upgrade path imports `.owners` and `.throttle` once. Reads preview their
-facts; a locked mutation checkpoints all imported re-homes and cooldowns
-together before attempting archival as `.imported` recovery copies. A failed
-write leaves the inputs available for retry. A crash or failed archive after
-commit leaves the originals inert: the checkpoint ends legacy reads, even
-when the initial import found no legacy files.
-
-Readable re-homes remain available independently of request-ledger damage.
-Unreadable legacy re-homes block checkpointing and mutations until repaired,
-as does a current sessions section into which legacy owners cannot safely
-be merged. This protects human decisions from retirement before preservation.
-A damaged legacy request ledger instead imports one maximum cooldown.
-
-The imported cooldown is a one-time global quiet period, capped at 16 minutes
-when checkpointed. It protects accounts outside the first claim, including
-identities now accessed through a different directory. Other accounts may
-wait too; ordinary per-account scheduling resumes after the deadline.
-Concurrent writers from retired binaries are outside this upgrade contract.
+A `legacy_import` section in an older file is the checkpoint of a retired
+one-time upgrade from `.owners` and `.throttle`; nothing reads it, and like
+any section this binary does not decode it is carried through writes
+untouched.
 
 `internal/refresh` owns the live-request operation for the board and checker:
 credential and identity eligibility, claims, fetches, interpretation and
@@ -1472,7 +1458,7 @@ Operation tests exercise request preparation,
 local HTTP and the real store together, so sent credentials, received facts,
 refusal backoff and persistence are tested through the callers' interface.
 Checker tests use fixture processes and HTTP to verify the final exit verdict.
-Store tests own locking, generations, migration preservation and cooldowns;
+Store tests own locking, generations, carrying sections they cannot read, and cooldowns;
 launch tests own routing, refusal-before-persistence and failure-after-write.
 `login` is tested through its command with the vendor's login injected —
 which accounts a window, names and `--all` choose, what is held back, and a

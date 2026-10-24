@@ -208,9 +208,6 @@ type doc struct {
 	// contention.
 	dirty bool
 
-	imported     *legacyImport
-	migrationErr error
-
 	// corruptDoc means the envelope itself would not decode, so the next write
 	// moves the old bytes aside instead of overwriting them.
 	corruptDoc bool
@@ -221,13 +218,6 @@ type doc struct {
 	unreadable bool
 
 	problems []Problem
-}
-
-// legacyImport is a durable checkpoint and a bounded upgrade quiet period.
-// One global deadline preserves every old name-keyed budget including identities now
-// accessed through a different directory. Once expired it has no effect on request eligibility.
-type legacyImport struct {
-	QuietUntilMS int64 `json:"quiet_until_ms,omitempty"`
 }
 
 func (d *doc) readOnly() bool { return d.version > Version }
@@ -290,9 +280,7 @@ func read(accountsRoot string) *doc {
 				" — nothing is being written until it can be read"})
 			return d
 		}
-		// No document yet: whatever the legacy files hold is the starting
-		// point, and the first write folds them in.
-		d.importLegacy(accountsRoot)
+		// No document yet: an empty store.
 		return d
 	}
 	if err := json.Unmarshal(data, &d.raw); err != nil {
@@ -324,9 +312,9 @@ func read(accountsRoot string) *doc {
 		d.accounts, d.badAccounts = map[string]accountRec{}, true
 		d.problems = append(d.problems, Problem{"accounts", "unreadable — quarantined; the request ledger rebuilds conservatively"})
 	}
-	// Validated whole, exactly as the .owners reader this replaced did: a
-	// section that decodes *around* a hollow record would have check report it
-	// readable while routing silently ignores what it holds.
+	// Validated whole: a section that decodes *around* a hollow record would
+	// have check report it readable while routing silently ignores what it
+	// holds.
 	if !decoded("sessions", &d.sessions) || !validOwners(d.sessions) {
 		d.sessions, d.badSessions = map[string]sessions.OwnerRec{}, true
 		d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
@@ -366,7 +354,6 @@ func read(accountsRoot string) *doc {
 	if d.members == nil {
 		d.members = map[string]Member{}
 	}
-	d.importLegacy(accountsRoot)
 	return d
 }
 
@@ -515,7 +502,7 @@ func (s Snapshot) Observation(k Key, now time.Time) (Observation, bool) {
 //
 // A deadline further out than the maximum cooldown is clamped (see deadline).
 func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
-	if s.d.badAccounts || s.d.readOnly() || s.d.migrationErr != nil {
+	if s.d.badAccounts || s.d.readOnly() {
 		// Nothing here can be trusted to say an account is eligible, and
 		// guessing "eligible" is the guess that generates traffic.
 		return now.Add(ceiling(s.spacing))
@@ -527,16 +514,13 @@ func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
 	return time.UnixMilli(next)
 }
 
-// deadline is when an account may next be asked, in Unix milliseconds: its
-// stored deadline or the imported quiet period, whichever is later. One
-// further out than ceil cannot have been written by this code — a clock
-// stepped forward while a cooldown was live — and is cut to now+ceil with
-// stepped set, so the claim that meets it can write the bound down.
+// deadline is when an account may next be asked, in Unix milliseconds. A
+// stored deadline further out than ceil cannot have been written by this code
+// — a clock stepped forward while a cooldown was live — and is cut to
+// now+ceil with stepped set, so the claim that meets it can write the bound
+// down.
 func (d *doc) deadline(id string, now time.Time, ceil time.Duration) (next int64, stepped bool) {
 	next = d.accounts[id].Request.NextEligibleMS
-	if d.imported != nil && d.imported.QuietUntilMS > next {
-		next = d.imported.QuietUntilMS
-	}
 	if limit := now.Add(ceil).UnixMilli(); next > limit {
 		return limit, true
 	}
@@ -606,9 +590,7 @@ func (s Snapshot) Audit() []AuditRecord {
 }
 
 // validOwners reports that every re-home record is whole. headroom is the only
-// writer of these, so a hollow one is corruption rather than an old shape — and
-// one predicate serves both readers, because the section and the legacy file it
-// absorbs hold the same records under the same rule.
+// writer of these, so a hollow one is corruption rather than an old shape.
 func validOwners(m map[string]sessions.OwnerRec) bool {
 	for id, rec := range m {
 		if id == "" || rec.Account == "" || rec.AtMS <= 0 {
@@ -616,17 +598,6 @@ func validOwners(m map[string]sessions.OwnerRec) bool {
 		}
 	}
 	return true
-}
-
-// mergeOwners folds src into dst newest-wins. Timestamps are event times from
-// one machine's clock on one axis, so comparing them is meaningful — and
-// newest-wins preserves decisions already in the current store during import.
-func mergeOwners(dst, src map[string]sessions.OwnerRec) {
-	for id, rec := range src {
-		if cur, ok := dst[id]; !ok || rec.AtMS > cur.AtMS {
-			dst[id] = rec
-		}
-	}
 }
 
 func (d *doc) marshal() ([]byte, error) {
@@ -639,9 +610,6 @@ func (d *doc) marshal() ([]byte, error) {
 		return nil, err
 	}
 	out["version"] = v
-	if d.imported != nil {
-		out["legacy_import"], _ = json.Marshal(d.imported)
-	}
 	// A section that decoded is written from what it now holds, and one that
 	// is gone — emptied, where its rule says empty means absent — leaves the
 	// file. One that did not decode is not touched: its raw bytes above go
