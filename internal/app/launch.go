@@ -90,9 +90,10 @@ func runResolve(cfg config.Scope, args []string) int {
 //
 // The account is decided one of four ways: named (`--account`), the last one
 // used (`--last`), pinned (`.current` names it) or automatic (`.current` says
-// auto, or `--auto`). Every one of them takes the same path from there —
-// placeLaunch, which the session picker shares: prepare, place, log, announce
-// — so a named launch is recorded as load the automatic ones can see, says
+// auto, or `--auto`). Every one of them takes the same path from there — the
+// facts gathered for a launch, every account prepared, and placeLaunch, which
+// the session picker shares: refuse what is known to refuse, remember, place,
+// log — so a named launch is recorded as load the automatic ones can see, says
 // where it went like any other, and the child environment is built by
 // launch.Prepare from the validated account whichever way it was chosen.
 //
@@ -202,9 +203,13 @@ parse:
 		}
 	}
 
+	cwd, _ := os.Getwd()
+	req := launchRequest{st: st, intent: intent, mode: mode, ref: ref, owner: owner, remember: remember, cwd: cwd, now: now}
 	if dryRun {
-		if c, ok := facts.find(intent.Account); intent.Kind == placement.Forced && ok && c.prepareErr != nil {
-			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", c.prepareErr)
+		// What the launch would refuse before writing anything is said as the
+		// launch says it; what it would decide is the table.
+		if err := preflight(req, facts); err != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 			return 1
 		}
 		d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
@@ -215,35 +220,9 @@ parse:
 		return 0
 	}
 
-	if remember {
-		// Before the placement and before the exec, necessarily — and a
-		// failure refuses the launch: "chosen and recorded" is one step to
-		// the user, and launching on a choice that could not be recorded
-		// would have the next bare `x` go somewhere else. A launch that no
-		// account can take records nothing either.
-		var err error
-		c, found := facts.find(intent.Account)
-		switch {
-		case automatic:
-			if d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now); d.Chosen == "" {
-				fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
-				return 1
-			}
-			err = set.SetAuto()
-		case found && c.prepareErr != nil:
-			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", c.prepareErr)
-			return 1
-		case found:
-			err = set.SetCurrent(c.acct)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launch: could not record .current (%v) — not launching\n", err)
-			return 1
-		}
-	}
-
-	cwd, _ := os.Getwd()
-	out, err := placeLaunch(launchRequest{st: st, intent: intent, mode: mode, ref: ref, owner: owner, cwd: cwd, now: now}, facts)
+	// --remember is written by the operation, after what it would refuse and
+	// before the placement and the exec.
+	out, err := placeLaunch(req, facts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1

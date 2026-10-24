@@ -822,6 +822,14 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	if got := f.launch("--dry-run", "--remember"); got.code != 2 {
 		t.Errorf("--dry-run --remember: exit %d, want 2", got.code)
 	}
+	// A launch that would refuse is a dry run that fails: a script asking
+	// "would this launch?" reads the exit status.
+	g := newAutoFixture(t)
+	var refused launched
+	table = captureStdout(t, func() { refused = g.launch("--dry-run", "--last") })
+	if refused.code != 1 || refused.called || !strings.Contains(table, "would refuse") {
+		t.Errorf("a dry run that would refuse: exit %d, called %v:\n%s", refused.code, refused.called, table)
+	}
 }
 
 func TestOverrides(t *testing.T) {
@@ -857,18 +865,41 @@ func TestOverrides(t *testing.T) {
 		t.Fatalf("--last after an automatic launch went to %s, want %s", got.account(f.cfg), auto.account(f.cfg))
 	}
 	// A removed account is not launched on the strength of an old record.
-	if err := os.RemoveAll(filepath.Join(f.cfg.AccountsRoot, auto.account(f.cfg))); err != nil {
+	f.launch("--account", "a@x.com")
+	if err := os.RemoveAll(filepath.Join(f.cfg.AccountsRoot, "a@x.com")); err != nil {
 		t.Fatal(err)
 	}
-	if auto.account(f.cfg) != "qiushi" {
-		if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no longer a discovered account") {
-			t.Fatalf("--last naming a removed account: %+v", got)
-		}
+	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no longer a discovered account") {
+		t.Fatalf("--last naming a removed account: %+v", got)
+	}
+	// Nor is one that can no longer be launched, and the refusal records
+	// nothing: no load, no log line, no new last account.
+	f.launch("--account", "b@x.com")
+	link := filepath.Join(f.cfg.AccountsRoot, "b@x.com", "projects")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(link, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recent, logged := len(f.st.Load().Placements().Recent), len(f.log())
+	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "cannot be launched") {
+		t.Fatalf("--last onto an account that cannot be launched: %+v", got)
+	}
+	if n, m := len(f.st.Load().Placements().Recent), len(f.log()); n != recent || m != logged {
+		t.Errorf("a refused --last left %d placement(s) and %d log line(s) behind", n-recent, m-logged)
 	}
 
-	for _, args := range [][]string{{"--auto", "--last"}, {"--auto", "--account", "a@x.com"}, {"--last", "--account", "a@x.com"}, {"--last", "--remember"}} {
+	for _, args := range [][]string{
+		{"--auto", "--last"}, {"--auto", "--account", "a@x.com"}, {"--last", "--account", "a@x.com"}, {"--last", "--remember"},
+		// An explicitly empty --account is a malformed name, not "the recorded
+		// choice": collapsing the two lets a caller's expansion bug launch the
+		// recorded account instead of refusing. Red against the pre-fix binary,
+		// which launched the primary here.
+		{"--account", ""},
+	} {
 		if got := f.launch(args...); got.code != 2 || got.called {
-			t.Errorf("%v: exit %d called %v, want a usage error", args, got.code, got.called)
+			t.Errorf("%q: exit %d called %v, want a usage error", args, got.code, got.called)
 		}
 	}
 }
@@ -907,6 +938,18 @@ func TestRememberRecordsTheMode(t *testing.T) {
 	})
 	if !strings.Contains(out, ".current remains auto") {
 		t.Errorf("missing persistence explanation: %s", out)
+	}
+
+	// A launch no account can take records nothing either: the mode it would
+	// have recorded is not written for a launch that never ran.
+	f.setCurrent("a@x.com\n")
+	writeJSON(t, f.cfg.PrimaryMeta(), `{}`)
+	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "a@x.com", ".claude.json"), `{}`)
+	if got := f.launch("--auto", "--remember"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no account can take a launch") {
+		t.Fatalf("--auto --remember with every account excluded: %+v", got)
+	}
+	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "a@x.com\n" {
+		t.Errorf(".current = %q after a refused --auto --remember, want the pin it had", data)
 	}
 }
 

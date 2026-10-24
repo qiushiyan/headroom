@@ -41,6 +41,12 @@ type launchRequest struct {
 	owner      string
 	mustReHome bool
 
+	// remember records the decision in `.current` — the account forced, or
+	// auto — before anything else is written. "Chosen and recorded" is one step
+	// to the person, so a choice that cannot be recorded refuses the launch:
+	// launching anyway would send the next bare launch somewhere else.
+	remember bool
+
 	cwd string
 	now time.Time
 }
@@ -63,11 +69,40 @@ type launchOutcome struct {
 	labels map[string]string
 }
 
-// placeLaunch decides the account, records the launch and whatever it means
-// for the session in one store operation, and appends the log line. An error
-// is a refusal — nothing was recorded and nothing may start. Bookkeeping that
-// merely failed is a note on the outcome, never a refusal: in auto mode every
-// usable account is a correct answer.
+// preflight is every refusal a launch can know before it writes anything, and
+// the one place each is decided: a dry run asks it, and so does placeLaunch
+// before its first write. An account the launch was told to run on — by flag,
+// by pin, or as a session's owner — that cannot be launched at all refuses
+// with its own preparation error, said the way it always was. A launch that
+// records auto as the mode refuses when the rule would choose nobody, since
+// recording it would move every later bare launch on the strength of one that
+// never ran.
+//
+// A forced refusal never reaches the store: Place registers the home, prunes
+// and commits even when its rule refuses, and a launch that cannot start must
+// leave nothing behind. What can still refuse afterwards is the store's own
+// decision under its lock, and a re-home that must be written.
+func preflight(req launchRequest, facts placeFacts) error {
+	if req.intent.Kind == placement.Forced {
+		if c, ok := facts.find(req.intent.Account); ok && c.prepareErr != nil {
+			return c.prepareErr
+		}
+	}
+	if req.remember && req.intent.Kind == placement.Auto {
+		if d := placement.Choose(facts.rule(), facts.snap.Placements(), req.intent, req.now); d.Chosen == "" {
+			return errors.New(d.Refusal)
+		}
+	}
+	return nil
+}
+
+// placeLaunch refuses what preflight refuses, records `.current` when asked
+// to, decides the account and records the launch and whatever it means for
+// the session in one store operation, and appends the log line — in that
+// order, so nothing is written for a launch that is then refused for a reason
+// known before the write. An error is a refusal and nothing may start.
+// Bookkeeping that merely failed is a note on the outcome, never a refusal: in
+// auto mode every usable account is a correct answer.
 //
 // What a launch owes the next one is decided here too, not by the surface:
 // a launch that writes a re-home sweeps the ones whose transcripts are gone,
@@ -77,11 +112,12 @@ type launchOutcome struct {
 func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	out := launchOutcome{req: req}
 	scope := facts.set.Scope
-	if req.intent.Kind == placement.Forced {
-		// The account was named — by flag, by pin, or as a session's owner:
-		// its own preparation error is the answer, said the way it always was.
-		if c, ok := facts.find(req.intent.Account); ok && c.prepareErr != nil {
-			return out, c.prepareErr
+	if err := preflight(req, facts); err != nil {
+		return out, err
+	}
+	if req.remember {
+		if err := rememberChoice(req.intent, facts); err != nil {
+			return out, fmt.Errorf("could not record .current (%v) — not launching", err)
 		}
 	}
 	cands := facts.rule()
@@ -100,23 +136,17 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	if out.decision.Chosen == "" {
 		return out, errors.New(out.decision.Refusal)
 	}
-	chosen, found := facts.find(out.decision.Chosen)
-	if !found || chosen.prepareErr != nil {
-		if found {
-			return out, chosen.prepareErr
-		}
-		return out, fmt.Errorf("%s cannot be launched", out.decision.Chosen)
-	}
+	// The rule chooses no account that cannot be launched — such a candidate
+	// is excluded, and refused by name — so the chosen one was prepared.
+	chosen, _ := facts.find(out.decision.Chosen)
 	out.prepared, out.account = chosen.prepared, chosen.acct
 	out.home, out.labels = facts.home, homeLabels(facts.snap)
 
-	switch {
-	case placeErr != nil:
-		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", placeErr))
-	case placed.RecordErr != nil:
-		// The re-home this launch depended on is written; the shared ledger's
-		// write failed after it.
-		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", placed.RecordErr))
+	// RecordErr: the re-home this launch depended on is written, and the
+	// shared ledger's write failed after it.
+	missed := cmp.Or(placeErr, placed.RecordErr)
+	if missed != nil {
+		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", missed))
 	}
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
@@ -124,8 +154,8 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	rec := launchlog.New(out.decision, cands, placed.Ledger, req.intent, req.now)
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.cwd, req.mode, placed.Recorded
 	rec.Session = req.ref.Route
-	if err := cmp.Or(placeErr, placed.RecordErr); err != nil {
-		rec.Problem = err.Error()
+	if missed != nil {
+		rec.Problem = missed.Error()
 	}
 	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
@@ -135,6 +165,18 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 		_ = startRefresh(scope)
 	}
 	return out, nil
+}
+
+// rememberChoice writes the decision to `.current`: auto, or the account the
+// launch was told to run on.
+func rememberChoice(intent placement.Intent, facts placeFacts) error {
+	if intent.Kind == placement.Auto {
+		return facts.set.SetAuto()
+	}
+	if c, ok := facts.find(intent.Account); ok {
+		return facts.set.SetCurrent(c.acct)
+	}
+	return nil
 }
 
 // announce says, before the vendor starts, where the launch is going and why,

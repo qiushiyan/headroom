@@ -120,42 +120,6 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 	}
 }
 
-// Launch refuses before .current is written: a sessions/ that is not the
-// shared link, and the primary under a re-pointed HEADROOM_HOME.
-func TestCodexLaunchRefusesBeforeRecording(t *testing.T) {
-	scope := codexLaunchFixture(t)
-	_, _, _, called := recordExec(t)
-
-	link := filepath.Join(scope.AccountsRoot, "cx@x.com", "sessions")
-	os.Remove(link)
-	os.MkdirAll(link, 0o755) // a real directory: the history fork
-	stderr := captureStderr(t, func() {
-		if code := runLaunch(scope, []string{"--remember", "--account", "cx@x.com"}); code != 1 {
-			t.Errorf("broken sessions link: exit %d", code)
-		}
-	})
-	if !strings.Contains(stderr, "not launching") || !strings.Contains(stderr, "sessions") {
-		t.Errorf("stderr = %q", stderr)
-	}
-
-	relocated := scope
-	relocated.PrimaryRelocated = true
-	stderr = captureStderr(t, func() {
-		if code := runLaunch(relocated, []string{"--remember", "--account", "primary"}); code != 1 {
-			t.Errorf("relocated primary: exit %d", code)
-		}
-	})
-	if !strings.Contains(stderr, "HEADROOM_HOME") {
-		t.Errorf("stderr = %q", stderr)
-	}
-	if *called {
-		t.Error("exec ran through a refusal")
-	}
-	if _, err := os.Stat(scope.CurrentFile()); err == nil {
-		t.Error(".current was written before the refusal")
-	}
-}
-
 // --remember records Codex's .current, under Codex's root.
 func TestCodexLaunchRemember(t *testing.T) {
 	scope := codexLaunchFixture(t)
