@@ -149,3 +149,46 @@ func (f *framePrinter) finish() {
 	io.WriteString(out, "\r\n")
 	f.prev = 0
 }
+
+// boardWindow decides what a chooser needs most on a screen of h rows: the
+// selected block scrolls into view whole so enter never commits an account
+// the user cannot see; the header (the compact layout's column headings —
+// none in the block layout) and the footer (warnings, refresh state) render
+// whenever a body row can stand beside them; and on a terminal too short for
+// all of it the selection outranks the header, which outranks the footer —
+// a row of figures is unreadable without its headings, and the refresh
+// countdown is the one thing a chooser can do without. Pure so the
+// arithmetic is table-testable.
+func boardWindow(top, selStart, selEnd, bodyLen, headerLen, footerLen, h int) (newTop, view int, keepHeader, keepFooter bool) {
+	switch {
+	case bodyLen+headerLen+footerLen <= h:
+		return 0, bodyLen, true, true
+	case h-headerLen-footerLen >= 1:
+		view := h - headerLen - footerLen
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, true, true
+	case h-headerLen >= 1:
+		view := h - headerLen
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, true, false
+	default:
+		view := min(h, bodyLen)
+		return fitTop(top, selStart, selEnd, bodyLen, view), view, false, false
+	}
+}
+
+// fitTop scrolls the board's viewport to keep the selected block whole in
+// view; when the block itself outgrows the viewport, its first line wins.
+func fitTop(top, selStart, selEnd, total, view int) int {
+	if selEnd > top+view {
+		top = selEnd - view
+	}
+	if selStart < top {
+		top = selStart
+	}
+	if top > total-view {
+		top = total - view
+	}
+	if top < 0 {
+		top = 0
+	}
+	return top
+}
