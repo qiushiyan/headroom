@@ -50,9 +50,10 @@ var codexSlots = []struct{ key, kind string }{
 // everything inside degrades visibly, row by row, and is never dropped.
 func parseCodex(body []byte) (Reading, error) {
 	var top map[string]any
-	if err := json.Unmarshal(body, &top); err != nil || top == nil {
+	if err := json.Unmarshal(body, &top); err != nil {
 		return Reading{}, ErrUnparseable
 	}
+	// A JSON null decodes to a nil map, which has no rate_limit either.
 	main, present := top["rate_limit"]
 	if !present {
 		return Reading{}, ErrUnparseable
@@ -222,18 +223,16 @@ func featureBlocked(limit map[string]any) bool {
 // blocking evidence is never hidden by a malformed sibling field. Codex
 // itself treats spend_control.reached and the workspace values of
 // rate_limit_reached_type as hard stops, which is why they are account-wide.
+//
+// A field is present exactly when its value is not nil: indexing a nil map
+// (a null or absent limit object) yields nil, and a JSON null decodes to nil,
+// so a null counts as absent, as a null window does.
 func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	spend, _ := top["spend_control"].(map[string]any)
-	fields := []struct {
-		value   any
-		present bool
-	}{
-		field(main, "allowed"), field(main, "limit_reached"), field(spend, "reached"), field(top, "rate_limit_reached_type"),
-	}
-	allowed, allowedOK := fields[0].value.(bool)
-	reached, reachedOK := fields[1].value.(bool)
-	spent, spentOK := fields[2].value.(bool)
-	reason, reasonOK := reachedReason(fields[3].value)
+	allowed, allowedOK := main["allowed"].(bool)
+	reached, reachedOK := main["limit_reached"].(bool)
+	spent, spentOK := spend["reached"].(bool)
+	reason, reasonOK := reachedReason(top["rate_limit_reached_type"])
 
 	// 1. blocked: any of the four well-typed and positive.
 	switch {
@@ -246,14 +245,13 @@ func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	case allowedOK && !allowed:
 		return AllowanceBlocked, "rate_limit.allowed is false"
 	}
-	// 2. bad: one of them present under a wrong type. Never blocks.
-	wellTyped := []bool{allowedOK, reachedOK, spentOK, reasonOK}
-	for i, f := range fields {
-		if f.present && !wellTyped[i] {
-			return AllowanceBad, ""
-		}
-	}
-	if sc, present := top["spend_control"]; present && sc != nil && spend == nil {
+	// 2. bad: one of them, or the spend_control object holding one, present
+	// under a wrong type. Never blocks.
+	if (main["allowed"] != nil && !allowedOK) ||
+		(main["limit_reached"] != nil && !reachedOK) ||
+		(spend["reached"] != nil && !spentOK) ||
+		(top["rate_limit_reached_type"] != nil && !reasonOK) ||
+		(top["spend_control"] != nil && spend == nil) {
 		return AllowanceBad, ""
 	}
 	// 3. allowed, on the vendor's own two words for it.
@@ -281,16 +279,4 @@ func reachedReason(v any) (string, bool) {
 		return kind, kind != ""
 	}
 	return "", false
-}
-
-// field reads one key; a JSON null counts as absent.
-func field(m map[string]any, key string) struct {
-	value   any
-	present bool
-} {
-	v, ok := m[key]
-	return struct {
-		value   any
-		present bool
-	}{v, ok && v != nil}
 }

@@ -195,8 +195,9 @@ func parseReset(v any) (int64, tag.State) {
 		}
 		return 0, tag.Bad
 	case float64:
-		// Numeric epoch seconds: accepted here (the jq reference marked
-		// numbers bad); a drift to numbers is handled, not papered over.
+		// Numeric epoch seconds: Claude Code has only ever sent a string
+		// here, but a drift to numbers is handled, not papered over — and
+		// Codex's reset_at has only ever been one.
 		if sec := int64(t); sec > 0 {
 			return sec, tag.OK
 		}
