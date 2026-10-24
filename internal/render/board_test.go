@@ -2,6 +2,7 @@ package render
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -395,6 +396,36 @@ func TestCompactRowsAreOnePhysicalRowEach(t *testing.T) {
 	a, c := bare(b.Groups[0][0]), bare(b.Groups[1][0])
 	if Cells(a[:strings.Index(a, "1% 1.0h")]) != Cells(c[:strings.Index(c, "1% 1.0h")]) {
 		t.Errorf("cells misaligned across a wide label:\n%q\n%q", a, c)
+	}
+}
+
+// The block layout draws the same vendor text — the account's label, the
+// login a mismatched dir reports, a row's label carrying a model name — and
+// each of its lines must be one physical row too, its bars aligned by cells.
+func TestBlockRowsAreOnePhysicalRowEach(t *testing.T) {
+	p := NewPalette(false)
+	now := time.Now().Unix()
+	views := []accountstate.Facts{
+		{Label: "evil\nname@x.com", DirMismatch: "ot\x1b[2Jher@x.com", Health: accountstate.HealthOK,
+			Obs:     fresh(now, session(1, now+3600), usage.Row{Label: "Fa\x1bble\t(7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fa\x1bble", Percent: 1, ResetAt: now + 3600}),
+			Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "b@x.com", Health: accountstate.HealthOK, Obs: fresh(now, session(1, now+3600), usage.Row{Label: "日本語 (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "日本語", Percent: 1, ResetAt: now + 3600}),
+			Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+	}
+	b := p.Board(views, now, LayoutBlocks, 0)
+	var bars []int
+	for _, g := range append([][]string{b.Header}, b.Groups...) {
+		for _, line := range g {
+			if strings.ContainsAny(line, "\n\r\t") || strings.Contains(bare(line), "\x1b") {
+				t.Errorf("line carries a control byte: %q", line)
+			}
+			if i := strings.IndexAny(line, "█░"); i > 0 && line[i-1] == '[' {
+				bars = append(bars, Cells(line[:i]))
+			}
+		}
+	}
+	if len(bars) < 4 || slices.Min(bars) != slices.Max(bars) {
+		t.Errorf("bars start at different cells across accounts: %v", bars)
 	}
 }
 

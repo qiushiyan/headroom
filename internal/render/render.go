@@ -11,7 +11,6 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
@@ -45,10 +44,13 @@ func NewPalette(color bool) Palette {
 // and the routing mark — "← current", or under automatic placement "← next"
 // on the account a bare launch would take, never both.
 func (p Palette) headerLine(v accountstate.Facts) string {
-	label := v.Label
+	// Both names come from files another program writes (the dir, the
+	// vendor's own record of the login), so they are sanitized like the
+	// compact row's.
+	label := Sanitize(v.Label)
 	if v.DirMismatch != "" {
 		// /login picked the wrong account in that dir's session — surface it.
-		label = fmt.Sprintf("%s %s(dir says %s!)%s", v.Label, p.Red, v.DirMismatch, p.Rst)
+		label = fmt.Sprintf("%s %s(dir says %s!)%s", label, p.Red, Sanitize(v.DirMismatch), p.Rst)
 	}
 	mark := ""
 	switch {
@@ -331,7 +333,7 @@ func labelWidth(views []accountstate.Facts) int {
 			continue
 		}
 		for _, r := range v.Obs.Rows {
-			if n := utf8.RuneCountInString(r.Label); n > w {
+			if n := Cells(Sanitize(r.Label)); n > w {
 				w = n
 			}
 		}
@@ -505,8 +507,10 @@ func (p Palette) limitRow(r usage.Row, now int64, width int) string {
 		// Absent or unparseable: the drift marker is what tells them apart.
 		phrase = "resets ?"
 	}
-	line := fmt.Sprintf("  %-*s %s[%s] %s%s  %s%s%s",
-		width, r.Label, p.severity(r, pct), glyphs, figure, p.Rst, p.Dim, phrase, p.Rst)
+	// The label carries the vendor's model name: sanitized, and padded by
+	// cells so a wide one keeps every account's bars in one column.
+	line := fmt.Sprintf("  %s %s[%s] %s%s  %s%s%s",
+		PadCell(Sanitize(r.Label), width), p.severity(r, pct), glyphs, figure, p.Rst, p.Dim, phrase, p.Rst)
 	if r.Drifted() {
 		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
 	}
