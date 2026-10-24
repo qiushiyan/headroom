@@ -27,13 +27,8 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account, snap state.Sn
 	// the shape moved and affinity is silently routing everything to the
 	// current account.
 	for _, a := range accts {
-		f, err := os.Open(filepath.Join(a.Dir(), "history.jsonl"))
-		if err != nil {
-			continue
-		}
-		h := sessions.ParseHistory(f)
-		f.Close()
-		if h.Lines == 0 {
+		h, ok := sessions.ReadHistory(a.Dir())
+		if !ok || h.Lines == 0 {
 			continue
 		}
 		r.check(len(h.Newest) > 0,
