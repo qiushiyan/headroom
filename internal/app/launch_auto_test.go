@@ -129,6 +129,19 @@ type launched struct {
 	stderr string
 }
 
+// String is what a failure message prints of a launch. Never the child's
+// environment: it is the test process's own, with whatever tokens the shell
+// that ran the suite exported.
+func (l launched) String() string {
+	dir := "(absent)"
+	for _, kv := range l.env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			dir = v
+		}
+	}
+	return fmt.Sprintf("{code:%d called:%v args:%q CLAUDE_CONFIG_DIR:%s stderr:%q}", l.code, l.called, l.args, dir, l.stderr)
+}
+
 func (l launched) account(cfg config.Scope) string {
 	for _, kv := range l.env {
 		if dir, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {

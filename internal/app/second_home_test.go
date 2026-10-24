@@ -47,8 +47,6 @@ func newTwoHomes(t *testing.T) *twoHomes {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	os.Unsetenv("CLAUDE_CONFIG_DIR")
 
 	owner := claudeScope(filepath.Join(base, "qiushiyan"), "qiushi")
 	steward := config.ForHome(filepath.Join(base, ".steward-home")).Claude

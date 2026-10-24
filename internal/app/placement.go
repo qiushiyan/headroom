@@ -493,12 +493,6 @@ var startRefresh = func(scope config.Scope) error {
 	if err != nil {
 		return err
 	}
-	if strings.HasSuffix(filepath.Base(exe), ".test") {
-		// A test binary re-executed with these arguments would run the suite
-		// again, which would launch again. The tests that mean to observe this
-		// edge replace it; one that forgot must not be able to fork.
-		return nil
-	}
 	cmd := exec.Command(exe, "refresh", "--vendor", string(scope.Vendor))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

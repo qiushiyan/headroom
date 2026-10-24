@@ -21,9 +21,6 @@ func codexLaunchFixture(t *testing.T) config.Scope {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	for _, v := range []string{"CODEX_HOME", "CODEX_SQLITE_HOME", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CLAUDE_CONFIG_DIR"} {
-		os.Unsetenv(v)
-	}
 	scope := config.ForHome(t.TempDir()).Codex
 	scope.Present = true
 	if _, _, _, err := accounts.Seed(scope, "cx@x.com", accounts.SeedOptions{}); err != nil {

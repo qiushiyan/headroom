@@ -464,10 +464,15 @@ func TestMintEndsAVendorThatDoesNotExit(t *testing.T) {
 		t.Fatalf("unapproved: %v after %v", err, time.Since(start))
 	}
 
+	// The approval wait is long here: a freshly written script can take
+	// seconds to print its first byte on macOS, and this case is about the
+	// grace after the token, not the wait before it. The bound is the
+	// vendor's own 30-second sleep, which the mint must not sit out.
+	mintWait = time.Minute
 	write("printf ' Your OAuth token (valid for 1 year):\\n\\n " + testToken + "\\n'; exec sleep 30\n")
 	scan = headless.NewScanner(io.Discard)
 	start = time.Now()
-	if err := vendorSetupToken(scope, approvalPage{remote: true}, scan); err != nil || scan.Token() != testToken || time.Since(start) > 5*time.Second {
+	if err := vendorSetupToken(scope, approvalPage{remote: true}, scan); err != nil || scan.Token() != testToken || time.Since(start) > 20*time.Second {
 		t.Fatalf("lingering after the token: %v, token %q, after %v", err, scan.Token(), time.Since(start))
 	}
 	if left, _ := os.ReadDir(os.Getenv("TMPDIR")); len(left) != 0 {
