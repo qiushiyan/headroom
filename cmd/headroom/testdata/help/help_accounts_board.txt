@@ -9,6 +9,11 @@ itself as often as the usage endpoint allows and goes quiet after five minutes w
 key; r asks now. Enter pins the selected account for bare launches and a turns automatic
 placement on; either prints what it recorded and exits. Tab switches vendor, esc cancels.
 
+--compact draws one row per account: each limit's percent and time to reset (not started
+for a Codex window nobody has spent against), then every warning the block would show. ●
+marks the current account (→ the next one, under auto), a red ! a dir logged in as another
+account, and a red name an account that cannot be used.
+
 Off a terminal — a pipe, a script, a hook — it prints the board once and exits 0. --json
 prints it as a document after one refresh round, for a script that wants fresh figures;
 headroom limits prints the same document from disk alone, without probing or asking.

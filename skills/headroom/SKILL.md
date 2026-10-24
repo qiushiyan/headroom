@@ -135,4 +135,5 @@ Routing lives in `headroom launch` — it owns `CLAUDE_CONFIG_DIR`,
 `CODEX_HOME` and `.current`; the board's enter and `a` are what move the
 default. The unmanaged
 escape hatch, when the user asks for one, is `env -u CLAUDE_CONFIG_DIR
-claude`. Flags beyond the ones above: `headroom -h`.
+claude`. Flags beyond the ones above: `headroom <command> --help`, which
+prints whatever the configuration says.

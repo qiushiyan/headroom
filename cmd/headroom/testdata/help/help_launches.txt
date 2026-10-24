@@ -9,8 +9,10 @@ account that would have been next. --json prints the records as logged, one per 
 --eval judges automatic placement instead, per rule version: windows its launches went into
 that reached a limit while another account had room, weekly room that may have renewed
 unspent, and the launches this binary's rule would decide differently. These are observed
-outcomes, not what another choice would have caused. It reads the launch logs of every home
-on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
+outcomes, not what another choice would have caused. A partial: line names a home or file
+it could not read; a fault: line counts launches this binary's rule decides differently
+from what was logged under its name, so that rule's figures mix two rules. It reads the
+launch logs of every home on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
 now (7d, 36h, 90m) or from a date (2026-10-01).
 
 Flags:

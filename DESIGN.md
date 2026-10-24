@@ -915,8 +915,8 @@ may evolve: a version tag inside a line only helps a reader new enough to
 check it, so a breaking change to a wrapper-facing surface ships as a
 *renamed verb* — argv is the one channel where the binary can observe a
 stale caller and refuse it, actionably. (An unchanged surface may keep an
-old spelling — `select` still aliases the board — but a surface whose
-contract changed must never reuse its name.)
+old spelling, but a surface whose contract changed must never reuse its
+name.)
 
 ## Automatic placement
 
@@ -1005,8 +1005,8 @@ that turning auto on forgets the pin.
   like the request ledger. Corrupt routing state still refuses, since an
   unreadable `.current` says nothing about what the person chose.
 - **The board's mark and the launch are one judgment.** `← next` and a launch
-  build their candidates with one function (`buildCandidates`), from the same
-  credential reader and the same exclusions, so the row the board marks is
+  build their candidates in one place (`launchop`'s `Mark` and `Gather`), from
+  the same credential reader and the same exclusions, so the row the board marks is
   the row a launch would take from those figures. A builder of the board's
   own can share the rule and still disagree on who is eligible, and then the
   mark names an account a launch refuses. The mark stays advice — a launch
@@ -1028,8 +1028,8 @@ that turning auto on forgets the pin.
   account forced — because a session started by name is load an automatic
   one must count.
 - **A launch is one operation, whoever asks for it.** `headroom launch` and
-  the session picker each build an intent and hand it to `placeLaunch`. It
-  refuses first whatever is known before a write — a named or pinned account
+  the session picker each build a request and commit it through `launchop`'s
+  plan. It refuses first whatever is known before a write — a named or pinned account
   that cannot be launched, `--auto --remember` the rule would refuse — since
   `state.Place` registers the home and prunes even when its rule refuses, and
   a launch that cannot start must leave nothing behind; then it records
@@ -1418,35 +1418,144 @@ here.
   `headroom launch --vendor codex --account <name> -- login` in the engine's
   own spelling — a wrapper's argument passing is not headroom's to know.
 
-## Dependencies and shape
+## The code
 
-stdlib plus `golang.org/x/term` (raw-mode terminal control for the two
-pickers), nothing else: no CLI framework, no TUI framework — the interactive
-surfaces share terminal lifetime, decoding and row emission, with their own
-frame policies. Every drawn line is one physical row: vendor text — account
-labels, model names, session titles and prompts — is sanitized where it is
-rendered, and a screen's last row carries no newline, since one more would
-scroll a frame of exactly the screen's height by a row on every draw.
-No cgo either:
-the Keychain is read by exec'ing `security(1)`, which keeps builds trivial.
-Parsing is pure functions (`[]byte` in, tagged structs out) tested by table;
-exec and HTTP stay in thin edges.
+The vendor set is closed at `claude` and `codex`. `config.Load` resolves one
+`Scope` per vendor — paths, binary, usage URL, request spacing, launcher
+format, environment policy, presence — and refuses accounts roots that alias
+each other. `accounts.Discover(scope)` returns a `Set` that owns `Select`,
+`SetCurrent` and `KnownDir`; an `Account` carries its scope, so no operation
+takes a scope beside an account. The set travels with whatever was built from
+it — a round, the page that shows it, the disk snapshot — and is never rebuilt
+from a scope plus a list. Each vendor keeps its own `.current`, `.order` and
+`state.json` under its own accounts root; a second home names another root's
+ledger in its `.ledger` (see A second home).
 
-`internal/tui` owns the terminal session whole: raw-mode lifetime,
-restoration on SIGTERM/SIGHUP/SIGINT (restore first, then re-raise so the
-exit status stays honest about the signal), and incremental key decoding —
-escape sequences may split across reads, and a bare ESC resolves as a
-keypress only after a pause.
+- **The command line** is `cmd/headroom`: Kong structs on clikit
+  (`github.com/qiushiyan/clikit`), one declaration per command holding its
+  flags, constraints and `Help()`, so the help page is generated from what
+  parses. Configuration loads only when a command asks for it, so help
+  prints whatever the environment says. A command's `Run` turns its flags
+  into one typed call into `internal/app` and maps the returned error to a
+  status. How help renders, how an argv error reads and which errors are usage
+  errors are clikit's: a change there is a clikit release and a `go.mod` bump,
+  reviewed through the golden help pages. Two inputs bypass the grammar.
+  `main` hands the `$BROWSER` call to `app.Open` before argv is parsed (see
+  Renewing logins), and the retired `resume` is a hidden command that takes
+  anything, `--help` included. A default command's flags (the board's
+  `--compact`, `--json`) parse at its parent's level, so the root refuses one
+  given with another command (`(*CLI).AfterApply`, `cmd/headroom/grammar.go`)
+  rather than letting it drop silently.
+- **Surfaces** are `internal/app`: one typed entry per surface — `Board`,
+  `Sessions`, `Launch`, `Login`, `HeadlessPlace`, `AccountsRemove`, … — each
+  taking its streams (`Streams`), the terminal facts it reads (`Terminal`,
+  stdin and stdout apart: the board needs both, mint only stdin) and the
+  edges it crosses as values: `launchop.Deps` (credential reader, process
+  probe, detached refresh), `round.Deps` (credential reader, health probe),
+  an `ExecFunc`. No package-level seam and no write to the process's own
+  streams; `cmd/headroom`'s `host` binds the live edges once, and a test binds
+  its own.
+- **Account facts and live requests have separate owners.** `accountstate`
+  assembles discovery, strict `.current` resolution, the newest usable disk
+  observation and a Codex account's plan; it owns `Health`, `Observation`
+  and `Attempt`, and its read has no credential, probe or HTTP dependency.
+  `refresh` owns credential and identity eligibility, durable request
+  claims, parallel fetches, response interpretation and completion
+  recording — the store's, and each reading's line in the usage log
+  (`usagelog`). A candidate binds its ledger key, vendor, prepared request
+  and expected identity behind unexported fields, and `Start` refuses a
+  candidate of the other vendor. `state` owns the request ledger, stored
+  bodies, placements, member homes and re-homes; `Place` is the one
+  operation that writes both of a second home's files, the ledger's lock
+  first. `render` draws the block and compact layouts and the session rows;
+  JSON serialization stays with the surfaces.
+- **A round** is `internal/round`: one vendor's discovery, facts on disk,
+  access (health and a request candidate — the second place vendor
+  documents are read), claim, fetches and results. `Prepare` is the local
+  half, `Fetch` the budget half; each result carries its round, so `Apply`
+  ignores another round's. `FromDisk` is `limits`' read, with no request on
+  any row. The board is a page per present vendor (`app/page.go`), holding
+  its round, selection, schedule and result channel until the channel closes
+  and drains, so a result lands on the page that started it and only the
+  visible page starts rounds; `picker.step` (`app/picker.go`) is the one place
+  results are routed and rounds started. Selection survives rediscovery by
+  account name. Off a terminal the board prints one frame (`app/board.go`);
+  `--json` serializes the same rounds.
+- **Sessions.** `internal/sessions` collects transcripts, history and
+  registry evidence, with one process sample per collection supplying both
+  liveness and ownership; mutations re-inspect at action time.
+  `app/sessions.go` owns the command's entry and collection,
+  `app/sessions_picker.go` the picker's state, `app/session_actions.go`
+  routing, resume and mutation effects.
+- **Placement.** `placement` is the rule: one pure function over candidates,
+  recent launches and an intent, with no clock, file or network of its own.
+  `internal/launchop` owns a placement from request to record. `Gather`
+  observes what every placement weighs once — stored observations, the
+  session registries of this home and of every home spending against its
+  ledger today (one inspection of every claim, one process sample per pid,
+  owner evidence from this home's claims alone) and, when the rule will
+  choose, credentials — and builds the candidates. The `Plan` it returns
+  previews (the dry run, through the same refusals) or commits: preflight
+  refuses what is known before any write, then `.current` if asked,
+  `state.Place` (the placement and a session's re-home in one locked
+  section), the launch log line, and for an automatic choice the detached
+  refresh. `headroom launch` and the session picker both commit through it,
+  keeping only their terminal, working directory, announcement and exec.
+  `Mark` is the same gathering for the board's `← next` and load figures, and
+  `PlaceHeadless` and `Started` are the protocol for a headless caller, with
+  its own eligibility and no exec. `accounts.Set.Bare` is the one reader of
+  `.current`.
+- **Login.** `app/login.go` chooses accounts on the board's health evidence,
+  runs `claude auth login` under `launch.Prepare`'s environment with the
+  binary itself as `$BROWSER` (`app/approval.go` owns that opener for `login`
+  and `headless mint`), relays only a pasted code carrying the sign-in's
+  state, and reads the credential back; `internal/browser` matches an email
+  to a Chrome profile. See Renewing logins.
+- **Launch preparation.** `launch.Prepare` validates routing, topology and
+  the executable and builds the environment before any surface persists a
+  choice. `internal/tui` owns raw-mode lifetime, restoration on
+  SIGTERM/SIGHUP/SIGINT (restore first, then re-raise so the exit status stays
+  honest about the signal) and incremental key decoding — escape sequences
+  may split across reads, and a bare ESC resolves as a keypress only after a
+  pause. Surfaces own keymaps and frame policy and emit rows through one
+  `writeRows` (`app/frame.go`).
+
+Dependencies: the standard library, `golang.org/x/term` (raw-mode terminal
+control for the two pickers), and clikit with Kong for the command line —
+no TUI framework, no cgo. The interactive surfaces share terminal lifetime,
+decoding and row emission, with their own frame policies. Every drawn line
+is one physical row: vendor text — account labels, model names, session
+titles and prompts — is sanitized where it is rendered, and a screen's last
+row carries no newline, since one more would scroll a frame of exactly the
+screen's height by a row on every draw. The Keychain is read by exec'ing
+`security(1)`, which keeps builds trivial. Parsing is pure functions
+(`[]byte` in, tagged structs out) tested by table; exec and HTTP stay in thin
+edges.
 
 ## Verification
 
-`make check` runs vet and the race-enabled Go suite. The suite is hermetic:
-`internal/app`'s `TestMain` clears every variable a vendor's environment
-policy strips, every `HEADROOM_*` override, `BROWSER` and the ssh markers,
-because the shell running the suite is often a managed session and each of
-them changes what a launch prints and where it routes; a test that needs one
-sets it with `t.Setenv`. Parser tables pin vendor
-contracts and visible drift. The placement rule is a table over candidates;
+`make check` runs vet, `go fix -diff` (which must print nothing), the
+race-enabled Go suite and gofmt. The suite is hermetic: the `TestMain` of
+`internal/app` and of `cmd/headroom` clears every variable a vendor's
+environment policy strips, every `HEADROOM_*` override, `BROWSER` and the ssh
+markers, because the shell running the suite is often a managed session and
+each of them changes what a launch prints and where it routes; a test that
+needs one sets it with `t.Setenv`.
+
+The command line is held at three tiers in `cmd/headroom`. `TestContracts`
+runs the built binary over a fixture home with stub vendors and no terminal,
+in the shapes other repositories invoke it, and compares every stream, exit
+status and vendor argv with `testdata/contract/`; a pin changes only with
+what its consumers read (`HEADROOM_CONTRACT_UPDATE=1` rewrites them, apart
+from the help pages so that accepting one can never rewrite the other).
+`grammar_test.go` runs the App in process: every argv refusal exits 2 having
+started nothing and changed nothing in the home, what argv decodes to, help
+and the tombstone under a configuration headroom refuses, and a missing
+vendor. `TestHelpPages` pins every help page (`make golden` accepts a
+change). Surfaces below it are tested through their typed entries, `round`
+and `launchop` through their own interfaces.
+
+Parser tables pin vendor contracts and visible drift. The placement rule is a table over candidates;
 the store's place operation is tested for the same property as the claim —
 contending handles on the real lock — and the launch path through the exec
 seam with credentials and the process table injected. The detached refresh

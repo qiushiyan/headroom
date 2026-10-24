@@ -1,7 +1,7 @@
 # The command line on clikit
 
-Status: built on the `clikit` branch, 2026-10-24, awaiting review. The
-working document the migration is built from: what the grammar is, which
+Status: shipped from the `clikit` branch, 2026-10-24; § Owed is what remains.
+The record of what the migration was built from: what the grammar is, which
 differences callers see, how the code is reshaped around it, and the cases
 that hold it. Written against `main` at dd103a3, clikit v0.4.1 and Kong
 v1.16.1, after one consult round (`consult-r1/codex-gpt-6-astra`) whose
@@ -209,6 +209,3 @@ Unless you know better ones.
 - A clikit release restating the unknown-command error at a `withargs`
   default, and refusing a default's flags under another command in the engine
   rather than in each tool; then a `go.mod` bump and the root hook deleted.
-- The docs pass: README, `docs/REFERENCE.md` § Commands (now the help pages),
-  DESIGN.md § Dependencies and shape, CLAUDE.md → AGENTS.md from the house
-  template, the two skills.

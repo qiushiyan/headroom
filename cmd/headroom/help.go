@@ -41,6 +41,11 @@ itself as often as the usage endpoint allows and goes quiet after five minutes w
 key; r asks now. Enter pins the selected account for bare launches and a turns automatic
 placement on; either prints what it recorded and exits. Tab switches vendor, esc cancels.
 
+--compact draws one row per account: each limit's percent and time to reset (not started
+for a Codex window nobody has spent against), then every warning the block would show. ●
+marks the current account (→ the next one, under auto), a red ! a dir logged in as another
+account, and a red name an account that cannot be used.
+
 Off a terminal — a pipe, a script, a hook — it prints the board once and exits 0. --json
 prints it as a document after one refresh round, for a script that wants fresh figures;
 headroom limits prints the same document from disk alone, without probing or asking.`
@@ -124,8 +129,10 @@ account that would have been next. --json prints the records as logged, one per 
 --eval judges automatic placement instead, per rule version: windows its launches went into
 that reached a limit while another account had room, weekly room that may have renewed
 unspent, and the launches this binary's rule would decide differently. These are observed
-outcomes, not what another choice would have caused. It reads the launch logs of every home
-on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
+outcomes, not what another choice would have caused. A partial: line names a home or file
+it could not read; a fault: line counts launches this binary's rule decides differently
+from what was logged under its name, so that rule's figures mix two rules. It reads the
+launch logs of every home on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
 now (7d, 36h, 90m) or from a date (2026-10-01).`
 
 const loginHelp = `Renews Claude Code logins: one claude auth login per account, in turn, its approval page
