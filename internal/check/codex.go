@@ -6,10 +6,10 @@ package check
 //
 // Two things differ from Claude Code's group, both on purpose. A 401 is never
 // a FAIL: Codex itself recovers from one by reloading and refreshing, so a
-// rejected token is not evidence that anything drifted (reportRequest). And there is a
-// credential-source probe: headroom reads only Codex's file credential store,
-// so a home where `codex login status` and auth.json disagree is said out
-// loud rather than rendered as a plain "not logged in".
+// rejected token is not evidence that anything drifted (report.request). And
+// there is a credential-source probe: headroom reads only Codex's file
+// credential store, so a home where `codex login status` and auth.json
+// disagree is said out loud rather than rendered as a plain "not logged in".
 
 import (
 	"context"
