@@ -64,8 +64,11 @@ naming a vendor this machine does not have fails saying so, except
   on the machine; enter resumes in its own project dir on the account that
   last drove it, `x` resumes on the current account and re-homes it there —
   under auto, on the least-loaded of the other accounts
-  (`--json` lists instead; `--cd-file <path>` writes the entered dir for the
-  shell). Codex sessions are reached through Codex's own `resume`, below.
+  (`--json` lists instead, with `current` and `mode` as in the board's
+  document: under `"auto"` `current` is `""`, and `mode` is `""` only when
+  `.current` cannot be resolved; `--cd-file <path>` writes the entered dir
+  for the shell). Codex sessions are reached through Codex's own `resume`,
+  below.
 - **`headroom launch`:** exec `claude` — or `codex` under `--vendor codex` —
   on the decided account, with the child environment built from that
   decision: an inherited `CLAUDE_CONFIG_DIR`, or for Codex `CODEX_HOME`,

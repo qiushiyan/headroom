@@ -3,10 +3,12 @@ package app
 // sessionsDoc is the --json wire contract, and these are its pins.
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
@@ -31,10 +33,10 @@ func TestSessionsDocCarriesBothBranchFacts(t *testing.T) {
 		Tail: sessions.Tail{Branch: "main"},
 	}
 	doc := sessionsDoc(sessions.Listing{Sessions: []*sessions.Session{moved, detached, husk}},
-		"a@x.com", time.Now())
+		accounts.Routing{Mode: "pinned", Current: "a@x.com"}, time.Now())
 
-	if doc.Schema != 3 {
-		t.Errorf("schema = %d, want 3 — the branch fields changed meaning", doc.Schema)
+	if doc.Schema != 4 {
+		t.Errorf("schema = %d, want 4 — a field changed meaning", doc.Schema)
 	}
 	by := map[string]jsonSession{}
 	for _, s := range doc.Sessions {
@@ -96,7 +98,7 @@ func TestSessionsDocSpellsEveryState(t *testing.T) {
 		add(fmt.Sprintf("title-%d", i), sessions.Session{Tail: c.tail})
 	}
 	by := map[string]jsonSession{}
-	for _, s := range sessionsDoc(listing, "", time.Now()).Sessions {
+	for _, s := range sessionsDoc(listing, accounts.Routing{}, time.Now()).Sessions {
 		by[s.ID] = s
 	}
 
@@ -113,6 +115,33 @@ func TestSessionsDocSpellsEveryState(t *testing.T) {
 	for i, c := range titles {
 		if got := by[fmt.Sprintf("title-%d", i)]; got.Title != c.title || got.TitleSource != c.source {
 			t.Errorf("title chain %+v: (%q, %q), want (%q, %q)", c.tail, got.Title, got.TitleSource, c.title, c.source)
+		}
+	}
+}
+
+// An empty current says nothing on its own: new sessions are placed by the
+// rule under auto, and nothing resolves when `.current` is corrupt. mode says
+// which, in the board's words — a consumer that read "" as broken routing,
+// or as auto, was guessing.
+func TestSessionsDocSaysTheMode(t *testing.T) {
+	for _, c := range []struct {
+		routing       accounts.Routing
+		current, mode string
+	}{
+		{accounts.Routing{Mode: "pinned", Current: "a@x.com"}, "a@x.com", "pinned"},
+		{accounts.Routing{Mode: "auto"}, "", "auto"},
+		{accounts.Routing{}, "", ""}, // .current will not resolve
+	} {
+		data, err := json.Marshal(sessionsDoc(sessions.Listing{}, c.routing, time.Now()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if mode, ok := doc["mode"]; !ok || mode != c.mode || doc["current"] != c.current {
+			t.Errorf("%+v: current %v, mode %v (present %v), want %q and %q", c.routing, doc["current"], mode, ok, c.current, c.mode)
 		}
 	}
 }

@@ -12,17 +12,23 @@ import (
 	"os"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
 type resumeDoc struct {
-	Schema      int           `json:"schema"`
-	GeneratedAt string        `json:"generated_at"` // RFC3339 UTC
-	Current     string        `json:"current"`      // account new sessions target
-	LocalKey    string        `json:"local_key"`    // what "local" groups on
-	Sessions    []jsonSession `json:"sessions"`
+	Schema      int    `json:"schema"`
+	GeneratedAt string `json:"generated_at"` // RFC3339 UTC
+	// Current is the pinned account new sessions target; "" under auto, when
+	// the rule places each one, and when `.current` will not resolve. Mode
+	// says which, in the board's words: "pinned", "auto", or "". A consumer
+	// that read an empty current as broken routing must read mode first.
+	Current  string        `json:"current"`
+	Mode     string        `json:"mode"`
+	LocalKey string        `json:"local_key"` // what "local" groups on
+	Sessions []jsonSession `json:"sessions"`
 }
 
 type jsonSession struct {
@@ -55,10 +61,9 @@ type jsonSession struct {
 
 func runSessionsJSON(cfg config.Scope) int {
 	listing, _, routing := collectSessions(cfg, state.Open(cfg))
-	current := routing.Current
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(sessionsDoc(listing, current, time.Now())); err != nil {
+	if err := enc.Encode(sessionsDoc(listing, routing, time.Now())); err != nil {
 		fmt.Fprintf(os.Stderr, "headroom sessions --json: %v\n", err)
 		return 1
 	}
@@ -68,11 +73,15 @@ func runSessionsJSON(cfg config.Scope) int {
 // sessionsDoc is the whole wire contract as a pure function of the listing —
 // no config, no store, no stdout — so the mapping every consumer depends on
 // can be asserted directly rather than inferred from a run.
-func sessionsDoc(listing sessions.Listing, current string, now time.Time) resumeDoc {
+func sessionsDoc(listing sessions.Listing, routing accounts.Routing, now time.Time) resumeDoc {
 	doc := resumeDoc{
-		Schema:      3, // 3: "branch" is now the live HEAD; observation moved to "branch_at_last_activity"
+		// 4: "mode", so an empty "current" under auto reads apart from one
+		// that will not resolve. (3: "branch" is the live HEAD; the
+		// observation is "branch_at_last_activity".)
+		Schema:      4,
 		GeneratedAt: now.UTC().Format(time.RFC3339),
-		Current:     current,
+		Current:     routing.Current,
+		Mode:        routing.Mode,
 		LocalKey:    listing.LocalKey,
 	}
 	for _, s := range listing.Sessions {
