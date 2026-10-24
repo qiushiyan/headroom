@@ -379,7 +379,9 @@ func TestCompactRowsAreOnePhysicalRowEach(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
 	views := []accountstate.Facts{
-		{Label: "evil\nname@x.com", Obs: fresh(now, session(1, now+3600), usage.Row{Label: "Fa\x1bble (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fa\x1bble", Percent: 1, ResetAt: now + 3600}), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "evil\nname@x.com", Obs: fresh(now, session(1, now+3600), usage.Row{Label: "Fa\x1bble (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fa\x1bble", Percent: 1, ResetAt: now + 3600}), Attempt: accountstate.Attempt{State: accountstate.AttemptOK},
+			// Another home's label is that home's own setting, read from disk.
+			Load: &accountstate.Load{Busy: 1, Homes: []accountstate.HomeLoad{{Label: "ev\x1b[2Jil\nhome", Busy: 1}}}},
 		{Label: "日本語@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	b := p.Board(views, now, LayoutCompact, 0)
