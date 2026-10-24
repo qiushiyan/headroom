@@ -188,9 +188,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			// bytes are set aside (never dropped: `check` reports them) and
 			// every account starts quiet. This self-heals in one cooldown
 			// rather than bricking until someone deletes the file.
-			d.quarantine("accounts")
-			d.badAccounts = false
-			d.dirty = true
+			d.setAside("accounts", &d.badAccounts)
 			for i, k := range keys {
 				r := d.accounts[k.ID()]
 				r.Name = k.Name
@@ -400,12 +398,7 @@ func validRuns(runs []Run) bool {
 // aside a section that would not decode; whatever it changes dirties the
 // document.
 func (d *doc) sweepRuns(gone []Run, now time.Time) {
-	if d.badRuns {
-		d.quarantine("runs")
-		d.badRuns = false
-		d.runs = nil
-		d.dirty = true
-	}
+	d.setAside("runs", &d.badRuns)
 	old := now.Add(-runKeep).UnixMilli()
 	kept := d.runs[:0]
 	for _, r := range d.runs {
@@ -483,14 +476,9 @@ func (s *Store) Place(l Launch) (Placed, error) {
 			// that merely failed to decode would destroy them for good.
 			return commit{}, cmp.Or(homeErr, ErrCorrupt)
 		}
-		if led.badPlacements {
-			// Disposable, like the request ledger: set the unreadable bytes
-			// aside for `check` and start from nothing.
-			led.quarantine("placements")
-			led.badPlacements = false
-			led.placements = placement.Ledger{}
-			led.dirty = true
-		}
+		// Disposable, like the request ledger: an unreadable record of
+		// launches is set aside and starts from nothing.
+		led.setAside("placements", &led.badPlacements)
 		if led.placements.Prune(now, retention) {
 			led.dirty = true
 		}
