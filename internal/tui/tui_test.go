@@ -27,6 +27,16 @@ func TestDecoderWholeChunks(t *testing.T) {
 		{"\x1b[3~", []Key{{Kind: KeyDelete}}},
 		{"\x1b[5~", []Key{{Kind: KeyPgUp}}},
 		{"\x1b[6~", []Key{{Kind: KeyPgDn}}},
+		// Home and End have three spellings each across terminals: the bare
+		// final, and two numbered tilde forms (VT220 and rxvt).
+		{"\x1b[F", []Key{{Kind: KeyEnd}}},
+		{"\x1b[1~", []Key{{Kind: KeyHome}}},
+		{"\x1b[7~", []Key{{Kind: KeyHome}}},
+		{"\x1b[4~", []Key{{Kind: KeyEnd}}},
+		{"\x1b[8~", []Key{{Kind: KeyEnd}}},
+		// A byte no CSI sequence may hold ends the sequence unrecognized, and
+		// decoding resumes with the next key rather than swallowing it.
+		{"\x1b[\x01j", []Key{{KeyRune, 'j'}}},
 		{"k", []Key{{KeyRune, 'k'}}},
 		{"j", []Key{{KeyRune, 'j'}}},
 		{"/", []Key{{KeyRune, '/'}}},
@@ -35,6 +45,7 @@ func TestDecoderWholeChunks(t *testing.T) {
 		{"\n", []Key{{Kind: KeyEnter}}},
 		{"\t", []Key{{Kind: KeyTab}}},
 		{"\x7f", []Key{{Kind: KeyBackspace}}},
+		{"\x08", []Key{{Kind: KeyBackspace}}}, // ^H: what some terminals send for backspace
 		{"\x03", []Key{{KeyCtrl, 'c'}}},
 		{"\x04", []Key{{KeyCtrl, 'd'}}},
 		{"\x15", []Key{{KeyCtrl, 'u'}}},
@@ -95,6 +106,13 @@ func TestDecoderSplitRunes(t *testing.T) {
 	want := []Key{{KeyRune, '改'}}
 	if !slices.Equal(got, want) {
 		t.Errorf("split rune = %v, want %v", got, want)
+	}
+	// An escape arriving mid-rune abandons the fragment: the sequence decodes,
+	// and the next rune is not glued to the dead bytes.
+	d = Decoder{}
+	got = append(feed(&d, string(b[:1]), "\x1b[A"), d.Feed([]byte("é"))...)
+	if want := []Key{{Kind: KeyUp}, {KeyRune, 'é'}}; !slices.Equal(got, want) {
+		t.Errorf("ESC mid-rune = %v, want %v", got, want)
 	}
 	// A dangling fragment is dropped on flush, never surfaced as garbage.
 	d = Decoder{}
@@ -173,6 +191,17 @@ func TestLineEdit(t *testing.T) {
 	before, at, after := e.Split()
 	if before != "" || at != "X" || after != "b" {
 		t.Errorf("Split = %q %q %q", before, at, after)
+	}
+	e.Handle(Key{Kind: KeyRight})
+	e.Handle(Key{KeyRune, 'Y'})
+	if e.String() != "XYb" {
+		t.Errorf("right+insert = %q, want XYb", e.String())
+	}
+	// At the end the cursor is a blank cell, which is what rename and search
+	// draw in inverse video.
+	e.Handle(Key{Kind: KeyEnd})
+	if before, at, after := e.Split(); before != "XYb" || at != " " || after != "" {
+		t.Errorf("Split at end = %q %q %q", before, at, after)
 	}
 	// Editing keys are consumed; mode keys are not.
 	if e.Handle(Key{Kind: KeyEnter}) || e.Handle(Key{Kind: KeyEsc}) {
