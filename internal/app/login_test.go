@@ -46,16 +46,15 @@ func (w *loginWorld) deps() loginDeps {
 		metaEmail:  func(a accounts.Account) string { return w.email[a.Name] },
 		sealed:     w.sealed,
 		inKeychain: func(a accounts.Account) bool { return w.keychain[a.Name] },
-		profiles:   []browser.Profile{{Dir: "Profile 2", Name: "a"}},
-		remote:     w.remote,
+		approver:   approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
 		now:        func() time.Time { return w.now },
-		login: func(a accounts.Account, _ accounts.Set, email string, page approvalPage) error {
-			where := page.profileDir
+		login: func(a accounts.Account, _ accounts.Set, page approvalPage) error {
+			where := page.profile.Dir
 			if page.remote {
 				where = "remote"
 			}
-			w.logins = append(w.logins, a.Name+" "+email+" "+where)
-			who := email
+			w.logins = append(w.logins, a.Name+" "+page.email+" "+where)
+			who := page.email
 			if as := w.approveAs[a.Name]; as != "" {
 				who = as
 			}
@@ -422,7 +421,7 @@ func TestLoginReadBack(t *testing.T) {
 			w.raw["a@x.com"] = c.before
 		}
 		d := w.deps()
-		d.login = func(a accounts.Account, _ accounts.Set, _ string, _ approvalPage) error { return c.vendor(w, a) }
+		d.login = func(a accounts.Account, _ accounts.Set, _ approvalPage) error { return c.vendor(w, a) }
 		var out bytes.Buffer
 		code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d)
 		line := resultLine(out.String(), "a@x.com")

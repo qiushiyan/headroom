@@ -335,7 +335,7 @@ type mintWorld struct {
 func (w *mintWorld) deps(now time.Time) mintDeps {
 	return mintDeps{
 		terminal: true,
-		profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}},
+		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}},
 		now:      func() time.Time { return now },
 		setupToken: func(_ config.Scope, page approvalPage, out *headless.Scanner) error {
 			w.pages = append(w.pages, page)
@@ -365,7 +365,7 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	if strings.Contains(out.String(), "sk-ant-") || !strings.Contains(out.String(), headless.Withheld) || !strings.Contains(out.String(), "✓ a@x.com: headless token stored") {
 		t.Fatalf("output:\n%s", out.String())
 	}
-	if len(w.pages) != 1 || w.pages[0].profileDir != "Profile 2" || w.pages[0].remote {
+	if len(w.pages) != 1 || w.pages[0].profile.Dir != "Profile 2" || w.pages[0].remote {
 		t.Errorf("page %+v", w.pages)
 	}
 	tokens, err := headless.Read(f.cfg.AccountsRoot)
@@ -436,9 +436,9 @@ func TestMintRefusalsAndARemoteUser(t *testing.T) {
 		t.Errorf("off a terminal: %d %s", code, errw.String())
 	}
 	deps = w.deps(now)
-	deps.remote = true
+	deps.approver.remote = true
 	var out bytes.Buffer
-	if code := runHeadlessMintTo(&out, io.Discard, f.cfg, []string{"a@x.com"}, deps); code != 0 || !w.pages[0].remote || w.pages[0].profileDir != "" || !strings.Contains(out.String(), "paste the code it shows") {
+	if code := runHeadlessMintTo(&out, io.Discard, f.cfg, []string{"a@x.com"}, deps); code != 0 || !w.pages[0].remote || w.pages[0].profile.Dir != "" || !strings.Contains(out.String(), "paste the code it shows") {
 		t.Errorf("remote: %d %+v\n%s", code, w.pages, out.String())
 	}
 }

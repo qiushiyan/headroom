@@ -40,11 +40,15 @@ esac
 	}
 	bin := headroomBinary(t)
 	cmd := exec.Command("script", "-q", "/dev/null", bin, "headless", "mint", "a@x.com")
+	// A sign-in file named by the environment the mint was started in is
+	// some other run's: the opener the vendor runs records in the mint's own.
+	inherited := filepath.Join(t.TempDir(), "inherited-signin")
 	cmd.Env = []string{
 		"HOME=" + h.home, "USER=" + os.Getenv("USER"), "TERM=dumb",
 		"PATH=" + h.stubs + ":/usr/bin:/bin:/usr/sbin:/sbin", "RECORD=" + h.record,
 		"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-inheritedinheritedinheritedinherited",
 		"CLAUDE_CONFIG_DIR=" + h.extra,
+		"HEADROOM_BROWSER_SIGNIN=" + inherited,
 	}
 	out, err := cmd.CombinedOutput()
 	rec, _ := os.ReadFile(h.record)
@@ -66,6 +70,9 @@ esac
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("the scratch dir %s is still there (%v)", dir, err)
+	}
+	if _, err := os.Stat(inherited); !os.IsNotExist(err) {
+		t.Errorf("the opener recorded the sign-in in the inherited %s (%v)", inherited, err)
 	}
 	for _, want := range []string{
 		"args setup-token", "oauth=unset", "stdout=pipe",

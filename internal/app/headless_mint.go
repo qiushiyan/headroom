@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -22,20 +21,18 @@ import (
 	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// mintDeps are the edges a mint crosses — the terminal, the browser
-// registry, where the user is, and the vendor's command — injected so the
-// command is testable without a browser or a vendor.
+// mintDeps are the edges a mint crosses — the terminal, where approval
+// pages go, and the vendor's command — injected so the command is testable
+// without a browser or a vendor.
 type mintDeps struct {
 	terminal bool
-	profiles []browser.Profile
-	remote   bool
+	approver approver
 	now      func() time.Time
 	// setupToken runs the vendor's command, its output written to scan.
 	setupToken func(scope config.Scope, page approvalPage, scan *headless.Scanner) error
@@ -55,8 +52,7 @@ var (
 func runHeadlessMint(scope config.Scope, args []string) int {
 	return runHeadlessMintTo(os.Stdout, os.Stderr, scope, args, mintDeps{
 		terminal:   term.IsTerminal(int(os.Stdin.Fd())),
-		profiles:   browser.ReadProfiles(browser.LocalStatePath(scope.Home)),
-		remote:     sshRemote(os.Getenv("SSH_CONNECTION")),
+		approver:   newApprover(scope),
 		now:        time.Now,
 		setupToken: vendorSetupToken,
 	})
@@ -97,15 +93,12 @@ func runHeadlessMintTo(out, errw io.Writer, scope config.Scope, args []string, d
 	}
 	key := state.KeyFor(a)
 
-	page := approvalPage{remote: deps.remote}
-	if p, ok := browser.Match(deps.profiles, a.Email); ok && !deps.remote {
-		page.profileDir = p.Dir
-	}
+	page := deps.approver.page(a.Email)
 	fmt.Fprintf(out, "minting a headless token for %s (claude setup-token)\n", a.Name)
 	if page.remote {
-		fmt.Fprintf(out, "open the URL below in a browser signed in to claude.ai as %s, click Authorize,\nand paste the code it shows\n", a.Email)
+		fmt.Fprintln(out, page.remoteSteps())
 	} else {
-		fmt.Fprintf(out, "approve as %s in %s — headroom cannot check which account approves\n", a.Email, pagePhrase(loginDeps{profiles: deps.profiles}, a.Email))
+		fmt.Fprintf(out, "approve as %s in %s — headroom cannot check which account approves\n", a.Email, page.phrase())
 	}
 	fmt.Fprintf(out, "it waits up to %s for the approval; ctrl-c does not reach it — close the terminal to stop sooner\n\n", span(mintWait))
 
@@ -187,21 +180,13 @@ func vendorSetupToken(scope config.Scope, page approvalPage, scan *headless.Scan
 	if err != nil {
 		return err
 	}
-	env := withoutVars(target.Env(os.Environ()), "BROWSER", browser.ProfileEnv,
-		"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-	switch {
-	case page.remote:
-		opener, err := exec.LookPath("true")
-		if err != nil {
-			return fmt.Errorf("no browser command: %w", err)
-		}
-		env = append(env, "BROWSER="+opener)
-	case runtime.GOOS == "darwin":
-		self, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("no browser command: %w", err)
-		}
-		env = append(env, "BROWSER="+self, browser.ProfileEnv+"="+page.profileDir)
+	// The sign-in is recorded and never read: the code goes to the vendor's
+	// own prompt. It is recorded so that, for a remote user, headroom is a
+	// $BROWSER that opens nothing.
+	env, err := page.env(withoutVars(target.Env(os.Environ()), "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+		filepath.Join(scratch, "headroom-signin"))
+	if err != nil {
+		return err
 	}
 	cmd := exec.Command(path, "setup-token")
 	cmd.Args[0] = scope.Binary()

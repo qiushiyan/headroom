@@ -9,13 +9,11 @@ package app
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,9 +36,9 @@ import (
 const defaultLoginWithin = 7 * 24 * time.Hour
 
 // loginDeps are the edges `headroom login` crosses — the health probe, the
-// credential and identity reads, the Keychain's reach, the browser registry,
-// where the user is, and the vendor's login process — injected so selection
-// and read-back are testable without a Keychain, a browser or a network.
+// credential and identity reads, the Keychain's reach, where approval pages
+// go, and the vendor's login process — injected so selection and read-back
+// are testable without a Keychain, a browser or a network.
 type loginDeps struct {
 	health    func([]accounts.Account) auth.QueryFunc
 	readRaw   func(accounts.Account) string
@@ -50,24 +48,13 @@ type loginDeps struct {
 	// which a sealed Keychain still shows.
 	sealed     bool
 	inKeychain func(accounts.Account) bool
-	profiles   []browser.Profile
-	// remote: the user is not at this machine's screen, so a page opened
-	// here is a page nobody sees.
-	remote bool
-	now    func() time.Time
-	login  func(acct accounts.Account, set accounts.Set, email string, page approvalPage) error
+	approver   approver
+	now        func() time.Time
+	login      func(acct accounts.Account, set accounts.Set, page approvalPage) error
 
 	// tokens are the stored headless tokens, whose ends the plan reports the
 	// way it reports logins'.
 	tokens func() (map[string]headless.Token, error)
-}
-
-// approvalPage is where the vendor's approval page goes: the Chrome profile
-// at profileDir ("" = the default browser), or, for a remote user, nowhere —
-// they open the printed URL where they are and paste back the code.
-type approvalPage struct {
-	profileDir string
-	remote     bool
 }
 
 // loginRow is one account as `login` sees it before acting.
@@ -85,7 +72,8 @@ type loginRow struct {
 	held   string
 	sealed bool
 	chosen bool
-	why    string // why chosen, or why left alone
+	why    string       // why chosen, or why left alone
+	page   approvalPage // where its approval goes, for the email it is for
 }
 
 func runLogin(scope config.Scope, args []string) int {
@@ -101,24 +89,11 @@ func runLogin(scope config.Scope, args []string) int {
 		},
 		sealed:     creds.KeychainSealed(),
 		inKeychain: func(a accounts.Account) bool { return creds.HasKeychainItem(a.ConfigDir) },
-		profiles:   browser.ReadProfiles(browser.LocalStatePath(scope.Home)),
-		remote:     sshRemote(os.Getenv("SSH_CONNECTION")),
+		approver:   newApprover(scope),
 		now:        time.Now,
 		login:      vendorLogin,
 		tokens:     func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
 	})
-}
-
-// sshRemote reports whether SSH_CONNECTION ("client port server port") puts
-// the user on another machine. An ssh from a machine to itself — how the
-// author's mini attaches its own tmux — leaves the user at this screen.
-func sshRemote(conn string) bool {
-	f := strings.Fields(conn)
-	if len(f) < 3 {
-		return false
-	}
-	client, server := f[0], f[2]
-	return client != server && !strings.HasPrefix(client, "127.") && client != "::1"
 }
 
 func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps loginDeps) int {
@@ -182,7 +157,7 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		line := fmt.Sprintf("  %-28s %s", r.acct.Name, r.why)
 		if r.chosen {
 			chosen = append(chosen, r)
-			line = "→" + line[1:] + " — " + pagePhrase(deps, r.email)
+			line = "→" + line[1:] + " — " + r.page.phrase()
 		}
 		if r.sealed {
 			sealed++
@@ -217,13 +192,8 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 	var retry []string // names whose login ran and did not take
 	var earliest int64 // the soonest end among the logins that took
 	for i, r := range chosen {
-		page := approvalPage{remote: deps.remote}
-		if p, ok := browser.Match(deps.profiles, r.email); ok && !deps.remote {
-			page.profileDir = p.Dir
-		}
-		if page.remote {
-			fmt.Fprintf(out, "\n[%d/%d] %s — open the URL below in a browser signed in to claude.ai as %s,\n"+
-				"click Authorize, and paste the code it shows\n", i+1, len(chosen), r.acct.Name, orNobody(r.email))
+		if r.page.remote {
+			fmt.Fprintf(out, "\n[%d/%d] %s — %s\n", i+1, len(chosen), r.acct.Name, r.page.remoteSteps())
 		} else {
 			fmt.Fprintf(out, "\n[%d/%d] %s — click Authorize in the page that opens\n", i+1, len(chosen), r.acct.Name)
 		}
@@ -231,7 +201,7 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 		// session may have refreshed this account while earlier approvals
 		// were pending.
 		before, beforeOK := creds.Parse(deps.readRaw(r.acct))
-		err := deps.login(r.acct, set, r.email, page)
+		err := deps.login(r.acct, set, r.page)
 		blob, msg := readBack(r, before, beforeOK, err, deps)
 		if msg != "" {
 			failed++
@@ -307,6 +277,7 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 			blobOK: ok,
 			sealed: deps.sealed && deps.inKeychain(a),
 		}
+		r.page = deps.approver.page(r.email)
 		switch {
 		case r.sealed:
 			r.held = "login kept in the Keychain, which this session cannot read"
@@ -410,16 +381,6 @@ func readBack(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps 
 	return blob, ""
 }
 
-func pagePhrase(deps loginDeps, email string) string {
-	if deps.remote {
-		return "over ssh: you open the printed URL where you are"
-	}
-	if p, ok := browser.Match(deps.profiles, email); ok {
-		return "Chrome profile " + p.Label()
-	}
-	return "default browser (no Chrome profile matches " + orNobody(email) + ")"
-}
-
 func endPhrase(b creds.Blob, now time.Time) string {
 	if b.RefreshState != tag.OK {
 		return ""
@@ -452,15 +413,11 @@ func orNobody(email string) string {
 }
 
 // vendorLogin runs `claude auth login` for acct in the foreground, under the
-// environment launch builds for it, with this binary as $BROWSER on macOS
-// and for a remote user: it records which sign-in the vendor started and
-// opens the approval page in the matched profile — or, for a remote user,
-// opens nothing, since a page opened here would land on a screen nobody is
-// at. stdout and stderr are the
-// terminal's: the vendor always prints the URL, and asks there for the code
-// when the browser cannot reach its localhost callback. The code itself
-// comes in through headroom (relayCodes).
-func vendorLogin(acct accounts.Account, set accounts.Set, email string, page approvalPage) error {
+// environment launch builds for it, with page's opener as its $BROWSER.
+// stdout and stderr are the terminal's: the vendor always prints the URL,
+// and asks there for the code when the browser cannot reach its localhost
+// callback. The code itself comes in through headroom (relayCodes).
+func vendorLogin(acct accounts.Account, set accounts.Set, page approvalPage) error {
 	p, err := launch.Prepare(acct, set, os.Environ())
 	if err != nil {
 		return err
@@ -474,24 +431,13 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email string, page app
 	}
 	defer os.RemoveAll(dir)
 	signin := filepath.Join(dir, "state")
-	recorded := page.remote || runtime.GOOS == "darwin"
-	env := p.Env
-	if recorded {
-		// Profiles are opened with open(1); elsewhere, at the machine, the
-		// vendor's own browser handling stays and a pasted code goes
-		// unchecked.
-		self, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("no browser command: %w", err)
-		}
-		env = append(withoutVars(env, "BROWSER", browser.ProfileEnv, browser.SigninEnv), "BROWSER="+self, browser.SigninEnv+"="+signin)
-		if !page.remote {
-			env = append(env, browser.ProfileEnv+"="+page.profileDir)
-		}
+	env, err := page.env(p.Env, signin)
+	if err != nil {
+		return err
 	}
 	args := []string{"auth", "login"}
-	if email != "" {
-		args = append(args, "--email", email)
+	if page.email != "" {
+		args = append(args, "--email", page.email)
 	}
 	cmd := exec.Command(p.Path, args...)
 	cmd.Args[0] = p.Binary
@@ -512,10 +458,11 @@ func vendorLogin(acct accounts.Account, set accounts.Set, email string, page app
 		relayCodes(lines, vendorIn, os.Stderr, func() string {
 			// The vendor hands $BROWSER the URL just after printing it, so
 			// only a paste typed ahead can beat the record; give it a
-			// moment before calling the state unknown.
+			// moment before calling the state unknown. With no opener of
+			// headroom's, a pasted code goes unchecked.
 			for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(50 * time.Millisecond) {
 				state, err := os.ReadFile(signin)
-				if err == nil || !recorded || time.Now().After(deadline) {
+				if err == nil || !page.recorded() || time.Now().After(deadline) {
 					return string(state)
 				}
 			}
@@ -626,54 +573,4 @@ func statePrefix(s string) string {
 		return s[:8] + "…"
 	}
 	return s
-}
-
-func withoutVars(env []string, names ...string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		keep := true
-		for _, n := range names {
-			if strings.HasPrefix(kv, n+"=") {
-				keep = false
-			}
-		}
-		if keep {
-			out = append(out, kv)
-		}
-	}
-	return out
-}
-
-// runOpen is the whole of headroom as a vendor's $BROWSER: record in the
-// file signin names which sign-in url belongs to, show url in the profile
-// `headroom login` chose when open, and nothing else.
-func runOpen(url, signin, profileDir string, open bool) int {
-	if signin != "" {
-		// Best effort: an unrecorded sign-in leaves its code unchecked, never
-		// its page unopened.
-		recordSignin(signin, browser.SigninState(url))
-	}
-	if !open {
-		return 0
-	}
-	out, err := exec.Command("open", browser.OpenArgs(profileDir, url)...).CombinedOutput()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) || len(out) > 0 {
-			fmt.Fprintf(os.Stderr, "headroom: open: %s\n", strings.TrimSpace(string(out)))
-		} else {
-			fmt.Fprintf(os.Stderr, "headroom: open: %v\n", err)
-		}
-		return 1
-	}
-	return 0
-}
-
-// recordSignin writes state whole, by rename: a code pasted while it is
-// written is never checked against part of it.
-func recordSignin(path, state string) {
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, []byte(state), 0o600) == nil {
-		os.Rename(tmp, path)
-	}
 }
