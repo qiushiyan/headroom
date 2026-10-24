@@ -48,6 +48,12 @@ type launch struct {
 	at        int64
 	automatic bool
 	chosenKey string
+
+	// mode is how the launch counts in a summary's modes and in what went
+	// into a window: the line's own mode, except that the rule's choices count
+	// as "auto" whatever surface asked — a headless caller's placements, the
+	// rule's too, stay "headless", apart from the person's own.
+	mode string
 }
 
 type eligibility struct {
@@ -129,7 +135,10 @@ func (e *evaluator) readLaunches() {
 		if err != nil {
 			continue
 		}
-		ll := launch{Launch: l, at: t.Unix(), automatic: automatic(l.Record)}
+		ll := launch{Launch: l, at: t.Unix(), automatic: automatic(l.Record), mode: l.Mode}
+		if ll.automatic && l.Mode != "headless" {
+			ll.mode = "auto"
+		}
 		for _, c := range l.Candidates {
 			if e.keyOf(l.Home, c) == "" {
 				unkeyed[l.Home+"\x00"+c.Name] = true
