@@ -49,10 +49,10 @@ func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, wid
 	if layout == LayoutCompact {
 		return p.compactBoard(views, now, width)
 	}
-	lw := LabelWidth(views)
+	lw := labelWidth(views)
 	b := Board{Groups: make([][]string, len(views))}
 	for i, v := range views {
-		b.Groups[i] = p.AccountBlock(v, now, lw)
+		b.Groups[i] = p.accountBlock(v, now, lw)
 	}
 	return b
 }
@@ -137,9 +137,7 @@ type cell struct {
 // pctWidth is the percent slot: "100%" and "  ?%" both fit.
 const pctWidth = 4
 
-func (c cell) width() int { return pctWidth + 1 + Cells(c.reset) }
-
-// cellFor is the compact counterpart of LimitRow: the same rowState, spelled
+// cellFor is the compact counterpart of limitRow: the same rowState, spelled
 // as distinct tokens rather than a legend — a valid future reset, a reset
 // legitimately absent (a 5h window nobody has opened), a reset that failed
 // to parse, a window nobody has started, a window that has since ended, and
@@ -196,7 +194,7 @@ func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	}
 	switch {
 	case v.Obs == nil && v.Health == accountstate.HealthOK:
-		parts = append(parts, p.Dim+"usage unknown — "+p.attemptReason(v, now)+p.Rst)
+		parts = append(parts, p.Dim+unknownText(v, now)+p.Rst)
 	case v.Obs != nil && len(v.Obs.Rows) == 0:
 		parts = append(parts, p.Dim+"no limits reported"+p.Rst)
 	}
@@ -206,7 +204,7 @@ func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	if t := featureText(v); t != "" {
 		parts = append(parts, p.Yel+t+p.Rst)
 	}
-	pr := p.provenance(v, now)
+	pr := provenance(v, now)
 	if pr.stale {
 		parts = append(parts, p.Yel+"stale"+p.Rst)
 	}

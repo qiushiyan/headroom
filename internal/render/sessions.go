@@ -154,7 +154,7 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	}
 	right := strings.Join(meta, " · ")
 	if Cells(right) > metaAvail {
-		right = TrimCells(right, metaAvail)
+		right = trimCells(right, metaAvail)
 	}
 
 	prefix := "  "
@@ -167,7 +167,7 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	label := Sanitize(primaryLabel(s))
 	labelWidth := max(w-2-Cells(right)-2-marksCells, 4)
 	if Cells(label) > labelWidth {
-		label = TrimCells(label, labelWidth-1) + "…"
+		label = trimCells(label, labelWidth-1) + "…"
 	}
 	left := prefix + label
 	if marksStr != "" {
@@ -182,7 +182,7 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	}
 	titleWidth := max(w-4, 8)
 	if Cells(title) > titleWidth {
-		title = TrimCells(title, titleWidth-1) + "…"
+		title = trimCells(title, titleWidth-1) + "…"
 	}
 	line2 := "    " + p.Dim + title + p.Rst
 	return []string{line1, line2}
@@ -277,7 +277,7 @@ func (p Palette) SessionPreview(s *sessions.Session, w int) []string {
 		text = Sanitize(text)
 		width := max(w-8, 10)
 		for i, line := 0, ""; text != "" && i < previewCap; i++ {
-			line = TrimCells(text, width)
+			line = trimCells(text, width)
 			text = text[len(line):]
 			out = append(out, "    "+p.Dim+prefix+line+p.Rst)
 			prefix = "  "
