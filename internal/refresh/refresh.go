@@ -138,9 +138,13 @@ func interpret(c Candidate, res response, at time.Time) (Result, state.Outcome, 
 }
 
 // Start returns one result per non-nil candidate and closes after all workers
-// finish. Each result addresses this input slice; callers finish draining a
-// round before rediscovering accounts. Workers never mutate caller facts.
-// reread optionally samples a rejected token for diagnostic callers.
+// finish — unless ctx is already done when it is called: a cancelled round
+// claims nothing, so only the candidates refused before the claim (the other
+// vendor's) get a result, and the rest none at all. Each result addresses
+// this input slice; callers finish draining a round before rediscovering
+// accounts, and a caller that reads results by index keeps its own default
+// for a candidate that got none. Workers never mutate caller facts. reread
+// optionally samples a rejected token for diagnostic callers.
 //
 // The store is scoped to one vendor, and a candidate of the other vendor is
 // refused before any claim: its key would be spent in the wrong ledger and

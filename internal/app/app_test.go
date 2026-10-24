@@ -86,7 +86,7 @@ func TestTransportFailureKeepsObservation(t *testing.T) {
 }
 
 // Regression test for the picker data race: the consumer applies each result
-// and then — like runSelect's draw — reads every account's view, while other
+// and then — like the picker's draw — reads every account's view, while other
 // fetches are still in flight. Fetch goroutines writing views themselves
 // made this fail under -race; launchFetches must keep views single-writer.
 func TestLaunchFetchesSingleWriter(t *testing.T) {
@@ -194,10 +194,11 @@ func usageServer(t *testing.T, requests *atomic.Int32) *httptest.Server {
 }
 
 // The quarantine's promise is that an unreadable ledger leaves every account
-// quiet for one cooldown rather than bricking. That promise is kept by Claim —
-// which only ever sees the accounts prepare marked as wanting a fetch, and
-// prepare decides that by reading the very ledger that is unreadable. Two runs
-// is the whole point: the first looks correct in isolation.
+// quiet for one cooldown rather than bricking. That promise is kept by Claim,
+// which decides every account's eligibility under its lock from the very
+// ledger that is unreadable — prepare only marks a spendable account pending
+// and decides nothing. Two runs is the whole point: the first looks correct
+// in isolation.
 func TestACorruptLedgerDoesNotFanOutOnTheNextRun(t *testing.T) {
 	var requests atomic.Int32
 	srv := usageServer(t, &requests)
@@ -255,7 +256,7 @@ func TestATornAccountFileDoesNotCostTheStoredObservation(t *testing.T) {
 
 	oneRound(t, cfg, blobs, now) // asks once, stores the answer under uuid:uuid-a
 	writeJSON(t, metaPath, `{ torn`)
-	oneRound(t, cfg, blobs, now.Add(time.Second)) // keyed dir:a@x.com for this run only
+	oneRound(t, cfg, blobs, now.Add(time.Second)) // whose it is unreadable: no key, so no claim this run
 	writeJSON(t, metaPath, goodMeta)
 	back := oneRound(t, cfg, blobs, now.Add(2*time.Second))["a@x.com"]
 
