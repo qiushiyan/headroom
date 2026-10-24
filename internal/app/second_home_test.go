@@ -145,7 +145,7 @@ func (f *twoHomes) launch(cfg config.Scope, args ...string) launched {
 
 func (f *twoHomes) log(cfg config.Scope) []launchlog.Record {
 	f.t.Helper()
-	recs, _, err := launchlog.Read(cfg.AccountsRoot, 0)
+	recs, _, err := launchlog.Read(cfg.AccountsRoot)
 	if err != nil {
 		f.t.Fatal(err)
 	}

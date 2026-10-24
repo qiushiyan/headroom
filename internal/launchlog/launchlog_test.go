@@ -1,20 +1,20 @@
 package launchlog
 
+// The file protocol — appends, the rewrite that bounds the file, torn lines —
+// is jsonl's, and is proven in jsonl_test. This file owns what a launch line
+// carries.
+
 import (
-	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/placement"
 )
 
-// record is a launch logged as placeLaunch logs it: the decision, and the
-// candidates, record of launches and intent it was made from.
-func record(now time.Time, intent placement.Intent) Record {
+// record is a launch logged as placeLaunch logs it, and the decision it was
+// made from: the candidates, record of launches and intent beside it.
+func record(now time.Time, intent placement.Intent) (Record, placement.Decision) {
 	cands := []placement.Candidate{
 		{Name: "a", Key: "uuid:a", ObservedAt: now.Add(-time.Minute).Unix(), Source: "headroom_cache",
 			Limits: []placement.Limit{
@@ -28,36 +28,62 @@ func record(now time.Time, intent placement.Intent) Record {
 		Recent: []placement.Pending{{Key: "uuid:b", Name: "b", PID: 3, AtMS: now.Add(-time.Minute).UnixMilli() + 7, Home: "/h"}},
 		Last:   map[string]placement.Last{"uuid:a": {Name: "a", AtMS: now.Add(-time.Hour).UnixMilli() + 250}},
 	}
-	return New(placement.Choose(cands, ledger, intent, now), cands, ledger, intent, now)
+	d := placement.Choose(cands, ledger, intent, now)
+	return New(d, cands, ledger, intent, now), d
 }
 
+// A line carries what the rule answered, the figures it counted, and every
+// input it read, through a write and a read: the times a reader compares in
+// their formats, and lists as lists — never null — when they are empty.
 func TestRecordCarriesEveryInput(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 10, 1, 10, 2, 11, 0, time.UTC)
-	rec := record(now, placement.Intent{Owner: "a", Exclude: "c"})
+	rec, d := record(now, placement.Intent{Owner: "a", Exclude: "c"})
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = "claude", 4242, "/tmp/p", "auto", true
 	if err := Append(root, rec); err != nil {
 		t.Fatal(err)
 	}
-	got, skipped, err := Read(root, 0)
+	got, skipped, err := Read(root)
 	if err != nil || skipped != 0 || len(got) != 1 {
 		t.Fatalf("read: %d records, %d skipped, %v", len(got), skipped, err)
 	}
 	r := got[0]
-	if r.At != "2026-10-01T10:02:11Z" || r.Chosen != "a" || r.Reason != placement.ReasonOwner || r.Rule != placement.Rule || !r.Recorded {
+	if r.At != "2026-10-01T10:02:11Z" || r.AtMS != now.UnixMilli() || !r.Recorded {
 		t.Errorf("record = %+v", r)
+	}
+	// The answer is the rule's, as it gave it.
+	if d.Chosen == "" || r.Chosen != d.Chosen || r.Reason != d.Reason || r.Rule != d.Rule {
+		t.Errorf("logged %q/%q/%q, the rule answered %+v", r.Chosen, r.Reason, r.Rule, d)
 	}
 	// What the rule was asked travels with what it answered, so the line can
 	// be decided again.
 	if r.V != Version || !r.Automatic || r.Owner != "a" || r.Exclude != "c" {
 		t.Errorf("intent = v%d automatic %v owner %q exclude %q", r.V, r.Automatic, r.Owner, r.Exclude)
 	}
-	if forced := record(now, placement.Intent{Kind: placement.Forced, Account: "a"}); forced.Automatic {
+	if forced, _ := record(now, placement.Intent{Kind: placement.Forced, Account: "a"}); forced.Automatic {
 		t.Error("a forced launch logged as the rule's choice")
 	}
 	a, b := r.Candidates[0], r.Candidates[1]
 	if a.Key != "uuid:a" || b.Key != "uuid:b" {
 		t.Errorf("keys = %q, %q", a.Key, b.Key)
+	}
+	// The figures are the ones the rule counted. The fixture's are all
+	// nonzero, so a field the line left unset cannot pass for one.
+	da := d.Candidates[0]
+	if da.Load == 0 || da.Week.Counted == 0 || da.Limits[0].Counted == 0 {
+		t.Fatalf("fixture: the rule counted %+v", da)
+	}
+	if a.Load != da.Load || a.Busy != da.Busy || a.Pending != da.Pending || a.Weekly != da.Week.Counted || a.NearLimit != da.NearLimit ||
+		a.Week.Room != da.Week.Room || a.Week.LeftS != da.Week.Left || a.Week.LeftBasis != string(da.Week.LeftBasis) {
+		t.Errorf("candidate a = %+v, the rule counted %+v", a, da)
+	}
+	for i, l := range a.Limits {
+		if dl := da.Limits[i]; l.Percent != dl.Percent || l.Session != dl.Session || l.Counted != dl.Counted || l.Basis != string(dl.Basis) {
+			t.Errorf("limit %d = %+v, the rule counted %+v", i, l, dl)
+		}
+	}
+	if !a.Eligible || b.Eligible || b.Excluded != "not logged in" || a.Source != "headroom_cache" {
+		t.Errorf("candidates = %+v, %+v", a, b)
 	}
 	// The raw input, not only the counts: the busy process, the record of
 	// launches, and the last placement to the millisecond that breaks ties.
@@ -70,163 +96,13 @@ func TestRecordCarriesEveryInput(t *testing.T) {
 	if a.LastPlaced == nil || *a.LastPlaced != "2026-10-01T09:02:11.250Z" {
 		t.Errorf("last placed = %v", a.LastPlaced)
 	}
-	if !a.Eligible || a.Load != 4 || a.Busy != 1 || a.Weekly != 12 || a.Source != "headroom_cache" ||
-		strings.Join(a.Statuses, ",") != "busy,shell" || a.ObservedAt == nil {
-		t.Errorf("candidate a = %+v", a)
+	if strings.Join(a.Statuses, ",") != "busy,shell" || b.Statuses == nil {
+		t.Errorf("statuses = %v, %v", a.Statuses, b.Statuses)
 	}
-	if l := a.Limits[0]; !l.Session || l.Counted != 34 || l.Basis != "observed" || l.ResetsAt == nil {
-		t.Errorf("limit = %+v", l)
+	if a.ObservedAt == nil || b.ObservedAt != nil || a.Limits[0].ResetsAt == nil {
+		t.Errorf("observed %v / %v, reset %v", a.ObservedAt, b.ObservedAt, a.Limits[0].ResetsAt)
 	}
 	if a.Limits[1].ResetsAt != nil {
 		t.Error("a row with no reset must say null, not 1970")
-	}
-	if b.Eligible || b.Excluded != "not logged in" || b.ObservedAt != nil || b.Statuses == nil {
-		t.Errorf("candidate b = %+v", b)
-	}
-}
-
-func TestATornLineIsSkippedNotFatal(t *testing.T) {
-	root := t.TempDir()
-	now := time.Now()
-	for range 3 {
-		if err := Append(root, record(now, placement.Intent{})); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f, _ := os.OpenFile(Path(root), os.O_APPEND|os.O_WRONLY, 0o600)
-	f.WriteString(`{"v":1,"at":"2026-10-01T10:0`)
-	f.Close()
-	got, skipped, err := Read(root, 2)
-	if err != nil || len(got) != 2 || skipped != 1 {
-		t.Fatalf("read: %d records, %d skipped, %v", len(got), skipped, err)
-	}
-	if got, _, err := Read(t.TempDir(), 5); err != nil || got != nil {
-		t.Fatalf("an absent log is an empty one: %v %v", got, err)
-	}
-}
-
-// Bounded by age, and only above the size bound: below it nothing is ever
-// rewritten, and above it only what is old goes.
-func TestBoundedByAgeOnlyAboveTheSizeBound(t *testing.T) {
-	root := t.TempDir()
-	now := time.Now()
-	old := record(now.Add(-2*Keep), placement.Intent{})
-	if err := Append(root, old); err != nil {
-		t.Fatal(err)
-	}
-	if err := Append(root, record(now, placement.Intent{})); err != nil {
-		t.Fatal(err)
-	}
-	if got, _, _ := Read(root, 0); len(got) != 2 {
-		t.Fatalf("below the size bound an old line was dropped: %d left", len(got))
-	}
-
-	prev := MaxBytes
-	MaxBytes = 1
-	t.Cleanup(func() { MaxBytes = prev })
-
-	// The log's own lock held alone by someone else — a rewrite in progress:
-	// the append gives up within its wait and says so, rather than writing to
-	// a file that is about to be replaced.
-	lock, err := os.OpenFile(Path(root)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	if err := Append(root, record(now, placement.Intent{})); err != ErrBusy {
-		t.Fatalf("append under a held lock: %v, want ErrBusy", err)
-	}
-	if time.Since(start) > time.Second {
-		t.Fatal("an append waited on the log's lock past its bound")
-	}
-	if got, _, _ := Read(root, 0); len(got) != 2 {
-		t.Fatalf("with the lock held: %d records, want the 2 already there", len(got))
-	}
-	syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	lock.Close()
-
-	if err := Append(root, record(now, placement.Intent{})); err != nil {
-		t.Fatal(err)
-	}
-	got, _, _ := Read(root, 0)
-	if len(got) != 2 {
-		t.Fatalf("above the bound: %d records, want the two recent ones", len(got))
-	}
-	for _, r := range got {
-		if r.At == old.At {
-			t.Fatal("the old line survived")
-		}
-	}
-}
-
-// A damaged tail — a line some writer never finished — must not swallow the
-// next record: a launch that succeeded is a line that can be read back.
-func TestADamagedTailDoesNotSwallowTheNextRecord(t *testing.T) {
-	root := t.TempDir()
-	now := time.Now()
-	if err := os.WriteFile(Path(root), []byte(`{"v":1,"at":"2026-10-01T10:0`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := Append(root, record(now, placement.Intent{})); err != nil {
-		t.Fatal(err)
-	}
-	got, skipped, err := Read(root, 0)
-	if err != nil || len(got) != 1 || skipped != 1 {
-		t.Fatalf("after a damaged tail: %d records, %d skipped, %v", len(got), skipped, err)
-	}
-}
-
-// Appends and the rewrite that bounds the file share one protocol: a record
-// whose append succeeded is in the file, however many rewrites ran meanwhile.
-// An append may give up under contention — and says so; what it may not do is
-// report success for a line the rename then threw away.
-func TestAppendsSurviveConcurrentPruning(t *testing.T) {
-	root := t.TempDir()
-	prev := MaxBytes
-	MaxBytes = 1 // every append is "above the bound"
-	t.Cleanup(func() { MaxBytes = prev })
-
-	now := time.Now()
-	const writers, each = 8, 40
-	var wg sync.WaitGroup
-	var written atomic.Int32
-	for w := range writers {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			for i := range each {
-				// An old line beside every new one, so each rewrite has
-				// something to drop and really does rename.
-				old := record(now.Add(-2*Keep), placement.Intent{})
-				old.PID = -1
-				_ = Append(root, old)
-				rec := record(now, placement.Intent{})
-				rec.PID = w*1000 + i
-				switch err := Append(root, rec); err {
-				case nil:
-					written.Add(1)
-				case ErrBusy:
-				default:
-					t.Errorf("append: %v", err)
-				}
-			}
-		}(w)
-	}
-	wg.Wait()
-	got, skipped, err := Read(root, 0)
-	if err != nil || skipped != 0 {
-		t.Fatalf("read: %d skipped, %v", skipped, err)
-	}
-	kept := 0
-	for _, r := range got {
-		if r.PID >= 0 {
-			kept++
-		}
-	}
-	if int(written.Load()) == 0 || kept != int(written.Load()) {
-		t.Fatalf("%d appends reported success and %d of their records are in the file", written.Load(), kept)
 	}
 }

@@ -85,7 +85,7 @@ func gatherEval(scope config.Scope, since, now time.Time) (eval.Input, error) {
 		}
 	}
 	for _, home := range homes {
-		recs, skipped, err := launchlog.Read(home, 0)
+		recs, skipped, err := launchlog.Read(home)
 		if err != nil {
 			if home == in.Home {
 				return in, err

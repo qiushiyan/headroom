@@ -78,7 +78,7 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 	var all []launchlog.Record
 	skipped := 0
 	for _, scope := range scopes {
-		recs, bad, err := launchlog.Read(scope.AccountsRoot, n)
+		recs, bad, err := launchlog.Read(scope.AccountsRoot)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
 			return 1
@@ -86,7 +86,8 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 		all = append(all, recs...)
 		skipped += bad
 	}
-	// One list across vendors, by time: RFC3339 UTC sorts as text.
+	// One list across vendors, by time — RFC3339 UTC sorts as text — and -n
+	// keeps its newest.
 	sort.SliceStable(all, func(i, j int) bool { return all[i].At < all[j].At })
 	if n > 0 && len(all) > n {
 		all = all[len(all)-n:]

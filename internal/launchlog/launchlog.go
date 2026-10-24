@@ -25,12 +25,12 @@ import (
 // have made.
 const Version = 2
 
-// The file is bounded by age, and only once it has grown past MaxBytes: a
+// The file is bounded by age, and only once it has grown past maxBytes: a
 // rewrite on every append would be pure contention for a file that gains a few
-// kilobytes a launch. Variables so a test can make a small file "large".
-var (
-	MaxBytes int64 = 8 << 20
-	Keep           = 180 * 24 * time.Hour
+// kilobytes a launch.
+const (
+	maxBytes = 8 << 20
+	keep     = 180 * 24 * time.Hour
 )
 
 // Path is the log of one vendor's accounts root.
@@ -205,30 +205,23 @@ func stamp(t time.Time) *string {
 	return &s
 }
 
-// ErrBusy is Append's answer when the log is being rewritten and stayed so past
-// the wait: the record was not written, and the caller says so.
-var ErrBusy = jsonl.ErrBusy
-
-// file is the log of one accounts root, bounded as the variables say now.
+// file is the log of one accounts root.
 func file(accountsRoot string) jsonl.Log {
-	return jsonl.Log{Path: Path(accountsRoot), MaxBytes: MaxBytes, Keep: Keep, Slack: Keep / 10}
+	return jsonl.Log{Path: Path(accountsRoot), MaxBytes: maxBytes, Keep: keep, Slack: keep / 10}
 }
 
-// Append writes one record as one line. A failure is the caller's to mention
-// and never to act on: a launch that could not be logged is still a launch.
+// Append writes one record as one line. A failure — jsonl.ErrBusy while the
+// log is being rewritten — is the caller's to mention and never to act on: a
+// launch that could not be logged is still a launch.
 // The state lock is never involved — routing must not wait on a file it does
 // not read.
 func Append(accountsRoot string, r Record) error {
 	return file(accountsRoot).Append(r)
 }
 
-// Read returns the newest n records, oldest first; n <= 0 means all of them.
-// A line that does not parse is skipped and counted: a torn final line during a
-// concurrent append is ordinary. An absent file is an empty log.
-func Read(accountsRoot string, n int) (records []Record, skipped int, err error) {
-	records, skipped, err = jsonl.Read(Path(accountsRoot), func(r Record) bool { return r.At != "" })
-	if n > 0 && len(records) > n {
-		records = records[len(records)-n:]
-	}
-	return records, skipped, err
+// Read returns every record, oldest first. A line that does not parse is
+// skipped and counted: a torn final line during a concurrent append is
+// ordinary. An absent file is an empty log.
+func Read(accountsRoot string) (records []Record, skipped int, err error) {
+	return jsonl.Read(Path(accountsRoot), func(r Record) bool { return r.At != "" })
 }
