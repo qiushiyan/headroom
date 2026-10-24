@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 // observedCodexBody is one real response with its identifiers replaced
@@ -116,17 +117,17 @@ func TestCodexResetStates(t *testing.T) {
 	for _, c := range []struct {
 		name      string
 		win       string
-		state     FieldState
+		state     tag.State
 		unstarted bool
 		resetAt   int64
 	}{
-		{"a parseable instant", window(10, 604800, 100, 1790000000), StateOK, false, 1790000000},
-		{"the vendor states no reset", window(10, 604800, 100, "null"), StateNone, false, 0},
-		{"present but unparseable", window(10, 604800, 100, `{"at":1}`), StateBad, false, 0},
-		{"never used: a full window away", window(0, 604800, 604800, 1790604800), StateNone, true, 0},
-		{"0% one second into a started window", window(0, 604800, 604799, 1790604799), StateOK, false, 1790604799},
-		{"a full window away but something was spent", window(1, 604800, 604800, 1790604800), StateOK, false, 1790604800},
-		{"unstarted shape with an undecodable remaining time", window(0, 604800, `"604800"`, 1790604800), StateOK, false, 1790604800},
+		{"a parseable instant", window(10, 604800, 100, 1790000000), tag.OK, false, 1790000000},
+		{"the vendor states no reset", window(10, 604800, 100, "null"), tag.None, false, 0},
+		{"present but unparseable", window(10, 604800, 100, `{"at":1}`), tag.Bad, false, 0},
+		{"never used: a full window away", window(0, 604800, 604800, 1790604800), tag.None, true, 0},
+		{"0% one second into a started window", window(0, 604800, 604799, 1790604799), tag.OK, false, 1790604799},
+		{"a full window away but something was spent", window(1, 604800, 604800, 1790604800), tag.OK, false, 1790604800},
+		{"unstarted shape with an undecodable remaining time", window(0, 604800, `"604800"`, 1790604800), tag.OK, false, 1790604800},
 	} {
 		row := mustCodex(t, codexBody(`{"primary_window":`+c.win+`}`, "")).Rows[0]
 		if row.ResetState != c.state || row.Unstarted != c.unstarted || row.ResetAt != c.resetAt {
@@ -159,13 +160,13 @@ func TestCodexEnvelopeAndDegradation(t *testing.T) {
 	for _, c := range []struct {
 		name                     string
 		win                      string
-		percent, reset, identity FieldState
+		percent, reset, identity tag.State
 	}{
-		{"a percent under a wrong type", window(`"93"`, 604800, 1, 1790000000), StateBad, StateOK, StateOK},
-		{"a missing percent", `{"limit_window_seconds":604800,"reset_at":1790000000}`, StateBad, StateOK, StateOK},
-		{"a non-positive duration", window(10, 0, 1, 1790000000), StateOK, StateOK, StateBad},
-		{"a duration under a wrong type", window(10, `"604800"`, 1, 1790000000), StateOK, StateOK, StateBad},
-		{"a window that is not an object", `7`, StateBad, StateNone, StateBad},
+		{"a percent under a wrong type", window(`"93"`, 604800, 1, 1790000000), tag.Bad, tag.OK, tag.OK},
+		{"a missing percent", `{"limit_window_seconds":604800,"reset_at":1790000000}`, tag.Bad, tag.OK, tag.OK},
+		{"a non-positive duration", window(10, 0, 1, 1790000000), tag.OK, tag.OK, tag.Bad},
+		{"a duration under a wrong type", window(10, `"604800"`, 1, 1790000000), tag.OK, tag.OK, tag.Bad},
+		{"a window that is not an object", `7`, tag.Bad, tag.None, tag.Bad},
 	} {
 		rows := mustCodex(t, codexBody(`{"primary_window":`+c.win+`}`, "")).Rows
 		if len(rows) != 1 {
@@ -175,7 +176,7 @@ func TestCodexEnvelopeAndDegradation(t *testing.T) {
 		if g.PercentState != c.percent || g.ResetState != c.reset || g.IdentityState != c.identity || !g.Drifted() {
 			t.Errorf("%s: %+v", c.name, g)
 		}
-		if g.PercentState == StateBad && g.Percent != 0 {
+		if g.PercentState == tag.Bad && g.Percent != 0 {
 			t.Errorf("%s: a bad percent kept a figure", c.name)
 		}
 	}
@@ -183,7 +184,7 @@ func TestCodexEnvelopeAndDegradation(t *testing.T) {
 	// A malformed additional entry is one bad row — never dropped silently.
 	for _, extra := range []string{`[7]`, `[{"limit_name":"x"}]`, `[{"metered_feature":"f","rate_limit":"x"}]`, `{"not":"a list"}`} {
 		r := mustCodex(t, codexBody(`null`, `"additional_rate_limits":`+extra))
-		if len(r.Rows) != 1 || r.Rows[0].IdentityState != StateBad || r.Rows[0].Group != CodexGroupAdditional {
+		if len(r.Rows) != 1 || r.Rows[0].IdentityState != tag.Bad || r.Rows[0].Group != CodexGroupAdditional {
 			t.Errorf("additional %s: rows = %+v", extra, r.Rows)
 		}
 	}
@@ -272,7 +273,7 @@ func TestParseDispatch(t *testing.T) {
 // rounds to: a sliver of use starts the window, and its reset is real.
 func TestCodexUnstartedTestsTheDecodedPercentNotTheRoundedOne(t *testing.T) {
 	row := mustCodex(t, codexBody(`{"primary_window":`+window(0.1, 604800, 604800, 1790604800)+`}`, "")).Rows[0]
-	if row.Unstarted || row.ResetAt != 1790604800 || row.ResetState != StateOK {
+	if row.Unstarted || row.ResetAt != 1790604800 || row.ResetState != tag.OK {
 		t.Errorf("0.1%% used read as not started and lost its reset: %+v", row)
 	}
 	if row.Percent != 0 {
@@ -292,7 +293,7 @@ func TestPeriod(t *testing.T) {
 		{config.Claude, Row{Kind: "weekly_all", Group: "weekly"}, week},
 		{config.Claude, Row{Kind: "weekly_scoped", Group: "weekly", Model: "Fable"}, week},
 		{config.Claude, Row{Kind: "session", Group: "session"}, 0},
-		{config.Claude, Row{Kind: "weekly_all", IdentityState: StateBad}, 0},
+		{config.Claude, Row{Kind: "weekly_all", IdentityState: tag.Bad}, 0},
 		{config.Claude, Row{Kind: "monthly_all", Group: "monthly"}, 0},
 		{config.Codex, Row{Kind: "secondary", Group: CodexGroupMain, WindowSeconds: 604800}, 0},
 	}
@@ -315,7 +316,7 @@ func TestSessionWindow(t *testing.T) {
 	if got := SessionWindow(config.Claude, claude[:1]); got != -1 {
 		t.Errorf("no session row = %d, want -1", got)
 	}
-	bad := []Row{{Kind: "session", IdentityState: StateBad}}
+	bad := []Row{{Kind: "session", IdentityState: tag.Bad}}
 	if got := SessionWindow(config.Claude, bad); got != -1 {
 		t.Errorf("a row that cannot say which limit it is = %d, want -1", got)
 	}

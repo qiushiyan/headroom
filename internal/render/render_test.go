@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -84,7 +85,7 @@ func TestLimitRowPlain(t *testing.T) {
 // bad percent rendering as a plain 0% would read as free headroom.
 func TestLimitRowDrift(t *testing.T) {
 	p := NewPalette(false)
-	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: usage.StateBad}, 0, 16)
+	bad := p.LimitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: tag.Bad}, 0, 16)
 	real0 := p.LimitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16)
 	if bad == real0 {
 		t.Fatalf("bad percent indistinguishable from real 0%%: %q", bad)
@@ -101,7 +102,7 @@ func TestLimitRowDrift(t *testing.T) {
 
 	// A bad timestamp alone also carries the marker.
 	badReset := p.LimitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal",
-		ResetState: usage.StateBad}, 0, 16)
+		ResetState: tag.Bad}, 0, 16)
 	if !strings.Contains(badReset, "drift") {
 		t.Errorf("bad reset should carry the drift marker: %q", badReset)
 	}
@@ -375,7 +376,7 @@ func TestRolledOverRowIsNotAnAnswer(t *testing.T) {
 	now := time.Now().Unix()
 	p := NewPalette(false)
 	rolled := usage.Row{Label: "5h session", Percent: 8, ResetAt: now - 33*3600,
-		PercentState: usage.StateOK, ResetState: usage.StateOK}
+		PercentState: tag.OK, ResetState: tag.OK}
 
 	line := p.LimitRow(rolled, now, 12)
 	if strings.Contains(line, "8%") {

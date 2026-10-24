@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 func parseOne(t *testing.T, body string) Row {
@@ -37,13 +39,13 @@ func TestParseLimitsModern(t *testing.T) {
 	if rows[0] != want0 {
 		t.Errorf("row0 = %+v, want %+v", rows[0], want0)
 	}
-	if rows[1].Label != "All models (7d)" || rows[1].Percent != 88 || rows[1].PercentState != StateOK {
+	if rows[1].Label != "All models (7d)" || rows[1].Percent != 88 || rows[1].PercentState != tag.OK {
 		t.Errorf("row1 = %+v", rows[1])
 	}
-	if rows[1].Group != "weekly" || rows[1].IdentityState != StateOK {
+	if rows[1].Group != "weekly" || rows[1].IdentityState != tag.OK {
 		t.Errorf("row1 identity = %+v", rows[1])
 	}
-	if rows[1].ResetState != StateOK {
+	if rows[1].ResetState != tag.OK {
 		t.Errorf("fractional+offset timestamp should parse: %+v", rows[1])
 	}
 	// A model-scoped entry labels by model even when a group is present —
@@ -51,8 +53,8 @@ func TestParseLimitsModern(t *testing.T) {
 	if rows[2].Label != "Claude Opus 4.5 (7d)" || rows[2].Model != "Claude Opus 4.5" {
 		t.Errorf("row2 = %+v", rows[2])
 	}
-	if rows[2].ResetAt != 0 || rows[2].ResetState != StateNone {
-		t.Errorf("null resets_at should be StateNone: %+v", rows[2])
+	if rows[2].ResetAt != 0 || rows[2].ResetState != tag.None {
+		t.Errorf("null resets_at should be tag.None: %+v", rows[2])
 	}
 	if rows[2].Severity != "limit_reached" {
 		t.Errorf("severity lost: %+v", rows[2])
@@ -76,17 +78,17 @@ func TestLimitsEnvelope(t *testing.T) {
 func TestDriftTags(t *testing.T) {
 	// Percent present but malformed → renders 0, tagged bad.
 	r := parseOne(t, `{"limits":[{"kind":"session","percent":"n/a","resets_at":"2026-08-02T15:00:00Z"}]}`)
-	if r.Percent != 0 || r.PercentState != StateBad || !r.Drifted() {
+	if r.Percent != 0 || r.PercentState != tag.Bad || !r.Drifted() {
 		t.Errorf("bad percent: %+v", r)
 	}
 	// Percent absent entirely is also drift (the field is required).
 	r = parseOne(t, `{"limits":[{"kind":"session"}]}`)
-	if r.PercentState != StateBad {
+	if r.PercentState != tag.Bad {
 		t.Errorf("missing percent: %+v", r)
 	}
 	// Timestamp present but unparseable → tagged bad, distinct from absent.
 	r = parseOne(t, `{"limits":[{"kind":"session","percent":1,"resets_at":"tomorrowish"}]}`)
-	if r.ResetAt != 0 || r.ResetState != StateBad || !r.Drifted() {
+	if r.ResetAt != 0 || r.ResetState != tag.Bad || !r.Drifted() {
 		t.Errorf("bad timestamp: %+v", r)
 	}
 	// Absent / empty timestamps are legitimate (untouched window).
@@ -95,13 +97,13 @@ func TestDriftTags(t *testing.T) {
 		`{"limits":[{"kind":"session","percent":1,"resets_at":""}]}`,
 	} {
 		r = parseOne(t, body)
-		if r.ResetState != StateNone || r.Drifted() {
-			t.Errorf("absent timestamp should be StateNone: %+v", r)
+		if r.ResetState != tag.None || r.Drifted() {
+			t.Errorf("absent timestamp should be tag.None: %+v", r)
 		}
 	}
 	// Numeric epochs are accepted (handled drift, not papered over).
 	r = parseOne(t, `{"limits":[{"kind":"session","percent":1,"resets_at":1754121600}]}`)
-	if r.ResetAt != 1754121600 || r.ResetState != StateOK {
+	if r.ResetAt != 1754121600 || r.ResetState != tag.OK {
 		t.Errorf("numeric epoch: %+v", r)
 	}
 }
@@ -130,7 +132,7 @@ func TestIdentityFields(t *testing.T) {
 	r := parseOne(t, `{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":1,
 		"scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}`)
 	if r.Kind != "weekly_scoped" || r.Group != "weekly" || r.Model != "Fable" ||
-		r.IdentityState != StateOK || r.Drifted() {
+		r.IdentityState != tag.OK || r.Drifted() {
 		t.Errorf("scoped row = %+v", r)
 	}
 
@@ -161,14 +163,14 @@ func TestIdentityFields(t *testing.T) {
 		`{"limits":[{"kind":"weekly_scoped","group":"session","percent":1,"scope":{"model":{"display_name":"Fable"}}}]}`,
 	} {
 		r := parseOne(t, body)
-		if r.IdentityState != StateBad || !r.Drifted() {
-			t.Errorf("identity for %s = %+v, want StateBad", body, r)
+		if r.IdentityState != tag.Bad || !r.Drifted() {
+			t.Errorf("identity for %s = %+v, want tag.Bad", body, r)
 		}
 	}
 
 	// A null scope (the unscoped rows' ordinary spelling) is not drift.
 	r = parseOne(t, `{"limits":[{"kind":"weekly_all","group":"weekly","percent":1,"scope":null}]}`)
-	if r.Model != "" || r.IdentityState != StateOK {
+	if r.Model != "" || r.IdentityState != tag.OK {
 		t.Errorf("null scope = %+v", r)
 	}
 }

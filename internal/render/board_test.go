@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -67,7 +68,7 @@ func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 		{Label: "b@x.com", Obs: fresh(now,
 			usage.Row{Label: "mystery", Kind: "mystery", Group: "weekly", Percent: 5},
 			weeklyAll(52, now+90000),
-			usage.Row{Label: "5h session", Kind: "session", Group: "weekly", IdentityState: usage.StateBad},
+			usage.Row{Label: "5h session", Kind: "session", Group: "weekly", IdentityState: tag.Bad},
 			scoped("Opus", 40, now+90000),
 		)},
 		{Label: "c@x.com", Obs: fresh(now,
@@ -109,9 +110,9 @@ func TestCompactCellStates(t *testing.T) {
 		{"valid, high, days", weeklyAll(97, now+4*86400+20*3600), cell{"97%", "4.8d", p.Red, p.Dim}},
 		{"valid, middling, minutes", session(55, now+35*60), cell{"55%", "0.6h", p.Yel, p.Dim}},
 		{"reset legitimately absent", session(0, 0), cell{"0%", "—", p.Grn, p.Dim}},
-		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: usage.StateBad}, cell{"12%", "reset?", p.Grn, p.Red}},
+		{"reset malformed is red", usage.Row{Kind: "session", Percent: 12, Severity: "normal", ResetState: tag.Bad}, cell{"12%", "reset?", p.Grn, p.Red}},
 		{"rolled over is dim and not a number", session(12, now-60), cell{"?%", "rolled", p.Dim, p.Dim}},
-		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: usage.StateBad, ResetAt: now + 3600}, cell{"?%", "1.0h", p.Red, p.Dim}},
+		{"bad percent is red", usage.Row{Kind: "session", Severity: "normal", PercentState: tag.Bad, ResetAt: now + 3600}, cell{"?%", "1.0h", p.Red, p.Dim}},
 		{"severity overrides a low percent", usage.Row{Kind: "session", Percent: 3, Severity: "warning", ResetAt: now + 3600}, cell{"3%", "1.0h", p.Red, p.Dim}},
 	}
 	for _, tc := range cases {

@@ -11,16 +11,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
-// The degradation vocabulary is shared with credential parsing — see
-// internal/tag. The aliases keep the usage.State* spelling at call sites.
-type FieldState = tag.State
-
-const (
-	StateOK   = tag.OK
-	StateNone = tag.None
-	StateBad  = tag.Bad
-)
-
 // Row is the response contract: one rendered line per limit.
 //
 // Kind, Group and Model are the vendor's own identity vocabulary, carried
@@ -37,20 +27,20 @@ type Row struct {
 	Kind         string // decoded "kind"; "" when absent
 	Group        string // decoded "group"; "" when absent
 	Model        string // decoded scope.model.display_name; "" when unscoped
-	Percent      int    // 0 when PercentState is StateBad
+	Percent      int    // 0 when PercentState is tag.Bad
 	ResetAt      int64  // unix seconds; 0 = unknown or absent
 	Severity     string
-	PercentState FieldState // StateOK or StateBad
-	ResetState   FieldState // StateOK, StateNone, or StateBad
+	PercentState tag.State // tag.OK or tag.Bad
+	ResetState   tag.State // tag.OK, tag.None, or tag.Bad
 
-	// IdentityState is StateBad when the row cannot be selected as what it
+	// IdentityState is tag.Bad when the row cannot be selected as what it
 	// claims to be: an identity field present under a type it has never
 	// had, a missing kind, a scoped row that no longer says what it is
 	// scoped to, or a known unscoped kind carrying a model. There is no
-	// StateNone — a limit that cannot say which limit it is isn't
+	// tag.None — a limit that cannot say which limit it is isn't
 	// legitimately anonymous, it is unselectable, and only `check` failing
 	// will surface that before a consumer quietly stops matching.
-	IdentityState FieldState
+	IdentityState tag.State
 
 	// WindowSeconds is the window's stated duration; 0 when the vendor does
 	// not state one, which is every Claude Code row. Feature is the metered
@@ -70,7 +60,7 @@ type Row struct {
 
 // Drifted reports whether any field was present but unparseable.
 func (r Row) Drifted() bool {
-	return r.PercentState == StateBad || r.ResetState == StateBad || r.IdentityState == StateBad
+	return r.PercentState == tag.Bad || r.ResetState == tag.Bad || r.IdentityState == tag.Bad
 }
 
 // RolledOver reports that the window this row describes has ended: its own
@@ -122,26 +112,26 @@ func parseEntry(e map[string]any) Row {
 	group, groupOK := identField(e, "group")
 	model, modelOK := scopedModel(e)
 
-	identState := StateOK
+	identState := tag.OK
 	switch {
 	case !kindOK || !groupOK || !modelOK:
-		identState = StateBad
+		identState = tag.Bad
 	case kind == "":
 		// kind is the selector consumers use to identify a limit.
-		identState = StateBad
+		identState = tag.Bad
 	case kind == "weekly_scoped" && model == "":
 		// A scoped row that no longer names its scope. Left untagged it
 		// would either masquerade under the all-models label or vanish from
 		// every consumer's match — both silent.
-		identState = StateBad
+		identState = tag.Bad
 	case (kind == "session" || kind == "weekly_all") && model != "":
 		// The known unscoped kinds contradicted by a model scope: a "5h
 		// session" carrying a model is drift wearing a valid selector.
 		// Unknown kinds stay untagged — new vendor vocabulary is carried
 		// and selectable, not an alarm.
-		identState = StateBad
+		identState = tag.Bad
 	case contradictsGroup(kind, group):
-		identState = StateBad
+		identState = tag.Bad
 	}
 
 	// Label derives from the decoded fields alone. The fallback prefers kind
@@ -177,42 +167,42 @@ func parseEntry(e map[string]any) Row {
 	}
 }
 
-func parsePercent(v any) (int, FieldState) {
+func parsePercent(v any) (int, tag.State) {
 	switch n := v.(type) {
 	case float64:
-		return int(math.Round(n)), StateOK
+		return int(math.Round(n)), tag.OK
 	case string:
 		if f, err := strconv.ParseFloat(n, 64); err == nil {
-			return int(math.Round(f)), StateOK
+			return int(math.Round(f)), tag.OK
 		}
 	}
-	return 0, StateBad
+	return 0, tag.Bad
 }
 
-func parseReset(v any) (int64, FieldState) {
+func parseReset(v any) (int64, tag.State) {
 	switch t := v.(type) {
 	case nil:
-		return 0, StateNone
+		return 0, tag.None
 	case string:
 		if t == "" {
-			return 0, StateNone
+			return 0, tag.None
 		}
 		if ts, err := time.Parse(time.RFC3339, t); err == nil {
 			if sec := ts.Unix(); sec > 0 {
-				return sec, StateOK
+				return sec, tag.OK
 			}
-			return 0, StateNone
+			return 0, tag.None
 		}
-		return 0, StateBad
+		return 0, tag.Bad
 	case float64:
 		// Numeric epoch seconds: accepted here (the jq reference marked
 		// numbers bad); a drift to numbers is handled, not papered over.
 		if sec := int64(t); sec > 0 {
-			return sec, StateOK
+			return sec, tag.OK
 		}
-		return 0, StateNone
+		return 0, tag.None
 	default:
-		return 0, StateBad
+		return 0, tag.Bad
 	}
 }
 

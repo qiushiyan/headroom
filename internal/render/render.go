@@ -11,6 +11,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -429,7 +430,7 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
 		phrase = "not started"
 	}
 	switch {
-	case r.PercentState == usage.StateBad:
+	case r.PercentState == tag.Bad:
 		// A percent that no longer parses must not read as real headroom.
 		bar = strings.Repeat("?", BarWidth)
 		pct = "  ?%"
@@ -461,7 +462,7 @@ func (p Palette) severity(r usage.Row, now int64) string {
 		color = p.Red
 	}
 	switch {
-	case r.PercentState == usage.StateBad:
+	case r.PercentState == tag.Bad:
 		color = p.Red
 	case r.RolledOver(now):
 		color = p.Dim

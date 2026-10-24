@@ -798,11 +798,7 @@ func checkHomes(set accounts.Set, snap state.Snapshot, chk, own func(bool, strin
 			mine[a.Dir()] = fi
 		}
 	}
-	var registered []config.Scope
-	for _, m := range snap.Members() {
-		registered = append(registered, config.HomeScope(scope.Vendor, m.Home, m.Root, m.Explicit))
-	}
-	homes := accounts.OtherHomes(scope, registered)
+	homes := snap.OtherHomes(scope)
 	others := len(homes)
 	for _, h := range homes {
 		for _, a := range h.Set.Accounts {

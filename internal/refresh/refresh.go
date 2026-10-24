@@ -57,7 +57,7 @@ func PrepareCodex(a accounts.Account, now time.Time) (*Candidate, accountstate.A
 		return nil, accountstate.AttemptTokenStale
 	}
 	return &Candidate{
-		key:       state.Key{UUID: snap.Identity(), Name: a.Name},
+		key:       state.KeyFor(a),
 		vendor:    config.Codex,
 		url:       a.Scope.UsageURL,
 		headers:   [][2]string{{"ChatGPT-Account-Id", snap.AccountID}, {"User-Agent", userAgent}},
@@ -78,7 +78,7 @@ func Prepare(a accounts.Account, blob creds.Blob, readable bool, now time.Time) 
 		return nil, accountstate.AttemptIdentityUnknown
 	default:
 		return &Candidate{
-			key:    state.Key{UUID: a.AccountID, Name: a.Name},
+			key:    state.KeyFor(a),
 			vendor: a.Scope.Vendor,
 			url:    a.Scope.UsageURL,
 			dir:    a.ConfigDir,

@@ -7,6 +7,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -24,15 +25,15 @@ func TestJSONDocument(t *testing.T) {
 					Rows: []usage.Row{
 						{Label: "5h session", Kind: "session", Group: "session",
 							Percent: 42, ResetAt: 1754121600,
-							Severity: "normal", PercentState: usage.StateOK, ResetState: usage.StateOK},
+							Severity: "normal", PercentState: tag.OK, ResetState: tag.OK},
 						{Label: "All models (7d)", Kind: "weekly_all", Group: "weekly", Severity: "normal",
-							PercentState: usage.StateBad, ResetState: usage.StateNone},
+							PercentState: tag.Bad, ResetState: tag.None},
 						{Label: "?", Percent: 81, Severity: "normal",
-							PercentState: usage.StateOK, ResetState: usage.StateNone,
-							IdentityState: usage.StateBad},
+							PercentState: tag.OK, ResetState: tag.None,
+							IdentityState: tag.Bad},
 						{Label: "Fable (7d)", Kind: "weekly_scoped", Group: "weekly", Model: "Fable",
 							Percent: 92, Severity: "critical",
-							PercentState: usage.StateOK, ResetState: usage.StateNone},
+							PercentState: tag.OK, ResetState: tag.None},
 					},
 				},
 				Attempt: accountstate.Attempt{State: accountstate.AttemptOK},

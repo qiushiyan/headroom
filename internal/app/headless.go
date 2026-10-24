@@ -420,7 +420,7 @@ func runHeadlessToken(out, errw io.Writer, scope config.Scope, args []string) in
 	}
 	tok, ok := tokens[a.Name]
 	now := time.Now()
-	key := state.Key{UUID: a.AccountID, Name: a.Name}
+	key := state.KeyFor(a)
 	switch {
 	case !ok:
 		fmt.Fprintf(errw, "headroom headless token: %s has no headless token — headroom headless mint %s\n", a.Name, a.Name)

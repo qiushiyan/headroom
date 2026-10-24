@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 // AllowanceState is the account-level answer a usage response gives to "may
@@ -92,7 +93,7 @@ func (r Reading) Drifted() int {
 func SessionWindow(vendor config.Vendor, rows []Row) int {
 	best := -1
 	for i, r := range rows {
-		if r.IdentityState == StateBad {
+		if r.IdentityState == tag.Bad {
 			continue
 		}
 		if vendor == config.Codex {
@@ -120,7 +121,7 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 // the first request after one ends, and so does every Codex window: none of
 // those keeps a schedule a passed reset could name.
 func Period(vendor config.Vendor, r Row) time.Duration {
-	if vendor == config.Codex || r.IdentityState == StateBad {
+	if vendor == config.Codex || r.IdentityState == tag.Bad {
 		return 0
 	}
 	if r.Kind == "weekly_all" || r.Kind == "weekly_scoped" {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 // The Codex usage body (GET …/backend-api/wham/usage; observed on codex-cli
@@ -126,7 +128,7 @@ func limitObject(v any) (map[string]any, bool) {
 
 func badIdentityRow(group, label string) Row {
 	return Row{Label: label, Group: group, Severity: "normal",
-		PercentState: StateBad, ResetState: StateNone, IdentityState: StateBad}
+		PercentState: tag.Bad, ResetState: tag.None, IdentityState: tag.Bad}
 }
 
 // codexWindows turns one limit object's slots into rows. A null or absent
@@ -141,7 +143,7 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		row := Row{Kind: slot.kind, Group: group, Feature: feature, Severity: "normal"}
 		w, ok := v.(map[string]any)
 		if !ok {
-			row.PercentState, row.ResetState, row.IdentityState = StateBad, StateNone, StateBad
+			row.PercentState, row.ResetState, row.IdentityState = tag.Bad, tag.None, tag.Bad
 			row.Label = codexLabel(0, suffix)
 			rows = append(rows, row)
 			continue
@@ -153,7 +155,7 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		} else {
 			// A window that cannot say how long it is cannot be told from a
 			// sibling slot of another duration: unselectable.
-			row.IdentityState = StateBad
+			row.IdentityState = tag.Bad
 		}
 		// The unstarted predicate is deliberately narrow: every field must
 		// decode, nothing may have been spent, and the remaining time must be
@@ -164,9 +166,9 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		// 0.1% used is a started window with a real reset.
 		used, _ := w["used_percent"].(float64)
 		if after, ok := w["reset_after_seconds"].(float64); ok &&
-			row.PercentState == StateOK && row.ResetState == StateOK && row.IdentityState == StateOK &&
+			row.PercentState == tag.OK && row.ResetState == tag.OK && row.IdentityState == tag.OK &&
 			used == 0 && int64(after) >= row.WindowSeconds {
-			row.Unstarted, row.ResetAt, row.ResetState = true, 0, StateNone
+			row.Unstarted, row.ResetAt, row.ResetState = true, 0, tag.None
 		}
 		row.Label = codexLabel(row.WindowSeconds, suffix)
 		rows = append(rows, row)
@@ -176,11 +178,11 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 
 // codexPercent is strict where Claude Code's is lenient: used_percent has
 // only ever been a number, and a string there is drift.
-func codexPercent(v any) (int, FieldState) {
+func codexPercent(v any) (int, tag.State) {
 	if n, ok := v.(float64); ok {
-		return int(math.Round(n)), StateOK
+		return int(math.Round(n)), tag.OK
 	}
-	return 0, StateBad
+	return 0, tag.Bad
 }
 
 // codexLabel names the duration, then whatever the group adds. It derives

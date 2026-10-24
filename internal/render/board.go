@@ -16,6 +16,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -141,7 +142,7 @@ func columns(views []accountstate.Facts) []column {
 			continue
 		}
 		for _, r := range v.Obs.Rows {
-			if r.IdentityState == usage.StateBad {
+			if r.IdentityState == tag.Bad {
 				continue
 			}
 			if slices.ContainsFunc(cols, func(c column) bool { return c.matches(r) }) {
@@ -204,7 +205,7 @@ func (p Palette) cellFor(r usage.Row, now int64) cell {
 		resetColor: p.Dim,
 	}
 	switch {
-	case r.ResetState == usage.StateBad:
+	case r.ResetState == tag.Bad:
 		c.reset, c.resetColor = "reset?", p.Red
 	case r.Unstarted:
 		c.reset = "not started"
@@ -212,7 +213,7 @@ func (p Palette) cellFor(r usage.Row, now int64) cell {
 		c.reset = "—"
 	}
 	switch {
-	case r.PercentState == usage.StateBad:
+	case r.PercentState == tag.Bad:
 		c.pct = "?%"
 	case r.RolledOver(now):
 		c.pct, c.reset = "?%", "rolled"

@@ -13,6 +13,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 	"github.com/qiushiyan/headroom/internal/usagelog"
 )
@@ -59,7 +60,7 @@ func pinned(when time.Time, name string, cands ...placement.Candidate) Launch {
 // logged is one usage-log line: a session and a weekly row, and a scoped
 // weekly row at zero beside them.
 func logged(when time.Time, name string, session, weekly int, sessionReset, weeklyReset time.Time) usagelog.Record {
-	ok := usage.StateOK
+	ok := tag.OK
 	return usagelog.New(when, config.Claude, "uuid:"+name, name, home, []usage.Row{
 		{Kind: "session", Label: "5h session", Percent: session, ResetAt: sessionReset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
 		{Kind: "weekly_all", Label: "All models (7d)", Percent: weekly, ResetAt: weeklyReset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
@@ -618,7 +619,7 @@ func TestTheFiguresAddUp(t *testing.T) {
 // the session window, a feature's limit decides nothing, and a blocked account
 // has no room.
 func TestCodexIsReadByItsOwnRules(t *testing.T) {
-	ok := usage.StateOK
+	ok := tag.OK
 	codex := func(when time.Time, name string, session, weekly, review int, allowance usage.AllowanceState) usagelog.Record {
 		return usagelog.New(when, config.Codex, "uuid:"+name, name, home, []usage.Row{
 			{Kind: "primary", Group: usage.CodexGroupMain, WindowSeconds: 18000, Label: "5h", Percent: session, ResetAt: at(3 * time.Hour).Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
@@ -649,7 +650,7 @@ func TestCodexIsReadByItsOwnRules(t *testing.T) {
 // made it: the launch went into it, and is followed through it — for Follow
 // and no further, however long the window runs.
 func TestALaunchOpensTheWindowThatStartsAfterIt(t *testing.T) {
-	ok := usage.StateOK
+	ok := tag.OK
 	codex := func(when time.Time, pct int, windowS int64, reset time.Time) usagelog.Record {
 		return usagelog.New(when, config.Codex, "uuid:x", "x", home, []usage.Row{
 			{Kind: "primary", Group: usage.CodexGroupMain, WindowSeconds: windowS, Label: "w", Percent: pct, ResetAt: reset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},

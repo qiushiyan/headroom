@@ -12,6 +12,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/eval"
 	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 	"github.com/qiushiyan/headroom/internal/usagelog"
 )
@@ -73,7 +74,7 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 			reset, _ = time.Parse(time.RFC3339, *l.ResetsAt)
 		}
 	}
-	ok := usage.StateOK
+	ok := tag.OK
 	read := launched.Add(30 * time.Second)
 	if err := usagelog.Append(f.cfg.AccountsRoot, usagelog.New(read, config.Claude, "uuid:u-a@x.com", "a@x.com", f.cfg.AccountsRoot,
 		[]usage.Row{{Kind: "session", Label: "5h session", Percent: 30, ResetAt: reset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok}},

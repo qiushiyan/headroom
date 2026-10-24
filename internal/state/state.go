@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -100,6 +101,12 @@ type Key struct {
 	UUID string // "" when .claude.json reports no accountUuid
 	Name string // dir basename, or the primary's configured name
 }
+
+// KeyFor is an account's key: the one spelling of it, since the ledger, both
+// logs and every home sharing them join on it. AccountID is the identity
+// discovery read — Claude Code's accountUuid, or for Codex the account and
+// user ids of the auth snapshot the account carries for the whole round.
+func KeyFor(a accounts.Account) Key { return Key{UUID: a.AccountID, Name: a.Name} }
 
 // ID is the map key in the document. The prefix keeps the two namespaces from
 // colliding and makes the file readable with jq.
@@ -483,6 +490,18 @@ func (s Snapshot) Members() []Member {
 	}
 	slices.SortFunc(out, func(a, b Member) int { return strings.Compare(a.Root, b.Root) })
 	return out
+}
+
+// OtherHomes is every other home spending against this ledger today: the
+// homes registered in it, resolved by accounts.OtherHomes, which keeps only
+// those whose own .ledger still names it. Their accounts are read for live
+// sessions alone — never candidates, owners or sweep targets.
+func (s Snapshot) OtherHomes(self config.Scope) []accounts.Home {
+	var registered []config.Scope
+	for _, m := range s.Members() {
+		registered = append(registered, config.HomeScope(self.Vendor, m.Home, m.Root, m.Explicit))
+	}
+	return accounts.OtherHomes(self, registered)
 }
 
 // Observation returns the newest usage response headroom itself stored for

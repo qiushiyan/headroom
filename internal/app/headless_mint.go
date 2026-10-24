@@ -95,7 +95,7 @@ func runHeadlessMintTo(out, errw io.Writer, scope config.Scope, args []string, d
 		fmt.Fprintf(errw, "headroom headless mint: %v\n", err)
 		return 1
 	}
-	key := state.Key{UUID: a.AccountID, Name: a.Name}
+	key := state.KeyFor(a)
 
 	page := approvalPage{remote: deps.remote}
 	if p, ok := browser.Match(deps.profiles, a.Email); ok && !deps.remote {

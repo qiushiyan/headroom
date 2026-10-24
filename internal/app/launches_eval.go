@@ -67,7 +67,7 @@ func gatherEval(scope config.Scope, since, now time.Time) (eval.Input, error) {
 	known := func(root string, set accounts.Set) {
 		for _, a := range set.Accounts {
 			if a.AccountID != "" {
-				in.Keys[root+"\x00"+a.Name] = state.Key{UUID: a.AccountID, Name: a.Name}.ID()
+				in.Keys[root+"\x00"+a.Name] = state.KeyFor(a).ID()
 			}
 		}
 	}

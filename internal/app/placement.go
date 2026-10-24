@@ -125,17 +125,7 @@ func otherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 		// Codex has no registry headroom can read.
 		return nil
 	}
-	return accounts.OtherHomes(scope, registered(scope.Vendor, snap))
-}
-
-// registered is every home the ledger has a registration for, as a scope to
-// discover it under.
-func registered(vendor config.Vendor, snap state.Snapshot) []config.Scope {
-	var out []config.Scope
-	for _, m := range snap.Members() {
-		out = append(out, config.HomeScope(vendor, m.Home, m.Root, m.Explicit))
-	}
-	return out
+	return snap.OtherHomes(scope)
 }
 
 // homeLabels names every home a surface may mention, by accounts root: the
@@ -283,7 +273,7 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 			// A label no account of this home can carry: the registry reader
 			// stamps it on every entry, and it is mapped back here.
 			label := o.Root + "\x00" + a.Name
-			who[label] = claimant{state.Key{UUID: a.AccountID, Name: a.Name}.ID(), o.Root}
+			who[label] = claimant{state.KeyFor(a).ID(), o.Root}
 			all = append(all, sessions.ReadRegistry(label, a.Dir()).Entries...)
 		}
 	}
@@ -355,7 +345,7 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 		}
 		limits = append(limits, placement.Limit{
 			Kind: r.Kind, Label: r.Label, Percent: r.Percent,
-			Bad: r.PercentState == usage.StateBad, ResetAt: r.ResetAt, Window: r.WindowSeconds,
+			Bad: r.PercentState == tag.Bad, ResetAt: r.ResetAt, Window: r.WindowSeconds,
 			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
 		})
 	}

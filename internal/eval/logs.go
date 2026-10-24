@@ -13,6 +13,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -174,7 +175,7 @@ func (e *evaluator) readUsage() {
 			rd.rows = append(rd.rows, row{
 				id: rowID(u.Kind, u.Label, u.WindowSeconds), label: u.Label, session: i == session,
 				period: int64(usage.Period(vendor, u) / time.Second), window: u.WindowSeconds,
-				point: point{at: rd.at, percent: u.Percent, bad: u.PercentState == usage.StateBad, reset: u.ResetAt},
+				point: point{at: rd.at, percent: u.Percent, bad: u.PercentState == tag.Bad, reset: u.ResetAt},
 			})
 		}
 		e.readings[r.Key] = append(e.readings[r.Key], rd)
