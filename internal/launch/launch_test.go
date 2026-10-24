@@ -3,10 +3,12 @@ package launch
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
@@ -85,12 +87,6 @@ func TestEnvDoesNotMutateBase(t *testing.T) {
 	}
 }
 
-func TestExtraRefusesEmptyDir(t *testing.T) {
-	if _, err := Extra(config.Claude, ""); err == nil {
-		t.Error("Extra(\"\") must refuse: it would build a primary-shaped environment under an extra-shaped call")
-	}
-}
-
 func TestAmbient(t *testing.T) {
 	if v, present := Ambient(config.Claude, []string{"HOME=/u"}); present || v != "" {
 		t.Errorf("Ambient(clean) = (%q, %v), want absent", v, present)
@@ -135,7 +131,10 @@ func TestConflicts(t *testing.T) {
 
 // A relative dir is the reproduced chimera: claude reads the *default*
 // Keychain item (the primary's login) while writing state beside the cwd.
-// Both constructors refuse it, so Env can never emit one.
+// Both constructors refuse it, so Env can never emit one. The empty dir is
+// one more dir that is not absolute: Extra refuses it, since it would build a
+// primary-shaped environment under an extra-shaped call, while For reads it as
+// the vendors' own spelling of the primary.
 func TestExtraAndForRefuseRelativeDirs(t *testing.T) {
 	for _, dir := range []string{"yan@planlab.ai", "./x", "../x"} {
 		if _, err := Extra(config.Claude, dir); err == nil {
@@ -144,6 +143,9 @@ func TestExtraAndForRefuseRelativeDirs(t *testing.T) {
 		if _, err := For(config.Claude, dir); err == nil {
 			t.Errorf("For(%q) accepted a relative dir", dir)
 		}
+	}
+	if _, err := Extra(config.Claude, ""); err == nil {
+		t.Error(`Extra("") accepted an empty dir`)
 	}
 	if tgt, err := For(config.Claude, ""); err != nil || !tgt.IsPrimary() {
 		t.Errorf("For(\"\") = (%v, %v), want the primary", tgt, err)
@@ -258,5 +260,32 @@ func TestExecPathSetsArgv0(t *testing.T) {
 		if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, name+" -c") {
 			t.Errorf("argv = %q, want argv[0] %q", got, name)
 		}
+	}
+}
+
+// A relative PATH entry resolves only under GODEBUG=execerrdot=0, and then
+// against the cwd — which the session picker leaves for the project's dir
+// before it execs. Prepare anchors the executable where it was resolved:
+// deleting the filepath.Abs in Prepare must fail this test.
+func TestPrepareAnchorsARelativeExecutable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("PATH", "bin")
+	t.Setenv("GODEBUG", "execerrdot=0")
+	set := accounts.Discover(config.ForHome(t.TempDir()).Claude)
+	p, err := Prepare(set.Accounts[0], set, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compared after resolving links: the temp dir's own path may run through one.
+	want, _ := filepath.EvalSymlinks(filepath.Join(dir, "bin", "claude"))
+	if got, _ := filepath.EvalSymlinks(p.Path); !filepath.IsAbs(p.Path) || got != want {
+		t.Errorf("Prepare resolved %q, want an absolute path to %s", p.Path, want)
 	}
 }
