@@ -80,7 +80,7 @@ naming a vendor this machine does not have fails saying so, except
 
   Every launch says on stderr which account it took and why, before the
   vendor starts: `<account> · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: …)`,
-  `· pinned`, `· named`, `· last`; `load 3 (2 from steward-home)` says how
+  `· pinned`, `· named`, `· the last account used`; `load 3 (2 from steward-home)` says how
   much of it another home put there. A figure that is not a fresh measurement
   says so: `≥12%` is a lower bound from an observation older than fifteen
   minutes, `window ended` a window whose reset has passed, `?%` a percent
@@ -177,7 +177,8 @@ naming a vendor this machine does not have fails saying so, except
   the board looks wrong). Its `credential[...]` line names the Keychain or
   `.credentials.json` source and fails when no parseable login exists. It
   also fails when an account dir's login, history or session registry is a
-  link, or when an account dir belongs to two homes sharing a ledger, and it
+  link, when an account dir belongs to two homes sharing a ledger, or when a
+  re-pointed `HEADROOM_HOME` leaves a vendor's primary unlaunchable, and it
   says when this home's primary is spelled out and which homes share its
   ledger. Its `retention:` line prints how long the shared session store is
   kept and fails when accounts sharing it disagree on `cleanupPeriodDays`:

@@ -77,7 +77,7 @@ a scratch config dir made for the run and removed after, with the environment
 `$BROWSER` is headroom (`HEADROOM_BROWSER_PROFILE` naming the profile matched
 to the account's email, as for `login`); over ssh from another machine it is
 headroom opening nothing, as for `login`, and the user opens the printed URL
-and pastes the code. (Until 2026-10-24 it was `true(1)` there.) The output
+and pastes the code. The output
 reaches the terminal with every `sk-ant-…` string replaced by `[token withheld
 — headroom stores it]`. The approval is waited for up to 10 minutes (the
 vendor ignores ctrl-c, so closing the terminal is the way to stop sooner).
