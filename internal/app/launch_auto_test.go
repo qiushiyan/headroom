@@ -63,19 +63,19 @@ func newAutoFixture(t *testing.T, extras ...string) autoFixture {
 	}
 
 	f := autoFixture{t: t, cfg: cfg, st: state.Open(cfg), refreshes: new(int), live: map[int]int64{}}
-	prevCreds, prevProbe, prevRefresh := placementCreds, placementProbe, startRefresh
+	prevCreds, prevProbe, prevRefresh := placementCreds, pidProbe, startRefresh
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	placementCreds = func(accounts.Account) string {
 		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
 	}
-	placementProbe = func(pid int) (int64, error) {
+	pidProbe = func(pid int) (int64, error) {
 		if start, ok := f.live[pid]; ok {
 			return start, nil
 		}
 		return 0, os.ErrNotExist
 	}
 	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
-	t.Cleanup(func() { placementCreds, placementProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
+	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 	return f
 }
 

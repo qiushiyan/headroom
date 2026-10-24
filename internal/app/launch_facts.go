@@ -39,8 +39,9 @@ var (
 		raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
 		return raw
 	}
-	// placementProbe answers when a pid started, for registry liveness.
-	placementProbe sessions.PIDProbe = psProbe
+	// pidProbe answers when a pid started: the one probe behind registry
+	// liveness, a headless run's report and the runs proven over.
+	pidProbe sessions.PIDProbe = psProbe
 )
 
 // placeCandidate is one account as a placement read it: what the rule is handed,
@@ -269,25 +270,32 @@ type sessionLoad struct {
 }
 
 // readSessionLoad reads every account's registry, this home's and the other
-// homes', and samples each pid once for all of them. keys maps this home's
-// account names to their subscription keys; another home's account counts
-// only when its identity says which subscription it is, since its dir name is
-// that home's to choose. Codex has no registry headroom can read: its accounts
-// carry no busy sessions, and an empty read there is not evidence of idleness.
+// homes', with the headless runs, and inspects every claim in one pass — one
+// sample per pid answers liveness, load and ownership alike. keys maps this
+// home's account names to their subscription keys; another home's account
+// counts only when its identity says which subscription it is, since its dir
+// name is that home's to choose. Codex has no registry headroom can read: its
+// accounts carry no busy sessions, and an empty read there is not evidence of
+// idleness.
 func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []accounts.Home, runs []state.Run) sessionLoad {
 	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
 	if set.Scope.Vendor != config.Claude {
 		return out
 	}
-	type claimant struct{ key, home string }
+	// A claimant is whose a claim is: the subscription it spends, the home
+	// that reported it, and whether it is one of this home's own accounts,
+	// whose live claims alone are evidence of a session's owner.
+	type claimant struct {
+		key, home string
+		own       bool
+	}
 	who := map[string]claimant{}
-	var own []sessions.RegistryEntry
+	var claims []sessions.RegistryEntry
 	for _, a := range set.Accounts {
 		out.refs = append(out.refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
-		who[a.Name] = claimant{keys[a.Name], home}
-		own = append(own, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
+		who[a.Name] = claimant{keys[a.Name], home, true}
+		claims = append(claims, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
 	}
-	all := append([]sessions.RegistryEntry(nil), own...)
 	for _, o := range others {
 		for _, a := range o.Set.Accounts {
 			if a.AccountID == "" {
@@ -296,26 +304,26 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 			// A label no account of this home can carry: the registry reader
 			// stamps it on every entry, and it is mapped back here.
 			label := o.Root + "\x00" + a.Name
-			who[label] = claimant{state.KeyFor(a).ID(), o.Root}
-			all = append(all, sessions.ReadRegistry(label, a.Dir()).Entries...)
+			who[label] = claimant{key: state.KeyFor(a).ID(), home: o.Root}
+			claims = append(claims, sessions.ReadRegistry(label, a.Dir()).Entries...)
 		}
 	}
 	for i, r := range runs {
 		// Labelled like another home's accounts, mapped back below.
 		label := fmt.Sprintf("\x00run\x00%d", i)
-		who[label] = claimant{r.Key, r.Home}
-		all = append(all, runEntry(label, r))
+		who[label] = claimant{key: r.Key, home: r.Home}
+		claims = append(claims, runEntry(label, r))
 	}
-	probe := sampleOnce(placementProbe)
-	out.evidence, _ = sessions.InspectClaims(own, probe)
-	evidence, live := sessions.InspectClaims(all, probe)
-	for _, r := range runs {
-		if evidence[runEntry("", r).SessionID].State == sessions.NotLive {
-			out.gone = append(out.gone, r)
-		}
-	}
+	evidence, live := sessions.InspectClaims(claims, pidProbe)
+	out.gone = retiredRuns(runs, evidence)
+	out.evidence = map[string]sessions.ProcessEvidence{}
 	for _, e := range live {
 		c := who[e.Account]
+		if _, seen := out.evidence[e.SessionID]; c.own && !seen {
+			// Another home's session is never this home's to route, even under
+			// an id this home also holds: there it is load, and only load.
+			out.evidence[e.SessionID] = sessions.ProcessEvidence{State: sessions.Live, Account: e.Account}
+		}
 		if c.key == "" {
 			continue
 		}
@@ -331,27 +339,25 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 // its process runs.
 func runEntry(label string, r state.Run) sessions.RegistryEntry {
 	return sessions.RegistryEntry{
-		Account: label, SessionID: "run:" + r.Placement, PID: r.PID, StartedAtMS: r.StartedMS,
+		Account: label, SessionID: runID(r), PID: r.PID, StartedAtMS: r.StartedMS,
 		OK: true, Status: sessions.StatusBusy, StatusState: tag.OK,
 	}
 }
 
-// sampleOnce answers each pid from one sample, however many times it is
-// asked: liveness and ownership read the same process table.
-func sampleOnce(probe sessions.PIDProbe) sessions.PIDProbe {
-	type sample struct {
-		start int64
-		err   error
-	}
-	seen := map[int]sample{}
-	return func(pid int) (int64, error) {
-		if s, ok := seen[pid]; ok {
-			return s.start, s.err
+// runID is the session id a run's claim carries: one no vendor session has.
+func runID(r state.Run) string { return "run:" + r.Placement }
+
+// retiredRuns is the runs the inspected claims prove over, for the next write
+// of the ledger to drop. A run whose process could not be inspected is kept:
+// failing to inspect is never evidence of absence.
+func retiredRuns(runs []state.Run, evidence map[string]sessions.ProcessEvidence) []state.Run {
+	var gone []state.Run
+	for _, r := range runs {
+		if evidence[runID(r)].State == sessions.NotLive {
+			gone = append(gone, r)
 		}
-		start, err := probe(pid)
-		seen[pid] = sample{start, err}
-		return start, err
 	}
+	return gone
 }
 
 // limitsOf turns an observation into the rows the rule counts: the ones that

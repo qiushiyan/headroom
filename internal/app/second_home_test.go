@@ -76,19 +76,19 @@ func newTwoHomes(t *testing.T) *twoHomes {
 	writeJSON(t, steward.LedgerFile(), owner.AccountsRoot+"\n")
 
 	f := &twoHomes{t: t, owner: owner, steward: steward, live: map[int]int64{}, refreshes: new(int)}
-	prevCreds, prevProbe, prevRefresh := placementCreds, placementProbe, startRefresh
+	prevCreds, prevProbe, prevRefresh := placementCreds, pidProbe, startRefresh
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	placementCreds = func(accounts.Account) string {
 		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
 	}
-	placementProbe = func(pid int) (int64, error) {
+	pidProbe = func(pid int) (int64, error) {
 		if start, ok := f.live[pid]; ok {
 			return start, nil
 		}
 		return 0, os.ErrNotExist
 	}
 	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
-	t.Cleanup(func() { placementCreds, placementProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
+	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 
 	for _, s := range []config.Scope{owner, steward} {
 		if err := state.Open(s).Register(time.Now()); err != nil {
@@ -498,6 +498,48 @@ func TestTheBoardShowsTheOtherHomesLoad(t *testing.T) {
 				t.Errorf("home share = %+v", h)
 			}
 		}
+	}
+}
+
+// One session id in both homes' registries: the owner a launch follows comes
+// from this home's evidence alone, and the other home's session on that id is
+// load on its subscription all the same. One sample of the process table
+// answers both; taking owner evidence from every home's claims must fail this.
+func TestASessionIDInBothHomesIsOwnedHereAndCountedThere(t *testing.T) {
+	f := newTwoHomes(t)
+	for _, email := range append(shared, "qiushi@x.com") {
+		f.observe(email, 0, 10)
+	}
+	const sid = "abcdefab-1111-4111-8111-111111111111"
+	claim := func(dir string, pid int, status string, live bool) {
+		t.Helper()
+		started := time.Now().Add(-time.Hour)
+		sdir := filepath.Join(dir, "sessions")
+		if err := os.MkdirAll(sdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(t, filepath.Join(sdir, fmt.Sprintf("%d.json", pid)),
+			fmt.Sprintf(`{"pid":%d,"sessionId":%q,"startedAt":%d,"status":%q}`, pid, sid, started.UnixMilli(), status))
+		if live {
+			f.live[pid] = started.Unix()
+		}
+	}
+	// Here: the session's last prompt was on a@x.com, whose claim on it is of
+	// a process that has exited.
+	ownA := filepath.Join(f.owner.AccountsRoot, "a@x.com")
+	writeJSON(t, filepath.Join(ownA, "history.jsonl"),
+		fmt.Sprintf(`{"sessionId":%q,"timestamp":%d}`+"\n", sid, time.Now().Add(-time.Hour).UnixMilli()))
+	claim(ownA, 1101, "idle", false)
+	// There: a live session under the same id, working on b@x.com.
+	claim(filepath.Join(f.steward.AccountsRoot, "b@x.com"), 1102, "busy", true)
+
+	got := f.launch(f.owner, "--auto", "--", "--resume", sid)
+	if dirs := configDirs(got.env); got.code != 0 || len(dirs) != 1 || filepath.Base(dirs[0]) != "a@x.com" ||
+		!strings.Contains(got.stderr, "this session's account") {
+		t.Fatalf("exit %d on %v — the owner is this home's a@x.com:\n%s", got.code, dirs, got.stderr)
+	}
+	if c := loggedCandidate(f.log(f.owner)[0], "b@x.com"); c.Busy != 1 || len(c.Homes) != 1 || c.Homes[0].Home != f.steward.AccountsRoot {
+		t.Errorf("the other home's session on that id counted as %+v", c)
 	}
 }
 

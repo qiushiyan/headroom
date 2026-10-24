@@ -363,7 +363,7 @@ func runHeadlessStarted(errw io.Writer, scope config.Scope, args []string) int {
 		fmt.Fprintf(errw, "headroom headless started: %q is not a process id\n", args[1])
 		return 2
 	}
-	start, err := placementProbe(pid)
+	start, err := pidProbe(pid)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(errw, "headroom headless started: process %d has already exited — its placement counts as a launch\n", pid)
 		return 0
@@ -384,20 +384,16 @@ func runHeadlessStarted(errw io.Writer, scope config.Scope, args []string) int {
 	return 0
 }
 
-// goneRuns is the runs whose process is proven over, from one sample per pid.
+// goneRuns is the runs whose process is proven over, from one sample per pid:
+// what a placement's own reading proves (retiredRuns), for a command that
+// reads nothing else.
 func goneRuns(runs []state.Run) []state.Run {
-	entries := make([]sessions.RegistryEntry, len(runs))
+	claims := make([]sessions.RegistryEntry, len(runs))
 	for i, r := range runs {
-		entries[i] = runEntry("", r)
+		claims[i] = runEntry("", r)
 	}
-	evidence, _ := sessions.InspectClaims(entries, sampleOnce(placementProbe))
-	var gone []state.Run
-	for i, r := range runs {
-		if evidence[entries[i].SessionID].State == sessions.NotLive {
-			gone = append(gone, r)
-		}
-	}
-	return gone
+	evidence, _ := sessions.InspectClaims(claims, pidProbe)
+	return retiredRuns(runs, evidence)
 }
 
 // ---- the credential ----
