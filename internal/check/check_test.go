@@ -128,7 +128,8 @@ func TestCheckRouting(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name     string
-		setup    func(t *testing.T, cfg config.Scope)
+		vendor   config.Vendor // "" is Claude Code
+		setup    func(t *testing.T, cfg *config.Scope)
 		environ  []string
 		wantOK   []string
 		wantFail []string // own failures, each one line
@@ -138,7 +139,7 @@ func TestCheckRouting(t *testing.T) {
 		// earns no env line.
 		{name: "clean", wantOK: []string{"current: .current resolves to a launchable account (qiushi)"}, absent: "env:"},
 		// Corrupt (empty) .current is headroom's file, never vendor drift.
-		{name: "empty .current", setup: func(t *testing.T, cfg config.Scope) { current(t, cfg, "") }, wantFail: []string{"current:"}},
+		{name: "empty .current", setup: func(t *testing.T, cfg *config.Scope) { current(t, *cfg, "") }, wantFail: []string{"current:"}},
 		// An inherited variable — present-but-empty included, which is
 		// unverified vendor territory rather than the verified absent state —
 		// earns the ok-with-detail line.
@@ -150,33 +151,48 @@ func TestCheckRouting(t *testing.T) {
 		{name: "relative ambient", environ: []string{"CLAUDE_CONFIG_DIR=yan@planlab.ai"}, wantFail: []string{"env: inherited CLAUDE_CONFIG_DIR is relative"}},
 		// A stranded `<dir>.lock` is skipped by discovery; check is where it
 		// gets named — an ok-with-detail line, never a failure.
-		{name: "lock debris", setup: func(t *testing.T, cfg config.Scope) { mkdir(t, filepath.Join(cfg.AccountsRoot, "a@x.com.lock")) },
+		{name: "lock debris", setup: func(t *testing.T, cfg *config.Scope) { mkdir(t, filepath.Join(cfg.AccountsRoot, "a@x.com.lock")) },
 			wantOK: []string{"root: a@x.com.lock is vendor lock debris"}},
 		// The topology assertion runs per extra account through the same
 		// verifier launch refuses with, so the gate and the report cannot
 		// disagree.
-		{name: "forked projects/", setup: func(t *testing.T, cfg config.Scope) {
+		{name: "forked projects/", setup: func(t *testing.T, cfg *config.Scope) {
 			mkdir(t, filepath.Join(cfg.AccountsRoot, "yan@planlab.ai", "projects")) // a real dir: the fork
 			mkdir(t, cfg.StoreDir())
 		}, wantFail: []string{"topology[yan@planlab.ai]: projects/ resolves to the canonical store"}},
 		// Automatic placement is a routing state, not a missing one.
-		{name: "auto", setup: func(t *testing.T, cfg config.Scope) { current(t, cfg, "auto\n") },
+		{name: "auto", setup: func(t *testing.T, cfg *config.Scope) { current(t, *cfg, "auto\n") },
 			wantOK: []string{"current: .current says auto"}},
 		// And still fails the file when the word is ambiguous.
-		{name: "auto beside an account named auto", setup: func(t *testing.T, cfg config.Scope) {
-			current(t, cfg, "auto\n")
+		{name: "auto beside an account named auto", setup: func(t *testing.T, cfg *config.Scope) {
+			current(t, *cfg, "auto\n")
 			mkdir(t, filepath.Join(cfg.AccountsRoot, "auto"))
 			mkdir(t, cfg.StoreDir())
 			if err := os.Symlink(cfg.StoreDir(), filepath.Join(cfg.AccountsRoot, "auto", "projects")); err != nil {
 				t.Fatal(err)
 			}
 		}, wantFail: []string{"current: … reserved"}},
+		// A relocated home re-points what headroom observes but not what a
+		// primary launch would use, which the vendor resolves against the real
+		// home: launch refuses the primary, for either vendor, and check says
+		// so. A primary spelled out by its dir names the tree described.
+		{name: "relocated home", setup: func(t *testing.T, cfg *config.Scope) { cfg.PrimaryRelocated = true },
+			wantFail: []string{"home: HEADROOM_HOME re-points the primary headroom describes … `claude`"}},
+		{name: "relocated home, Codex", vendor: config.Codex, setup: func(t *testing.T, cfg *config.Scope) { cfg.PrimaryRelocated = true },
+			wantFail: []string{"home: HEADROOM_HOME re-points the primary headroom describes … `codex`"}},
+		{name: "relocated home, primary spelled out", setup: func(t *testing.T, cfg *config.Scope) {
+			cfg.PrimaryRelocated, cfg.PrimaryExplicit = true, true
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cfg := claudeScope(home, "qiushi")
+			if tc.vendor == config.Codex {
+				cfg = config.ForHome(home).Codex
+				cfg.PrimaryName = "qiushi"
+			}
 			if tc.setup != nil {
-				tc.setup(t, cfg)
+				tc.setup(t, &cfg)
 			}
 			r, out := testReport()
 			checkRouting(accounts.Discover(cfg), append([]string{"HOME=" + home}, tc.environ...), r)

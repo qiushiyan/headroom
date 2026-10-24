@@ -84,11 +84,12 @@ func checkRouting(set accounts.Set, environ []string, r *report) {
 
 	// A relocated home (HEADROOM_HOME) re-points what headroom observes but
 	// not what a primary launch would use — the primary is selected by the
-	// variable being absent, resolved by the vendor against the real home.
-	// Own-state, not drift: launch refuses the primary until it is unset.
-	if cfg.PrimaryLaunchRefused() && cfg.Vendor == config.Claude {
+	// vendor's home variable being absent, resolved by the vendor against the
+	// real home, for Codex exactly as for Claude Code. Own-state, not drift:
+	// launch refuses the primary until it is unset.
+	if cfg.PrimaryLaunchRefused() {
 		r.own(false, "home: HEADROOM_HOME re-points the primary headroom describes",
-			"primary launches refuse; the board describes a tree bare `claude` would not use")
+			fmt.Sprintf("primary launches refuse; the board describes a tree bare `%s` would not use", cfg.Binary()))
 	}
 
 	// Vendor lock debris in the accounts root: Claude Code's config locking
