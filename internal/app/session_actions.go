@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -15,19 +14,25 @@ import (
 
 // sessionActions owns routing and launch effects. The picker supplies terminal
 // restoration as the commit boundary; action tests need no terminal object.
+//
+// It holds the discovered set and the surface's one read of `.current`, and
+// derives everything else from those two — the accounts whose registries
+// gate a mutation, the current account, whether launches choose — so no two
+// of them can describe different accounts.
 type sessionActions struct {
-	cfg     config.Scope
-	st      *state.Store
-	refs    []sessions.AccountRef
-	set     accounts.Set
-	current string
-	// auto says bare launches choose for themselves: there is then no current
-	// account, and wherever this surface would fall back to one it asks the
-	// placement rule instead.
-	auto         bool
+	st           *state.Store
+	set          accounts.Set
+	routing      accounts.Routing
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
+}
+
+// auto says bare launches choose for themselves: there is then no current
+// account, and wherever this surface would fall back to one it asks the
+// placement rule instead.
+func (actions *sessionActions) auto() bool {
+	return actions.routing.Mode == "auto"
 }
 
 func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool, error) {
@@ -95,28 +100,34 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 // moves the session to the least-loaded of the *other* accounts — moving means
 // somewhere other than where it is.
 func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) (placement.Intent, bool) {
-	known := func(name string) bool {
-		for _, a := range actions.set.Accounts {
-			if a.Name == name {
-				return name != ""
-			}
-		}
-		return false
-	}
+	_, owned := accountNamed(actions.set, s.Owner)
+	_, pinned := accountNamed(actions.set, actions.routing.Current)
 	switch {
-	case !override && known(s.Owner):
+	case !override && owned:
 		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}, true
-	case actions.auto && override:
+	case actions.auto() && override:
 		return placement.Intent{Exclude: s.Owner}, true
-	case actions.auto:
+	case actions.auto():
 		return placement.Intent{}, true
-	case known(actions.current):
+	case pinned:
 		// Degraded attribution — no evidence, or an owner the filesystem no
 		// longer has — falls back to the *current* account; the row's owner
 		// tag already says so.
-		return placement.Intent{Kind: placement.Forced, Account: actions.current, Reason: "pinned"}, true
+		return placement.Intent{Kind: placement.Forced, Account: actions.routing.Current, Reason: "pinned"}, true
 	}
 	return placement.Intent{}, false
+}
+
+// accountNamed finds the set's account by name. A name the set does not hold
+// — an owner whose dir is gone, the empty current of unresolvable routing —
+// is not one this surface can route to.
+func accountNamed(set accounts.Set, name string) (accounts.Account, bool) {
+	for _, a := range set.Accounts {
+		if name != "" && a.Name == name {
+			return a, true
+		}
+	}
+	return accounts.Account{}, false
 }
 
 // liveNow re-establishes the selected session's liveness at action time —
@@ -124,7 +135,7 @@ func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) 
 // picker drew must still gate every mutation and the resume refusal. The
 // fresh answer also lands back on the row so the display tells the truth.
 func (actions *sessionActions) liveNow(s *sessions.Session) sessions.LiveState {
-	s.Live = sessions.LiveNow(s.ID, actions.refs, psProbe)
+	s.Live = sessions.LiveNow(s.ID, accountRefs(actions.set), psProbe)
 	return s.Live
 }
 

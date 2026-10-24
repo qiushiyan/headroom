@@ -50,17 +50,23 @@ func psProbe(pid int) (int64, error) {
 	return t.Unix(), nil
 }
 
-func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []sessions.AccountRef, accounts.Set, accounts.Routing) {
-	set := accounts.Discover(cfg)
+// accountRefs is the set as the session collector names accounts: each one's
+// name and the config dir its history and registry live in.
+func accountRefs(set accounts.Set) []sessions.AccountRef {
 	refs := make([]sessions.AccountRef, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
 		refs = append(refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
 	}
+	return refs
+}
+
+func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, accounts.Set, accounts.Routing) {
+	set := accounts.Discover(cfg)
 	cwd, _ := os.Getwd()
 	listing := sessions.Collect(sessions.Input{
 		ProjectsDir: cfg.StoreDir(),
 		CWD:         cwd,
-		Accounts:    refs,
+		Accounts:    accountRefs(set),
 		Owners:      st.Load().Owners(),
 		Probe:       psProbe,
 	})
@@ -70,7 +76,7 @@ func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, []ses
 	// be the resume surface's route around the launch path's refusal.
 	// One read serves both facts: the current account, and whether there is
 	// none because launches choose.
-	return listing, refs, set, set.Routing()
+	return listing, set, set.Routing()
 }
 
 func runSessions(cfg config.Scope, args []string) int {
@@ -138,7 +144,7 @@ parse:
 	}
 
 	st := state.Open(cfg)
-	listing, refs, set, routing := collectSessions(cfg, st)
+	listing, set, routing := collectSessions(cfg, st)
 	t, err := tui.OpenTTY()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
@@ -147,7 +153,7 @@ parse:
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		sessionActions: sessionActions{cfg: cfg, st: st, refs: refs, set: set, current: routing.Current, auto: routing.Mode == "auto", cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
+		sessionActions: sessionActions{st: st, set: set, routing: routing, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment

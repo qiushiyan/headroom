@@ -20,10 +20,10 @@ import (
 // shown is the name the picker prints for where new sessions go: the current
 // account, or the word for there being none because launches choose.
 func (actions *sessionActions) shown() string {
-	if actions.auto {
+	if actions.auto() {
 		return accounts.AutoWord
 	}
-	return actions.current
+	return actions.routing.Current
 }
 
 // resumeUI is the picker's whole mutable state. One mode value at a time —

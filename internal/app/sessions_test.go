@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,11 +41,14 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// New sessions go to the extra, as `.current` says: the routing the
+	// picker carries is the one read a real run takes.
+	writeJSON(t, cfg.CurrentFile(), "yan@planlab.ai\n")
+	set := accounts.Discover(cfg)
 	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
 		st:         state.Open(cfg),
-		cfg:        cfg,
-		set:        accounts.Discover(cfg),
-		current:    "yan@planlab.ai",
+		set:        set,
+		routing:    set.Routing(),
 		claudeArgs: []string{"--dangerously-skip-permissions"},
 	}}
 	s := &sessions.Session{
@@ -54,6 +58,29 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	ui.listing.Sessions = []*sessions.Session{s}
 	ui.rows = ui.listing.Sessions
 	return ui, s
+}
+
+// stubPS puts a ps(1) running script first on PATH: the picker samples
+// processes through the real ps, and this is what it answers.
+func stubPS(t *testing.T, script string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// claimSession writes the vendor's live-session record for id into an
+// account's registry, as a running claude does.
+func claimSession(t *testing.T, accountDir, id string, pid int, started time.Time) {
+	t.Helper()
+	dir := filepath.Join(accountDir, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(dir, fmt.Sprintf("%d.json", pid)),
+		fmt.Sprintf(`{"sessionId":%q,"pid":%d,"startedAt":%d}`, id, pid, started.UnixMilli()))
 }
 
 // The commit becomes the session: chdir to the verified cwd, personal args
@@ -80,7 +107,7 @@ func TestSessionsCommitExecsOnOwner(t *testing.T) {
 	if strings.Join(*argv, " ") != strings.Join(want, " ") {
 		t.Errorf("argv = %v, want %v", *argv, want)
 	}
-	wantDir := "CLAUDE_CONFIG_DIR=" + filepath.Join(ui.cfg.AccountsRoot, "yan@planlab.ai")
+	wantDir := "CLAUDE_CONFIG_DIR=" + filepath.Join(ui.set.Scope.AccountsRoot, "yan@planlab.ai")
 	nDir, pwd := 0, ""
 	for _, kv := range *env {
 		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
@@ -117,26 +144,41 @@ func TestSessionsCommitExecsOnOwner(t *testing.T) {
 func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 	cases := []struct {
 		name  string
-		wreck func(ui *resumeUI, s *sessions.Session)
+		wreck func(t *testing.T, ui *resumeUI, s *sessions.Session)
 		want  string
 	}{
-		{"broken topology", func(ui *resumeUI, s *sessions.Session) {
-			link := filepath.Join(ui.cfg.AccountsRoot, "yan@planlab.ai", "projects")
+		{"live elsewhere", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
+			// Open in another terminal on its owner: a second writer on one
+			// transcript. The claim's pid runs and started when it says.
+			started := time.Now().Add(-time.Minute).Truncate(time.Second)
+			claimSession(t, filepath.Join(ui.set.Scope.AccountsRoot, "yan@planlab.ai"), s.ID, 4242, started)
+			stubPS(t, "echo '"+started.Format("Mon Jan _2 15:04:05 2006")+"'")
+		}, "another terminal"},
+		{"newline in the cwd, with a cd file", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
+			// The cd file is one line; this dir cannot be written to it.
+			s.CWD = filepath.Join(ui.set.Scope.Home, "project\nname")
+			if err := os.Mkdir(s.CWD, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, "newline"},
+		{"broken topology", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
+			link := filepath.Join(ui.set.Scope.AccountsRoot, "yan@planlab.ai", "projects")
 			os.Remove(link)
 			os.MkdirAll(link, 0o755) // real dir: the history fork
 		}, "not launching"},
-		{"relocated primary", func(ui *resumeUI, s *sessions.Session) {
+		{"relocated primary", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
 			// Relocation is a fact about the scope, and accounts carry the
 			// scope they were discovered under — as a real run's would.
-			ui.cfg.PrimaryRelocated = true
-			ui.set = accounts.Discover(ui.cfg)
+			cfg := ui.set.Scope
+			cfg.PrimaryRelocated = true
+			ui.set = accounts.Discover(cfg)
 			s.Owner = "qiushi"
 		}, "HEADROOM_HOME"},
-		{"dir gone at action time", func(ui *resumeUI, s *sessions.Session) {
+		{"dir gone at action time", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
 			os.RemoveAll(s.CWD)
 		}, "directory is gone"},
-		{"no account at all", func(ui *resumeUI, s *sessions.Session) {
-			s.Owner, ui.current = "", ""
+		{"no account at all", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
+			s.Owner, ui.routing = "", accounts.Routing{}
 		}, "no account"},
 	}
 	for _, c := range cases {
@@ -150,7 +192,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 				f.Close()
 			}
 			ui.cdFile = cd
-			c.wreck(ui, s)
+			c.wreck(t, ui, s)
 
 			done, code := ui.commitResume(false)
 			if done || code != 0 {
@@ -171,7 +213,7 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 
 func TestSessionPreparationPreservesPriorRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
-	ui.st = state.Open(ui.cfg)
+	ui.st = state.Open(ui.set.Scope)
 	if err := rehome(ui.st, s.ID, "qiushi", time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +224,34 @@ func TestSessionPreparationPreservesPriorRehome(t *testing.T) {
 	}
 	if owner := ui.st.Load().Owners()[s.ID]; owner.Account != "qiushi" {
 		t.Fatalf("preparation failure changed owner: %+v", owner)
+	}
+}
+
+// The listing routes by the re-homes the store holds: collectSessions must hand
+// them to the collector, or a session the user moved with x lists — and
+// resumes — on the account its history names instead.
+func TestCollectSessionsRoutesByTheStoredReHomes(t *testing.T) {
+	cfg := launchConfig(t)
+	proj := filepath.Join(cfg.Home, "proj")
+	store := filepath.Join(cfg.StoreDir(), sessions.Munge(proj))
+	for _, dir := range []string{proj, store} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const id = "11111111-2222-3333-4444-555555555555"
+	writeJSON(t, filepath.Join(store, id+".jsonl"), fmt.Sprintf(`{"type":"user","sessionId":%q,"cwd":%q}`+"\n", id, proj))
+	st := state.Open(cfg)
+	if err := rehome(st, id, "yan@planlab.ai", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, _, _ := collectSessions(cfg, st)
+	if len(listing.Sessions) != 1 {
+		t.Fatalf("listed %d sessions, want 1", len(listing.Sessions))
+	}
+	if s := listing.Sessions[0]; s.Owner != "yan@planlab.ai" || s.OwnerState != sessions.OwnerRehome {
+		t.Errorf("owner (%q, %v), want the re-home's account", s.Owner, s.OwnerState)
 	}
 }
 
@@ -204,7 +274,7 @@ func TestSessionsArgContract(t *testing.T) {
 func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	_, _, _, called := capturedSessionsExec(t)
-	s.CWD = filepath.Join(ui.cfg.Home, "project\nname")
+	s.CWD = filepath.Join(ui.set.Scope.Home, "project\nname")
 	if err := os.Mkdir(s.CWD, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -216,43 +286,41 @@ func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
 	capturedSessionsExec(t) // also restores cwd
-	ui.st = state.Open(ui.cfg)
+	ui.st = state.Open(ui.set.Scope)
 	execSessions = func(string, string, []string, []string) error { return os.ErrPermission }
 	output := captureStderr(t, func() {
 		if done, code := ui.commitResume(true); !done || code != 1 {
 			t.Fatalf("commit: %v %d %s", done, code, ui.message)
 		}
 	})
-	if !strings.Contains(output, "re-home remains recorded for "+ui.current) {
+	if !strings.Contains(output, "re-home remains recorded for "+ui.routing.Current) {
 		t.Fatalf("missing persistence explanation: %s", output)
 	}
 
-	if owner := ui.st.Load().Owners()[s.ID]; owner.Account != ui.current {
+	if owner := ui.st.Load().Owners()[s.ID]; owner.Account != ui.routing.Current {
 		t.Fatalf("re-home after failed exec: %+v", owner)
 	}
 }
 
-func TestUncertainProcessInspectionPreservesTranscript(t *testing.T) {
+// claimedTranscript is a session with a transcript on disk whose owner's
+// registry claims it under pid 7: what ps then says about pid 7 decides
+// whether r and dd may touch it.
+func claimedTranscript(t *testing.T) (*resumeUI, *sessions.Session, []byte) {
+	t.Helper()
 	ui, s := sessionsFixture(t)
-	registry := filepath.Join(ui.cfg.AccountsRoot, "a", "sessions")
-	if err := os.MkdirAll(registry, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(registry, "7.json"), []byte(`{"sessionId":"`+s.ID+`","pid":7,"startedAt":1000}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	ui.refs = []sessions.AccountRef{{Name: "a", Dir: filepath.Dir(registry)}}
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte("#!/bin/sh\necho unreadable-start-time\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
+	claimSession(t, filepath.Join(ui.set.Scope.AccountsRoot, "yan@planlab.ai"), s.ID, 7, time.UnixMilli(1000))
 	s.StoreDir = t.TempDir()
 	s.Path = filepath.Join(s.StoreDir, s.ID+".jsonl")
 	original := []byte("{}\n")
-	if err := os.WriteFile(s.Path, original, 0644); err != nil {
+	if err := os.WriteFile(s.Path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return ui, s, original
+}
+
+func TestUncertainProcessInspectionPreservesTranscript(t *testing.T) {
+	ui, s, original := claimedTranscript(t)
+	stubPS(t, "echo unreadable-start-time")
 	if err := ui.rename(s, "changed"); err == nil {
 		t.Fatal("uncertain process allowed rename")
 	}
@@ -262,5 +330,24 @@ func TestUncertainProcessInspectionPreservesTranscript(t *testing.T) {
 	data, err := os.ReadFile(s.Path)
 	if err != nil || string(data) != string(original) {
 		t.Fatalf("transcript changed: %q %v", data, err)
+	}
+}
+
+// ps exiting 1 with nothing on either stream is its answer for "no such
+// process": the claim is stale, the session is not open, and r goes ahead.
+// Read as a failed inspection instead, every stale registry file would refuse
+// r, dd and accounts remove for good.
+func TestAbsentProcessLeavesTheSessionMutable(t *testing.T) {
+	ui, s, _ := claimedTranscript(t)
+	stubPS(t, "exit 1")
+	if err := ui.rename(s, "changed"); err != nil {
+		t.Fatalf("a claim whose process is gone refused rename: %v", err)
+	}
+	data, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessions.ParseTail(data, "", true).CustomTitle; got != "changed" {
+		t.Errorf("transcript's custom title = %q, want the rename", got)
 	}
 }
