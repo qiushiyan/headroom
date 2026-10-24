@@ -479,9 +479,13 @@ func (ui *resumeUI) localSectionLabel() string {
 
 func (ui *resumeUI) draw() {
 	w, h, err := ui.t.Size()
-	if err != nil || w < 20 {
-		w, h = 80, 24
+	if err != nil || w <= 0 || h <= 0 {
+		w, h = assumeWidth, assumeHeight
 	}
+	// Rows are laid out to at least a usable width, and every row is clipped
+	// to the real one: a narrow pane reads less, never wraps into a second
+	// physical row.
+	layoutW := max(w, 20)
 	now := time.Now().Unix()
 	p := ui.p
 
@@ -490,8 +494,8 @@ func (ui *resumeUI) draw() {
 	lines = append(lines, p.Bold+"resume"+p.Rst+p.Dim+
 		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), render.ShortAccount(ui.shown()), title)+p.Rst)
 
-	rowLines, selLine, selSpan := ui.rowLines(w, now)
-	body := max(h-3, 3) // header + footer + input/message line
+	rowLines, selLine, selSpan := ui.rowLines(layoutW, now)
+	body := max(h-3, 1) // header + footer + input/message line
 	// Scroll to keep the selected entry's whole span — both lines plus the
 	// expanded preview — in view; when the span outgrows the viewport, the
 	// entry's first line wins.

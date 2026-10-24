@@ -429,6 +429,28 @@ if command -v tmux >/dev/null 2>&1; then
         ;;
     esac
     tmx kill-server 2>/dev/null || true
+
+    # A pane too short for the picker's chrome, and one too narrow for its
+    # layout: each frame still fits the screen, so after redraws (a selection
+    # move forces several) the header is still the first row. The alternate
+    # screen keeps no scrollback, so the first row is the evidence.
+    for geom in "100 4" "15 12"; do
+        set -- $geom
+        tmx new-session -d -x "$1" -y "$2" -s small "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN' sessions"
+        sleep 2
+        tmx send-keys -t small j j k 2>/dev/null || true
+        sleep 1
+        top=$(tmx capture-pane -t small -p 2>/dev/null | head -1)
+        case "$top" in
+        "resume ·"*) echo "ok   sessions-${1}x${2}" ;;
+        *)
+            echo "FAIL sessions-${1}x${2}: a frame overflowed the pane; first row:"
+            tmx capture-pane -t small -p 2>/dev/null | sed 's/^/     /'
+            fail=1
+            ;;
+        esac
+        tmx kill-server 2>/dev/null || true
+    done
 else
     echo "skip scrollback (tmux not installed)"
 fi

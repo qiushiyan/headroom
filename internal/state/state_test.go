@@ -246,6 +246,20 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 	if got := s.Load().NextEligible(key("b"), later); got.After(later.Add(s.spacing + time.Second)) {
 		t.Errorf("after the permitted claim the deadline is %v out, want one spacing", got.Sub(later))
 	}
+
+	// The same holds when the step sits in the imported checkpoint, which
+	// every account's deadline is read against, and for a spacing longer
+	// than the maximum cooldown; each claim reads a freshly opened store.
+	slow := rootScope(root)
+	slow.Spacing = 2 * CooldownMax
+	writeDoc(t, root, `{"version":1,"legacy_import":{"quiet_until_ms":`+itoa(now.Add(72*time.Hour).UnixMilli())+`}}`)
+	if claimOne(t, Open(slow), key("c"), now).Permit {
+		t.Fatal("inside the clamped checkpoint a claim must be denied")
+	}
+	later = now.Add(ceiling(slow.Spacing) + time.Second)
+	if !claimOne(t, Open(slow), key("c"), later).Permit {
+		t.Error("an anomalous checkpoint receded with the clock: denied one ceiling later")
+	}
 }
 
 // A section this binary cannot decode is carried through a write by a section

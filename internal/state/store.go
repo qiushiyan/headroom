@@ -204,10 +204,14 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			r := d.accounts[id]
 			next, stepped := d.deadline(id, now, ceiling(s.spacing))
 			if stepped {
-				// Written down, so the silence ends one ceiling from this
-				// claim rather than receding with every later claim's clock.
+				// Written down — in whichever record held it — so the silence
+				// ends one ceiling from this claim rather than receding with
+				// every later claim's clock.
 				r.Request.NextEligibleMS = next
 				d.accounts[id] = r
+				if d.imported != nil && d.imported.QuietUntilMS > next {
+					d.imported.QuietUntilMS = next
+				}
 				d.dirty = true
 			}
 			if now.UnixMilli() < next {
