@@ -23,70 +23,61 @@ import (
 )
 
 // resolve writes one view and nothing else — the store has already been told,
-// by the goroutine that fetched. A successful observation must arrive stamped:
-// rows without a time were the mechanism by which carried-over data passed
-// itself off as current.
-func TestResolveKeepsReceivedTimestamp(t *testing.T) {
+// by the goroutine that fetched — and it writes each axis on its own. The
+// headline regression: a request that failed says nothing about the account,
+// so it annotates what is known rather than erasing it. Before the three-axis
+// model, a 429 replaced the rows and the whole board read as broken. A
+// reading, zero rows included ("this account reports no limits" is newer
+// truth than any cached bars), replaces the figures with its own stamp:
+// rows without their time are how carried-over data passed itself off as
+// current. And a bookkeeping failure rides beside the endpoint's verdict
+// without replacing it.
+func TestResolveWritesEachAxisOnItsOwn(t *testing.T) {
 	now := time.Now()
-	out := refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: &accountstate.Observation{Rows: []usage.Row{{Percent: 5}, {Percent: 9}}, ObservedAt: now.Add(-5 * time.Second).Unix(), Source: accountstate.SourceLive}}
+	at := now.Add(-5 * time.Second).Unix()
+	prior := &accountstate.Observation{Rows: []usage.Row{{Label: "5h session", Percent: 42}},
+		ObservedAt: now.Add(-22 * time.Hour).Unix(), Source: accountstate.SourceCache}
+	reading := &accountstate.Observation{Rows: []usage.Row{{Percent: 5}, {Percent: 9}}, ObservedAt: at, Source: accountstate.SourceLive}
+	noLimits := &accountstate.Observation{ObservedAt: at, Source: accountstate.SourceLive}
 
-	d := &accountData{}
-	resolve(d, out)
-	if d.View.Obs == nil || len(d.View.Obs.Rows) != 2 {
-		t.Fatalf("rows not carried: %+v", d.View.Obs)
-	}
-	if d.View.Obs.ObservedAt != now.Add(-5*time.Second).Unix() || d.View.Obs.Source != accountstate.SourceLive {
-		t.Errorf("observation lacks provenance: %+v", d.View.Obs)
-	}
-}
-
-// The headline regression: a refused request says nothing about the account,
-// so it must annotate what is known rather than erase it. Before the three-axis
-// model, a 429 replaced the rows and the whole board read as broken.
-func TestRefusalKeepsObservation(t *testing.T) {
-	now := time.Now()
-	prior := &accountstate.Observation{
-		Rows:       []usage.Row{{Label: "5h session", Percent: 42}},
-		ObservedAt: now.Add(-30 * time.Second).Unix(),
-		Source:     accountstate.SourceLive,
-	}
-	d := &accountData{View: accountstate.Facts{Obs: prior}}
-	resolve(d, refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, NextEligibleAt: now.Add(state.CooldownBase).Unix()}})
-
-	if d.View.Obs != prior {
-		t.Fatalf("429 dropped the observation: %+v", d.View.Obs)
-	}
-	if d.View.Obs.ObservedAt != prior.ObservedAt {
-		t.Errorf("429 restamped the observation as if it were fresh")
-	}
-	if d.View.Attempt.State != accountstate.AttemptRefused {
-		t.Errorf("attempt = %v, want refused", d.View.Attempt.State)
-	}
-	if d.View.Health != accountstate.HealthOK {
-		t.Errorf("a refused request must not change health: %v", d.View.Health)
-	}
-	// And it must schedule its own quiet period rather than hammering.
-	if d.View.Attempt.NextEligibleAt <= now.Unix() {
-		t.Errorf("no cooldown scheduled after 429: %+v", d.View.Attempt)
-	}
-}
-
-// Transport failures get the same protection: a flaky network is not news
-// about the account either.
-func TestTransportFailureKeepsObservation(t *testing.T) {
-	now := time.Now()
-	prior := &accountstate.Observation{Rows: []usage.Row{{Label: "5h session", Percent: 7}},
-		ObservedAt: now.Add(-time.Minute).Unix(), Source: accountstate.SourceCache}
-	d := &accountData{View: accountstate.Facts{Obs: prior}}
-	out := refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}}
-	resolve(d, out)
-	if d.View.Obs != prior || d.View.Attempt.State != accountstate.AttemptTransport {
-		t.Errorf("transport failure mishandled: obs=%+v attempt=%+v", d.View.Obs, d.View.Attempt)
+	for _, c := range []struct {
+		name     string
+		result   refresh.Result
+		obs      *accountstate.Observation // the view's afterwards
+		storeErr string
+	}{
+		{"a reading replaces the figures, stamp intact",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading}, reading, ""},
+		{"no limits replaces old bars",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}, Observation: noLimits}, noLimits, ""},
+		{"a 429 annotates and never erases",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}}, prior, ""},
+		{"a transport failure annotates and never erases",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}}, prior, ""},
+		{"a store error rides beside a reading",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading, StoreErr: state.ErrReadOnly}, reading, state.ErrReadOnly.Error()},
+		{"a store error rides beside a refusal",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}, StoreErr: state.ErrReadOnly}, prior, state.ErrReadOnly.Error()},
+	} {
+		d := &accountData{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}
+		resolve(d, c.result)
+		if d.View.Obs != c.obs {
+			t.Errorf("%s: observation %+v, want %+v", c.name, d.View.Obs, c.obs)
+		}
+		if c.obs == reading && d.View.Obs.ObservedAt != at {
+			t.Errorf("%s: the reading was restamped: %d, want %d", c.name, d.View.Obs.ObservedAt, at)
+		}
+		if d.View.Attempt.State != c.result.Attempt.State || d.View.Attempt.StoreError != c.storeErr {
+			t.Errorf("%s: attempt %+v, want state %v beside store error %q", c.name, d.View.Attempt, c.result.Attempt.State, c.storeErr)
+		}
+		if d.View.Health != accountstate.HealthOK {
+			t.Errorf("%s: a request's outcome changed health: %v", c.name, d.View.Health)
+		}
 	}
 }
 
 // Regression test for the picker data race: the consumer applies each result
-// and then — like runSelect's draw — reads every account's view, while other
+// and then — like the picker's draw — reads every account's view, while other
 // fetches are still in flight. Fetch goroutines writing views themselves
 // made this fail under -race; launchFetches must keep views single-writer.
 func TestLaunchFetchesSingleWriter(t *testing.T) {
@@ -119,78 +110,6 @@ func TestLaunchFetchesSingleWriter(t *testing.T) {
 		if d.View.Attempt.State != accountstate.AttemptOK {
 			t.Errorf("account %d not resolved: attempt %v", i, d.View.Attempt.State)
 		}
-	}
-}
-
-// Health answers "can Claude Code use this account". A credential headroom
-// can't read stops *headroom* from fetching; it says nothing about the
-// account, and reporting it as an account problem is the same false alarm
-// this rework exists to remove.
-func TestBadBlobIsNotAnAccountHealthProblem(t *testing.T) {
-	ok := auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK}
-	if got := resolveHealth(ok, `not json`, creds.Blob{}, false, 0); got != accountstate.HealthOK {
-		t.Errorf("unreadable credential downgraded a logged-in account: health=%v", got)
-	}
-	if got := resolveHealth(ok, "", creds.Blob{}, false, 0); got != accountstate.HealthOK {
-		t.Errorf("missing credential downgraded a logged-in account: health=%v", got)
-	}
-	// With no first-party answer, credential evidence still decides.
-	if got := resolveHealth(auth.Status{}, "", creds.Blob{}, false, 0); got != accountstate.HealthNoLogin {
-		t.Errorf("no auth answer + no credential should be no-login: health=%v", got)
-	}
-	if got := resolveHealth(auth.Status{}, `not json`, creds.Blob{}, false, 0); got != accountstate.HealthBadBlob {
-		t.Errorf("no auth answer + bad blob should surface drift: health=%v", got)
-	}
-}
-
-// Whatever went wrong reading the credential must still reach the user, just
-// on the axis it belongs to.
-func TestUnreadableCredentialBecomesAnAttemptFact(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfg.PrimaryMeta(),
-		[]byte(`{"oauthAccount":{"emailAddress":"p@x.com"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	list, _ := prepareWith(accounts.Discover(cfg), state.Open(cfg).Load(), sources{
-		readRaw: func(accounts.Account) string { return `not json` },
-		health:  func(string) auth.Status { return auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK} },
-		now:     time.Now(),
-	})
-	v := list[0].View
-	if v.Health != accountstate.HealthOK {
-		t.Errorf("health should stay OK: %v", v.Health)
-	}
-	if v.Attempt.State != accountstate.AttemptCredentialUnreadable {
-		t.Errorf("attempt should carry the unreadable credential: %v", v.Attempt.State)
-	}
-	if list[0].Request != nil {
-		t.Error("must not fetch without a usable credential")
-	}
-}
-
-// Zero limit rows is a documented, contractual answer — usage.ParseLimits
-// defines it as "this account reports no limits". It is newer truth than any
-// cached bars and must replace them, not hide behind them.
-func TestZeroRowsBecomesTheNewestObservation(t *testing.T) {
-	now := time.Now()
-	stale := &accountstate.Observation{
-		Rows:       []usage.Row{{Label: "5h session", Percent: 58}},
-		ObservedAt: now.Add(-22 * time.Hour).Unix(), Source: accountstate.SourceCache,
-	}
-	d := &accountData{View: accountstate.Facts{Obs: stale}}
-	d.Acct.Name = "a"
-	out := refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}, Observation: &accountstate.Observation{ObservedAt: now.Unix(), Source: accountstate.SourceLive}}
-	resolve(d, out)
-
-	if d.View.Obs == stale {
-		t.Fatal("22h-old bars still displayed after the endpoint reported no limits")
-	}
-	if d.View.Obs == nil || len(d.View.Obs.Rows) != 0 || d.View.Obs.ObservedAt != now.Unix() {
-		t.Errorf("zero-row observation not recorded: %+v", d.View.Obs)
 	}
 }
 
@@ -244,10 +163,11 @@ func usageServer(t *testing.T, requests *atomic.Int32) *httptest.Server {
 }
 
 // The quarantine's promise is that an unreadable ledger leaves every account
-// quiet for one cooldown rather than bricking. That promise is kept by Claim —
-// which only ever sees the accounts prepare marked as wanting a fetch, and
-// prepare decides that by reading the very ledger that is unreadable. Two runs
-// is the whole point: the first looks correct in isolation.
+// quiet for one cooldown rather than bricking. That promise is kept by Claim,
+// which decides every account's eligibility under its lock from the very
+// ledger that is unreadable — prepare only marks a spendable account pending
+// and decides nothing. Two runs is the whole point: the first looks correct
+// in isolation.
 func TestACorruptLedgerDoesNotFanOutOnTheNextRun(t *testing.T) {
 	var requests atomic.Int32
 	srv := usageServer(t, &requests)
@@ -305,7 +225,7 @@ func TestATornAccountFileDoesNotCostTheStoredObservation(t *testing.T) {
 
 	oneRound(t, cfg, blobs, now) // asks once, stores the answer under uuid:uuid-a
 	writeJSON(t, metaPath, `{ torn`)
-	oneRound(t, cfg, blobs, now.Add(time.Second)) // keyed dir:a@x.com for this run only
+	oneRound(t, cfg, blobs, now.Add(time.Second)) // whose it is unreadable: no key, so no claim this run
 	writeJSON(t, metaPath, goodMeta)
 	back := oneRound(t, cfg, blobs, now.Add(2*time.Second))["a@x.com"]
 
@@ -370,6 +290,13 @@ func candidate(url, name, token string) *refresh.Candidate {
 	return c
 }
 
+// The board says a bookkeeping failure beside the endpoint's verdict, in both
+// layouts, never instead of it: "rate limited" and "state file unavailable"
+// can both apply. This is the only guard of render's state-file clause; it
+// belongs beside render's TestProvenanceKeepsTheAxesApart and stays here until
+// that suite takes it. (resolve keeping the two apart is
+// TestResolveWritesEachAxisOnItsOwn's; the document's problem entry is
+// TestJSONDocument's.)
 func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
@@ -378,31 +305,28 @@ func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
 	}{
 		{accountstate.AttemptOK, ""}, {accountstate.AttemptRefused, "rate limited"},
 	} {
-		d := &accountData{Acct: accounts.Account{Name: "a"}, View: accountstate.Facts{Obs: &accountstate.Observation{Rows: []usage.Row{{Percent: 42}}, ObservedAt: now.Unix(), Source: accountstate.SourceLive}}}
-		resolve(d, refresh.Result{Attempt: accountstate.Attempt{State: tc.state}, StoreErr: state.ErrReadOnly})
-		if d.View.Attempt.State != tc.state {
-			t.Errorf("persistence replaced endpoint verdict: %v", d.View.Attempt.State)
+		v := accountstate.Facts{
+			Obs:     &accountstate.Observation{Rows: []usage.Row{{Percent: 42}}, ObservedAt: now.Unix(), Source: accountstate.SourceLive},
+			Attempt: accountstate.Attempt{State: tc.state, StoreError: state.ErrReadOnly.Error()},
 		}
 		for _, layout := range []render.Layout{render.LayoutBlocks, render.LayoutCompact} {
-			text := strings.Join(render.NewPalette(false).Board(views([]*accountData{d}), now.Unix(), layout, 0).Groups[0], "\n")
+			text := strings.Join(render.NewPalette(false).Board([]accountstate.Facts{v}, now.Unix(), layout, 0).Groups[0], "\n")
 			if !strings.Contains(text, "state file unavailable") || !strings.Contains(text, tc.phrase) {
 				t.Errorf("missing independent evidence: %s", text)
 			}
 		}
-		data, err := jsonDocument(claudeBoard([]*accountData{d}, "a"), now)
-		if err != nil || !strings.Contains(string(data), `"problems"`) {
-			t.Errorf("JSON omitted bookkeeping problem: %s %v", data, err)
-		}
 	}
 }
 
+// A refresh that landed answers the manual `r` with "all current" — a 200
+// with no limit windows is as much an answer as one with — and the document
+// carries no error status for it.
 func TestSuccessfulRefreshPresentation(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
-		empty      bool
 	}{
-		{"rows", `{"limits":[{"kind":"session","percent":42}]}`, false},
-		{"empty", `{"limits":[]}`, true},
+		{"rows", `{"limits":[{"kind":"session","percent":42}]}`},
+		{"empty", `{"limits":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -414,15 +338,15 @@ func TestSuccessfulRefreshPresentation(t *testing.T) {
 				resolve(d, r)
 			}
 			ui := page{list: []*accountData{d}}
-			if got := ui.ackString(time.Now()); got != "refreshed · all current" {
+			if got := ui.ackString(time.Now()); !strings.Contains(got, "all current") {
 				t.Errorf("ack=%q", got)
 			}
 			data, err := jsonDocument(claudeBoard(ui.list, ""), time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(data), `"http_status"`) || (strings.Contains(string(data), `"next_eligible_at"`) != tc.empty) {
-				t.Errorf("successful attempt gained error/retry fields: %s", data)
+			if strings.Contains(string(data), `"http_status"`) {
+				t.Errorf("successful attempt gained an error status: %s", data)
 			}
 		})
 	}
@@ -445,6 +369,9 @@ func captureStderr(t *testing.T, run func()) string {
 	return string(data)
 }
 
+// The board reads each credential once, in prepare. Sampling the token again
+// after a 401 is check's diagnostic, and the board makes no such extra read —
+// no `security` spawn per rejected account for evidence it never shows.
 func TestBoardLeaves401CredentialSamplingToChecker(t *testing.T) {
 	bin := t.TempDir()
 	sampled := filepath.Join(t.TempDir(), "sampled")

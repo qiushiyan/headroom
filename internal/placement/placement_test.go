@@ -109,7 +109,7 @@ func TestAWeeklyFigureNeverHidesALaunch(t *testing.T) {
 	for i := range cands {
 		d := chosen(t, cands, ledger, Intent{})
 		got = append(got, d.Chosen)
-		ledger.Record("uuid:"+d.Chosen, d.Chosen, 100+i, here, now)
+		ledger.RecordAs("", "uuid:"+d.Chosen, d.Chosen, 100+i, here, now)
 	}
 	if strings.Join(got, ",") != "a,b,c,d" {
 		t.Fatalf("four launches went to %v, want four accounts", got)
@@ -182,7 +182,7 @@ func TestWeeklyRoomThatEndsSoonerGoesFirst(t *testing.T) {
 	for i := range cands {
 		d := chosen(t, cands, ledger, Intent{})
 		got = append(got, d.Chosen)
-		ledger.Record("uuid:"+d.Chosen, d.Chosen, 100+i, here, now)
+		ledger.RecordAs("", "uuid:"+d.Chosen, d.Chosen, 100+i, here, now)
 	}
 	if want := "qiushi,cliushi,qiushi@,yan,qiushiyan,yqs"; strings.Join(got, ",") != want {
 		t.Fatalf("six launches went to %v, want %s", got, want)
@@ -230,7 +230,7 @@ func TestLoadStillRanksBeforeTheWeek(t *testing.T) {
 func TestSerialUseReturnsToTheSoonerReset(t *testing.T) {
 	cands := []Candidate{weekly("later", 0, 6*24*time.Hour), weekly("sooner", 0, 24*time.Hour)}
 	var ledger Ledger
-	ledger.Record("uuid:sooner", "sooner", 1, here, now)
+	ledger.RecordAs("", "uuid:sooner", "sooner", 1, here, now)
 	if d := Choose(cands, ledger, Intent{}, now.Add(5*time.Minute)); d.Chosen != "later" {
 		t.Errorf("five minutes on: chose %q, want later", d.Chosen)
 	}
@@ -321,8 +321,8 @@ func TestFiguresAtTheirLimitsCompareExactly(t *testing.T) {
 	}
 	x := Week{Room: 80, Left: math.MaxInt64}
 	y := Week{Room: 79, Left: math.MaxInt64 - 1}
-	if x.Pressing(y) != -y.Pressing(x) || x.Pressing(x) != 0 {
-		t.Error("Pressing is not antisymmetric at the extremes")
+	if x.pressing(y) != -y.pressing(x) || x.pressing(x) != 0 {
+		t.Error("pressing is not antisymmetric at the extremes")
 	}
 }
 
@@ -330,7 +330,7 @@ func TestAPendingLaunchCountsForItsSpanAndOnce(t *testing.T) {
 	a, b := acct("a", 0, 0), acct("b", 0, 5)
 	recent := now.Add(-5 * time.Minute)
 	ledger := Ledger{}
-	ledger.Record("uuid:a", "a", 77, here, recent)
+	ledger.RecordAs("", "uuid:a", "a", 77, here, recent)
 
 	// The process has exited and the figures were refreshed since: it still
 	// counts until its span has passed.
@@ -422,7 +422,7 @@ func TestRotationWhenNothingWasEverObserved(t *testing.T) {
 			t.Fatalf("reason = %q", d.Reason)
 		}
 		got = append(got, d.Chosen)
-		ledger.Record(d.Chosen, d.Chosen, i, here, clock)
+		ledger.RecordAs("", d.Chosen, d.Chosen, i, here, clock)
 		clock = clock.Add(20 * time.Minute)
 	}
 	if strings.Join(got, "") != "abcabc" {
@@ -453,12 +453,12 @@ func TestForcedAndLast(t *testing.T) {
 		t.Fatalf("last with nothing recorded: %+v", d)
 	}
 	var ledger Ledger
-	ledger.Record("uuid:ok", "ok", 1, here, now.Add(-3*time.Hour))
-	ledger.Record("uuid:soft", "soft", 2, here, now.Add(-2*time.Hour))
+	ledger.RecordAs("", "uuid:ok", "ok", 1, here, now.Add(-3*time.Hour))
+	ledger.RecordAs("", "uuid:soft", "soft", 2, here, now.Add(-2*time.Hour))
 	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "soft" || d.Reason != ReasonLast {
 		t.Fatalf("last: %+v", d)
 	}
-	ledger.Record("uuid:gone", "gone", 3, here, now.Add(-time.Hour))
+	ledger.RecordAs("", "uuid:gone", "gone", 3, here, now.Add(-time.Hour))
 	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "" || !strings.Contains(d.Refusal, "gone") {
 		t.Fatalf("last names a removed account: %+v", d)
 	}
@@ -466,9 +466,9 @@ func TestForcedAndLast(t *testing.T) {
 
 func TestPruneKeepsWhatStillCounts(t *testing.T) {
 	var l Ledger
-	l.Record("a", "a", 1, here, now.Add(-20*time.Minute))
-	l.Record("b", "b", 2, here, now.Add(-5*time.Minute))
-	l.Record("c", "c", 3, here, now.Add(-40*24*time.Hour))
+	l.RecordAs("", "a", "a", 1, here, now.Add(-20*time.Minute))
+	l.RecordAs("", "b", "b", 2, here, now.Add(-5*time.Minute))
+	l.RecordAs("", "c", "c", 3, here, now.Add(-40*24*time.Hour))
 	if !l.Prune(now, 30*24*time.Hour) {
 		t.Fatal("nothing pruned")
 	}
@@ -498,10 +498,10 @@ func TestAnotherHomesSessionsAndLaunchesCountOnTheSubscription(t *testing.T) {
 	started := now.Add(-time.Hour).UnixMilli()
 	shared.Busy = []Proc{{PID: 10, StartedMS: started, Home: there}, {PID: 11, StartedMS: started, Home: here}}
 	var ledger Ledger
-	ledger.Record("uuid:shared", "shared", 20, there, now.Add(-time.Minute))
+	ledger.RecordAs("", "uuid:shared", "shared", 20, there, now.Add(-time.Minute))
 	// A launch the other home made two minutes ago that has since become one
 	// of its busy sessions is counted once, as the session: one pid space.
-	ledger.Record("uuid:shared", "shared", 10, there, now.Add(-2*time.Minute))
+	ledger.RecordAs("", "uuid:shared", "shared", 10, there, now.Add(-2*time.Minute))
 	shared.Busy[0].StartedMS = now.Add(-2 * time.Minute).UnixMilli()
 
 	d := chosen(t, []Candidate{shared, spare}, ledger, Intent{Home: here})
@@ -527,8 +527,8 @@ func TestTheLastAccountUsedIsPerHome(t *testing.T) {
 	const there = "/home/steward/.claude-accounts"
 	cands := []Candidate{acct("a", 0, 0), acct("b", 0, 0)}
 	var ledger Ledger
-	ledger.Record("uuid:a", "a", 1, here, now.Add(-time.Hour))
-	ledger.Record("uuid:b", "b", 2, there, now.Add(-time.Minute))
+	ledger.RecordAs("", "uuid:a", "a", 1, here, now.Add(-time.Hour))
+	ledger.RecordAs("", "uuid:b", "b", 2, there, now.Add(-time.Minute))
 	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "a" {
 		t.Fatalf("this home's last = %q, want a", d.Chosen)
 	}
@@ -538,5 +538,14 @@ func TestTheLastAccountUsedIsPerHome(t *testing.T) {
 	// The tie-break is the subscription's, whichever home placed it.
 	if ledger.Last["uuid:b"].Name != "b" {
 		t.Errorf("last per subscription = %+v", ledger.Last)
+	}
+	// Newest wins: two homes' launches can reach the lock out of order, and an
+	// older record replaces neither the subscription's newest nor the home's.
+	ledger.RecordAs("", "uuid:b", "b", 3, here, now.Add(-2*time.Hour))
+	if got := ledger.Last["uuid:b"].AtMS; got != now.Add(-time.Minute).UnixMilli() {
+		t.Errorf("an older launch replaced the subscription's newest: at %d", got)
+	}
+	if d := chosen(t, cands, ledger, Intent{Kind: LastUsed, Home: here}); d.Chosen != "a" {
+		t.Errorf("an older launch replaced this home's last: %q", d.Chosen)
 	}
 }

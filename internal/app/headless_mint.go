@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -22,20 +21,18 @@ import (
 	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// mintDeps are the edges a mint crosses — the terminal, the browser
-// registry, where the user is, and the vendor's command — injected so the
-// command is testable without a browser or a vendor.
+// mintDeps are the edges a mint crosses — the terminal, where approval
+// pages go, and the vendor's command — injected so the command is testable
+// without a browser or a vendor.
 type mintDeps struct {
 	terminal bool
-	profiles []browser.Profile
-	remote   bool
+	approver approver
 	now      func() time.Time
 	// setupToken runs the vendor's command, its output written to scan.
 	setupToken func(scope config.Scope, page approvalPage, scan *headless.Scanner) error
@@ -55,8 +52,7 @@ var (
 func runHeadlessMint(scope config.Scope, args []string) int {
 	return runHeadlessMintTo(os.Stdout, os.Stderr, scope, args, mintDeps{
 		terminal:   term.IsTerminal(int(os.Stdin.Fd())),
-		profiles:   browser.ReadProfiles(browser.LocalStatePath(scope.Home)),
-		remote:     sshRemote(os.Getenv("SSH_CONNECTION")),
+		approver:   newApprover(scope),
 		now:        time.Now,
 		setupToken: vendorSetupToken,
 	})
@@ -95,17 +91,14 @@ func runHeadlessMintTo(out, errw io.Writer, scope config.Scope, args []string, d
 		fmt.Fprintf(errw, "headroom headless mint: %v\n", err)
 		return 1
 	}
-	key := state.Key{UUID: a.AccountID, Name: a.Name}
+	key := state.KeyFor(a)
 
-	page := approvalPage{remote: deps.remote}
-	if p, ok := browser.Match(deps.profiles, a.Email); ok && !deps.remote {
-		page.profileDir = p.Dir
-	}
+	page := deps.approver.page(a.Email)
 	fmt.Fprintf(out, "minting a headless token for %s (claude setup-token)\n", a.Name)
 	if page.remote {
-		fmt.Fprintf(out, "open the URL below in a browser signed in to claude.ai as %s, click Authorize,\nand paste the code it shows\n", a.Email)
+		fmt.Fprintln(out, page.remoteSteps())
 	} else {
-		fmt.Fprintf(out, "approve as %s in %s — headroom cannot check which account approves\n", a.Email, pagePhrase(loginDeps{profiles: deps.profiles}, a.Email))
+		fmt.Fprintf(out, "approve as %s in %s — headroom cannot check which account approves\n", a.Email, page.phrase())
 	}
 	fmt.Fprintf(out, "it waits up to %s for the approval; ctrl-c does not reach it — close the terminal to stop sooner\n\n", span(mintWait))
 
@@ -151,25 +144,16 @@ func span(d time.Duration) string {
 }
 
 // vendorSetupToken runs `claude setup-token` with the terminal on its input,
-// its output on scan, and headroom as its $BROWSER, as `headroom login` runs
-// the vendor's login.
+// its output on scan, and page's opener as its $BROWSER — the vendor facts
+// behind each, in DESIGN.md § Headless tokens.
 //
-// It runs under a config dir of its own, made for the run and removed after:
-// the vendor stores nothing from a setup-token — it prints the token — so the
-// account's dir has no part in it, and a scratch dir guarantees that nothing
+// It runs under a config dir made for the run and removed after, so nothing
 // in the account's dir, its login above all, is touched. The environment is
 // launch's constructor applied to that dir, so no inherited CLAUDE_CONFIG_DIR
-// or credential redirect reaches the vendor, and inherited credentials are
-// left out, which would only have the vendor warn that one is configured.
-//
-// Its output goes to a pipe, not the terminal: the vendor then draws its
-// screen as whole frames of plain lines, which is what lets the scanner keep
-// the token and withhold it from the terminal (see headless.Scanner). Its
-// input must be the terminal: on a pipe it draws nothing and waits.
-//
-// The vendor ignores every key while it waits for the approval, so headroom
-// ends it: after mintWait without one, or mintGrace after it has printed the
-// token, should it still be running then.
+// or credential redirect reaches the vendor, less the inherited credentials,
+// which would only have the vendor warn that one is configured. headroom
+// ends the vendor, which ignores every key while it waits: after mintWait
+// with no approval, or mintGrace after it has printed the token.
 func vendorSetupToken(scope config.Scope, page approvalPage, scan *headless.Scanner) error {
 	path, err := exec.LookPath(scope.Binary())
 	if err != nil {
@@ -187,21 +171,13 @@ func vendorSetupToken(scope config.Scope, page approvalPage, scan *headless.Scan
 	if err != nil {
 		return err
 	}
-	env := withoutVars(target.Env(os.Environ()), "BROWSER", browser.ProfileEnv,
-		"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-	switch {
-	case page.remote:
-		opener, err := exec.LookPath("true")
-		if err != nil {
-			return fmt.Errorf("no browser command: %w", err)
-		}
-		env = append(env, "BROWSER="+opener)
-	case runtime.GOOS == "darwin":
-		self, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("no browser command: %w", err)
-		}
-		env = append(env, "BROWSER="+self, browser.ProfileEnv+"="+page.profileDir)
+	// The sign-in is recorded and never read: the code goes to the vendor's
+	// own prompt. It is recorded so that, for a remote user, headroom is a
+	// $BROWSER that opens nothing.
+	env, err := page.env(withoutVars(target.Env(os.Environ()), "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+		filepath.Join(scratch, "headroom-signin"))
+	if err != nil {
+		return err
 	}
 	cmd := exec.Command(path, "setup-token")
 	cmd.Args[0] = scope.Binary()

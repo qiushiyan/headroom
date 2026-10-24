@@ -122,7 +122,7 @@ func runAccountsRemove(cfg config.Scope, args []string) int {
 		return refuseCodexRemove(os.Stderr, cfg, args)
 	}
 	return runAccountsRemoveTo(os.Stdout, os.Stderr, cfg, args, removeDeps{
-		probe:          psProbe,
+		probe:          pidProbe,
 		deleteKeychain: creds.DeleteKeychainItem,
 		stdin:          os.Stdin,
 		// Both ends, as the board requires: the picker draws on stdout and
@@ -166,10 +166,10 @@ type removeCandidate struct {
 
 // removeCandidates lists what the command can remove, in board order
 // (discovery's extras, then lock debris by name). Discovery skips `.lock`
-// dirs by design, so they are gathered here from the root directly. An
-// accounts root that does not exist is an empty list; one that cannot be
-// read is returned as the error, so "nothing to remove" is never said over
-// a root that was merely unreadable.
+// dirs by design, so they come from accounts.LockDebris. An accounts root
+// that does not exist is an empty list; one that cannot be read is returned
+// as the error, so "nothing to remove" is never said over a root that was
+// merely unreadable.
 func removeCandidates(cfg config.Scope) ([]removeCandidate, error) {
 	var cands []removeCandidate
 	for _, a := range accounts.Discover(cfg).Accounts {
@@ -178,14 +178,12 @@ func removeCandidates(cfg config.Scope) ([]removeCandidate, error) {
 		}
 		cands = append(cands, removeCandidate{Name: a.Name, Email: a.Email})
 	}
-	entries, err := os.ReadDir(cfg.AccountsRoot)
-	if err != nil && !os.IsNotExist(err) {
+	debris, err := accounts.LockDebris(cfg)
+	if err != nil {
 		return cands, fmt.Errorf("listing %s: %w", cfg.AccountsRoot, err)
 	}
-	for _, e := range entries {
-		if accounts.LockArtifact(e.Name()) && e.IsDir() {
-			cands = append(cands, removeCandidate{Name: e.Name(), Lock: true})
-		}
+	for _, name := range debris {
+		cands = append(cands, removeCandidate{Name: name, Lock: true})
 	}
 	return cands, nil
 }
@@ -380,7 +378,8 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 			fmt.Fprintf(errw, "headroom accounts remove: %s: live-session registry unreadable (%v) — refusing while liveness cannot be verified\n", name, reg.Problems)
 			return false
 		}
-		for id, evidence := range sessions.Inspect(reg.Entries, deps.probe) {
+		claims, _ := sessions.InspectClaims(reg.Entries, deps.probe)
+		for id, evidence := range claims {
 			switch evidence.State {
 			case sessions.Live:
 				fmt.Fprintf(errw, "headroom accounts remove: %s has a live session (%s) — quit it first\n", name, id)
@@ -446,13 +445,12 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 		return 1
 	}
 	fmt.Fprintf(out, "removed %s\n", dir)
-	if cfg.Vendor == config.Claude {
-		// A secret for an account that no longer exists is no use to anyone.
-		if forgot, err := headless.Remove(cfg.AccountsRoot, name); err != nil {
-			fmt.Fprintf(errw, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
-		} else if forgot {
-			fmt.Fprintln(out, "forgot its headless token — headroom does not revoke it with the vendor")
-		}
+	// A secret for an account that no longer exists is no use to anyone.
+	// (Only Claude Code accounts reach here: Codex removal refuses up front.)
+	if forgot, err := headless.Remove(cfg.AccountsRoot, name); err != nil {
+		fmt.Fprintf(errw, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
+	} else if forgot {
+		fmt.Fprintln(out, "forgot its headless token — headroom does not revoke it with the vendor")
 	}
 	fmt.Fprintln(out, "transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed")
 	if cur, err := os.ReadFile(cfg.CurrentFile()); err == nil && strings.TrimSpace(string(cur)) == name {

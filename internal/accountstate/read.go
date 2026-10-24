@@ -16,14 +16,14 @@ type Account struct {
 }
 
 // Snapshot is one disk read: the discovered set, what is known about each of
-// its accounts, and the store it was read against. The set travels with the
-// facts so that selection and recording the current account are asked of the
-// accounts that were actually discovered, never of a set rebuilt beside them.
+// its accounts, the one read of `.current` that marked them, and the store
+// they were read against. The set travels with the facts so that selection
+// and recording the current account are asked of the accounts that were
+// actually discovered, never of a set rebuilt beside them.
 type Snapshot struct {
 	Set      accounts.Set
 	Accounts []Account
-	Current  string
-	Mode     string
+	Routing  accounts.Routing
 	Store    state.Snapshot
 }
 
@@ -31,7 +31,7 @@ func Read(scope config.Scope, st *state.Store, now time.Time) Snapshot {
 	snap := st.Load()
 	set := accounts.Discover(scope)
 	list, routing := Assemble(set, snap, now)
-	return Snapshot{set, list, routing.Current, routing.Mode, snap}
+	return Snapshot{set, list, routing, snap}
 }
 
 // Assemble selects strict current-account state and the newest usable observation.
@@ -40,7 +40,7 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) ([]Account, 
 	current := routing.Current
 	list := make([]Account, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
-		key := state.Key{UUID: a.AccountID, Name: a.Name}
+		key := state.KeyFor(a)
 		v := Facts{Vendor: a.Scope.Vendor, FreshFor: a.Scope.RequestSpacing(), Label: a.Name, Launcher: accounts.Launcher(a), Current: current == a.Name, Health: HealthUnprobed}
 		if a.Scope.Vendor == config.Codex {
 			v.LoginCommand = accounts.EngineLauncher(a) + " -- login"

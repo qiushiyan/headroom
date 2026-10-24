@@ -6,17 +6,18 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 func rows(session int) []usage.Row {
 	return []usage.Row{
 		{Kind: "session", Label: "5h session", Percent: session, ResetAt: 1791580000,
-			PercentState: usage.StateOK, ResetState: usage.StateOK, IdentityState: usage.StateOK},
+			PercentState: tag.OK, ResetState: tag.OK, IdentityState: tag.OK},
 		{Kind: "weekly_scoped", Model: "Opus", Label: "Opus (7d)", Percent: 0,
-			PercentState: usage.StateBad, ResetState: usage.StateNone, IdentityState: usage.StateOK},
+			PercentState: tag.Bad, ResetState: tag.None, IdentityState: tag.OK},
 		{Kind: "codex", Group: "main", WindowSeconds: 18000, Label: "5h", Unstarted: true,
-			PercentState: usage.StateOK, ResetState: usage.StateNone, IdentityState: usage.StateBad},
+			PercentState: tag.OK, ResetState: tag.None, IdentityState: tag.Bad},
 	}
 }
 

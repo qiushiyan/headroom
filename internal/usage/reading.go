@@ -1,9 +1,12 @@
 package usage
 
 import (
+	"cmp"
+	"slices"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 // AllowanceState is the account-level answer a usage response gives to "may
@@ -71,17 +74,8 @@ func (r Reading) BelongsTo(accountID, userID string) bool {
 
 // Drifted reports whether anything in the reading was present but no longer
 // parses: a row's field, or the allowance.
-func (r Reading) Drifted() int {
-	n := 0
-	for _, row := range r.Rows {
-		if row.Drifted() {
-			n++
-		}
-	}
-	if r.Allowance.State == AllowanceBad {
-		n++
-	}
-	return n
+func (r Reading) Drifted() bool {
+	return r.Allowance.State == AllowanceBad || slices.ContainsFunc(r.Rows, Row.Drifted)
 }
 
 // SessionWindow is the index of the vendor's shortest limit among rows: Claude
@@ -92,7 +86,7 @@ func (r Reading) Drifted() int {
 func SessionWindow(vendor config.Vendor, rows []Row) int {
 	best := -1
 	for i, r := range rows {
-		if r.IdentityState == StateBad {
+		if r.IdentityState == tag.Bad {
 			continue
 		}
 		if vendor == config.Codex {
@@ -104,7 +98,7 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 			}
 			continue
 		}
-		if r.Kind == "session" {
+		if r.Kind == KindSession {
 			return i
 		}
 	}
@@ -120,13 +114,66 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 // the first request after one ends, and so does every Codex window: none of
 // those keeps a schedule a passed reset could name.
 func Period(vendor config.Vendor, r Row) time.Duration {
-	if vendor == config.Codex || r.IdentityState == StateBad {
+	if vendor == config.Codex || r.IdentityState == tag.Bad {
 		return 0
 	}
-	if r.Kind == "weekly_all" || r.Kind == "weekly_scoped" {
+	if r.Kind == KindWeeklyAll || r.Kind == KindWeeklyScoped {
 		return 7 * 24 * time.Hour
 	}
 	return 0
+}
+
+// CompareRows orders two rows of one vendor's reading by how much they decide
+// the choice between accounts, for a surface that lays limits out side by
+// side (the compact board's columns). Claude Code: the all-models weekly
+// first — the window that strands an account for days — then the 5h
+// session, then the model-scoped weekly windows, which bind only for work on
+// that one model, and unknown kinds after, deterministically. Codex: the main
+// rate limit, then code review, then the additional limits by feature, and
+// inside a group the longer window first, for the same reason the weekly
+// leads for Claude Code. Like SessionWindow it is the vendor's vocabulary,
+// so it lives beside the parsers; render's column tests are its owners.
+func CompareRows(vendor config.Vendor, a, b Row) int {
+	if vendor == config.Codex {
+		return cmp.Or(
+			cmp.Compare(codexGroupRank(a.Group), codexGroupRank(b.Group)),
+			cmp.Compare(a.Feature, b.Feature),
+			cmp.Compare(b.WindowSeconds, a.WindowSeconds), // longer window first
+			cmp.Compare(a.Kind, b.Kind),
+		)
+	}
+	return cmp.Or(
+		cmp.Compare(kindRank(a.Kind), kindRank(b.Kind)),
+		cmp.Compare(a.Model, b.Model),
+		cmp.Compare(a.Kind, b.Kind),
+		cmp.Compare(a.Group, b.Group),
+	)
+}
+
+func kindRank(kind string) int {
+	switch kind {
+	case KindWeeklyAll:
+		return 0
+	case KindSession:
+		return 1
+	case KindWeeklyScoped:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func codexGroupRank(group string) int {
+	switch group {
+	case CodexGroupMain:
+		return 0
+	case CodexGroupCodeReview:
+		return 1
+	case CodexGroupAdditional:
+		return 2
+	default:
+		return 3
+	}
 }
 
 // General reports whether a row bounds ordinary work on the account, as

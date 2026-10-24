@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 	"github.com/qiushiyan/headroom/internal/usagelog"
 )
@@ -59,7 +61,7 @@ func pinned(when time.Time, name string, cands ...placement.Candidate) Launch {
 // logged is one usage-log line: a session and a weekly row, and a scoped
 // weekly row at zero beside them.
 func logged(when time.Time, name string, session, weekly int, sessionReset, weeklyReset time.Time) usagelog.Record {
-	ok := usage.StateOK
+	ok := tag.OK
 	return usagelog.New(when, config.Claude, "uuid:"+name, name, home, []usage.Row{
 		{Kind: "session", Label: "5h session", Percent: session, ResetAt: sessionReset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
 		{Kind: "weekly_all", Label: "All models (7d)", Percent: weekly, ResetAt: weeklyReset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
@@ -405,22 +407,27 @@ func TestALaunchIsFollowedThroughItsOwnWindow(t *testing.T) {
 
 // Room is room on evidence: a fresh reading, or a session window that has
 // ended since an older one. An old reading of a window still open is a lower
-// bound and shows no room.
+// bound and shows no room, and an account the newest launch line could not
+// choose has none, however its figures read.
 func TestRoomElsewhereNeedsEvidence(t *testing.T) {
 	week := at(4 * 24 * time.Hour)
 	near := []usagelog.Record{logged(at(0), "a", 50, 10, at(4*time.Hour), week), logged(at(time.Hour), "a", 85, 10, at(4*time.Hour), week)}
+	expired := line(at(40*time.Minute), "auto", placement.Intent{}, placement.Ledger{},
+		placement.Candidate{Name: "a", Key: "uuid:a"}, placement.Candidate{Name: "b", Key: "uuid:b", Excluded: "login expired"})
 	for _, c := range []struct {
-		name  string
-		b     usagelog.Record
-		basis string
+		name     string
+		b        usagelog.Record
+		launches []Launch
+		basis    string
 	}{
-		{"fresh", logged(at(50*time.Minute), "b", 30, 10, at(3*time.Hour), week), "fresh"},
-		{"an old reading of a window that has ended", logged(at(-10*time.Hour), "b", 70, 10, at(-8*time.Hour), week), "ended"},
-		{"an old reading of a window still open", logged(at(-16*time.Hour), "b", 30, 10, at(10*time.Hour), week), ""},
-		{"fresh but too full", logged(at(50*time.Minute), "b", 60, 10, at(3*time.Hour), week), ""},
+		{"fresh", logged(at(50*time.Minute), "b", 30, 10, at(3*time.Hour), week), nil, "fresh"},
+		{"an old reading of a window that has ended", logged(at(-10*time.Hour), "b", 70, 10, at(-8*time.Hour), week), nil, "ended"},
+		{"an old reading of a window still open", logged(at(-16*time.Hour), "b", 30, 10, at(10*time.Hour), week), nil, ""},
+		{"fresh but too full", logged(at(50*time.Minute), "b", 60, 10, at(3*time.Hour), week), nil, ""},
+		{"fresh but excluded by the newest launch line", logged(at(50*time.Minute), "b", 30, 10, at(3*time.Hour), week), []Launch{expired}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			rep := build(nil, append([]usagelog.Record{c.b}, near...), at(2*time.Hour))
+			rep := build(c.launches, append([]usagelog.Record{c.b}, near...), at(2*time.Hour))
 			if len(rep.Episodes) != 1 {
 				t.Fatalf("episodes = %+v", rep.Episodes)
 			}
@@ -576,21 +583,30 @@ func TestTheFiguresAddUp(t *testing.T) {
 		auto(at(10*time.Minute), a(at(10*time.Minute), 2*time.Minute, 0), b(at(10*time.Minute), 3*time.Minute, 10)),
 		auto(at(20*time.Minute), a(at(20*time.Minute), 30*time.Minute, 50), b(at(20*time.Minute), 3*time.Minute, 10)), // b
 		pinned(at(30*time.Minute), "a", a(at(30*time.Minute), time.Minute, 50), b(at(30*time.Minute), time.Minute, 10)),
+		// A headless caller's placement: the rule's choice, kept apart from
+		// the person's own.
+		line(at(40*time.Minute), "headless", placement.Intent{}, placement.Ledger{}, a(at(40*time.Minute), time.Minute, 50), b(at(40*time.Minute), time.Minute, 10)), // b
 	}
-	for i, want := range []string{"a", "a", "b", "a"} {
+	for i, want := range []string{"a", "a", "b", "a", "b"} {
 		if launches[i].Chosen != want {
 			t.Fatalf("fixture: launch %d chose %s", i, launches[i].Chosen)
 		}
 	}
 	rep := build(launches, nil, at(time.Hour))
 	l := summary(t, rep, placement.Rule).Launches
-	if l.Total != 4 || l.Automatic != 3 || l.ByMode["auto"] != 3 || l.ByMode["pinned"] != 1 || l.ByReason[placement.ReasonLeastLoad] != 3 ||
-		l.ByAccount["a"] != 2 || l.ByAccount["b"] != 1 || l.LongestRun != 2 {
+	if l.Total != 5 || l.Automatic != 4 || l.ByMode["auto"] != 3 || l.ByMode["headless"] != 1 || l.ByMode["pinned"] != 1 ||
+		l.ByReason[placement.ReasonLeastLoad] != 4 || l.ByAccount["a"] != 2 || l.ByAccount["b"] != 2 || l.LongestRun != 2 {
 		t.Errorf("launches = %+v", l)
 	}
-	// The chosen figures were 60s, 120s and 180s old.
+	// The chosen figures were 60s, 120s, 180s and 60s old.
 	if l.ChosenAgeP50S != 120 || l.ChosenAgeP90S != 180 || l.ChosenStale != 0 {
 		t.Errorf("ages: p50 %d p90 %d stale %d", l.ChosenAgeP50S, l.ChosenAgeP90S, l.ChosenStale)
+	}
+	// And in what went into a window that then reached its limit: b's, where
+	// the rule placed once for the person and once for the headless caller.
+	near := build(launches, []usagelog.Record{logged(at(50*time.Minute), "b", 85, 10, soon, week)}, at(time.Hour))
+	if len(near.Episodes) != 1 || !maps.Equal(near.Episodes[0].Launches, map[string]int{"auto": 1, "headless": 1}) {
+		t.Errorf("episodes = %+v", near.Episodes)
 	}
 
 	// The fleet: a near from 30m to the 1h end, b fresh at 10% beside it.
@@ -618,7 +634,7 @@ func TestTheFiguresAddUp(t *testing.T) {
 // the session window, a feature's limit decides nothing, and a blocked account
 // has no room.
 func TestCodexIsReadByItsOwnRules(t *testing.T) {
-	ok := usage.StateOK
+	ok := tag.OK
 	codex := func(when time.Time, name string, session, weekly, review int, allowance usage.AllowanceState) usagelog.Record {
 		return usagelog.New(when, config.Codex, "uuid:"+name, name, home, []usage.Row{
 			{Kind: "primary", Group: usage.CodexGroupMain, WindowSeconds: 18000, Label: "5h", Percent: session, ResetAt: at(3 * time.Hour).Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},
@@ -649,7 +665,7 @@ func TestCodexIsReadByItsOwnRules(t *testing.T) {
 // made it: the launch went into it, and is followed through it — for Follow
 // and no further, however long the window runs.
 func TestALaunchOpensTheWindowThatStartsAfterIt(t *testing.T) {
-	ok := usage.StateOK
+	ok := tag.OK
 	codex := func(when time.Time, pct int, windowS int64, reset time.Time) usagelog.Record {
 		return usagelog.New(when, config.Codex, "uuid:x", "x", home, []usage.Row{
 			{Kind: "primary", Group: usage.CodexGroupMain, WindowSeconds: windowS, Label: "w", Percent: pct, ResetAt: reset.Unix(), PercentState: ok, ResetState: ok, IdentityState: ok},

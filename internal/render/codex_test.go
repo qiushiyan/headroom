@@ -115,28 +115,26 @@ func TestCodexAllowanceCaptions(t *testing.T) {
 	blocked := codexFacts(t, "blocked@x.com", `{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":3,"limit_window_seconds":604800,"reset_after_seconds":10,"reset_at":1790400000}},"spend_control":{"reached":true}}`, renderNow)
 	feature := codexFacts(t, "feature@x.com", `{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":3,"limit_window_seconds":604800,"reset_after_seconds":10,"reset_at":1790400000}},"code_review_rate_limit":{"allowed":false,"limit_reached":true}}`, renderNow)
 	reason := codexFacts(t, "ws@x.com", `{"rate_limit":null,"rate_limit_reached_type":{"type":"workspace_owner_usage_limit_reached"}}`, renderNow)
-	drift := codexFacts(t, "drift@x.com", `{"rate_limit":{"allowed":"yes","limit_reached":false}}`, renderNow)
+	// Labelled so that nothing but the marker can say "drift".
+	malformed := codexFacts(t, "malformed@x.com", `{"rate_limit":{"allowed":"yes","limit_reached":false}}`, renderNow)
 	p := NewPalette(false)
 	for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
 		out := func(v accountstate.Facts) string {
 			return boardText(p.Board([]accountstate.Facts{v}, renderNow, layout, 0))
 		}
-		if s := out(blocked); !strings.Contains(s, "blocked — spend limit reached") {
+		if s := out(blocked); !strings.Contains(s, "blocked") || !strings.Contains(s, "spend limit") {
 			t.Errorf("layout %d, blocked:\n%s", layout, s)
 		}
-		if s := out(reason); !strings.Contains(s, "blocked — workspace owner usage limit reached") {
+		if s := out(reason); !strings.Contains(s, "blocked") || !strings.Contains(s, "workspace owner usage limit reached") {
 			t.Errorf("layout %d, vendor reason:\n%s", layout, s)
 		}
 		s := out(feature)
 		if !strings.Contains(s, "code review blocked") || strings.Contains(s, "blocked —") {
 			t.Errorf("layout %d, feature-only block:\n%s", layout, s)
 		}
-		if s := out(drift); !strings.Contains(s, "drift") {
+		if s := out(malformed); !strings.Contains(s, "⚠ drift") {
 			t.Errorf("layout %d, a malformed allowance is not marked as drift:\n%s", layout, s)
 		}
-	}
-	if blocked.Actionable(renderNow) || !feature.Actionable(renderNow) {
-		t.Error("actionability does not follow the allowance")
 	}
 }
 
@@ -149,19 +147,21 @@ func TestCodexLoginHints(t *testing.T) {
 		v := accountstate.Facts{Vendor: config.Codex, Label: "a@x.com", Launcher: "cx-a@x.com", Health: h,
 			LoginCommand: "headroom launch --vendor codex --account a@x.com -- login"}
 		for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
-			out := boardText(p.Board([]accountstate.Facts{v}, renderNow, layout, 0))
-			if !strings.Contains(out, "run headroom launch --vendor codex --account a@x.com -- login") {
-				t.Errorf("health %d layout %d:\n%s", h, layout, out)
+			said := body(p.Board([]accountstate.Facts{v}, renderNow, layout, 0), layout)
+			if !strings.Contains(said, v.LoginCommand) {
+				t.Errorf("health %d layout %d does not name the login command:\n%s", h, layout, said)
 			}
-			if strings.Contains(out, "/login") || strings.Contains(out, "run cx-") {
-				t.Errorf("health %d layout %d names /login or the wrapper:\n%s", h, layout, out)
+			if strings.Contains(said, "/login") || strings.Contains(said, v.Launcher) {
+				t.Errorf("health %d layout %d names /login or the wrapper:\n%s", h, layout, said)
 			}
 		}
 	}
-	// Claude Code's hint is unchanged.
+	// Claude Code logs in from inside a session: its launcher, then /login.
 	v := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthNoLogin}
-	if out := boardText(p.Board([]accountstate.Facts{v}, renderNow, LayoutBlocks, 0)); !strings.Contains(out, "not logged in — run x-a and /login") {
-		t.Errorf("claude hint changed:\n%s", out)
+	for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
+		if said := body(p.Board([]accountstate.Facts{v}, renderNow, layout, 0), layout); !strings.Contains(said, "x-a") || !strings.Contains(said, "/login") {
+			t.Errorf("layout %d: claude hint lacks its launcher and /login:\n%s", layout, said)
+		}
 	}
 }
 
@@ -171,11 +171,12 @@ func TestCodexAttemptAndModeCaptions(t *testing.T) {
 	p := NewPalette(false)
 	rejected := accountstate.Facts{Vendor: config.Codex, Label: "a@x.com", Launcher: "cx-a", Health: accountstate.HealthOK,
 		Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}}
-	if out := boardText(p.Board([]accountstate.Facts{rejected}, renderNow, LayoutBlocks, 0)); !strings.Contains(out, "access token rejected — any cx-a session refreshes it") || strings.Contains(out, "login") {
-		t.Errorf("401:\n%s", out)
+	b := p.Board([]accountstate.Facts{rejected}, renderNow, LayoutBlocks, 0)
+	if said := body(b, LayoutBlocks); !strings.Contains(said, "cx-a") || !strings.Contains(said, "refreshes it") || strings.Contains(boardText(b), "login") {
+		t.Errorf("401:\n%s", boardText(b))
 	}
 	apikey := accountstate.Facts{Vendor: config.Codex, Label: "k@x.com", Health: accountstate.HealthUnknown, AuthMode: "apikey"}
-	if out := boardText(p.Board([]accountstate.Facts{apikey}, renderNow, LayoutCompact, 0)); !strings.Contains(out, "auth mode apikey") {
+	if out := boardText(p.Board([]accountstate.Facts{apikey}, renderNow, LayoutCompact, 0)); !strings.Contains(out, "apikey") {
 		t.Errorf("auth mode:\n%s", out)
 	}
 	unknown := accountstate.Facts{Vendor: config.Codex, Label: "u@x.com", Health: accountstate.HealthOK,

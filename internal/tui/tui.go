@@ -52,15 +52,27 @@ const escTimeout = 50 * time.Millisecond
 // partial UTF-8 runes across read boundaries — a terminal may split either
 // anywhere.
 type Decoder struct {
-	esc []byte // prefix of an unfinished escape sequence
-	seq []byte // params of a CSI sequence in flight (after ESC [)
-	utf []byte // prefix of an unfinished multi-byte rune
+	esc escState // how far into an escape sequence the input has got
+	seq []byte   // params of a CSI sequence in flight (after ESC [)
+	utf []byte   // prefix of an unfinished multi-byte rune
 }
+
+// escState is the decoder's place in an escape sequence. Only ESC, ESC [ and
+// ESC O are ever held; whatever follows them is a CSI parameter (carried in
+// seq) or the final byte that ends the sequence.
+type escState uint8
+
+const (
+	escGround escState = iota // no sequence in flight
+	escHeld                   // ESC: a lone Escape key, or a sequence's start
+	escCSI                    // ESC [: parameters until a final byte
+	escSS3                    // ESC O: the next byte is the final
+)
 
 // Pending reports whether an escape prefix is held; when true and input
 // pauses, call Flush — only the pause distinguishes a lone ESC from a split
 // sequence.
-func (d *Decoder) Pending() bool { return len(d.esc) > 0 }
+func (d *Decoder) Pending() bool { return d.esc != escGround }
 
 func (d *Decoder) Feed(buf []byte) []Key {
 	var keys []Key
@@ -89,36 +101,36 @@ func (d *Decoder) feedByte(keys []Key, b byte) []Key {
 		d.utf = d.utf[:0]
 	}
 
-	switch len(d.esc) {
-	case 0:
+	switch d.esc {
+	case escGround:
 		return d.plainByte(keys, b)
-	case 1: // held: ESC
-		if b == '[' || b == 'O' {
-			d.esc = append(d.esc, b)
-			d.seq = d.seq[:0]
+	case escHeld:
+		switch b {
+		case '[':
+			d.esc, d.seq = escCSI, d.seq[:0]
+			return keys
+		case 'O':
+			d.esc = escSS3
 			return keys
 		}
 		keys = append(keys, Key{Kind: KeyEsc}) // the held ESC was alone
-		d.esc = d.esc[:0]
+		d.esc = escGround
 		return d.feedByte(keys, b)
-	default: // held: ESC + [ or O — parameters until a final byte
-		if d.esc[1] == 'O' {
-			keys = appendSpecial(keys, b, nil)
-			d.esc = d.esc[:0]
-			return keys
-		}
-		// CSI: parameter/intermediate bytes 0x20–0x3f accumulate; a final
-		// byte 0x40–0x7e ends the sequence.
-		if b >= 0x40 && b <= 0x7e {
-			keys = appendSpecial(keys, b, d.seq)
-			d.esc, d.seq = d.esc[:0], d.seq[:0]
-			return keys
-		}
+	case escSS3:
+		d.esc = escGround
+		return appendSpecial(keys, b, nil)
+	default: // escCSI
+		// Parameter/intermediate bytes 0x20–0x3f accumulate; a final byte
+		// 0x40–0x7e ends the sequence, and any other byte ends it malformed —
+		// dropped, so decoding resumes with the next key.
 		if b >= 0x20 && b <= 0x3f {
 			d.seq = append(d.seq, b)
 			return keys
 		}
-		d.esc, d.seq = d.esc[:0], d.seq[:0] // malformed; drop
+		if b >= 0x40 && b <= 0x7e {
+			keys = appendSpecial(keys, b, d.seq)
+		}
+		d.esc, d.seq = escGround, d.seq[:0]
 		return keys
 	}
 }
@@ -126,7 +138,7 @@ func (d *Decoder) feedByte(keys []Key, b byte) []Key {
 func (d *Decoder) plainByte(keys []Key, b byte) []Key {
 	switch {
 	case b == 0x1b:
-		d.esc = append(d.esc, b)
+		d.esc = escHeld
 	case b == '\r' || b == '\n':
 		keys = append(keys, Key{Kind: KeyEnter})
 	case b == '\t':
@@ -180,10 +192,10 @@ func appendSpecial(keys []Key, final byte, params []byte) []Key {
 // dropped — half a rune has no honest keypress.
 func (d *Decoder) Flush() []Key {
 	d.utf = d.utf[:0]
-	if len(d.esc) == 0 {
+	if d.esc == escGround {
 		return nil
 	}
-	d.esc, d.seq = d.esc[:0], d.seq[:0]
+	d.esc, d.seq = escGround, d.seq[:0]
 	return []Key{{Kind: KeyEsc}}
 }
 
@@ -248,14 +260,17 @@ func (e *LineEdit) Handle(k Key) bool {
 }
 
 type Terminal struct {
-	in      *os.File
-	out     *os.File
-	ownsTTY bool
-	alt     bool
-	old     *term.State
-	events  chan Key
-	sigs    chan os.Signal
-	once    sync.Once
+	in  *os.File
+	out *os.File
+	// tty marks a session on /dev/tty (OpenTTY): headroom opened the
+	// descriptor, so Close closes it, and the session runs on the alternate
+	// screen. The two always go together — a session on the caller's stdio
+	// owns neither.
+	tty    bool
+	old    *term.State
+	events chan Key
+	sigs   chan os.Signal
+	once   sync.Once
 
 	mu       sync.Mutex
 	epilogue func()
@@ -267,7 +282,7 @@ type Terminal struct {
 // terminal before the process dies. (Raw mode disables ISIG, so ctrl-c
 // arrives as a key byte — these signals only come from outside.)
 func Open() (*Terminal, error) {
-	return open(os.Stdin, os.Stdout, false, false)
+	return open(os.Stdin, os.Stdout, false)
 }
 
 // OpenTTY runs the session on /dev/tty — both keys and frames — leaving
@@ -281,7 +296,7 @@ func OpenTTY() (*Terminal, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no controlling terminal: %w", err)
 	}
-	t, err := open(tty, tty, true, true)
+	t, err := open(tty, tty, true)
 	if err != nil {
 		tty.Close()
 		return nil, err
@@ -289,14 +304,14 @@ func OpenTTY() (*Terminal, error) {
 	return t, nil
 }
 
-func open(in, out *os.File, ownsTTY, alt bool) (*Terminal, error) {
+func open(in, out *os.File, tty bool) (*Terminal, error) {
 	old, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
 		return nil, err
 	}
-	t := &Terminal{in: in, out: out, ownsTTY: ownsTTY, alt: alt, old: old,
+	t := &Terminal{in: in, out: out, tty: tty, old: old,
 		events: make(chan Key, 8), sigs: make(chan os.Signal, 1)}
-	if alt {
+	if tty {
 		fmt.Fprint(out, "\x1b[?1049h")
 	}
 	fmt.Fprint(out, "\x1b[?25l")
@@ -353,11 +368,11 @@ func (t *Terminal) Close() {
 		signal.Stop(t.sigs)
 		close(t.sigs)
 		fmt.Fprint(t.out, "\x1b[?25h")
-		if t.alt {
+		if t.tty {
 			fmt.Fprint(t.out, "\x1b[?1049l")
 		}
 		term.Restore(int(t.in.Fd()), t.old)
-		if t.ownsTTY {
+		if t.tty {
 			t.in.Close()
 		}
 	})

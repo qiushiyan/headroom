@@ -5,10 +5,11 @@ import (
 	"strings"
 )
 
-// SigninEnv carries a file path from `headroom login` to the headroom
-// process the vendor runs as $BROWSER, which writes there the state of the
-// sign-in the URL it was handed belongs to. Present without ProfileEnv, it
-// makes headroom a recorder that opens nothing.
+// SigninEnv carries a file path from the command that runs a vendor with
+// headroom as its $BROWSER to the headroom process the vendor runs, which
+// writes there the state of the sign-in the URL it was handed belongs to.
+// Present without ProfileEnv, it makes headroom a recorder that opens
+// nothing.
 const SigninEnv = "HEADROOM_BROWSER_SIGNIN"
 
 // SigninState is the state parameter of a vendor authorize URL: the value

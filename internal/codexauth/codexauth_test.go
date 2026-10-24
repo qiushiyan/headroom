@@ -54,12 +54,22 @@ func TestParseEligibilityTable(t *testing.T) {
 		{"row 5: id token undecodable", edit(t, func(top map[string]any) { tokens(top)["id_token"] = "garbage" }), codexauth.IdentityUnknown},
 		{"row 5: user id absent", codexauthtest.Login{Email: "a@x.com", AccountID: "acct-1", Token: "t"}.Document(), codexauth.IdentityUnknown},
 		{"row 5: account id disagrees with the claim", edit(t, func(top map[string]any) { tokens(top)["account_id"] = "acct-other" }), codexauth.IdentityUnknown},
+		// The ledger key joins the parts with "/": acct "a/b" + user "c" and
+		// acct "a" + user "b/c" would spell one key for two identities.
+		{"row 5: account id containing the key's separator", codexauthtest.Login{Email: "a@x.com", AccountID: "acct/1", UserID: "user-1", Token: "t"}.Document(), codexauth.IdentityUnknown},
+		{"row 5: user id containing the key's separator", codexauthtest.Login{Email: "a@x.com", AccountID: "acct-1", UserID: "user/1", Token: "t"}.Document(), codexauth.IdentityUnknown},
 		{"row 7: a ChatGPT login", good().Document(), codexauth.OK},
 		{"row 7: auth_mode absent beside ChatGPT tokens", edit(t, func(top map[string]any) { delete(top, "auth_mode") }), codexauth.OK},
 		{"row 7: auth_mode null", edit(t, func(top map[string]any) { top["auth_mode"] = nil }), codexauth.OK},
 	} {
-		if got := codexauth.Parse(c.doc).State; got != c.want {
-			t.Errorf("%s: state = %v, want %v", c.name, got, c.want)
+		s := codexauth.Parse(c.doc)
+		if s.State != c.want {
+			t.Errorf("%s: state = %v, want %v", c.name, s.State, c.want)
+		}
+		// An account that cannot say whose it is gets no ledger identity at
+		// all: only an OK snapshot may key a budget.
+		if (s.State == codexauth.OK) != (s.Identity() != "") {
+			t.Errorf("%s: state %v with identity %q", c.name, s.State, s.Identity())
 		}
 	}
 }
@@ -96,14 +106,6 @@ func TestTokenStale(t *testing.T) {
 	s = codexauth.Parse(opaque)
 	if s.State != codexauth.OK || s.ExpiresOK || !s.TokenStale(0) {
 		t.Errorf("undecodable expiry: %+v", s)
-	}
-}
-
-// An account that cannot say whose it is gets no ledger identity at all.
-func TestIdentityIsEmptyUnlessOK(t *testing.T) {
-	s := codexauth.Parse(codexauthtest.Login{AccountID: "acct-1", Token: "t"}.Document())
-	if s.State != codexauth.IdentityUnknown || s.Identity() != "" {
-		t.Errorf("state %v identity %q", s.State, s.Identity())
 	}
 }
 

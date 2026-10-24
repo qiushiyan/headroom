@@ -7,91 +7,6 @@ import (
 	"testing"
 )
 
-// Relative overrides refuse outright: verified against the 2.1.220 binary, a
-// relative CLAUDE_CONFIG_DIR runs the session as the primary (default
-// Keychain item) while writing state beside the cwd, and every config-dir
-// path headroom builds derives from these roots.
-func TestLoadRefusesRelativeOverrides(t *testing.T) {
-	t.Setenv("HEADROOM_HOME", "fixture")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_HOME") {
-		t.Errorf("relative HEADROOM_HOME: err = %v, want a refusal naming it", err)
-	}
-	t.Setenv("HEADROOM_HOME", "")
-
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "./accounts")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_ACCOUNTS_ROOT") {
-		t.Errorf("relative HEADROOM_ACCOUNTS_ROOT: err = %v, want a refusal naming it", err)
-	}
-}
-
-func TestLoadMarksRelocatedPrimary(t *testing.T) {
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
-	t.Setenv("HEADROOM_HOME", "")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.PrimaryRelocated {
-		t.Error("unset HEADROOM_HOME must not read as relocated")
-	}
-
-	fixture := t.TempDir()
-	t.Setenv("HEADROOM_HOME", fixture)
-	cfg, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.PrimaryRelocated {
-		t.Error("a re-pointed home must be marked: primary launches refuse on it")
-	}
-	if cfg.Claude.AccountsRoot != filepath.Join(fixture, ".claude-accounts") {
-		t.Errorf("AccountsRoot = %q, want under the fixture home", cfg.Claude.AccountsRoot)
-	}
-}
-
-// The primary's name is not compiled in: unset, Load leaves it "" so
-// discovery derives it from the primary's login; the variable pins it.
-func TestLoadPrimaryNameIsDerivedUnlessPinned(t *testing.T) {
-	t.Setenv("HEADROOM_HOME", "")
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
-	t.Setenv("HEADROOM_PRIMARY_NAME", "")
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Claude.PrimaryName != "" {
-		t.Errorf("unset HEADROOM_PRIMARY_NAME: PrimaryName = %q, want \"\" (derive at discovery)", c.Claude.PrimaryName)
-	}
-	t.Setenv("HEADROOM_PRIMARY_NAME", "pinned")
-	c, _ = Load()
-	if c.Claude.PrimaryName != "pinned" {
-		t.Errorf("pinned: PrimaryName = %q", c.Claude.PrimaryName)
-	}
-}
-
-// The advertised launcher spelling defaults to a command every install has
-// and is re-spelled by HEADROOM_LAUNCHER_FORMAT, which must carry exactly
-// one %s — a malformed format would render every hint wrong.
-func TestLoadLauncherFormat(t *testing.T) {
-	t.Setenv("HEADROOM_HOME", "")
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", "")
-	t.Setenv("HEADROOM_LAUNCHER_FORMAT", "")
-	c, err := Load()
-	if err != nil || c.Claude.LauncherFormat != "headroom launch --account %s" {
-		t.Errorf("default LauncherFormat = %q, %v", c.Claude.LauncherFormat, err)
-	}
-	t.Setenv("HEADROOM_LAUNCHER_FORMAT", "x-%s")
-	if c, err = Load(); err != nil || c.Claude.LauncherFormat != "x-%s" {
-		t.Errorf("pinned LauncherFormat = %q, %v", c.Claude.LauncherFormat, err)
-	}
-	for _, bad := range []string{"x-", "%s %s", "%d-%s", "100%% %s"} {
-		t.Setenv("HEADROOM_LAUNCHER_FORMAT", bad)
-		if _, err := Load(); err == nil {
-			t.Errorf("HEADROOM_LAUNCHER_FORMAT=%q accepted", bad)
-		}
-	}
-}
-
 func clearOverrides(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
@@ -102,9 +17,113 @@ func clearOverrides(t *testing.T) {
 	}
 }
 
+// Relative overrides refuse outright: verified against the 2.1.220 binary, a
+// relative CLAUDE_CONFIG_DIR runs the session as the primary (default
+// Keychain item) while writing state beside the cwd, and every config-dir
+// path headroom builds derives from these roots.
+func TestLoadRefusesRelativeOverrides(t *testing.T) {
+	for v, rel := range map[string]string{
+		"HEADROOM_HOME":                "fixture",
+		"HEADROOM_ACCOUNTS_ROOT":       "./accounts",
+		"HEADROOM_CODEX_ACCOUNTS_ROOT": "relative/root",
+	} {
+		clearOverrides(t)
+		t.Setenv(v, rel)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), v) {
+			t.Errorf("relative %s: err = %v, want a refusal naming it", v, err)
+		}
+	}
+}
+
+// launch.Prepare refuses a primary launch on each scope's own field: a
+// primary is selected by the vendor's home variable being absent, which the
+// vendor resolves against the real home, not the re-pointed one.
+func TestLoadMarksRelocatedPrimary(t *testing.T) {
+	clearOverrides(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Claude.PrimaryRelocated || c.Codex.PrimaryRelocated {
+		t.Errorf("unset HEADROOM_HOME read as relocated: claude %v codex %v", c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated)
+	}
+
+	t.Setenv("HEADROOM_HOME", t.TempDir())
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Claude.PrimaryRelocated || !c.Codex.PrimaryRelocated {
+		t.Errorf("a re-pointed home must mark both scopes — primary launches refuse on it: claude %v codex %v", c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated)
+	}
+}
+
+// Each HEADROOM_* override lands on its own vendor's field and nowhere else.
+// Unset, the primary's name is not compiled in — Load leaves it "" so
+// discovery derives it from the primary's login — and the advertised launcher
+// is a command every install has; a launcher format must carry exactly one
+// %s, since a malformed one would render every hint wrong.
+func TestLoadOverridesLandOnTheirOwnScope(t *testing.T) {
+	clearOverrides(t)
+	home := t.TempDir()
+	t.Setenv("HEADROOM_HOME", home)
+	base, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Claude.PrimaryName != "" || base.Codex.PrimaryName != "" {
+		t.Errorf("unset primary names = %q, %q, want \"\" (derive at discovery)", base.Claude.PrimaryName, base.Codex.PrimaryName)
+	}
+	if base.Claude.LauncherFormat != "headroom launch --account %s" {
+		t.Errorf("default LauncherFormat = %q", base.Claude.LauncherFormat)
+	}
+
+	root := func(s *Scope) *string { return &s.AccountsRoot }
+	name := func(s *Scope) *string { return &s.PrimaryName }
+	launcher := func(s *Scope) *string { return &s.LauncherFormat }
+	url := func(s *Scope) *string { return &s.UsageURL }
+	for _, tc := range []struct {
+		env, value string
+		vendor     Vendor
+		field      func(*Scope) *string
+	}{
+		{"HEADROOM_ACCOUNTS_ROOT", filepath.Join(home, "claude-root"), Claude, root},
+		{"HEADROOM_PRIMARY_NAME", "pinned", Claude, name},
+		{"HEADROOM_LAUNCHER_FORMAT", "x-%s", Claude, launcher},
+		{"HEADROOM_USAGE_URL", "http://127.0.0.1:1/claude", Claude, url},
+		{"HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(home, "codex-root"), Codex, root},
+		{"HEADROOM_CODEX_PRIMARY_NAME", "cx", Codex, name},
+		{"HEADROOM_CODEX_LAUNCHER_FORMAT", "cx-%s", Codex, launcher},
+		{"HEADROOM_CODEX_USAGE_URL", "http://127.0.0.1:1/usage", Codex, url},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			c, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := base
+			*tc.field(map[Vendor]*Scope{Claude: &want.Claude, Codex: &want.Codex}[tc.vendor]) = tc.value
+			if c.Claude != want.Claude || c.Codex != want.Codex {
+				t.Errorf("%s=%q:\n claude %+v\n  codex %+v\nwant only %s's field changed", tc.env, tc.value, c.Claude, c.Codex, tc.vendor)
+			}
+		})
+	}
+
+	for _, env := range []string{"HEADROOM_LAUNCHER_FORMAT", "HEADROOM_CODEX_LAUNCHER_FORMAT"} {
+		for _, bad := range []string{"x-", "cx", "x-%d", "%s %s", "%d-%s", "100%% %s"} {
+			t.Setenv(env, bad)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), env) {
+				t.Errorf("%s=%q: err = %v, want a refusal naming it", env, bad, err)
+			}
+		}
+		t.Setenv(env, "")
+	}
+}
+
 // Both scopes always resolve — `accounts add --vendor codex` must work before
 // any Codex directory exists — and presence alone says whether the board,
-// `--json` and `check` include Codex unasked.
+// `--json` and `check` include Codex unasked. Either directory makes Codex
+// present.
 func TestLoadResolvesBothScopes(t *testing.T) {
 	clearOverrides(t)
 	home := t.TempDir()
@@ -135,44 +154,26 @@ func TestLoadResolvesBothScopes(t *testing.T) {
 		t.Errorf("Claude scope = %+v", cl)
 	}
 
-	// Either directory makes Codex present.
-	if err := os.MkdirAll(filepath.Join(home, ".codex-accounts"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if c, _ = Load(); !c.Codex.Present || len(c.Present()) != 2 || c.Present()[0].Vendor != Claude {
-		t.Errorf("accounts root alone must make Codex present, Claude Code first: %v", c.Present())
-	}
-}
-
-func TestLoadCodexOverrides(t *testing.T) {
-	clearOverrides(t)
-	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", "relative/root")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_CODEX_ACCOUNTS_ROOT") {
-		t.Errorf("relative Codex accounts root: err = %v, want a refusal naming it", err)
-	}
-	root := t.TempDir()
-	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", root)
-	t.Setenv("HEADROOM_CODEX_PRIMARY_NAME", "cx")
-	t.Setenv("HEADROOM_CODEX_LAUNCHER_FORMAT", "cx-%s")
-	t.Setenv("HEADROOM_CODEX_USAGE_URL", "http://127.0.0.1:1/usage")
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Codex.AccountsRoot != root || c.Codex.PrimaryName != "cx" || c.Codex.LauncherFormat != "cx-%s" || c.Codex.UsageURL != "http://127.0.0.1:1/usage" {
-		t.Errorf("Codex overrides not applied: %+v", c.Codex)
-	}
-	if c.Claude.PrimaryName != "" || c.Claude.LauncherFormat != "headroom launch --account %s" {
-		t.Errorf("a Codex override leaked into Claude Code's scope: %+v", c.Claude)
-	}
-	t.Setenv("HEADROOM_CODEX_LAUNCHER_FORMAT", "cx")
-	if _, err := Load(); err == nil {
-		t.Error("a Codex launcher format without its placeholder was accepted")
+	for _, dir := range []string{".codex", ".codex-accounts"} {
+		t.Run(dir+" alone", func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HEADROOM_HOME", home)
+			if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if c, err := Load(); err != nil || !c.Codex.Present || len(c.Present()) != 2 || c.Present()[0].Vendor != Claude {
+				t.Errorf("%s alone must make Codex present, Claude Code first: %v (%v)", dir, c.Present(), err)
+			}
+		})
 	}
 }
 
 // Distinct roots keep the two vendors' .current, .order and state.json apart.
-// One location refuses however it is spelled.
+// One location refuses however it is spelled or reached: through a symlink,
+// through an alias above several components that do not exist yet, and under
+// a spelling that differs only in case on a filesystem that folds it —
+// seeding under an accepted pair would otherwise create the shared root the
+// refusal exists to prevent.
 func TestLoadRefusesAliasedAccountsRoots(t *testing.T) {
 	clearOverrides(t)
 	real := t.TempDir()
@@ -185,6 +186,7 @@ func TestLoadRefusesAliasedAccountsRoots(t *testing.T) {
 		"different spelling":                   {real, real + "/./"},
 		"through a symlink":                    {real, link},
 		"absent leaf under a symlinked parent": {filepath.Join(real, "new"), filepath.Join(link, "new")},
+		"alias above two missing components":   {filepath.Join(real, "new", "accounts"), filepath.Join(link, "new", "accounts")},
 	} {
 		t.Setenv("HEADROOM_ACCOUNTS_ROOT", roots[0])
 		t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", roots[1])
@@ -192,32 +194,18 @@ func TestLoadRefusesAliasedAccountsRoots(t *testing.T) {
 			t.Errorf("%s: err = %v, want a refusal", name, err)
 		}
 	}
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", real)
-	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(real, "codex"))
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("distinct roots refused: %v", err)
-	}
-	if c.Claude.AccountsRoot != real {
-		t.Errorf("an accepted spelling was rewritten: %q", c.Claude.AccountsRoot)
-	}
-}
-
-// One location must refuse however it is reached: through an alias above
-// several components that do not exist yet, and under a spelling that differs
-// only in case on a filesystem that folds it. Seeding under an accepted pair
-// would otherwise create the shared root the refusal exists to prevent.
-func TestLoadRefusesAliasedRootsAboveMissingComponentsAndByCase(t *testing.T) {
-	clearOverrides(t)
-	real := t.TempDir()
-	link := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", filepath.Join(real, "new", "accounts"))
-	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(link, "new", "accounts"))
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "same location") {
-		t.Errorf("alias above two missing components: err = %v, want a refusal", err)
+	for name, roots := range map[string][2]string{
+		"distinct roots": {real, filepath.Join(real, "codex")},
+		"distinct siblings above missing components": {filepath.Join(real, "a", "accounts"), filepath.Join(real, "b", "accounts")},
+	} {
+		t.Setenv("HEADROOM_ACCOUNTS_ROOT", roots[0])
+		t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", roots[1])
+		c, err := Load()
+		if err != nil {
+			t.Errorf("%s refused: %v", name, err)
+		} else if c.Claude.AccountsRoot != roots[0] {
+			t.Errorf("%s: an accepted spelling was rewritten: %q", name, c.Claude.AccountsRoot)
+		}
 	}
 
 	existing := filepath.Join(real, "Accounts")
@@ -234,26 +222,6 @@ func TestLoadRefusesAliasedRootsAboveMissingComponentsAndByCase(t *testing.T) {
 		}
 	} else if err != nil {
 		t.Errorf("distinct directories on a case-sensitive filesystem refused: %v", err)
-	}
-
-	// Distinct siblings above missing components stay accepted.
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", filepath.Join(real, "a", "accounts"))
-	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(real, "b", "accounts"))
-	if _, err := Load(); err != nil {
-		t.Errorf("distinct roots refused: %v", err)
-	}
-}
-
-// Either directory makes Codex present — the primary home alone included.
-func TestCodexPresentFromItsPrimaryHomeAlone(t *testing.T) {
-	clearOverrides(t)
-	home := t.TempDir()
-	t.Setenv("HEADROOM_HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if c, err := Load(); err != nil || !c.Codex.Present {
-		t.Errorf("~/.codex alone: present=%v err=%v", c.Codex.Present, err)
 	}
 }
 
@@ -312,14 +280,14 @@ func TestTheLedgerFileIsReadStrictly(t *testing.T) {
 	ledger := filepath.Join(root, ".ledger")
 
 	c, err := Load()
-	if err != nil || c.Claude.LedgerRoot != "" || c.Claude.Ledger() != root || c.Claude.SharesLedger() {
-		t.Fatalf("absent: %+v %v", c.Claude, err)
+	if err != nil || c.Claude.LedgerRoot != "" || c.Claude.Ledger() != root {
+		t.Fatalf("absent: ledger root %q ledger %q err %v", c.Claude.LedgerRoot, c.Claude.Ledger(), err)
 	}
 	if err := os.WriteFile(ledger, []byte(other+"/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if c, err = Load(); err != nil || c.Claude.LedgerRoot != other || !c.Claude.SharesLedger() {
-		t.Fatalf("another root: ledger %q shared %v err %v", c.Claude.LedgerRoot, c.Claude.SharesLedger(), err)
+	if c, err = Load(); err != nil || c.Claude.LedgerRoot != other || c.Claude.Ledger() != other {
+		t.Fatalf("another root: ledger root %q ledger %q err %v", c.Claude.LedgerRoot, c.Claude.Ledger(), err)
 	}
 	if c.Codex.LedgerRoot != "" {
 		t.Error("Codex was given the Claude Code ledger")
@@ -349,8 +317,8 @@ func TestTheLedgerFileIsReadStrictly(t *testing.T) {
 	if err := os.WriteFile(ledger, []byte(root+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if c, err = Load(); err != nil || c.Claude.SharesLedger() {
-		t.Errorf("own root: shared %v err %v", c.Claude.SharesLedger(), err)
+	if c, err = Load(); err != nil || c.Claude.LedgerRoot != "" || c.Claude.Ledger() != root {
+		t.Errorf("own root: ledger root %q ledger %q err %v", c.Claude.LedgerRoot, c.Claude.Ledger(), err)
 	}
 }
 

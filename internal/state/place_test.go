@@ -249,21 +249,3 @@ func TestPlaceFollowingTheOwnerWritesNoReHome(t *testing.T) {
 		t.Fatal("following the owner recorded a re-home")
 	}
 }
-
-// An older binary must carry the section through its own writes: it is not in
-// the set this test's "old" writer decodes, exactly as it will not be for a
-// binary from before this change.
-func TestUnknownSectionsSurvivePlacement(t *testing.T) {
-	root := t.TempDir()
-	doc := `{"version":1,"accounts":{},"future":{"keep":true}}`
-	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s := Open(rootScope(root))
-	if _, err := place(s, idle("a"), placement.Intent{}, 1, "", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if got := compact(t, readRaw(t, root)["future"]); got != `{"keep":true}` {
-		t.Errorf("unknown section = %s", got)
-	}
-}

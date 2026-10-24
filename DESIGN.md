@@ -158,7 +158,7 @@ verifier's error messages name something that exists on every install:
   one refusal that guards data: a `projects/` that is a *real directory*
   holds sessions never migrated into the store, and `RemoveAll` would take
   them with the account; the liveness gate consumes `sessions.ReadRegistry`
-  problems and `sessions.Inspect` evidence — an unreadable claim or registry
+  problems and `sessions.InspectClaims` evidence — an unreadable claim or registry
   directory refuses removal, as does any live or unverifiable session;
   then confirmation — `y/N` on a terminal, `--yes` off one, and refusal
   without either; a picker choice arrives
@@ -167,7 +167,8 @@ verifier's error messages name something that exists on every install:
   started. Then the Keychain item, then the dir (including any file-backed
   `.credentials.json`; `os.RemoveAll` does not
   follow symlinks, so the `projects/` link goes and the store behind it
-  stays — pinned by test), then the `.order` line. `.current` is never
+  stays — pinned by test), then every `.order` line discovery reads as that
+  account, a trailing comment included. `.current` is never
   rewritten: a removed current account makes launch refuse until the board
   repicks, so corrupt-vs-chosen stays distinguishable. Transcripts survive
   (they are the machine's); the picker shows the dead owner as degraded
@@ -1037,12 +1038,18 @@ that turning auto on forgets the pin.
   section, which is `Claim`'s shape applied to launches: two launches started
   together cannot both see an account as empty. The rule is imported and
   called by the store, so no caller hands a function into the lock. Every
-  launch goes through it — a pinned or named one with its account forced —
-  because a session started by name is load an automatic one must count.
+  launch that can start goes through it — a pinned or named one with its
+  account forced — because a session started by name is load an automatic
+  one must count.
 - **A launch is one operation, whoever asks for it.** `headroom launch` and
-  the session picker each build an intent and hand it to `placeLaunch`, which
-  places, prepares, logs and announces. What the launch means for a session
-  travels into `state.Place` with it, so the load and the session's re-home
+  the session picker each build an intent and hand it to `placeLaunch`. It
+  refuses first whatever is known before a write — a named or pinned account
+  that cannot be launched, `--auto --remember` the rule would refuse — since
+  `state.Place` registers the home and prunes even when its rule refuses, and
+  a launch that cannot start must leave nothing behind; then it records
+  `.current` when asked, places and logs, and the surface announces the
+  outcome and execs. What the launch means for a session travels into
+  `state.Place` with it, so the load and the session's re-home
   are one write: both land or neither does. The picker's `x` is the one
   launch that depends on its bookkeeping — the re-home is what routes the
   session's next turn — so it is refused when the re-home cannot be written,
@@ -1429,7 +1436,11 @@ here.
 
 stdlib plus `golang.org/x/term` (raw-mode terminal control for the two
 pickers), nothing else: no CLI framework, no TUI framework — the interactive
-surfaces share terminal lifetime and decoding, with their own frame policies.
+surfaces share terminal lifetime, decoding and row emission, with their own
+frame policies. Every drawn line is one physical row: vendor text — account
+labels, model names, session titles and prompts — is sanitized where it is
+rendered, and a screen's last row carries no newline, since one more would
+scroll a frame of exactly the screen's height by a row on every draw.
 No cgo either:
 the Keychain is read by exec'ing `security(1)`, which keeps builds trivial.
 Parsing is pure functions (`[]byte` in, tagged structs out) tested by table;
@@ -1443,7 +1454,12 @@ keypress only after a pause.
 
 ## Verification
 
-`make check` runs vet and the race-enabled Go suite. Parser tables pin vendor
+`make check` runs vet and the race-enabled Go suite. The suite is hermetic:
+`internal/app`'s `TestMain` clears every variable a vendor's environment
+policy strips, every `HEADROOM_*` override, `BROWSER` and the ssh markers,
+because the shell running the suite is often a managed session and each of
+them changes what a launch prints and where it routes; a test that needs one
+sets it with `t.Setenv`. Parser tables pin vendor
 contracts and visible drift. The placement rule is a table over candidates;
 the store's place operation is tested for the same property as the claim —
 contending handles on the real lock — and the launch path through the exec
@@ -1506,7 +1522,10 @@ launches, aliases of one subscription, a millisecond tie, an owner, a move —
 each logged and replayed, beside the frozen lines of the current rule.
 
 `make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
-interaction, selection, refresh scheduling, scrollback and terminal lifetime.
+interaction, selection, refresh scheduling, scrollback and terminal lifetime,
+and — read from a tmux pane, since the alternate screen keeps no scrollback —
+the session picker's header holding the first row of a full, a short and a
+narrow pane.
 Automatic placement is exercised there through the real binary: five launches
 started together reach five accounts, a session named on its first turn
 resumes on the same account, the board under auto marks an account's row,

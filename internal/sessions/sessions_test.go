@@ -44,6 +44,15 @@ func TestParseTailTitleChain(t *testing.T) {
 	if got := ParseTail([]byte(withRename), storeDir, true).Title(); got != "my name" {
 		t.Errorf("custom-title should win: %q", got)
 	}
+
+	// Untitled: the vendor's newest real prompt, and without one the newest
+	// plain user message — never a blank row while the transcript says more.
+	if got := ParseTail([]byte(lines[0]+"\n"+lines[3]+"\n"), storeDir, true).Title(); got != "do the thing" {
+		t.Errorf("untitled with a last prompt: %q, want the last prompt", got)
+	}
+	if got := ParseTail([]byte(lines[0]+"\n"), storeDir, true).Title(); got != "first prompt" {
+		t.Errorf("untitled without a last prompt: %q, want the last user message", got)
+	}
 }
 
 func TestParseTailModel(t *testing.T) {
@@ -81,6 +90,12 @@ func TestParseTailCwdVerifiedNotDemunged(t *testing.T) {
 	reloc := `{"type":"relocated","relocatedCwd":"/repo/wt/a","sessionId":"s"}` + "\n"
 	if got := ParseTail([]byte(reloc), storeDir, true).CWD; got != "/repo/wt/a" {
 		t.Errorf("relocatedCwd = %q", got)
+	}
+	// …and fail it the same way: a relocation to somewhere this store dir was
+	// not named after is not the cd target.
+	foreign := `{"type":"relocated","relocatedCwd":"/repo/other","sessionId":"s"}` + "\n"
+	if got := ParseTail([]byte(foreign), storeDir, true).CWD; got != "" {
+		t.Errorf("unverifiable relocatedCwd = %q, want empty", got)
 	}
 	// No verifiable cwd at all → empty, never a guess.
 	if got := ParseTail([]byte(lines[1]+"\n"), storeDir, true).CWD; got != "" {
@@ -182,7 +197,8 @@ func TestResolveOwner(t *testing.T) {
 			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerConflict},
 	}
 	for _, c := range cases {
-		acct, st := resolveOwner("s", Inspect(c.registry, probe)["s"], c.owners, c.hists, names)
+		evidence, _ := InspectClaims(c.registry, probe)
+		acct, st := ownerEvidence{names: names, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
 		if acct != c.wantAcct || st != c.wantState {
 			t.Errorf("%s: = (%q, %v), want (%q, %v)", c.name, acct, st, c.wantAcct, c.wantState)
 		}
@@ -207,7 +223,7 @@ func TestLiveness(t *testing.T) {
 			return 0, os.ErrNotExist
 		}
 	}
-	m := Inspect(entries, probe)
+	m, _ := InspectClaims(entries, probe)
 	if m["live"].State != Live {
 		t.Errorf("live = %v", m["live"].State)
 	}
@@ -215,8 +231,8 @@ func TestLiveness(t *testing.T) {
 	// proof outranks uncertainty — Live, never LiveUnknown, or the resume
 	// guard (which refuses only Live) would resume a session proven open.
 	both := append(entries[:1:1], RegistryEntry{Account: "b", SessionID: "live", PID: 99, OK: false})
-	if got := Inspect(both, probe)["live"].State; got != Live {
-		t.Errorf("verified live + unverifiable claim = %v, want Live", got)
+	if got, _ := InspectClaims(both, probe); got["live"].State != Live {
+		t.Errorf("verified live + unverifiable claim = %v, want Live", got["live"].State)
 	}
 	if m["recycled"].State != NotLive {
 		t.Errorf("recycled pid must not read live: %v", m["recycled"].State)
@@ -329,6 +345,79 @@ func TestCollectGroupsAndSorts(t *testing.T) {
 	}
 }
 
+// Collect is the picker's and --json's only path to each account's evidence:
+// its prompt history names the owner, its live registry says what is open,
+// an unreadable registry makes every unproven answer unknown, and the
+// re-homes it is handed compete with the history. The rules themselves are
+// TestResolveOwner's and TestRegistryProblemsKeepTheirScope's; this is the
+// wiring, which those cannot see — cutting any one input here must fail it.
+func TestCollectWiresEachAccountsEvidence(t *testing.T) {
+	projects, write := storeFixture(t)
+	cwd := t.TempDir()
+	now := time.Now()
+	for i, id := range []string{"s-hist", "s-live", "s-rehome", "s-none"} {
+		write(Munge(cwd), id+".jsonl", rec(id, cwd, id), now.Add(-time.Duration(i)*time.Minute))
+	}
+	dirA, dirB := t.TempDir(), t.TempDir()
+	// Both accounts drove s-hist; a did so last.
+	os.WriteFile(filepath.Join(dirA, "history.jsonl"), []byte(`{"sessionId":"s-hist","timestamp":100}`+"\n"), 0o644)
+	os.WriteFile(filepath.Join(dirB, "history.jsonl"), []byte(`{"sessionId":"s-hist","timestamp":50}`+"\n"), 0o644)
+	os.MkdirAll(filepath.Join(dirB, "sessions"), 0o755)
+	os.WriteFile(filepath.Join(dirB, "sessions", "42.json"), []byte(`{"sessionId":"s-live","pid":42,"startedAt":5001000}`), 0o644)
+	in := Input{
+		ProjectsDir: projects, CWD: "/nowhere",
+		Accounts: []AccountRef{{Name: "a", Dir: dirA}, {Name: "b", Dir: dirB}},
+		Owners:   map[string]OwnerRec{"s-rehome": {Account: "b", AtMS: 200}},
+		Probe: func(pid int) (int64, error) {
+			if pid == 42 {
+				return 5_000, nil
+			}
+			return 0, os.ErrNotExist
+		},
+	}
+	collect := func() map[string]*Session {
+		t.Helper()
+		by := map[string]*Session{}
+		for _, s := range Collect(in).Sessions {
+			by[s.ID] = s
+		}
+		if len(by) != 4 {
+			t.Fatalf("collected %d sessions, want 4", len(by))
+		}
+		return by
+	}
+
+	by := collect()
+	want := map[string]struct {
+		owner string
+		state OwnerState
+		live  LiveState
+	}{
+		"s-hist":   {"a", OwnerHistory, NotLive},
+		"s-live":   {"b", OwnerLive, Live},
+		"s-rehome": {"b", OwnerRehome, NotLive},
+		"s-none":   {"", OwnerNone, NotLive},
+	}
+	for id, w := range want {
+		if s := by[id]; s.Owner != w.owner || s.OwnerState != w.state || s.Live != w.live {
+			t.Errorf("%s: owner (%q, %v) live %v, want (%q, %v) live %v", id, s.Owner, s.OwnerState, s.Live, w.owner, w.state, w.live)
+		}
+	}
+
+	// One account's registry cannot be listed: nothing unproven reads as
+	// closed, and the proven-open session stays open.
+	sdir := filepath.Join(dirA, "sessions")
+	os.Mkdir(sdir, 0o755)
+	if err := os.Chmod(sdir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(sdir, 0o755) })
+	by = collect()
+	if by["s-none"].Live != LiveUnknown || by["s-live"].Live != Live {
+		t.Errorf("with a registry unreadable: s-none %v, s-live %v — want unknown and live", by["s-none"].Live, by["s-live"].Live)
+	}
+}
+
 func TestDeleteTranscript(t *testing.T) {
 	projects, write := storeFixture(t)
 	tm := time.Now()
@@ -365,13 +454,17 @@ func TestDeleteTranscript(t *testing.T) {
 
 // A transcript ending in one message larger than the tail budget must still
 // resolve its cwd — the window widens until a record verifies. Without this,
-// a resumable session renders "dir gone" (5 real transcripts did).
+// a resumable session renders "dir gone" (5 real transcripts did). The model
+// claim after the oversized record is what makes this the cwd half of the
+// gate: the first window already holds a model, so only a missing cwd can
+// keep it widening.
 func TestCollectWidensPastCwdlessTail(t *testing.T) {
 	projects, write := storeFixture(t)
 	dir := t.TempDir()
 	filler := strings.Repeat("x", TailBudget) // one record larger than the budget
 	content := rec("s-big", dir, "big session") +
-		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n"
+		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n" +
+		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","model":"claude-fable-5","content":[]}}` + "\n"
 	write(Munge(dir), "s-big.jsonl", content, time.Now())
 
 	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
@@ -550,35 +643,6 @@ func TestResolveWalksPastAGitHusk(t *testing.T) {
 	}
 }
 
-// The two reasons there is no branch to read are not the same fact, and a
-// caller that cannot tell them apart cannot render either honestly: no HEAD
-// here means this is not a checkout, an unreadable HEAD means it is one and
-// something is wrong with it.
-func TestHeadDistinguishesAbsentFromUnreadable(t *testing.T) {
-	root := t.TempDir()
-	mk := func(path, body string) string {
-		full := filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if body != "" {
-			if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return filepath.Dir(full)
-	}
-	absent := mk("no-head/info/exclude", "x")
-	unreadable := mk("junk/HEAD", "not a sha and not a ref\n")
-
-	if got := readHead(absent); got.Kind != HeadNone {
-		t.Errorf("no HEAD file: Kind = %v, want HeadNone", got.Kind)
-	}
-	if got := readHead(unreadable); got.Kind != HeadUnreadable {
-		t.Errorf("unparseable HEAD: Kind = %v, want HeadUnreadable", got.Kind)
-	}
-}
-
 func TestProcessEvidenceSamplesOnceAndPreservesUnknown(t *testing.T) {
 	entries := []RegistryEntry{
 		{Account: "owner", SessionID: "s", PID: 7, StartedAtMS: 100_000, OK: true},
@@ -586,7 +650,7 @@ func TestProcessEvidenceSamplesOnceAndPreservesUnknown(t *testing.T) {
 		{Account: "other", SessionID: "unknown", PID: 8, StartedAtMS: 100_000, OK: true},
 	}
 	calls := map[int]int{}
-	evidence := Inspect(entries, func(pid int) (int64, error) {
+	evidence, _ := InspectClaims(entries, func(pid int) (int64, error) {
 		calls[pid]++
 		if pid == 8 {
 			return 0, os.ErrPermission

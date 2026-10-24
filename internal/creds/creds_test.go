@@ -1,6 +1,8 @@
 package creds
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,28 @@ import (
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
+// stubSecurity puts a `security` on PATH that holds one Keychain item, under
+// service, and answers like the real command for any other: not found. An
+// empty service holds none. So a read reaches the item only if the service
+// name it derived reaches the command.
+func stubSecurity(t *testing.T, service, blob string) {
+	t.Helper()
+	bin := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-s" ] && [ "$2" = %q ] && [ -n %q ]; then echo %q; exit 0; fi
+  shift
+done
+exit 44
+`, service, service, blob)
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+}
+
+// A present Keychain item outranks the file, and the file is read from the
+// account's real dir — the primary's included, whose Keychain key is "".
 func TestReadRaw(t *testing.T) {
 	const keychainBlob = `{"claudeAiOauth":{"accessToken":"keychain"}}`
 	const fileBlob = `{"claudeAiOauth":{"accessToken":"file"}}`
@@ -39,22 +63,38 @@ func TestReadRaw(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				keychain := func(key string) string {
-					if key != account.key {
-						t.Errorf("keychain key = %q, want %q", key, account.key)
-					}
-					if tc.keychain {
-						return keychainBlob
-					}
-					return ""
+				service := ""
+				if tc.keychain {
+					service = ServiceName(account.key)
 				}
-				raw, source := readRaw(account.key, dir, keychain, os.ReadFile)
+				stubSecurity(t, service, keychainBlob)
+				raw, source := ReadRaw(context.Background(), account.key, dir)
 				if raw != tc.wantRaw || source != tc.wantSource {
 					t.Errorf("got %q, %v; want %q, %v", raw, source, tc.wantRaw, tc.wantSource)
 				}
 			})
 		}
 	}
+
+	// A read stopped while `security` stalls reads nothing — not the file the
+	// killed Keychain read would otherwise fall through to: a credential
+	// read that outlives its caller's deadline must not be acted on.
+	t.Run("stopped mid-read", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(fileBlob), 0600); err != nil {
+			t.Fatal(err)
+		}
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+":/bin:/usr/bin")
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		if raw, source := ReadRaw(ctx, "", dir); raw != "" || source != SourceNone {
+			t.Errorf("got %q, %v; want nothing", raw, source)
+		}
+	})
 }
 
 func TestServiceName(t *testing.T) {

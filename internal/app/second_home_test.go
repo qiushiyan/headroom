@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -47,8 +46,6 @@ func newTwoHomes(t *testing.T) *twoHomes {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	os.Unsetenv("CLAUDE_CONFIG_DIR")
 
 	owner := claudeScope(filepath.Join(base, "qiushiyan"), "qiushi")
 	steward := config.ForHome(filepath.Join(base, ".steward-home")).Claude
@@ -78,19 +75,19 @@ func newTwoHomes(t *testing.T) *twoHomes {
 	writeJSON(t, steward.LedgerFile(), owner.AccountsRoot+"\n")
 
 	f := &twoHomes{t: t, owner: owner, steward: steward, live: map[int]int64{}, refreshes: new(int)}
-	prevCreds, prevProbe, prevRefresh := placementCreds, placementProbe, startRefresh
+	prevCreds, prevProbe, prevRefresh := placementCreds, pidProbe, startRefresh
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	placementCreds = func(accounts.Account) string {
 		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
 	}
-	placementProbe = func(pid int) (int64, error) {
+	pidProbe = func(pid int) (int64, error) {
 		if start, ok := f.live[pid]; ok {
 			return start, nil
 		}
 		return 0, os.ErrNotExist
 	}
 	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
-	t.Cleanup(func() { placementCreds, placementProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
+	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 
 	for _, s := range []config.Scope{owner, steward} {
 		if err := state.Open(s).Register(time.Now()); err != nil {
@@ -147,7 +144,7 @@ func (f *twoHomes) launch(cfg config.Scope, args ...string) launched {
 
 func (f *twoHomes) log(cfg config.Scope) []launchlog.Record {
 	f.t.Helper()
-	recs, _, err := launchlog.Read(cfg.AccountsRoot, 0)
+	recs, _, err := launchlog.Read(cfg.AccountsRoot)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -395,7 +392,7 @@ func TestEachHomesSessionsStayInItsHome(t *testing.T) {
 	}
 
 	ids := func(s config.Scope) []string {
-		listing, _, _, _ := collectSessions(s, state.Open(s))
+		listing, _, _ := collectSessions(s, state.Open(s))
 		var out []string
 		for _, sess := range listing.Sessions {
 			out = append(out, sess.ID)
@@ -420,86 +417,45 @@ func TestEachHomesSessionsStayInItsHome(t *testing.T) {
 	}
 }
 
-// The owner's board and --json count the second home's sessions and launches,
-// and say whose they are.
-func TestTheBoardShowsTheOtherHomesLoad(t *testing.T) {
+// One session id in both homes' registries: the owner a launch follows comes
+// from this home's evidence alone, and the other home's session on that id is
+// load on its subscription all the same. One sample of the process table
+// answers both; taking owner evidence from every home's claims must fail this.
+func TestASessionIDInBothHomesIsOwnedHereAndCountedThere(t *testing.T) {
 	f := newTwoHomes(t)
 	for _, email := range append(shared, "qiushi@x.com") {
 		f.observe(email, 0, 10)
 	}
-	if got := f.launch(f.steward, "--account", "a@x.com"); got.code != 0 {
-		t.Fatal(got.stderr)
+	const sid = "abcdefab-1111-4111-8111-111111111111"
+	claim := func(dir string, pid int, status string, live bool) {
+		t.Helper()
+		started := time.Now().Add(-time.Hour)
+		sdir := filepath.Join(dir, "sessions")
+		if err := os.MkdirAll(sdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(t, filepath.Join(sdir, fmt.Sprintf("%d.json", pid)),
+			fmt.Sprintf(`{"pid":%d,"sessionId":%q,"startedAt":%d,"status":%q}`, pid, sid, started.UnixMilli(), status))
+		if live {
+			f.live[pid] = started.Unix()
+		}
 	}
-	f.busy(filepath.Join(f.steward.AccountsRoot, "b@x.com"), 701)
-	f.busy(filepath.Join(f.owner.AccountsRoot, "b@x.com"), 702)
+	// Here: the session's last prompt was on a@x.com, whose claim on it is of
+	// a process that has exited.
+	ownA := filepath.Join(f.owner.AccountsRoot, "a@x.com")
+	writeJSON(t, filepath.Join(ownA, "history.jsonl"),
+		fmt.Sprintf(`{"sessionId":%q,"timestamp":%d}`+"\n", sid, time.Now().Add(-time.Hour).UnixMilli()))
+	claim(ownA, 1101, "idle", false)
+	// There: a live session under the same id, working on b@x.com.
+	claim(filepath.Join(f.steward.AccountsRoot, "b@x.com"), 1102, "busy", true)
 
-	st := state.Open(f.owner)
-	set := accounts.Discover(f.owner)
-	now := time.Now()
-	facts, routing := accountstate.Assemble(set, st.Load(), now)
-	list := accountList(facts)
-	markPlacement(set, list, routing.Mode, st, now)
-
-	view := func(name string) accountstate.Facts {
-		for _, d := range list {
-			if d.Acct.Name == name {
-				return d.View
-			}
-		}
-		t.Fatalf("no %s", name)
-		return accountstate.Facts{}
+	got := f.launch(f.owner, "--auto", "--", "--resume", sid)
+	if dirs := configDirs(got.env); got.code != 0 || len(dirs) != 1 || filepath.Base(dirs[0]) != "a@x.com" ||
+		!strings.Contains(got.stderr, "this session's account") {
+		t.Fatalf("exit %d on %v — the owner is this home's a@x.com:\n%s", got.code, dirs, got.stderr)
 	}
-	if l := view("a@x.com").Load; l == nil || l.Launched != 1 || len(l.Elsewhere()) != 1 || l.Elsewhere()[0].Label != "steward-home" {
-		t.Fatalf("a@x.com load = %+v", l)
-	}
-	if l := view("qiushi").Load; l == nil || l.Busy+l.Launched != 0 {
-		t.Errorf("an idle account's load = %+v", l)
-	}
-
-	p := render.NewPalette(false)
-	blocks := strings.Join(slices.Concat(p.Board(views(list), now.Unix(), render.LayoutBlocks, 0).Groups...), "\n")
-	for _, want := range []string{"sessions: 1 launched (steward-home: 1 launched)", "sessions: 2 busy (steward-home: 1 busy)"} {
-		if !strings.Contains(blocks, want) {
-			t.Errorf("the board lacks %q:\n%s", want, blocks)
-		}
-	}
-	compact := strings.Join(slices.Concat(p.Board(views(list), now.Unix(), render.LayoutCompact, 0).Groups...), "\n")
-	if !strings.Contains(compact, "2 busy (steward-home: 1 busy)") {
-		t.Errorf("the compact board lacks the load clause:\n%s", compact)
-	}
-
-	data, err := jsonDocument([]vendorBoard{{scope: f.owner, set: set, st: st, list: list, mode: routing.Mode}}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc struct {
-		Accounts []struct {
-			Name string
-			Load *struct {
-				Busy, Launched int
-				Homes          []struct {
-					Label          string
-					This           bool
-					Busy, Launched int
-				}
-			}
-		}
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range doc.Accounts {
-		if a.Name != "b@x.com" {
-			continue
-		}
-		if a.Load == nil || a.Load.Busy != 2 || len(a.Load.Homes) != 2 {
-			t.Fatalf("b@x.com load = %+v", a.Load)
-		}
-		for _, h := range a.Load.Homes {
-			if h.This == (h.Label == "steward-home") || h.Busy != 1 {
-				t.Errorf("home share = %+v", h)
-			}
-		}
+	if c := loggedCandidate(f.log(f.owner)[0], "b@x.com"); c.Busy != 1 || len(c.Homes) != 1 || c.Homes[0].Home != f.steward.AccountsRoot {
+		t.Errorf("the other home's session on that id counted as %+v", c)
 	}
 }
 
@@ -547,9 +503,11 @@ func TestOneHomesTwoDirsOnOneSubscriptionShareTheirLoad(t *testing.T) {
 	}
 }
 
-// The owner's own surfaces, as they run: the board printed off a terminal and
-// --json, in pinned mode, with one account the other home launched on and one
-// with no figures yet that the other home has a session on.
+// The owner's own surfaces, as they run: the board printed off a terminal in
+// both layouts and --json, in pinned mode, with one account the other home
+// launched on and one with no figures yet that both homes have a session on.
+// Each says how much is the other home's, and this home's own share is
+// counted once.
 func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
 	f := newTwoHomes(t)
 	f.owner = withUsageURL(f.owner, "http://127.0.0.1:1/usage")
@@ -561,46 +519,62 @@ func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
 		t.Fatal(got.stderr)
 	}
 	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 951)
+	f.busy(filepath.Join(f.owner.AccountsRoot, "a@x.com"), 952)
 
 	boards := fetchBoards([]config.Scope{f.owner})
-	if boards[0].mode != "pinned" {
-		t.Fatalf("mode %q", boards[0].mode)
+	if boards[0].routing.Mode != "pinned" {
+		t.Fatalf("mode %q", boards[0].routing.Mode)
 	}
-	var out strings.Builder
-	writeBoards(&out, render.NewPalette(false), boards, time.Now().Unix(), render.LayoutBlocks, 0)
-	if !strings.Contains(out.String(), "sessions: 1 busy (steward-home: 1 busy)") {
-		t.Errorf("the board does not carry the other home's session on an account without figures:\n%s", out.String())
+	for layout, want := range map[render.Layout][]string{
+		render.LayoutBlocks:  {"sessions: 2 busy (steward-home: 1 busy)", "sessions: 1 launched (steward-home: 1 launched)"},
+		render.LayoutCompact: {"2 busy (steward-home: 1 busy)"},
+	} {
+		var out strings.Builder
+		writeBoards(&out, render.NewPalette(false), boards, time.Now().Unix(), layout, 0)
+		for _, w := range want {
+			if !strings.Contains(out.String(), w) {
+				t.Errorf("layout %v lacks %q:\n%s", layout, w, out.String())
+			}
+		}
 	}
 
 	data, err := jsonDocument(boards, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	type share struct {
+		Home, Label    string
+		This           bool
+		Busy, Launched int
+	}
 	var doc struct {
 		Accounts []struct {
 			Name string
 			Load *struct {
 				Value, Busy, Launched int
-				Homes                 []struct {
-					Home, Label    string
-					This           bool
-					Busy, Launched int
-				}
+				Homes                 []share
 			}
 		}
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][3]int{"b@x.com": {4, 0, 1}, "a@x.com": {1, 1, 0}} // value, busy, launched
+	steward := share{Home: f.steward.AccountsRoot, Label: "steward-home"}
+	want := map[string]struct {
+		value, busy, launched int
+		homes                 []share
+	}{
+		"b@x.com": {4, 0, 1, []share{{Home: steward.Home, Label: steward.Label, Launched: 1}}},
+		// Shares in the order of their roots, as the document lists them.
+		"a@x.com": {2, 2, 0, []share{{Home: steward.Home, Label: steward.Label, Busy: 1}, {Home: f.owner.AccountsRoot, Label: "qiushiyan", This: true, Busy: 1}}},
+	}
 	for _, a := range doc.Accounts {
 		w, ok := want[a.Name]
 		if !ok {
 			continue
 		}
-		if a.Load == nil || a.Load.Value != w[0] || a.Load.Busy != w[1] || a.Load.Launched != w[2] ||
-			len(a.Load.Homes) != 1 || a.Load.Homes[0].Home != f.steward.AccountsRoot || a.Load.Homes[0].Label != "steward-home" || a.Load.Homes[0].This {
-			t.Errorf("%s load = %+v, want value/busy/launched %v from the steward's root", a.Name, a.Load, w)
+		if a.Load == nil || a.Load.Value != w.value || a.Load.Busy != w.busy || a.Load.Launched != w.launched || !slices.Equal(a.Load.Homes, w.homes) {
+			t.Errorf("%s load = %+v, want value/busy/launched %d/%d/%d by home %+v", a.Name, a.Load, w.value, w.busy, w.launched, w.homes)
 		}
 		delete(want, a.Name)
 	}

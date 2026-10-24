@@ -22,20 +22,9 @@ func TestCells(t *testing.T) {
 	}
 }
 
-func TestClipWideRunes(t *testing.T) {
-	// A wide rune that would straddle the boundary is dropped whole: clipping
-	// 会(2)话(2) to 3 cells yields one rune, 2 cells — never a wrapped line.
-	if got := Clip("会话选择", 3); got != "会" {
-		t.Errorf("Clip wide to 3 = %q, want 会", got)
-	}
-	if got := Clip("a会话", 4); got != "a会" {
-		t.Errorf("Clip mixed to 4 = %q, want a会", got)
-	}
-}
-
 func TestTrimAndPadCells(t *testing.T) {
-	if got := TrimCells("会话选择", 5); got != "会话" {
-		t.Errorf("TrimCells = %q, want 会话", got)
+	if got := trimCells("会话选择", 5); got != "会话" {
+		t.Errorf("trimCells = %q, want 会话", got)
 	}
 	if got := PadCell("ab", 4); got != "ab  " {
 		t.Errorf("PadCell short = %q", got)

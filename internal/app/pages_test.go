@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -24,20 +24,26 @@ func injectedPage(t *testing.T, vendor config.Vendor, names ...string) (*page, c
 	scope := config.Scope{Vendor: vendor, AccountsRoot: t.TempDir()}
 	ch := make(chan refresh.Result, 8)
 	begun := 0
-	pg := &page{scope: scope, st: state.Open(scope)}
-	pg.begin = func(ctx context.Context, _ *page) (accounts.Set, []*accountData, <-chan refresh.Result) {
+	pg := newPage(scope)
+	pg.begin = func(_ context.Context, pg *page) (board, <-chan refresh.Result) {
 		begun++
-		list := make([]*accountData, len(names))
-		for i, n := range names {
-			list[i] = &accountData{
-				Acct:    accounts.Account{Scope: scope, Name: n},
-				View:    accountstate.Facts{Vendor: vendor, Label: n, Health: accountstate.HealthOK, Attempt: accountstate.Attempt{State: accountstate.AttemptPending}},
-				Request: &refresh.Candidate{},
-			}
-		}
-		return accounts.Set{Scope: scope}, list, ch
+		return injectedBoard(pg, names...), ch
 	}
 	return pg, ch, &begun
+}
+
+// injectedBoard is a round's board under the page's own scope and store, its
+// rows as prepare leaves them: usable, and each with a request to make.
+func injectedBoard(pg *page, names ...string) board {
+	b := board{scope: pg.scope, st: pg.st, set: accounts.Set{Scope: pg.scope}, list: make([]*accountData, len(names))}
+	for i, n := range names {
+		b.list[i] = &accountData{
+			Acct:    accounts.Account{Scope: pg.scope, Name: n},
+			View:    accountstate.Facts{Vendor: pg.scope.Vendor, Label: n, Health: accountstate.HealthOK, Attempt: accountstate.Attempt{State: accountstate.AttemptPending}},
+			Request: &refresh.Candidate{},
+		}
+	}
+	return b
 }
 
 func observed(percent int) refresh.Result {
@@ -184,6 +190,65 @@ func TestPagesKeepTheirOwnSelectionAndTheTabBar(t *testing.T) {
 	}
 }
 
+// A page's first visit opens on the row enter would re-confirm: the current
+// account, or under auto the account a launch would take now. Opening on row
+// 0 instead would make enter-without-moving pin whatever sorts first, and
+// silently re-route every bare launch. Disabling show's first-visit choice
+// must fail both halves.
+func TestAPageOpensOnTheRowEnterWouldConfirm(t *testing.T) {
+	ctx := context.Background()
+	pinned, _, _ := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com", "c2@x.com")
+	rows := pinned.begin
+	pinned.begin = func(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
+		b, ch := rows(ctx, pg)
+		b.list[1].View.Current = true
+		return b, ch
+	}
+	(&picker{pages: []*page{pinned}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
+	if pinned.sel != 1 || pinned.selName != "c1@x.com" {
+		t.Errorf("pinned: opened on row %d (%q), want the current account's row 1", pinned.sel, pinned.selName)
+	}
+
+	// Under auto no row is current: the least-loaded one is marked next.
+	f := boardFixture(t, "a@x.com", "b@x.com")
+	f.setCurrent("auto\n")
+	f.observe("qiushi", 50, 10, time.Minute)
+	f.observe("a@x.com", 40, 10, time.Minute)
+	f.observe("b@x.com", 0, 10, time.Minute)
+	auto := newPage(f.cfg)
+	(&picker{pages: []*page{auto}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
+	_, next := marks(auto.list)
+	if len(next) != 1 || next[0] == auto.list[0].Acct.Name {
+		t.Fatalf("fixture: next %v must be one row other than the first", next)
+	}
+	if got := auto.list[auto.sel].Acct.Name; got != next[0] || auto.selName != next[0] {
+		t.Errorf("auto: opened on %s (%q), want the next row %s", got, auto.selName, next[0])
+	}
+}
+
+// Rediscovery between rounds can reorder the list — an account dir added or
+// removed — and the cursor stays on the account, not the index: a user about
+// to press enter would otherwise commit whichever account slid under it.
+// Making restoreSelection a no-op must fail this.
+func TestTheSelectionFollowsItsAccountAcrossARediscovery(t *testing.T) {
+	pg, ch, _ := injectedPage(t, config.Claude, "a@x.com", "b@x.com", "c@x.com")
+	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now()}
+	ctx := context.Background()
+	ui.show(ctx, 0)
+	pg.move(1)
+	close(ch)
+	ui.step(ctx, nil, nil)
+
+	// The next round discovers one more account, sorted ahead of the chosen one.
+	pg.begin = func(_ context.Context, pg *page) (board, <-chan refresh.Result) {
+		return injectedBoard(pg, "a@x.com", "aa@x.com", "b@x.com", "c@x.com"), make(chan refresh.Result)
+	}
+	pg.startRound(ctx, false)
+	if got := pg.list[pg.sel].Acct.Name; got != "b@x.com" || pg.sel != 2 {
+		t.Errorf("the cursor moved to %s (row %d) when a rediscovery reordered the list; it was on b@x.com", got, pg.sel)
+	}
+}
+
 // The footer names a vendor block as a block — not as figures too old.
 func TestFooterCountsBlockedApartFromStale(t *testing.T) {
 	now := time.Now().Unix()
@@ -199,5 +264,35 @@ func TestFooterCountsBlockedApartFromStale(t *testing.T) {
 	}
 	if blocked, stale := notActionable(list, now); blocked != 1 || stale != 1 {
 		t.Errorf("blocked=%d stale=%d, want 1 and 1", blocked, stale)
+	}
+}
+
+// The footer names an inherited home the current account's launch would
+// neutralize, and stays quiet for the ordinary case: the shell lives inside a
+// managed session, on a discovered account's own dir. It asks launch's
+// classifier, so the board and the launch's notice cannot disagree; dropping
+// the note, or the quieting, must fail this.
+func TestFooterSaysAnUnexplainedInheritedHome(t *testing.T) {
+	root := t.TempDir()
+	scope := config.Scope{Vendor: config.Claude, AccountsRoot: root}
+	a := accounts.Account{Scope: scope, Name: "a@x.com", ConfigDir: filepath.Join(root, "a@x.com")}
+	b := accounts.Account{Scope: scope, Name: "b@x.com", ConfigDir: filepath.Join(root, "b@x.com")}
+	pg := newPage(scope)
+	pg.board = board{scope: scope, st: pg.st, set: accounts.Set{Scope: scope, Accounts: []accounts.Account{a, b}},
+		list: []*accountData{{Acct: a, View: accountstate.Facts{Label: a.Name, Current: true}}}}
+	ui := &picker{pages: []*page{pg}}
+	now := time.Now()
+	for _, c := range []struct {
+		inherited string
+		said      bool
+	}{
+		{"/somewhere/else", true},
+		{b.ConfigDir, false}, // a managed session's shell: the ordinary case
+		{a.ConfigDir, false}, // what the launch sets anyway
+	} {
+		t.Setenv("CLAUDE_CONFIG_DIR", c.inherited)
+		if got := strings.Contains(ui.status(now), "ambient CLAUDE_CONFIG_DIR neutralized"); got != c.said {
+			t.Errorf("inherited %s: note said=%v, want %v — %q", c.inherited, got, c.said, ui.status(now))
+		}
 	}
 }

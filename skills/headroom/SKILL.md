@@ -70,7 +70,7 @@ shell's `x-<name>`) — quote that spelling.
   launches, an account near any limit set aside, the weekly room that would
   lapse first breaking ties.
   Every launch prints the account it took on stderr before `claude` starts
-  (`· auto`, `· pinned`, `· named`, `· last`; `≥12%` there is a lower bound
+  (`· auto`, `· pinned`, `· named`, `· the last account used`; `≥12%` there is a lower bound
   from old figures). Enter on a row pins one
   account again. `headroom launch --auto` places a single launch that way
   without changing the default; `headroom launch --last` reuses the account

@@ -1,5 +1,9 @@
-// Package render draws account blocks: a header line plus limit bars or a
-// one-line status. Output format matches the reference claude-usage script.
+// Package render draws what headroom shows a person: the accounts board in
+// both of its layouts (Board — the block per account and the compact row),
+// the session picker's rows and preview, and the cell-width text handling
+// both rest on. It decides no facts: it spells the ones accountstate and
+// sessions hand it, and the callers own the terminal — clipping, framing and
+// the in-place redraw.
 package render
 
 import (
@@ -7,18 +11,18 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 const (
-	BarWidth = 20
+	barWidth = 20
 
 	// minLabelWidth keeps the classic column for the usual short labels;
-	// LabelWidth widens it only when some label needs more.
+	// labelWidth widens it only when some label needs more.
 	minLabelWidth = 16
 )
 
@@ -36,11 +40,17 @@ func NewPalette(color bool) Palette {
 	}
 }
 
-func (p Palette) HeaderLine(v accountstate.Facts) string {
-	label := v.Label
+// headerLine is the block's first line: the account, its plan and launcher,
+// and the routing mark — "← current", or under automatic placement "← next"
+// on the account a bare launch would take, never both.
+func (p Palette) headerLine(v accountstate.Facts) string {
+	// Both names come from files another program writes (the dir, the
+	// vendor's own record of the login), so they are sanitized like the
+	// compact row's.
+	label := Sanitize(v.Label)
 	if v.DirMismatch != "" {
 		// /login picked the wrong account in that dir's session — surface it.
-		label = fmt.Sprintf("%s %s(dir says %s!)%s", v.Label, p.Red, v.DirMismatch, p.Rst)
+		label = fmt.Sprintf("%s %s(dir says %s!)%s", label, p.Red, Sanitize(v.DirMismatch), p.Rst)
 	}
 	mark := ""
 	switch {
@@ -55,11 +65,11 @@ func (p Palette) HeaderLine(v accountstate.Facts) string {
 	return fmt.Sprintf("%s%s%s  %s%s%s%s", p.Bold, label, p.Rst, p.Dim, v.Launcher, p.Rst, mark)
 }
 
-// HealthLine states what is wrong with the account itself, or "" when nothing
+// healthLine states what is wrong with the account itself, or "" when nothing
 // is. It is rendered independently of any figures: an account needing /login
 // can still hold a recent cache, and showing those bars without the warning
 // would invite the user to pick an account they cannot use.
-func (p Palette) HealthLine(v accountstate.Facts) string {
+func (p Palette) healthLine(v accountstate.Facts) string {
 	if t := healthText(v); t != "" {
 		return "  " + p.Red + t + p.Rst
 	}
@@ -145,19 +155,18 @@ func allowanceDrifted(v accountstate.Facts) bool {
 	return v.Obs != nil && v.Obs.Allowance.State == usage.AllowanceBad
 }
 
-// StatusLine is what an account with no figures at all shows. When health is
-// the problem, HealthLine has already said so and there is nothing to add.
-func (p Palette) StatusLine(v accountstate.Facts, now int64) string {
-	if v.Health != accountstate.HealthOK {
-		return p.HealthLine(v)
-	}
-	return "  " + p.Dim + "usage unknown — " + p.attemptReason(v, now) + p.Rst
+// unknownText is what a healthy account with no figures at all says, in both
+// layouts: that its usage is unknown, and why the newest refresh did not
+// produce numbers. An unhealthy one says nothing more — its health clause
+// already names the problem.
+func unknownText(v accountstate.Facts, now int64) string {
+	return "usage unknown — " + attemptReason(v, now)
 }
 
 // attemptReason explains, in the user's terms, why the newest refresh did not
 // produce numbers. None of these are statements about the account.
-func (p Palette) attemptReason(v accountstate.Facts, now int64) string {
-	reason := p.requestReason(v, now)
+func attemptReason(v accountstate.Facts, now int64) string {
+	reason := requestReason(v, now)
 	if v.Attempt.StoreError != "" && v.Attempt.State != accountstate.AttemptStateUnavailable {
 		problem := "headroom's own state file unavailable — run headroom check"
 		if v.Attempt.State == accountstate.AttemptOK || (v.Attempt.State == accountstate.AttemptNoLimits && v.Obs != nil) {
@@ -168,7 +177,7 @@ func (p Palette) attemptReason(v accountstate.Facts, now int64) string {
 	return reason
 }
 
-func (p Palette) requestReason(v accountstate.Facts, now int64) string {
+func requestReason(v accountstate.Facts, now int64) string {
 	switch v.Attempt.State {
 	case accountstate.AttemptPending:
 		return "fetching…"
@@ -236,7 +245,7 @@ func retryPhrase(nextAt, now int64) string {
 // went wrong refreshing them. It returns "" for the ordinary case — fresh
 // numbers straight from the endpoint need no caption.
 func (p Palette) ProvenanceLine(v accountstate.Facts, now int64) string {
-	pr := p.provenance(v, now)
+	pr := provenance(v, now)
 	if pr.empty() {
 		return ""
 	}
@@ -274,7 +283,7 @@ func (pr provenanceParts) empty() bool { return pr.age == "" }
 
 // provenance is empty for the ordinary case — fresh figures headroom fetched
 // itself, with nothing to report about the refresh.
-func (p Palette) provenance(v accountstate.Facts, now int64) provenanceParts {
+func provenance(v accountstate.Facts, now int64) provenanceParts {
 	if v.Obs == nil {
 		return provenanceParts{}
 	}
@@ -282,7 +291,7 @@ func (p Palette) provenance(v accountstate.Facts, now int64) provenanceParts {
 	if fresh && v.Obs.Source.Ours() && expected(v.Attempt.State) && v.Attempt.StoreError == "" {
 		return provenanceParts{}
 	}
-	pr := provenanceParts{age: "observed " + agePhrase(now-v.Obs.ObservedAt) + " ago", stale: !fresh}
+	pr := provenanceParts{age: "observed " + Age(now-v.Obs.ObservedAt) + " ago", stale: !fresh}
 	if v.Obs.Source == accountstate.SourceCache {
 		pr.source = "via Claude Code's cache"
 	}
@@ -291,16 +300,15 @@ func (p Palette) provenance(v accountstate.Facts, now int64) provenanceParts {
 	sayAttempt := v.Attempt.State != accountstate.AttemptOK && v.Attempt.State != accountstate.AttemptNone &&
 		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0)
 	if sayAttempt || v.Attempt.StoreError != "" {
-		pr.attempt = p.attemptReason(v, now)
+		pr.attempt = attemptReason(v, now)
 	}
 	return pr
 }
 
-// Age is agePhrase for other surfaces: the session picker stamps every row
-// with the same relative-time vocabulary the dashboard uses.
-func Age(sec int64) string { return agePhrase(sec) }
-
-func agePhrase(sec int64) string {
+// Age is the one relative-time vocabulary: the board's "observed … ago", the
+// session picker's row stamps and the launch surfaces' figure ages all say
+// how old something is the same way.
+func Age(sec int64) string {
 	switch {
 	case sec < 1:
 		return "just now"
@@ -315,17 +323,17 @@ func agePhrase(sec int64) string {
 	}
 }
 
-// LabelWidth is the label column width for a set of views: wide enough for
+// labelWidth is the label column width for a set of views: wide enough for
 // the longest label anywhere, so every account's bars align, and never
 // narrower than the classic column.
-func LabelWidth(views []accountstate.Facts) int {
+func labelWidth(views []accountstate.Facts) int {
 	w := minLabelWidth
 	for _, v := range views {
 		if v.Obs == nil {
 			continue
 		}
 		for _, r := range v.Obs.Rows {
-			if n := utf8.RuneCountInString(r.Label); n > w {
+			if n := Cells(Sanitize(r.Label)); n > w {
 				w = n
 			}
 		}
@@ -333,19 +341,19 @@ func LabelWidth(views []accountstate.Facts) int {
 	return w
 }
 
-// AccountBlock renders the three axes independently, because they are three
+// accountBlock renders the three axes independently, because they are three
 // facts: what is wrong with the account (if anything), what is known about its
 // quota, and how the last refresh went. A failed attempt annotates figures
 // rather than deleting them, and a health problem is stated whether or not
 // figures exist.
-func (p Palette) AccountBlock(v accountstate.Facts, now int64, labelWidth int) []string {
-	lines := []string{p.HeaderLine(v)}
-	if h := p.HealthLine(v); h != "" {
+func (p Palette) accountBlock(v accountstate.Facts, now int64, width int) []string {
+	lines := []string{p.headerLine(v)}
+	if h := p.healthLine(v); h != "" {
 		lines = append(lines, h)
 	}
 	if v.Obs == nil {
 		if v.Health == accountstate.HealthOK {
-			lines = append(lines, p.StatusLine(v, now))
+			lines = append(lines, "  "+p.Dim+unknownText(v, now)+p.Rst)
 		}
 		return append(lines, p.loadLine(v)...)
 	}
@@ -355,7 +363,7 @@ func (p Palette) AccountBlock(v accountstate.Facts, now int64, labelWidth int) [
 		lines = append(lines, "  "+p.Dim+"no limits reported"+p.Rst)
 	}
 	for _, r := range v.Obs.Rows {
-		lines = append(lines, p.LimitRow(r, now, labelWidth))
+		lines = append(lines, p.limitRow(r, now, width))
 	}
 	if t := allowanceText(v); t != "" {
 		lines = append(lines, "  "+p.Red+t+p.Rst)
@@ -415,34 +423,94 @@ func loadCounts(busy, launched int) string {
 	return strings.Join(parts, ", ")
 }
 
-// LimitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4.8d)`
-// Bars and percentages retain their severity colour regardless of observation
-// age; the provenance caption carries staleness separately.
-func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
-	color := p.severity(r, now)
-	bar := Bar(r.Percent)
-	pct := fmt.Sprintf("%3d%%", r.Percent)
-	phrase := ResetPhrase(r.ResetAt, now)
-	if r.Unstarted {
-		// Nobody has spent against this window yet, so the vendor's reset
-		// instant slides with every request and means nothing.
-		phrase = "not started"
+// A limit row's display state, in two layers that degrade independently:
+// what its percent can say, and what its reset can. Both layouts draw the
+// same state — the block as a bar and a phrase, the compact row as a cell —
+// so the state is decided once, by rowState, and each layout only spells it.
+// Deciding it per layout is how the two came to disagree: a percent that
+// failed to parse over a window that had ended read "resetting…" in the
+// block and a negative clock in the compact row.
+type pctState uint8
+
+const (
+	pctFigure      pctState = iota // a number that answers "how much is left"
+	pctUnparseable                 // present and no longer a number: drift
+	pctRolled                      // parsed, but about a window that has ended
+)
+
+type resetState uint8
+
+const (
+	resetAt          resetState = iota // a future instant: a clock
+	resetAbsent                        // legitimately none — a window nobody has opened
+	resetUnparseable                   // present and no longer parses: drift
+	resetUnstarted                     // Codex: nobody has spent; the vendor's instant slides
+	resetRolled                        // the instant has passed: the window ended
+)
+
+// rowState classifies a row once, with one precedence. The window having
+// ended outranks every other reset reading, because a passed instant is a
+// fact about the window whatever else the row says, and an unstarted window
+// is one that has not ended. A percent that failed to parse outranks the
+// window having ended — drift is the louder fact and the one `check` must
+// see — while the reset layer still says the window ended, so neither layer
+// draws a clock for a window that is over.
+func rowState(r usage.Row, now int64) (pctState, resetState) {
+	reset := resetAt
+	switch {
+	case r.RolledOver(now):
+		reset = resetRolled
+	case r.ResetState == tag.Bad:
+		reset = resetUnparseable
+	case r.Unstarted:
+		reset = resetUnstarted
+	case r.ResetAt == 0:
+		reset = resetAbsent
 	}
 	switch {
-	case r.PercentState == usage.StateBad:
+	case r.PercentState == tag.Bad:
+		return pctUnparseable, reset
+	case reset == resetRolled:
+		return pctRolled, reset
+	}
+	return pctFigure, reset
+}
+
+// limitRow: `  <label>  [██████░░░░...]  56%  resets Wed 18:00 (in 4.8d)`
+// Bars and percentages retain their severity colour regardless of observation
+// age; the provenance caption carries staleness separately. width is the
+// board's label column (labelWidth), shared by every account.
+func (p Palette) limitRow(r usage.Row, now int64, width int) string {
+	pct, reset := rowState(r, now)
+	glyphs, figure := bar(r.Percent), fmt.Sprintf("%3d%%", r.Percent)
+	switch pct {
+	case pctUnparseable:
 		// A percent that no longer parses must not read as real headroom.
-		bar = strings.Repeat("?", BarWidth)
-		pct = "  ?%"
-	case r.RolledOver(now):
+		glyphs, figure = strings.Repeat("?", barWidth), "  ?%"
+	case pctRolled:
 		// The window ended; whatever is being spent against the new one is
 		// unknown. Showing the old number here is the same lie as showing a
 		// drifted one — smaller, and in the direction that invites a choice.
-		bar = strings.Repeat("·", BarWidth)
-		pct = "  ?%"
-		phrase = "window rolled over"
+		glyphs, figure = strings.Repeat("·", barWidth), "  ?%"
 	}
-	line := fmt.Sprintf("  %-*s %s[%s] %s%s  %s%s%s",
-		labelWidth, r.Label, color, bar, pct, p.Rst, p.Dim, phrase, p.Rst)
+	var phrase string
+	switch reset {
+	case resetAt:
+		phrase = resetPhrase(r.ResetAt, now)
+	case resetUnstarted:
+		// Nobody has spent against this window yet, so the vendor's reset
+		// instant slides with every request and means nothing.
+		phrase = "not started"
+	case resetRolled:
+		phrase = "window rolled over"
+	default:
+		// Absent or unparseable: the drift marker is what tells them apart.
+		phrase = "resets ?"
+	}
+	// The label carries the vendor's model name: sanitized, and padded by
+	// cells so a wide one keeps every account's bars in one column.
+	line := fmt.Sprintf("  %s %s[%s] %s%s  %s%s%s",
+		PadCell(Sanitize(r.Label), width), p.severity(r, pct), glyphs, figure, p.Rst, p.Dim, phrase, p.Rst)
 	if r.Drifted() {
 		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
 	}
@@ -452,21 +520,18 @@ func (p Palette) LimitRow(r usage.Row, now int64, labelWidth int) string {
 // severity is the one colour rule for bars and percentages in both layouts.
 // Observation age does not change severity. A percent that failed to parse
 // is red, and a rolled-over window is dim whatever it once read.
-func (p Palette) severity(r usage.Row, now int64) string {
-	color := p.Grn
-	if r.Percent >= 50 {
-		color = p.Yel
-	}
-	if r.Percent >= 80 || r.Severity != "normal" {
-		color = p.Red
-	}
+func (p Palette) severity(r usage.Row, pct pctState) string {
 	switch {
-	case r.PercentState == usage.StateBad:
-		color = p.Red
-	case r.RolledOver(now):
-		color = p.Dim
+	case pct == pctUnparseable:
+		return p.Red
+	case pct == pctRolled:
+		return p.Dim
+	case r.Percent >= 80 || r.Severity != "normal":
+		return p.Red
+	case r.Percent >= 50:
+		return p.Yel
 	}
-	return color
+	return p.Grn
 }
 
 // Clip truncates s to at most width display cells, passing ANSI escape
@@ -501,19 +566,18 @@ func Clip(s string, width int) string {
 	return b.String()
 }
 
-func Bar(pct int) string {
-	filled := max(min((pct*BarWidth+50)/100, BarWidth), 0)
-	return strings.Repeat("█", filled) + strings.Repeat("░", BarWidth-filled)
+// bar is a percent as barWidth glyphs, clamped at both ends: a vendor
+// percent below zero or above a hundred still draws a whole bar.
+func bar(pct int) string {
+	filled := max(min((pct*barWidth+50)/100, barWidth), 0)
+	return strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 }
 
-func ResetPhrase(resetAt, now int64) string {
-	if resetAt == 0 {
-		return "resets ?"
-	}
+// resetPhrase is the block's clock for a reset still ahead — the one reset
+// state that has one: the instant, with the weekday once it is a day or more
+// away, and the time left.
+func resetPhrase(resetAt, now int64) string {
 	rem := resetAt - now
-	if rem <= 0 {
-		return "resetting…"
-	}
 	t := time.Unix(resetAt, 0)
 	if rem < 86400 {
 		return fmt.Sprintf("resets %s (in %s)", t.Format("15:04"), Remaining(rem))
@@ -526,7 +590,10 @@ func ResetPhrase(resetAt, now int64) string {
 // up (4.8d). One number with one decimal reads faster than a pair of units,
 // and the tenth is the precision a choice between accounts actually uses.
 // The unit turns over on the rounded value, so 23h58m reads 1.0d rather
-// than 24.0h. Only called with a positive remainder.
+// than 24.0h. It is a remainder still to run: here only a reset rowState
+// found ahead is given one — a reset that has passed is a rolled-over
+// window, which has no clock — and placement's callers pass a window's time
+// left.
 func Remaining(rem int64) string {
 	if h := float64(rem) / 3600; math.Round(h*10)/10 < 24 {
 		return fmt.Sprintf("%.1fh", h)

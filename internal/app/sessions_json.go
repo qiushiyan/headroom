@@ -54,7 +54,7 @@ type jsonSession struct {
 }
 
 func runSessionsJSON(cfg config.Scope) int {
-	listing, _, _, routing := collectSessions(cfg, state.Open(cfg))
+	listing, _, routing := collectSessions(cfg, state.Open(cfg))
 	current := routing.Current
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -76,10 +76,11 @@ func sessionsDoc(listing sessions.Listing, current string, now time.Time) resume
 		LocalKey:    listing.LocalKey,
 	}
 	for _, s := range listing.Sessions {
+		title, source := s.Tail.TitleAndSource()
 		doc.Sessions = append(doc.Sessions, jsonSession{
 			ID:          s.ID,
-			Title:       s.Tail.Title(),
-			TitleSource: titleSource(s),
+			Title:       title,
+			TitleSource: source,
 			ProjectDir:  s.CWD,
 			DirOK:       s.DirOK,
 			Repo:        s.RepoKey,
@@ -102,21 +103,6 @@ func sessionsDoc(listing sessions.Listing, current string, now time.Time) resume
 		})
 	}
 	return doc
-}
-
-func titleSource(s *sessions.Session) string {
-	switch {
-	case s.Tail.CustomTitle != "":
-		return "custom"
-	case s.Tail.AITitle != "":
-		return "ai"
-	case s.Tail.LastPrompt != "":
-		return "last_prompt"
-	case s.Tail.LastUser != "":
-		return "last_user"
-	default:
-		return "none"
-	}
 }
 
 func ownerSource(st sessions.OwnerState) string {

@@ -7,10 +7,11 @@ import (
 
 // AppendCustomTitle renames a session the way the vendor does it: one
 // custom-title record appended to the transcript, which every title reader
-// (Claude Code's picker included) ranks above the generated ai-title. This
-// is one of exactly two mutations headroom makes to vendor state — the
-// caller must refuse it while the session is open elsewhere, because the
-// vendor's own writer may hold the file.
+// (Claude Code's picker included) ranks above the generated ai-title. It is
+// one of the few documented mutations headroom makes to vendor state (with
+// DeleteTranscript and accounts remove's Keychain delete) — the caller must
+// refuse it while the session is open elsewhere, because the vendor's own
+// writer may hold the file.
 func AppendCustomTitle(path, id, title string) error {
 	line, err := json.Marshal(struct {
 		Type        string `json:"type"`

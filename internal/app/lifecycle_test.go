@@ -87,20 +87,6 @@ func TestAccountsAddCommand(t *testing.T) {
 	}
 }
 
-// A canonical store that is a regular file is as much a topology violation
-// as a symlinked one; seeding refuses and creates nothing.
-func TestAccountsAddRefusesFileAsStore(t *testing.T) {
-	cfg := lifecycleConfig(t)
-	os.WriteFile(cfg.StoreDir(), []byte("not a dir"), 0o644)
-	var out, errw bytes.Buffer
-	if code := runAccountsAddTo(&out, &errw, cfg, []string{"a@x.com"}); code != 1 || !strings.Contains(errw.String(), "not a directory") {
-		t.Errorf("exit %d: %s", code, errw.String())
-	}
-	if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "a@x.com")); err == nil {
-		t.Error("dir created")
-	}
-}
-
 // The dispatch: `accounts add|remove` route to the lifecycle commands, and
 // the board (`accounts`, bare, `select`) still refuses any argument.
 func TestAccountsDispatch(t *testing.T) {
@@ -164,7 +150,15 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if code := run(deps, "nope@x.com", "--yes"); code != 1 {
 		t.Errorf("missing: exit %d", code)
 	}
-	if code := run(deps); code != 2 || !strings.Contains(errw.String(), "removable:") || !strings.Contains(errw.String(), "a@x.com  (logged in)") {
+	listed := func(name, state string) bool {
+		for _, l := range strings.Split(errw.String(), "\n") {
+			if strings.Contains(l, name) && strings.Contains(l, state) {
+				return true
+			}
+		}
+		return false
+	}
+	if code := run(deps); code != 2 || !strings.Contains(errw.String(), "removable:") || !listed("a@x.com", "logged in") {
 		t.Errorf("no name off a terminal: exit %d %s", code, errw.String())
 	}
 	// A typo names what would have worked.

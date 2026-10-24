@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/atomicfile"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -187,9 +188,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			// bytes are set aside (never dropped: `check` reports them) and
 			// every account starts quiet. This self-heals in one cooldown
 			// rather than bricking until someone deletes the file.
-			d.quarantine("accounts")
-			d.badAccounts = false
-			d.dirty = true
+			d.setAside("accounts", &d.badAccounts)
 			for i, k := range keys {
 				r := d.accounts[k.ID()]
 				r.Name = k.Name
@@ -202,15 +201,17 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 		for i, k := range keys {
 			id := k.ID()
 			r := d.accounts[id]
-			next := r.Request.NextEligibleMS
-			if d.imported != nil && d.imported.QuietUntilMS > next {
-				next = d.imported.QuietUntilMS
-			}
-			if maxNext := now.Add(ceiling(s.spacing)).UnixMilli(); next > maxNext {
-				// Further out than this code can produce: a clock step, not a
-				// decision. Clamp rather than let it silence the account for
-				// as long as the step.
-				next = maxNext
+			next, stepped := d.deadline(id, now, ceiling(s.spacing))
+			if stepped {
+				// Written down — in whichever record held it — so the silence
+				// ends one ceiling from this claim rather than receding with
+				// every later claim's clock.
+				r.Request.NextEligibleMS = next
+				d.accounts[id] = r
+				if d.imported != nil && d.imported.QuietUntilMS > next {
+					d.imported.QuietUntilMS = next
+				}
+				d.dirty = true
 			}
 			if now.UnixMilli() < next {
 				out[i] = Decision{Key: k, NextEligible: time.UnixMilli(next)}
@@ -305,8 +306,12 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 // accounts this machine has ever logged into, so it needs no operation of its
 // own and no caller has to remember to call one.
 //
-// A record with no attempt time is left alone: this code always writes one, so
-// its absence means a document shape this binary does not fully understand.
+// A record with no attempt time is left alone, because Claim writes such
+// records itself: a quiet period reserved without an attempt. The quarantine
+// of an unreadable ledger starts every account it is asked about that way, and
+// so does the bound written down for a clock-stepped checkpoint on an account
+// with no record yet. Swept by its zero attempt time, that quiet period would
+// end at the very next claim.
 func (d *doc) sweepStale(now time.Time) {
 	if d.badAccounts {
 		return
@@ -393,12 +398,7 @@ func validRuns(runs []Run) bool {
 // aside a section that would not decode; whatever it changes dirties the
 // document.
 func (d *doc) sweepRuns(gone []Run, now time.Time) {
-	if d.badRuns {
-		d.quarantine("runs")
-		d.badRuns = false
-		d.runs = nil
-		d.dirty = true
-	}
+	d.setAside("runs", &d.badRuns)
 	old := now.Add(-runKeep).UnixMilli()
 	kept := d.runs[:0]
 	for _, r := range d.runs {
@@ -476,14 +476,9 @@ func (s *Store) Place(l Launch) (Placed, error) {
 			// that merely failed to decode would destroy them for good.
 			return commit{}, cmp.Or(homeErr, ErrCorrupt)
 		}
-		if led.badPlacements {
-			// Disposable, like the request ledger: set the unreadable bytes
-			// aside for `check` and start from nothing.
-			led.quarantine("placements")
-			led.badPlacements = false
-			led.placements = placement.Ledger{}
-			led.dirty = true
-		}
+		// Disposable, like the request ledger: an unreadable record of
+		// launches is set aside and starts from nothing.
+		led.setAside("placements", &led.badPlacements)
 		if led.placements.Prune(now, retention) {
 			led.dirty = true
 		}
@@ -755,26 +750,7 @@ func commitDoc(d *doc) error {
 		// the only copy, and someone may want to look at it.
 		_ = os.Rename(path, path+".unreadable")
 	}
-	tmp, err := os.CreateTemp(d.root, "state-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	// Sync, not just rename: this document holds re-homes, and losing a human
-	// decision to a crash is not the same class of loss as a forgotten
-	// cooldown.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := atomicfile.Write(path, "state-*.json", data); err != nil {
 		return err
 	}
 	archiveLegacy(d)

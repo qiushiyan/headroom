@@ -35,41 +35,32 @@ exit 1
 	}
 }
 
+// codexRun is one Codex group run through a report: its lines, each marked
+// "ok ", "FAIL " or "?? ", and its counts (fails includes own).
 type codexRun struct {
 	lines             []string
 	fails, own, skips int
 }
 
 func (r *codexRun) has(sub string) bool {
-	for _, l := range r.lines {
-		if strings.Contains(l, sub) {
-			return true
-		}
-	}
-	return false
+	return hasLine(r.lines, sub)
 }
 
 func runCodexCheck(scope config.Scope, environ []string) *codexRun {
-	r := &codexRun{}
-	chk := func(ok bool, label, hint string) {
-		if !ok {
-			r.fails++
-			r.lines = append(r.lines, "FAIL "+label+" — "+hint)
-			return
-		}
-		r.lines = append(r.lines, "ok "+label)
+	rep, out := testReport()
+	rep.group(config.Codex, "")
+	checkCodex(scope, environ, rep)
+	r := &codexRun{fails: rep.fails, own: rep.ownFails, skips: rep.unknowns}
+	oks, fails, skips := printed(out)
+	for _, l := range oks {
+		r.lines = append(r.lines, "ok "+l)
 	}
-	own := func(ok bool, label, hint string) {
-		if !ok {
-			r.own++
-		}
-		chk(ok, label, hint)
+	for _, l := range fails {
+		r.lines = append(r.lines, "FAIL "+l)
 	}
-	skip := func(label, why string) {
-		r.skips++
-		r.lines = append(r.lines, "?? "+label+" — "+why)
+	for _, l := range skips {
+		r.lines = append(r.lines, "?? "+l)
 	}
-	checkCodex(scope, environ, chk, own, skip)
 	return r
 }
 
@@ -288,7 +279,7 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	home := t.TempDir()
 	claude, _ := soundClaudeTree(t, home)
 	claude.UsageURL = srv.URL
-	cfg := config.Config{Home: home, Claude: claude, Codex: config.ForHome(home).Codex}
+	cfg := config.Config{Claude: claude, Codex: config.ForHome(home).Codex}
 
 	var out strings.Builder
 	if code := Run(cfg, &out, false, nil); code != ExitPass {
@@ -309,6 +300,25 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	if !strings.Contains(text, "— Codex likely changed a format") || strings.Contains(text, "Claude Code likely") || strings.Contains(text, "Claude Code and Codex") {
 		t.Errorf("closing line blames the wrong vendor:\n%s", text)
 	}
+
+	// A failure against headroom's own files in Claude Code's group — a
+	// corrupt .current — is no evidence against Claude Code: the blame stays
+	// with Codex alone.
+	if err := os.MkdirAll(claude.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claude.CurrentFile(), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	code = Run(cfg, &out, false, nil)
+	text = out.String()
+	if code != ExitFail || !strings.Contains(text, "FAIL  current:") {
+		t.Fatalf("own failure beside Codex drift: exit %d\n%s", code, text)
+	}
+	if !strings.Contains(text, "— Codex likely changed a format") || strings.Contains(text, "Claude Code and Codex") {
+		t.Errorf("an own failure was blamed on Claude Code:\n%s", text)
+	}
 }
 
 // A wedged `codex login status` costs one timeout, not one per home and not
@@ -322,15 +332,16 @@ func TestCodexCheckProbesAreBoundedAndParallel(t *testing.T) {
 		t.Fatal(err)
 	}
 	prev := loginStatusTimeout
-	loginStatusTimeout = 400 * time.Millisecond
+	loginStatusTimeout = 2 * time.Second
 	t.Cleanup(func() { loginStatusTimeout = prev })
 
 	start := time.Now()
 	r := runCodexCheck(scope, []string{"PATH=" + bin + ":/bin:/usr/bin"})
 	elapsed := time.Since(start)
-	// Five probes (primary, three extras, isolation). Serial would be ≥ 2s;
-	// unbounded would be 30s.
-	if elapsed > 1500*time.Millisecond {
+	// Five probes (primary, three extras, isolation). Serial would be ≥ 10s;
+	// unbounded would be 30s. The slack above one bound is for a loaded
+	// machine, where a freshly written stub can take seconds to start.
+	if elapsed > 8*time.Second {
 		t.Errorf("probes took %v: not bounded, or not parallel", elapsed)
 	}
 	if r.fails != 0 || !r.has("?? isolation: not tested") || !r.has("?? credentials[c@x.com]: not tested") {

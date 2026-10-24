@@ -25,7 +25,7 @@ func Prepare(account accounts.Account, discovered accounts.Set, base []string) (
 	if discovered.Scope.Vendor != scope.Vendor {
 		return p, fmt.Errorf("%s account %q was not selected from the %s accounts", scope.Vendor.Title(), account.Name, discovered.Scope.Vendor.Title())
 	}
-	if account.ConfigDir == "" && scope.PrimaryRelocated {
+	if account.IsPrimary() && scope.PrimaryLaunchRefused() {
 		return p, fmt.Errorf("HEADROOM_HOME re-points the primary — cannot launch it here (extras are unaffected)")
 	}
 	if err := accounts.VerifyTopology(account); err != nil {
@@ -40,14 +40,16 @@ func Prepare(account accounts.Account, discovered accounts.Set, base []string) (
 	if err != nil {
 		return p, fmt.Errorf("%s not found on PATH: %w", p.Binary, err)
 	}
-	// LookPath can return a relative path containing a slash. Anchor it before
-	// the sessions caller enters another project directory.
+	// LookPath can return a relative path containing a slash: under
+	// GODEBUG=execerrdot=0 a relative PATH entry resolves against the cwd
+	// instead of refusing. Anchor it before the sessions caller enters another
+	// project directory.
 	p.Path, err = filepath.Abs(path)
 	if err != nil {
 		return p, err
 	}
 	p.Env = target.Env(base)
-	if value, conflict := target.Conflicts(base); conflict && !discovered.KnownDir(value) {
+	if value, unexplained := Unexplained(target, discovered, base); unexplained {
 		p.Notices = append(p.Notices, fmt.Sprintf("ignoring inherited %s=%s; launching %s (%s)", scope.Env().HomeVar, value, account.Name, account.Dir()))
 	}
 	for _, in := range Redirects(scope.Vendor, base) {

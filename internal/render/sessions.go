@@ -115,28 +115,31 @@ func ShortAccount(name string) string {
 	return local
 }
 
-// sessionLines renders one session as a two-line entry. The first line
+// SessionLines renders one session as a two-line entry. The first line
 // carries what muscle memory recognizes a session by — where it ran (branch
 // or worktree locally, branch·project elsewhere), whether it is open right
 // now, and the meta column: model, account, age. The second line, dimmed,
-// is just the confirming title.
+// is just the confirming title. Every width is measured on plain text before
+// it is styled, so the arithmetic never meets an escape sequence.
 func (p Palette) SessionLines(s *sessions.Session, current string, selected bool, w int, now int64) []string {
-
-	var marks []string
+	// The marks, as words to measure and as the styled text drawn.
+	var words, marks []string
+	mark := func(color, word string) {
+		words = append(words, word)
+		marks = append(marks, color+word+p.Rst)
+	}
 	if s.Live == sessions.Live {
-		marks = append(marks, p.Grn+"● live"+p.Rst)
+		mark(p.Grn, "● live")
 	}
 	if s.Live == sessions.LiveUnknown {
-		marks = append(marks, p.Yel+"● live?"+p.Rst)
+		mark(p.Yel, "● live?")
 	}
 	if !s.DirOK {
-		marks = append(marks, p.Red+"✗ dir gone"+p.Rst)
+		mark(p.Red, "✗ dir gone")
 	}
-	marksStr := strings.Join(marks, " ")
-
-	marksCells := 0
-	if marksStr != "" {
-		marksCells = Cells(stripSGR(marksStr)) + 2
+	marksCells := 0 // the marks and the gap before them
+	if len(words) > 0 {
+		marksCells = Cells(strings.Join(words, " ")) + 2
 	}
 
 	// The meta column budgets itself before the label flexes, and sheds from
@@ -144,7 +147,9 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	// second, the age never: the final Clip cuts lines from the right, and a
 	// row without its timestamp is the one degradation this repo forbids.
 	var meta []string
-	if m := modelLabel(s.Tail.Model); m != "" {
+	if m := Sanitize(modelLabel(s.Tail.Model)); m != "" {
+		// The model id is vendor text like the title: verbatim from the
+		// transcript, so it is made safe before it shares a line.
 		meta = append(meta, m)
 	}
 	meta = append(meta, ownerTag(s, current), Age(now-s.MTime.Unix()))
@@ -154,10 +159,10 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	}
 	right := strings.Join(meta, " · ")
 	if Cells(right) > metaAvail {
-		right = TrimCells(right, metaAvail)
+		right = trimCells(right, metaAvail)
 	}
 
-	prefix := "  "
+	prefix := "  " // two cells, selected or not
 	if selected {
 		prefix = p.Bold + "▶ " + p.Rst
 	}
@@ -167,13 +172,13 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	label := Sanitize(primaryLabel(s))
 	labelWidth := max(w-2-Cells(right)-2-marksCells, 4)
 	if Cells(label) > labelWidth {
-		label = TrimCells(label, labelWidth-1) + "…"
+		label = trimCells(label, labelWidth-1) + "…"
 	}
 	left := prefix + label
-	if marksStr != "" {
-		left += "  " + marksStr
+	if len(marks) > 0 {
+		left += "  " + strings.Join(marks, " ")
 	}
-	pad := max(w-Cells(stripSGR(left))-Cells(right), 2)
+	pad := max(w-2-Cells(label)-marksCells-Cells(right), 2)
 	line1 := left + strings.Repeat(" ", pad) + p.Dim + right + p.Rst
 
 	title := Sanitize(s.Tail.Title())
@@ -182,7 +187,7 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 	}
 	titleWidth := max(w-4, 8)
 	if Cells(title) > titleWidth {
-		title = TrimCells(title, titleWidth-1) + "…"
+		title = trimCells(title, titleWidth-1) + "…"
 	}
 	line2 := "    " + p.Dim + title + p.Rst
 	return []string{line1, line2}
@@ -249,25 +254,6 @@ func allDigits(s string) bool {
 	return s != ""
 }
 
-// stripSGR removes escape sequences for width computation.
-func stripSGR(s string) string {
-	var b strings.Builder
-	inEsc := false
-	for _, r := range s {
-		switch {
-		case inEsc:
-			if r >= '@' && r <= '~' && r != '[' {
-				inEsc = false
-			}
-		case r == 0x1b:
-			inEsc = true
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
 func (p Palette) SessionPreview(s *sessions.Session, w int) []string {
 	var out []string
 	add := func(prefix, text string) {
@@ -277,7 +263,7 @@ func (p Palette) SessionPreview(s *sessions.Session, w int) []string {
 		text = Sanitize(text)
 		width := max(w-8, 10)
 		for i, line := 0, ""; text != "" && i < previewCap; i++ {
-			line = TrimCells(text, width)
+			line = trimCells(text, width)
 			text = text[len(line):]
 			out = append(out, "    "+p.Dim+prefix+line+p.Rst)
 			prefix = "  "

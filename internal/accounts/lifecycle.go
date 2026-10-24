@@ -25,16 +25,17 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-// SharedConfigEntries is the default set an account may share with the
-// primary's ~/.claude when the caller asks for sharing without naming a
-// source: configuration only. Deliberately a whitelist, not "everything
-// but": a config dir also holds per-login and per-run state that must stay
-// per account — history.jsonl is session-ownership evidence, sessions/ is
-// the live registry, .credentials.json is a login where no Keychain
-// exists — and a blacklist would silently share whichever of those the
-// vendor adds next. This list is vendor-perishable, but nothing load-bearing
-// rides on it: a missing entry means one skill or setting is absent in that
-// account, never a misroute, which is why check does not verify it.
+// claudeSharedConfig is Claude Code's sharing whitelist: what an account may
+// share with the primary's ~/.claude when the caller asks for sharing without
+// naming a source — configuration only. Deliberately a whitelist, not
+// "everything but": a config dir also holds per-login and per-run state that
+// must stay per account — history.jsonl is session-ownership evidence,
+// sessions/ is the live registry, .credentials.json is a login where no
+// Keychain exists — and a blacklist would silently share whichever of those
+// the vendor adds next. This list is vendor-perishable, but nothing
+// load-bearing rides on it: a missing entry means one skill or setting is
+// absent in that account, never a misroute, which is why check does not
+// verify it.
 var claudeSharedConfig = []string{
 	"settings.json",
 	"CLAUDE.md",
@@ -61,7 +62,8 @@ var codexSharedConfig = []string{
 	"plugins",
 }
 
-// SharedConfigEntries is the vendor's default sharing whitelist.
+// SharedConfigEntries is the vendor's default sharing whitelist: what a bare
+// `accounts add --share-config` links from the primary's dir.
 func SharedConfigEntries(v config.Vendor) []string {
 	if v == config.Codex {
 		return codexSharedConfig
@@ -74,12 +76,13 @@ func SharedConfigEntries(v config.Vendor) []string {
 // registry — and the store link, which seeding makes itself. Linking one of
 // these between two dirs makes them one login, or one account's history in
 // another's name, so no share mode links them; a config package that happens
-// to hold one has it skipped and named.
+// to hold one has it skipped and named, and `check` fails on a dir where any
+// but the store link is a link.
 func PerDirEntries(v config.Vendor) []string {
 	if v == config.Codex {
 		return []string{"auth.json", "history.jsonl", "sessions"}
 	}
-	return []string{".credentials.json", ".claude.json", "history.jsonl", "sessions", "projects"}
+	return []string{".claude.json", ".credentials.json", "history.jsonl", "sessions", "projects"}
 }
 
 func perDir(v config.Vendor, name string) bool {
@@ -194,33 +197,25 @@ func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared, k
 	return dir, shared, kept, nil
 }
 
-// ensureCanonicalStore makes ~/.claude/projects exist as a real directory —
-// the one precondition seeding may satisfy itself, because an absent store
-// on a fresh machine is not a fork of anyone's history. A store that exists
-// as a symlink or a file is a topology violation and refuses, same as
-// VerifyTopology would.
+// ensureCanonicalStore makes the vendor's canonical store exist as a real
+// directory — the one precondition seeding may satisfy itself, because an
+// absent store on a fresh machine is not a fork of anyone's history. A store
+// that exists as a symlink or a file is a topology violation and refuses,
+// classified by the same canonicalStore VerifyTopology reads.
 func ensureCanonicalStore(cfg config.Scope) error {
-	canon := cfg.StoreDir()
-	fi, err := os.Lstat(canon)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return os.MkdirAll(canon, 0o755)
-	case err != nil:
-		return fmt.Errorf("canonical session store %s unreadable (%v)", canon, err)
-	case fi.Mode()&os.ModeSymlink != 0:
-		return fmt.Errorf("canonical session store %s is itself a symlink — it must be a real directory", canon)
-	case !fi.IsDir():
-		return fmt.Errorf("canonical session store %s is not a directory", canon)
+	absent, err := canonicalStore(cfg)
+	if absent {
+		return os.MkdirAll(cfg.StoreDir(), 0o755)
 	}
-	return nil
+	return err
 }
 
 // CheckRemovable is every refusal RemoveDir will make, available ahead of
 // time so the app layer can run it before the confirmation prompt and the
 // Keychain deletion — nothing irreversible may precede these answers.
 //
-// The one refusal that guards data rather than form: a projects/ that is a
-// *real directory*. Normally it is the store link, and RemoveAll on a link
+// The one refusal that guards data rather than form: a store link (projects/)
+// that is a *real directory*. Normally it is the link, and RemoveAll on a link
 // removes the link; a real directory holds sessions nobody migrated into
 // the store, and removing the account would silently delete them. That is
 // the same state VerifyTopology names as "unmigrated sessions?", and the
@@ -247,8 +242,8 @@ func CheckRemovable(cfg config.Scope, name string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", dir)
 	}
-	if pfi, err := os.Lstat(filepath.Join(dir, "projects")); err == nil && pfi.Mode()&os.ModeSymlink == 0 && pfi.IsDir() {
-		return fmt.Errorf("%s/projects is a real directory — it holds sessions never migrated into %s; move them there (with no claude running) before removing the account", dir, cfg.StoreDir())
+	if pfi, err := os.Lstat(filepath.Join(dir, cfg.StoreLink())); err == nil && pfi.Mode()&os.ModeSymlink == 0 && pfi.IsDir() {
+		return fmt.Errorf("%s/%s is a real directory — it holds sessions never migrated into %s; move them there (with no %s running) before removing the account", dir, cfg.StoreLink(), cfg.StoreDir(), cfg.Binary())
 	}
 	return nil
 }
@@ -279,8 +274,9 @@ func RemoveDir(cfg config.Scope, name string) error {
 	return scrubOrder(cfg, name)
 }
 
-// scrubOrder drops name's line from .order, if present, keeping every other
-// byte of the file (comments, spacing) as the human wrote it.
+// scrubOrder drops every line that lists name from .order — read by the same
+// orderEntry discovery reads it with — keeping every other byte of the file
+// (comments, spacing) as the human wrote it.
 func scrubOrder(cfg config.Scope, name string) error {
 	data, err := os.ReadFile(cfg.OrderFile())
 	if errors.Is(err, os.ErrNotExist) {
@@ -293,7 +289,7 @@ func scrubOrder(cfg config.Scope, name string) error {
 	kept := lines[:0]
 	changed := false
 	for _, l := range lines {
-		if strings.TrimSpace(l) == name {
+		if orderEntry(l) == name {
 			changed = true
 			continue
 		}

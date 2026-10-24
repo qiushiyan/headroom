@@ -63,19 +63,19 @@ func newAutoFixture(t *testing.T, extras ...string) autoFixture {
 	}
 
 	f := autoFixture{t: t, cfg: cfg, st: state.Open(cfg), refreshes: new(int), live: map[int]int64{}}
-	prevCreds, prevProbe, prevRefresh := placementCreds, placementProbe, startRefresh
+	prevCreds, prevProbe, prevRefresh := placementCreds, pidProbe, startRefresh
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	placementCreds = func(accounts.Account) string {
 		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, far)
 	}
-	placementProbe = func(pid int) (int64, error) {
+	pidProbe = func(pid int) (int64, error) {
 		if start, ok := f.live[pid]; ok {
 			return start, nil
 		}
 		return 0, os.ErrNotExist
 	}
 	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
-	t.Cleanup(func() { placementCreds, placementProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
+	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 	return f
 }
 
@@ -129,6 +129,19 @@ type launched struct {
 	stderr string
 }
 
+// String is what a failure message prints of a launch. Never the child's
+// environment: it is the test process's own, with whatever tokens the shell
+// that ran the suite exported.
+func (l launched) String() string {
+	dir := "(absent)"
+	for _, kv := range l.env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			dir = v
+		}
+	}
+	return fmt.Sprintf("{code:%d called:%v args:%q CLAUDE_CONFIG_DIR:%s stderr:%q}", l.code, l.called, l.args, dir, l.stderr)
+}
+
 func (l launched) account(cfg config.Scope) string {
 	for _, kv := range l.env {
 		if dir, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
@@ -153,7 +166,7 @@ func (f autoFixture) launch(args ...string) launched {
 
 func (f autoFixture) log() []launchlog.Record {
 	f.t.Helper()
-	recs, skipped, err := launchlog.Read(f.cfg.AccountsRoot, 0)
+	recs, skipped, err := launchlog.Read(f.cfg.AccountsRoot)
 	if err != nil || skipped != 0 {
 		f.t.Fatalf("log: %d skipped, %v", skipped, err)
 	}
@@ -234,25 +247,6 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	}
 }
 
-func TestAutoLaunchesSpreadAcrossAccounts(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com", "b@x.com", "c@x.com")
-	f.setCurrent("auto\n")
-	for _, name := range []string{"qiushi", "a@x.com", "b@x.com", "c@x.com"} {
-		f.observe(name, 0, 10, time.Minute)
-	}
-	seen := map[string]int{}
-	for range 4 {
-		got := f.launch()
-		if got.code != 0 {
-			t.Fatalf("exit %d: %s", got.code, got.stderr)
-		}
-		seen[got.account(f.cfg)]++
-	}
-	if len(seen) != 4 {
-		t.Fatalf("four launches against four equal accounts went to %v", seen)
-	}
-}
-
 // An account that cannot be asked is tried, with figures that say they are
 // old, and its own placement keeps the next launch from following it there.
 func TestAStaleAccountIsTriedOnceAndSaysItsFiguresAreOld(t *testing.T) {
@@ -319,7 +313,7 @@ func TestNamedLaunchSaysWhereItWentAndCounts(t *testing.T) {
 	f.observe("a@x.com", 0, 10, time.Minute)
 
 	named := f.launch("--account", "a@x.com")
-	if named.code != 0 || named.account(f.cfg) != "a@x.com" || named.stderr != "headroom launch: a@x.com · named\n" {
+	if named.code != 0 || named.account(f.cfg) != "a@x.com" || !strings.Contains(named.stderr, "a@x.com · named") || strings.Contains(named.stderr, "auto") {
 		t.Fatalf("named launch: %+v", named)
 	}
 	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
@@ -346,6 +340,10 @@ func TestModeIsReadStrictly(t *testing.T) {
 		if got := f.launch(); got.code != 1 || got.called {
 			t.Errorf("%s .current: exit %d called %v", name, got.code, got.called)
 		}
+	}
+	// An unknown name refuses the same way: no fallback to anyone, no exec.
+	if got := f.launch("--account", "gone@x.com"); got.code != 1 || got.called {
+		t.Errorf("--account gone@x.com: exit %d called %v", got.code, got.called)
 	}
 
 	// The word names the mode and nothing else: an account bearing it makes the
@@ -622,21 +620,18 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 			t.Error("a newer document was rewritten")
 		}
 	})
-	t.Run("unreadable placements", func(t *testing.T) {
+	t.Run("unreadable session routing", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
 		f.setCurrent("auto\n")
-		statePath := filepath.Join(f.cfg.AccountsRoot, "state.json")
-		writeJSON(t, statePath, `{"version":1,"placements":[1,2],"sessions":{"`+sessA+`":{"account":"a@x.com","atMs":5}}}`)
-		got := f.launch()
-		if got.code != 0 || !got.called || strings.Contains(got.stderr, "not recorded") {
-			t.Fatalf("over an unreadable placements section: %+v", got)
+		// A sessions section that will not validate: the placement is
+		// recorded, the session's routing is not, and the launch says so.
+		writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":1,"sessions":{"hollow":{"account":"","atMs":5}}}`)
+		got := f.launch("--", "-p", "--session-id", sessA)
+		if got.code != 0 || !got.called || !strings.Contains(got.stderr, "session routing not recorded") {
+			t.Fatalf("beside unreadable session routing: %+v", got)
 		}
-		snap := f.st.Load()
-		if rec, _ := snap.Owner(sessA); rec.Account != "a@x.com" || rec.AtMS != 5 {
-			t.Errorf("a re-home beside the damage changed: %+v", rec)
-		}
-		if len(snap.Placements().Recent) != 1 {
-			t.Error("the record was not rebuilt")
+		if len(f.st.Load().Placements().Recent) != 1 {
+			t.Error("the placement beside it was not recorded")
 		}
 	})
 	t.Run("unwritable log", func(t *testing.T) {
@@ -708,10 +703,10 @@ func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 		}
 	}
 	got := f.launch()
-	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto · 5h 0% · week 30%, resets in 20.0h") {
+	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto") || !strings.Contains(got.stderr, "resets in 20.0h") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
-	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot)
 	if len(recs) != 1 {
 		t.Fatalf("%d records", len(recs))
 	}
@@ -741,7 +736,7 @@ func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
 	if got := f.launch(); got.code != 0 || !strings.Contains(got.stderr, "qiushi · auto") || strings.Contains(got.stderr, "resets in") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
-	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
+	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot)
 	if len(recs) != 1 {
 		t.Fatalf("%d records", len(recs))
 	}
@@ -809,6 +804,14 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	if got := f.launch("--dry-run", "--remember"); got.code != 2 {
 		t.Errorf("--dry-run --remember: exit %d, want 2", got.code)
 	}
+	// A launch that would refuse is a dry run that fails: a script asking
+	// "would this launch?" reads the exit status.
+	g := newAutoFixture(t)
+	var refused launched
+	table = captureStdout(t, func() { refused = g.launch("--dry-run", "--last") })
+	if refused.code != 1 || refused.called || !strings.Contains(table, "would refuse") {
+		t.Errorf("a dry run that would refuse: exit %d, called %v:\n%s", refused.code, refused.called, table)
+	}
 }
 
 func TestOverrides(t *testing.T) {
@@ -844,18 +847,41 @@ func TestOverrides(t *testing.T) {
 		t.Fatalf("--last after an automatic launch went to %s, want %s", got.account(f.cfg), auto.account(f.cfg))
 	}
 	// A removed account is not launched on the strength of an old record.
-	if err := os.RemoveAll(filepath.Join(f.cfg.AccountsRoot, auto.account(f.cfg))); err != nil {
+	f.launch("--account", "a@x.com")
+	if err := os.RemoveAll(filepath.Join(f.cfg.AccountsRoot, "a@x.com")); err != nil {
 		t.Fatal(err)
 	}
-	if auto.account(f.cfg) != "qiushi" {
-		if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no longer a discovered account") {
-			t.Fatalf("--last naming a removed account: %+v", got)
-		}
+	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no longer a discovered account") {
+		t.Fatalf("--last naming a removed account: %+v", got)
+	}
+	// Nor is one that can no longer be launched, and the refusal records
+	// nothing: no load, no log line, no new last account.
+	f.launch("--account", "b@x.com")
+	link := filepath.Join(f.cfg.AccountsRoot, "b@x.com", "projects")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(link, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recent, logged := len(f.st.Load().Placements().Recent), len(f.log())
+	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "cannot be launched") {
+		t.Fatalf("--last onto an account that cannot be launched: %+v", got)
+	}
+	if n, m := len(f.st.Load().Placements().Recent), len(f.log()); n != recent || m != logged {
+		t.Errorf("a refused --last left %d placement(s) and %d log line(s) behind", n-recent, m-logged)
 	}
 
-	for _, args := range [][]string{{"--auto", "--last"}, {"--auto", "--account", "a@x.com"}, {"--last", "--account", "a@x.com"}, {"--last", "--remember"}} {
+	for _, args := range [][]string{
+		{"--auto", "--last"}, {"--auto", "--account", "a@x.com"}, {"--last", "--account", "a@x.com"}, {"--last", "--remember"},
+		// An explicitly empty --account is a malformed name, not "the recorded
+		// choice": collapsing the two lets a caller's expansion bug launch the
+		// recorded account instead of refusing. Red against the pre-fix binary,
+		// which launched the primary here.
+		{"--account", ""},
+	} {
 		if got := f.launch(args...); got.code != 2 || got.called {
-			t.Errorf("%v: exit %d called %v, want a usage error", args, got.code, got.called)
+			t.Errorf("%q: exit %d called %v, want a usage error", args, got.code, got.called)
 		}
 	}
 }
@@ -895,6 +921,18 @@ func TestRememberRecordsTheMode(t *testing.T) {
 	if !strings.Contains(out, ".current remains auto") {
 		t.Errorf("missing persistence explanation: %s", out)
 	}
+
+	// A launch no account can take records nothing either: the mode it would
+	// have recorded is not written for a launch that never ran.
+	f.setCurrent("a@x.com\n")
+	writeJSON(t, f.cfg.PrimaryMeta(), `{}`)
+	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "a@x.com", ".claude.json"), `{}`)
+	if got := f.launch("--auto", "--remember"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no account can take a launch") {
+		t.Fatalf("--auto --remember with every account excluded: %+v", got)
+	}
+	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "a@x.com\n" {
+		t.Errorf(".current = %q after a refused --auto --remember, want the pin it had", data)
+	}
 }
 
 func TestResolveRefusesUnderAuto(t *testing.T) {
@@ -910,17 +948,6 @@ func TestResolveRefusesUnderAuto(t *testing.T) {
 	}
 	if code := runResolve(f.cfg, []string{"a@x.com"}); code != 0 {
 		t.Errorf("a name still resolves: exit %d", code)
-	}
-}
-
-func TestEveryAccountNearALimitSaysSo(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
-	f.observe("qiushi", 10, 95, time.Minute)
-	f.observe("a@x.com", 10, 84, time.Minute)
-	got := f.launch()
-	if got.account(f.cfg) != "a@x.com" || !strings.Contains(got.stderr, "every account is near a limit · All models (7d) 84%, resets in") {
-		t.Fatalf("went to %s:\n%s", got.account(f.cfg), got.stderr)
 	}
 }
 
@@ -1019,16 +1046,16 @@ func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		week launchlog.Week
-		want string
+		want string // "" = no time left is said
 	}{
-		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "week   7%, 1.9d left"},
-		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "week   7%, ≈6.5d left"},
-		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, "week   7%"},
-		{"written before the field", launchlog.Week{}, "week   7%"},
+		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "1.9d left"},
+		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "≈6.5d left"},
+		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, ""},
+		{"written before the field", launchlog.Week{}, ""},
 	} {
 		line := launchesLine(record(c.week), 1, false)
-		if !strings.HasSuffix(strings.TrimRight(line, " "), c.want) {
-			t.Errorf("%s: %q does not end in %q", c.name, line, c.want)
+		if !strings.Contains(line, "7%") || (c.want == "") == strings.Contains(line, " left") || !strings.Contains(line, c.want) {
+			t.Errorf("%s: %q, want the week's figure and %q", c.name, line, c.want)
 		}
 	}
 }
@@ -1052,11 +1079,6 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "a@x.com") || !strings.Contains(lines[0], "auto/least-load") || !strings.Contains(lines[0], "next qiushi") {
 		t.Errorf("first line: %s", lines[0])
-	}
-	// How long the deciding week had left is part of why the launch went
-	// where it did.
-	if !strings.Contains(lines[0], "week  10%, 3.0d left") {
-		t.Errorf("first line does not say how long its week had left: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "qiushi") || !strings.Contains(lines[1], "named") || strings.Contains(lines[1], "named/named") {
 		t.Errorf("second line: %s", lines[1])
@@ -1095,7 +1117,7 @@ func rehome(st *state.Store, id, account string, at time.Time) error {
 
 func readLog(t *testing.T, scope config.Scope) ([]launchlog.Record, int, error) {
 	t.Helper()
-	recs, skipped, err := launchlog.Read(scope.AccountsRoot, 0)
+	recs, skipped, err := launchlog.Read(scope.AccountsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,7 +47,7 @@ func secretByte(c byte) bool {
 }
 
 // Write takes the vendor's output. It never fails the vendor: a terminal that
-// stops taking output is remembered and reported by Err, and the token is
+// stops taking output is remembered and reported by Close, and the token is
 // still kept.
 func (s *Scanner) Write(p []byte) (int, error) {
 	s.held = append(s.held, p...)
@@ -70,9 +70,6 @@ func (s *Scanner) Token() string {
 	}
 	return s.token
 }
-
-// Err is the first error writing to the terminal.
-func (s *Scanner) Err() error { return s.writeErr }
 
 // pass forwards the held bytes up to the first place a token could still be
 // growing, withholding every complete one.
@@ -117,7 +114,7 @@ func (s *Scanner) pass(final bool) {
 }
 
 func (s *Scanner) keep(candidate string) {
-	if !Valid(candidate) {
+	if !valid(candidate) {
 		return
 	}
 	if s.token != "" && s.token != candidate {

@@ -16,7 +16,8 @@
 // Env is the single environment constructor and Conflicts the single
 // conflict classifier: auth's health probes, the launch command, the board's
 // note and check's report all answer through them, so subprocess routing and
-// its diagnostics cannot disagree.
+// its diagnostics cannot disagree. Unexplained is the one judgment, on top of
+// Conflicts, of which conflicts a launch says out loud.
 package launch
 
 import (
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
@@ -187,6 +189,17 @@ func (t Target) Conflicts(base []string) (value string, conflicting bool) {
 		return v, true
 	}
 	return v, v != t.configDir
+}
+
+// Unexplained reports an ambient home variable that a launch on this target
+// neutralizes and must say it did: one that conflicts, and does not name a
+// discovered account's spelled-out dir. Such a value means only "this shell
+// lives inside a managed session", the machine's ordinary environment, so a
+// launch's notice and the board's note stay quiet for it; check reports every
+// conflict all the same.
+func Unexplained(t Target, discovered accounts.Set, base []string) (value string, unexplained bool) {
+	v, conflicting := t.Conflicts(base)
+	return v, conflicting && !discovered.KnownDir(v)
 }
 
 // ExecPath replaces this process with the executable already resolved, under

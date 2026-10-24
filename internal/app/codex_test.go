@@ -74,7 +74,7 @@ func codexUsage(accountID, userID string, percent int) string {
 func (f codexFixture) round(t *testing.T) map[string]*accountData {
 	t.Helper()
 	st := state.Open(f.scope)
-	list := prepare(f.scope, st).list
+	list := prepare(context.Background(), f.scope, st, true).list
 	for u := range launchFetches(context.Background(), list, st) {
 		resolve(list[u.Index], u)
 	}

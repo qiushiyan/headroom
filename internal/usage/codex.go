@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+
+	"github.com/qiushiyan/headroom/internal/tag"
 )
 
 // The Codex usage body (GET …/backend-api/wham/usage; observed on codex-cli
@@ -48,9 +50,10 @@ var codexSlots = []struct{ key, kind string }{
 // everything inside degrades visibly, row by row, and is never dropped.
 func parseCodex(body []byte) (Reading, error) {
 	var top map[string]any
-	if err := json.Unmarshal(body, &top); err != nil || top == nil {
+	if err := json.Unmarshal(body, &top); err != nil {
 		return Reading{}, ErrUnparseable
 	}
+	// A JSON null decodes to a nil map, which has no rate_limit either.
 	main, present := top["rate_limit"]
 	if !present {
 		return Reading{}, ErrUnparseable
@@ -126,7 +129,7 @@ func limitObject(v any) (map[string]any, bool) {
 
 func badIdentityRow(group, label string) Row {
 	return Row{Label: label, Group: group, Severity: "normal",
-		PercentState: StateBad, ResetState: StateNone, IdentityState: StateBad}
+		PercentState: tag.Bad, ResetState: tag.None, IdentityState: tag.Bad}
 }
 
 // codexWindows turns one limit object's slots into rows. A null or absent
@@ -141,7 +144,7 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		row := Row{Kind: slot.kind, Group: group, Feature: feature, Severity: "normal"}
 		w, ok := v.(map[string]any)
 		if !ok {
-			row.PercentState, row.ResetState, row.IdentityState = StateBad, StateNone, StateBad
+			row.PercentState, row.ResetState, row.IdentityState = tag.Bad, tag.None, tag.Bad
 			row.Label = codexLabel(0, suffix)
 			rows = append(rows, row)
 			continue
@@ -153,7 +156,7 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		} else {
 			// A window that cannot say how long it is cannot be told from a
 			// sibling slot of another duration: unselectable.
-			row.IdentityState = StateBad
+			row.IdentityState = tag.Bad
 		}
 		// The unstarted predicate is deliberately narrow: every field must
 		// decode, nothing may have been spent, and the remaining time must be
@@ -164,9 +167,9 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 		// 0.1% used is a started window with a real reset.
 		used, _ := w["used_percent"].(float64)
 		if after, ok := w["reset_after_seconds"].(float64); ok &&
-			row.PercentState == StateOK && row.ResetState == StateOK && row.IdentityState == StateOK &&
+			row.PercentState == tag.OK && row.ResetState == tag.OK && row.IdentityState == tag.OK &&
 			used == 0 && int64(after) >= row.WindowSeconds {
-			row.Unstarted, row.ResetAt, row.ResetState = true, 0, StateNone
+			row.Unstarted, row.ResetAt, row.ResetState = true, 0, tag.None
 		}
 		row.Label = codexLabel(row.WindowSeconds, suffix)
 		rows = append(rows, row)
@@ -176,11 +179,11 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 
 // codexPercent is strict where Claude Code's is lenient: used_percent has
 // only ever been a number, and a string there is drift.
-func codexPercent(v any) (int, FieldState) {
+func codexPercent(v any) (int, tag.State) {
 	if n, ok := v.(float64); ok {
-		return int(math.Round(n)), StateOK
+		return int(math.Round(n)), tag.OK
 	}
-	return 0, StateBad
+	return 0, tag.Bad
 }
 
 // codexLabel names the duration, then whatever the group adds. It derives
@@ -220,18 +223,16 @@ func featureBlocked(limit map[string]any) bool {
 // blocking evidence is never hidden by a malformed sibling field. Codex
 // itself treats spend_control.reached and the workspace values of
 // rate_limit_reached_type as hard stops, which is why they are account-wide.
+//
+// A field is present exactly when its value is not nil: indexing a nil map
+// (a null or absent limit object) yields nil, and a JSON null decodes to nil,
+// so a null counts as absent, as a null window does.
 func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	spend, _ := top["spend_control"].(map[string]any)
-	fields := []struct {
-		value   any
-		present bool
-	}{
-		field(main, "allowed"), field(main, "limit_reached"), field(spend, "reached"), field(top, "rate_limit_reached_type"),
-	}
-	allowed, allowedOK := fields[0].value.(bool)
-	reached, reachedOK := fields[1].value.(bool)
-	spent, spentOK := fields[2].value.(bool)
-	reason, reasonOK := reachedReason(fields[3].value)
+	allowed, allowedOK := main["allowed"].(bool)
+	reached, reachedOK := main["limit_reached"].(bool)
+	spent, spentOK := spend["reached"].(bool)
+	reason, reasonOK := reachedReason(top["rate_limit_reached_type"])
 
 	// 1. blocked: any of the four well-typed and positive.
 	switch {
@@ -244,14 +245,13 @@ func codexAllowance(top, main map[string]any) (AllowanceState, string) {
 	case allowedOK && !allowed:
 		return AllowanceBlocked, "rate_limit.allowed is false"
 	}
-	// 2. bad: one of them present under a wrong type. Never blocks.
-	wellTyped := []bool{allowedOK, reachedOK, spentOK, reasonOK}
-	for i, f := range fields {
-		if f.present && !wellTyped[i] {
-			return AllowanceBad, ""
-		}
-	}
-	if sc, present := top["spend_control"]; present && sc != nil && spend == nil {
+	// 2. bad: one of them, or the spend_control object holding one, present
+	// under a wrong type. Never blocks.
+	if (main["allowed"] != nil && !allowedOK) ||
+		(main["limit_reached"] != nil && !reachedOK) ||
+		(spend["reached"] != nil && !spentOK) ||
+		(top["rate_limit_reached_type"] != nil && !reasonOK) ||
+		(top["spend_control"] != nil && spend == nil) {
 		return AllowanceBad, ""
 	}
 	// 3. allowed, on the vendor's own two words for it.
@@ -279,16 +279,4 @@ func reachedReason(v any) (string, bool) {
 		return kind, kind != ""
 	}
 	return "", false
-}
-
-// field reads one key; a JSON null counts as absent.
-func field(m map[string]any, key string) struct {
-	value   any
-	present bool
-} {
-	v, ok := m[key]
-	return struct {
-		value   any
-		present bool
-	}{v, ok && v != nil}
 }

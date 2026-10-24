@@ -20,6 +20,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/atomicfile"
 )
 
 // ErrBusy is Append's answer when the log is being rewritten and stayed so past
@@ -164,19 +166,7 @@ func (l Log) prune(lock *os.File, now time.Time) {
 		return
 	}
 	base := strings.TrimSuffix(filepath.Base(l.Path), filepath.Ext(l.Path))
-	tmp, err := os.CreateTemp(filepath.Dir(l.Path), base+"-*"+filepath.Ext(l.Path))
-	if err != nil {
-		return
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.Write(kept.Bytes()); err != nil {
-		tmp.Close()
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		return
-	}
-	_ = os.Rename(tmp.Name(), l.Path)
+	_ = atomicfile.Write(l.Path, base+"-*"+filepath.Ext(l.Path), kept.Bytes())
 }
 
 // due reports whether a rewrite would drop a line worth rewriting for: a

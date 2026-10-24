@@ -22,7 +22,15 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys, now); err != nil {
 		t.Fatal(err)
 	}
-	ui := &page{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
+	// Rows with something to ask about, as prepare leaves a usable account.
+	asking := func(keys ...state.Key) []*accountData {
+		list := make([]*accountData, len(keys))
+		for i, k := range keys {
+			list[i] = &accountData{Key: k, Request: &refresh.Candidate{}}
+		}
+		return list
+	}
+	ui := &page{st: st, list: asking(keys...)}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait < config.DefaultSpacing-2*time.Second {
@@ -38,7 +46,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys[1:], now); err != nil {
 		t.Fatal(err)
 	}
-	ui = &page{st: st, wanted: 2, list: []*accountData{{Key: keys[0]}, {Key: keys[1]}}}
+	ui = &page{st: st, list: asking(keys...)}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait > config.DefaultSpacing/2+2*time.Second {
 		t.Errorf("next round in %v; the sooner account was ignored", wait)
@@ -46,7 +54,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 
 	// And an empty ledger — every claim failed, so nothing recorded an
 	// eligibility — must not become a busy loop.
-	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), wanted: 1, list: []*accountData{{Key: keys[0]}}}
+	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: asking(keys[0])}
 	ui.schedule()
 	if wait := ui.nextAt.Sub(now); wait < refreshFloor-2*time.Second {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
@@ -54,12 +62,14 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 
 	// A board with nothing to ask about must not treat the floor as a cadence
 	// either — each round costs a `claude auth status` spawn per account to
-	// re-learn the same answer. How far it backs off is
-	// TestAnIdleBoardStillComesBack's business.
+	// re-learn the same answer — and backs off to the request spacing, the
+	// slowest rate at which it could tell the user anything new. That it
+	// stays under the presence window is TestAnIdleBoardStillComesBack's
+	// business.
 	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: keys[0]}}}
 	ui.schedule()
-	if wait := ui.nextAt.Sub(now); wait <= refreshFloor {
-		t.Errorf("idle board polls every %v, at a subprocess spawn per account", wait)
+	if wait := ui.nextAt.Sub(now); wait < config.DefaultSpacing-2*time.Second {
+		t.Errorf("idle board polls every %v, at a subprocess spawn per account; want the request spacing", wait)
 	}
 }
 
@@ -101,45 +111,45 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 // round already in flight and the subprocess-spawn floor; both remember the
 // press instead of dropping it.
 func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
-	now := time.Now()
-	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()})}
+	ctx := context.Background()
+	ui, _, begun := injectedPage(t, config.Claude, "a@x.com")
+	ui.startRound(ctx, false) // its account is waiting on the budget
+	ui.updates = nil          // and the round has drained
 
-	// Past the floor `r` runs immediately — even mid-quiet-period, even with
-	// accounts waiting on the budget (wanted > 0): eligibility is the claim's
+	// Past the floor `r` runs a round immediately — even mid-quiet-period,
+	// even with accounts waiting on the budget: eligibility is the claim's
 	// question, and pre-deciding it here is the duplicated-eligibility bug
 	// the store's locked test-and-set exists to close.
-	ui.wanted, ui.lastLocal, ui.nextAt = 1, now.Add(-refreshFloor-time.Second), now.Add(time.Minute)
-	if !ui.refreshNow(now) {
-		t.Error("r mid-quiet-period was deferred; only the claim may defer a request")
+	ui.lastLocal, ui.nextAt = time.Now().Add(-refreshFloor-time.Second), time.Now().Add(time.Minute)
+	ui.refresh(ctx)
+	if *begun != 2 || ui.updates == nil || ui.armed || !ui.manual {
+		t.Fatalf("r mid-quiet-period did not run a round of its own (rounds %d, armed %v); only the claim may defer a request", *begun, ui.armed)
 	}
 
 	// Inside the floor the press arms — spawn hygiene for prepare's
 	// per-account `claude auth status`, not budget politeness.
-	ui.lastLocal = now
-	ui.refresh(context.Background())
-	if !ui.armed {
-		t.Error("r inside the floor was dropped instead of arming")
-	}
-	if ui.updates != nil {
-		t.Error("r inside the floor must not start a round")
+	ui.updates = nil
+	ui.refresh(ctx)
+	if !ui.armed || ui.updates != nil || *begun != 2 {
+		t.Errorf("r inside the floor: armed %v, rounds %d — it must arm and start nothing", ui.armed, *begun)
 	}
 
-	// During a round it arms too: the round in flight only carries the
-	// accounts that were eligible when it started.
-	ui.armed = false
+	// During a round it arms too, floor or not: the round in flight only
+	// carries the accounts that were eligible when it started.
+	ui.armed, ui.lastLocal = false, time.Now().Add(-refreshFloor-time.Second)
 	ui.updates = make(chan refresh.Result)
-	ui.refresh(context.Background())
-	if !ui.armed {
-		t.Error("r during a round was dropped")
+	ui.refresh(ctx)
+	if !ui.armed || *begun != 2 {
+		t.Errorf("r during a round: armed %v, rounds %d — it must arm and start nothing", ui.armed, *begun)
 	}
 
 	// A held key delivers dozens of presses; all coalesce into the one armed
 	// bit, and none spawns anything.
 	for range 50 {
-		ui.refresh(context.Background())
+		ui.refresh(ctx)
 	}
-	if !ui.armed {
-		t.Error("a burst of r lost the armed bit")
+	if !ui.armed || *begun != 2 {
+		t.Errorf("a burst of r: armed %v, rounds %d", ui.armed, *begun)
 	}
 }
 

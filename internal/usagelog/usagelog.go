@@ -33,18 +33,19 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/jsonl"
 	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // Version is the record shape this binary writes.
 const Version = 1
 
-// The file is bounded by age once it has grown past MaxBytes. It keeps less
+// The file is bounded by age once it has grown past maxBytes. It keeps less
 // than the launch log: figures from a quarter ago describe a rule long
-// replaced. Variables so a test can make a small file "large".
-var (
-	MaxBytes int64 = 16 << 20
-	Keep           = 90 * 24 * time.Hour
+// replaced.
+const (
+	maxBytes = 16 << 20
+	keep     = 90 * 24 * time.Hour
 )
 
 // Heartbeat is how old the last line of an unchanged account may grow before
@@ -108,9 +109,9 @@ func New(at time.Time, vendor config.Vendor, key, name, home string, rows []usag
 		}
 		for _, f := range []struct {
 			name  string
-			state usage.FieldState
+			state tag.State
 		}{{"percent", u.PercentState}, {"reset", u.ResetState}, {"identity", u.IdentityState}} {
-			if f.state == usage.StateBad {
+			if f.state == tag.Bad {
 				row.Bad = append(row.Bad, f.name)
 			}
 		}
@@ -126,27 +127,27 @@ func (r Row) Usage() usage.Row {
 	u := usage.Row{
 		Kind: r.Kind, Group: r.Group, Model: r.Model, Feature: r.Feature, WindowSeconds: r.WindowS,
 		Label: r.Label, Percent: r.Percent, Unstarted: r.Unstarted,
-		PercentState: usage.StateOK, ResetState: usage.StateNone, IdentityState: usage.StateOK,
+		PercentState: tag.OK, ResetState: tag.None, IdentityState: tag.OK,
 	}
 	if r.ResetsAt != nil {
 		if t, err := time.Parse(time.RFC3339, *r.ResetsAt); err == nil {
-			u.ResetAt, u.ResetState = t.Unix(), usage.StateOK
+			u.ResetAt, u.ResetState = t.Unix(), tag.OK
 		}
 	}
 	if slices.Contains(r.Bad, "percent") {
-		u.PercentState, u.Percent = usage.StateBad, 0
+		u.PercentState, u.Percent = tag.Bad, 0
 	}
 	if slices.Contains(r.Bad, "reset") {
-		u.ResetState, u.ResetAt = usage.StateBad, 0
+		u.ResetState, u.ResetAt = tag.Bad, 0
 	}
 	if slices.Contains(r.Bad, "identity") {
-		u.IdentityState = usage.StateBad
+		u.IdentityState = tag.Bad
 	}
 	return u
 }
 
 func file(ledgerRoot string) jsonl.Log {
-	return jsonl.Log{Path: Path(ledgerRoot), MaxBytes: MaxBytes, Keep: Keep, Slack: Keep / 10}
+	return jsonl.Log{Path: Path(ledgerRoot), MaxBytes: maxBytes, Keep: keep, Slack: keep / 10}
 }
 
 // logged is the last line this process wrote per log and account: what an

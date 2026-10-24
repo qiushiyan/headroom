@@ -48,45 +48,6 @@ func TestSeedRefusesBadNames(t *testing.T) {
 	}
 }
 
-func TestSeedRefusesLinkedStore(t *testing.T) {
-	cfg := testConfig(t)
-	real := filepath.Join(cfg.Home, "elsewhere")
-	os.MkdirAll(real, 0o755)
-	os.MkdirAll(cfg.PrimaryDir(), 0o755)
-	os.Symlink(real, cfg.StoreDir())
-	if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil {
-		t.Fatal("a symlinked canonical store must refuse")
-	}
-	if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "a@x.com")); err == nil {
-		t.Fatal("dir was created despite the refusal")
-	}
-}
-
-func TestSeedShareWhitelist(t *testing.T) {
-	cfg := testConfig(t)
-	// The primary dir holds config and state; only the whitelist is shared.
-	os.MkdirAll(filepath.Join(cfg.PrimaryDir(), "skills"), 0o755)
-	os.MkdirAll(filepath.Join(cfg.PrimaryDir(), "sessions"), 0o755)
-	os.WriteFile(filepath.Join(cfg.PrimaryDir(), "settings.json"), []byte("{}"), 0o644)
-	os.WriteFile(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), []byte(""), 0o644)
-	dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]bool{"settings.json": true, "skills": true}
-	if len(shared) != 2 || !want[shared[0]] || !want[shared[1]] {
-		t.Fatalf("shared = %v, want settings.json and skills only", shared)
-	}
-	for _, n := range []string{"history.jsonl", "sessions"} {
-		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
-			t.Errorf("%s was shared — per-account state must stay per account", n)
-		}
-	}
-	if target, _ := os.Readlink(filepath.Join(dir, "settings.json")); target != filepath.Join(cfg.PrimaryDir(), "settings.json") {
-		t.Errorf("settings.json → %q", target)
-	}
-}
-
 func TestSeedShareWholeDir(t *testing.T) {
 	cfg := testConfig(t)
 	pkg := filepath.Join(cfg.Home, "dotfiles", "claude", ".claude")
@@ -125,7 +86,9 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	// A session in the store, and a private file in the account dir.
 	os.WriteFile(filepath.Join(cfg.StoreDir(), "t.jsonl"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, "history.jsonl"), []byte("x"), 0o644)
-	os.WriteFile(cfg.OrderFile(), []byte("# order\nb@x.com\na@x.com   \nc@x.com\n"), 0o644)
+	// The line discovery honours — a trailing comment included — is the line
+	// removal takes out; a comment that only mentions the name stays.
+	os.WriteFile(cfg.OrderFile(), []byte("# order\nb@x.com\na@x.com   \nc@x.com\na@x.com # work\n# a@x.com, retired\n"), 0o644)
 	os.WriteFile(cfg.CurrentFile(), []byte("a@x.com\n"), 0o644)
 
 	if err := RemoveDir(cfg, "a@x.com"); err != nil {
@@ -137,7 +100,7 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cfg.StoreDir(), "t.jsonl")); err != nil {
 		t.Fatal("removing an account deleted the canonical store's contents")
 	}
-	if got, _ := os.ReadFile(cfg.OrderFile()); string(got) != "# order\nb@x.com\nc@x.com\n" {
+	if got, _ := os.ReadFile(cfg.OrderFile()); string(got) != "# order\nb@x.com\nc@x.com\n# a@x.com, retired\n" {
 		t.Errorf(".order = %q", got)
 	}
 	if got, _ := os.ReadFile(cfg.CurrentFile()); string(got) != "a@x.com\n" {
@@ -183,104 +146,115 @@ func TestRemoveDirRefusesUnmigratedProjects(t *testing.T) {
 	}
 }
 
-// Obligation 10: Seed for Codex builds what VerifyTopology accepts — on a
-// tree where no Codex directory exists yet, and on one where the store does —
-// and refuses a store that is a symlink or a file.
-func TestSeedCodex(t *testing.T) {
-	t.Run("bootstraps an absent tree", func(t *testing.T) {
-		cfg := config.ForHome(t.TempDir()).Codex
-		if _, err := os.Stat(cfg.PrimaryDir()); err == nil {
-			t.Fatal("fixture already has a Codex home")
+// Seeding builds what VerifyTopology accepts, for either vendor — on a tree
+// where no vendor directory exists yet, and on one where the store does —
+// and refuses a store that is a symlink, a file or unreadable before it makes
+// the account's dir.
+func TestSeedStorePreconditions(t *testing.T) {
+	for _, vendor := range config.Vendors {
+		scope := func(t *testing.T) config.Scope { return config.ForHome(t.TempDir()).Scope(vendor) }
+		otherVendor := config.Codex
+		if vendor == config.Codex {
+			otherVendor = config.Claude
 		}
-		dir, _, _, err := Seed(cfg, "new@x.com", SeedOptions{})
-		if err != nil {
-			t.Fatalf("Seed on a machine without Codex: %v", err)
-		}
-		if target, err := os.Readlink(filepath.Join(dir, "sessions")); err != nil || target != cfg.StoreDir() {
-			t.Errorf("sessions link = %q, %v; want %s", target, err, cfg.StoreDir())
-		}
-		if fi, err := os.Lstat(cfg.StoreDir()); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			t.Errorf("canonical store not created as a real directory: %v", err)
-		}
-		if _, err := os.Lstat(filepath.Join(dir, "projects")); err == nil {
-			t.Error("a Codex home was given Claude Code's projects link")
-		}
-		set := Discover(cfg)
-		a, err := set.Select("new@x.com")
-		if err != nil {
-			t.Fatalf("the seeded home is not discoverable: %v", err)
-		}
-		if err := VerifyTopology(a); err != nil {
-			t.Errorf("seeded home fails the launch gate: %v", err)
-		}
-	})
-	t.Run("store already exists", func(t *testing.T) {
-		cfg := config.ForHome(t.TempDir()).Codex
-		if err := os.MkdirAll(cfg.StoreDir(), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		marker := filepath.Join(cfg.StoreDir(), "keep")
-		os.WriteFile(marker, []byte("x"), 0o644)
-		if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(marker); err != nil {
-			t.Error("seeding disturbed an existing store")
-		}
-	})
-	t.Run("store is a symlink", func(t *testing.T) {
-		cfg := config.ForHome(t.TempDir()).Codex
-		os.MkdirAll(cfg.PrimaryDir(), 0o755)
-		if err := os.Symlink(t.TempDir(), cfg.StoreDir()); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), "symlink") {
-			t.Errorf("err = %v, want a refusal naming the symlinked store", err)
-		}
-	})
-	t.Run("store is a file", func(t *testing.T) {
-		cfg := config.ForHome(t.TempDir()).Codex
-		os.MkdirAll(cfg.PrimaryDir(), 0o755)
-		os.WriteFile(cfg.StoreDir(), []byte("x"), 0o644)
-		if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
-			t.Errorf("err = %v, want a refusal", err)
-		}
-	})
-	t.Run("an unreadable store is not an absent one", func(t *testing.T) {
-		if os.Getuid() == 0 {
-			t.Skip("root reads everything")
-		}
-		cfg := config.ForHome(t.TempDir()).Codex
-		os.MkdirAll(cfg.PrimaryDir(), 0o755)
-		os.Chmod(cfg.PrimaryDir(), 0o000)
-		t.Cleanup(func() { os.Chmod(cfg.PrimaryDir(), 0o755) })
-		_, _, _, err := Seed(cfg, "a@x.com", SeedOptions{})
-		if err == nil || !strings.Contains(err.Error(), "unreadable") {
-			t.Errorf("err = %v, want the unreadable-store refusal, not a fresh store", err)
-		}
-	})
-	t.Run("shares only whitelisted config", func(t *testing.T) {
-		cfg := config.ForHome(t.TempDir()).Codex
-		for _, n := range []string{"config.toml", "AGENTS.md", "auth.json", "history.jsonl", "state_5.sqlite"} {
-			os.MkdirAll(cfg.PrimaryDir(), 0o755)
-			os.WriteFile(filepath.Join(cfg.PrimaryDir(), n), []byte("x"), 0o644)
-		}
-		for _, n := range []string{"skills", "sessions", "prompts"} {
-			os.MkdirAll(filepath.Join(cfg.PrimaryDir(), n), 0o755)
-		}
-		dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Join(shared, ","); got != "config.toml,AGENTS.md,skills,prompts" {
-			t.Errorf("shared = %s", got)
-		}
-		for _, n := range []string{"auth.json", "history.jsonl", "state_5.sqlite"} {
-			if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
-				t.Errorf("%s was shared: a login or per-home state must never be", n)
+		other := config.ForHome("").Scope(otherVendor).StoreLink()
+		t.Run(string(vendor)+"/bootstraps an absent tree", func(t *testing.T) {
+			cfg := scope(t)
+			if _, err := os.Stat(cfg.PrimaryDir()); err == nil {
+				t.Fatal("fixture already has a vendor home")
 			}
+			dir, _, _, err := Seed(cfg, "new@x.com", SeedOptions{})
+			if err != nil {
+				t.Fatalf("Seed on a machine without the vendor: %v", err)
+			}
+			if target, err := os.Readlink(filepath.Join(dir, cfg.StoreLink())); err != nil || target != cfg.StoreDir() {
+				t.Errorf("%s link = %q, %v; want %s", cfg.StoreLink(), target, err, cfg.StoreDir())
+			}
+			if fi, err := os.Lstat(cfg.StoreDir()); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+				t.Errorf("canonical store not created as a real directory: %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, other)); err == nil {
+				t.Errorf("a %s home was given the other vendor's %s link", vendor, other)
+			}
+			a, err := Discover(cfg).Select("new@x.com")
+			if err != nil {
+				t.Fatalf("the seeded home is not discoverable: %v", err)
+			}
+			if err := VerifyTopology(a); err != nil {
+				t.Errorf("seeded home fails the launch gate: %v", err)
+			}
+		})
+		t.Run(string(vendor)+"/store already exists", func(t *testing.T) {
+			cfg := scope(t)
+			if err := os.MkdirAll(cfg.StoreDir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(cfg.StoreDir(), "keep")
+			os.WriteFile(marker, []byte("x"), 0o644)
+			if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Error("seeding disturbed an existing store")
+			}
+		})
+		for _, tc := range []struct {
+			name, want string
+			setup      func(t *testing.T, cfg config.Scope)
+		}{
+			{"store is a symlink", "symlink", func(t *testing.T, cfg config.Scope) {
+				if err := os.Symlink(t.TempDir(), cfg.StoreDir()); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"store is a file", "not a directory", func(t *testing.T, cfg config.Scope) {
+				os.WriteFile(cfg.StoreDir(), []byte("x"), 0o644)
+			}},
+			{"an unreadable store is not an absent one", "unreadable", func(t *testing.T, cfg config.Scope) {
+				if os.Getuid() == 0 {
+					t.Skip("root reads everything")
+				}
+				os.Chmod(cfg.PrimaryDir(), 0o000)
+				t.Cleanup(func() { os.Chmod(cfg.PrimaryDir(), 0o755) })
+			}},
+		} {
+			t.Run(string(vendor)+"/"+tc.name, func(t *testing.T) {
+				cfg := scope(t)
+				os.MkdirAll(cfg.PrimaryDir(), 0o755)
+				tc.setup(t, cfg)
+				if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("err = %v, want a refusal naming %q", err, tc.want)
+				}
+				if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "a@x.com")); err == nil {
+					t.Error("the account dir was created despite the refusal")
+				}
+			})
 		}
-	})
+	}
+}
+
+// Codex's whitelist shares configuration and nothing a home keeps per login.
+func TestSeedCodexSharesOnlyWhitelistedConfig(t *testing.T) {
+	cfg := config.ForHome(t.TempDir()).Codex
+	for _, n := range []string{"config.toml", "AGENTS.md", "auth.json", "history.jsonl", "state_5.sqlite"} {
+		os.MkdirAll(cfg.PrimaryDir(), 0o755)
+		os.WriteFile(filepath.Join(cfg.PrimaryDir(), n), []byte("x"), 0o644)
+	}
+	for _, n := range []string{"skills", "sessions", "prompts"} {
+		os.MkdirAll(filepath.Join(cfg.PrimaryDir(), n), 0o755)
+	}
+	dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(shared, ","); got != "config.toml,AGENTS.md,skills,prompts" {
+		t.Errorf("shared = %s", got)
+	}
+	for _, n := range []string{"auth.json", "history.jsonl", "state_5.sqlite"} {
+		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
+			t.Errorf("%s was shared: a login or per-home state must never be", n)
+		}
+	}
 }
 
 // A Codex account cannot be recorded as Claude Code's current account, or the

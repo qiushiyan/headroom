@@ -76,7 +76,8 @@ a scratch config dir made for the run and removed after, with the environment
 `launch`'s constructor builds for that dir, minus inherited credentials. Its
 `$BROWSER` is headroom (`HEADROOM_BROWSER_PROFILE` naming the profile matched
 to the account's email, as for `login`); over ssh from another machine it is
-`true(1)` and the user opens the printed URL and pastes the code. The output
+headroom opening nothing, as for `login`, and the user opens the printed URL
+and pastes the code. The output
 reaches the terminal with every `sk-ant-…` string replaced by `[token withheld
 — headroom stores it]`. The approval is waited for up to 10 minutes (the
 vendor ignores ctrl-c, so closing the terminal is the way to stop sooner).
@@ -96,10 +97,9 @@ Candidates are the accounts of this home, built as a launch builds them —
 figures, verified-live busy sessions (headless runs included) and launches of
 the last fifteen minutes, from every home sharing the ledger. An account is
 excluded, on positive evidence only, when it has no token, its token's end has
-passed, its dir is now logged in to another subscription or to none, its
-identity could not be read just now, or the vendor says it is blocked — and
-when the caller names it with `--exclude`, repeatable, read as `excluded by
-the caller`. The caller knows what headroom cannot: a session that ended on
+passed, its dir is now logged in to another subscription or to none, or its
+identity could not be read just now — and when the caller names it with
+`--exclude`, repeatable, read as `excluded by the caller`. The caller knows what headroom cannot: a session that ended on
 the account's usage limit, or a token the vendor refused, whose account reads
 idle to the rule. Excluding it inside the placement keeps the choice the
 rule's and records nothing on an account the caller would veto. A name
@@ -138,7 +138,7 @@ follows a session's owner. `--dry-run` decides and records nothing.
       "session": {"percent": 12, "basis": "observed", "resets_at": "2026-10-13T12:00:00Z"},
       "week": {"percent": 33, "basis": "observed", "resets_at": "2026-10-16T12:00:00Z"}
     },
-    {"account": "qiushi", "eligible": false, "excluded": "no headless token", "...": "…"}
+    {"account": "qiushi", "eligible": false, "excluded": "no headless token — headroom headless mint qiushi", "...": "…"}
   ]
 }
 ```
@@ -150,7 +150,7 @@ Refused:
   "schema": 1,
   "placed": false,
   "rule": "load-2",
-  "refusal": "every account that could take it is near a limit: yan@planlab.ai (5h session 86%); not eligible: qiushi (no headless token)",
+  "refusal": "every account that could take it is near a limit: yan@planlab.ai (5h session 86%); not eligible: qiushi (no headless token — headroom headless mint qiushi)",
   "retry_at": "2026-10-13T12:00:00Z",
   "accounts": [{"account": "yan@planlab.ai", "eligible": true, "near_limit": true, "room_at": "2026-10-13T12:00:00Z", "...": "…"}]
 }
@@ -166,7 +166,8 @@ resets never count. It is `null` when no such account names its resets — and
 when every account is excluded, since then waiting alone changes nothing: an
 account needs a token, or a person. With every account excluded the refusal
 names each with its reason: `no account can take a launch: qiushi (no
-headless token), yan@planlab.ai (excluded by the caller), …`.
+headless token — headroom headless mint qiushi), yan@planlab.ai (excluded by
+the caller), …`. A token's reason names the command that fixes it.
 `notes` warns when the chosen token ends within seven days.
 
 ### `headroom headless started <placement> <pid>`
@@ -188,7 +189,10 @@ fifteen minutes, so report right after starting the session.
 
 Prints that account's token and a newline, nothing else. Exit 1 with a reason
 on stderr when it has none, when its end has passed, or when the dir is now
-logged in to another subscription than the token was minted for.
+logged in to another subscription than the token was minted for — the
+placement's reasons, on positive evidence only: a dir logged out, or whose
+identity cannot be read just now, still holds the subscription its token was
+minted for.
 
 ### `headroom headless [--json]`, `headroom headless forget <account>`
 

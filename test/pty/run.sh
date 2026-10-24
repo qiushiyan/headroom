@@ -413,6 +413,44 @@ if command -v tmux >/dev/null 2>&1; then
         fi
     fi
     tmx kill-server 2>/dev/null || true
+
+    # The session picker fills the alternate screen exactly; a frame whose
+    # last row ended in a newline scrolled the header off on every draw.
+    # Only the screen shows that, not the bytes, so this reads the pane.
+    tmx new-session -d -x 100 -y 12 -s picker "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN' sessions"
+    sleep 3
+    top=$(tmx capture-pane -t picker -p 2>/dev/null | head -1)
+    case "$top" in
+    "resume ·"*) echo "ok   sessions-header" ;;
+    *)
+        echo "FAIL sessions-header: the picker's first row is not its header:"
+        tmx capture-pane -t picker -p 2>/dev/null | sed 's/^/     /'
+        fail=1
+        ;;
+    esac
+    tmx kill-server 2>/dev/null || true
+
+    # A pane too short for the picker's chrome, and one too narrow for its
+    # layout: each frame still fits the screen, so after redraws (a selection
+    # move forces several) the header is still the first row. The alternate
+    # screen keeps no scrollback, so the first row is the evidence.
+    for geom in "100 4" "15 12"; do
+        set -- $geom
+        tmx new-session -d -x "$1" -y "$2" -s small "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN' sessions"
+        sleep 2
+        tmx send-keys -t small j j k 2>/dev/null || true
+        sleep 1
+        top=$(tmx capture-pane -t small -p 2>/dev/null | head -1)
+        case "$top" in
+        "resume ·"*) echo "ok   sessions-${1}x${2}" ;;
+        *)
+            echo "FAIL sessions-${1}x${2}: a frame overflowed the pane; first row:"
+            tmx capture-pane -t small -p 2>/dev/null | sed 's/^/     /'
+            fail=1
+            ;;
+        esac
+        tmx kill-server 2>/dev/null || true
+    done
 else
     echo "skip scrollback (tmux not installed)"
 fi

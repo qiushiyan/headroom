@@ -21,7 +21,7 @@ type Login struct {
 	AccountID string // tokens.account_id and the chatgpt_account_id claim
 	UserID    string
 	Token     string    // a marker folded into the access token so tests can tell logins apart
-	Expires   time.Time // access token exp; zero means ten days out
+	Expires   time.Time // access token exp; zero means farOff
 }
 
 // JWT encodes claims as an unsigned token.
@@ -33,11 +33,16 @@ func JWT(claims map[string]any) string {
 	return enc(map[string]string{"alg": "none"}) + "." + enc(claims) + ".sig"
 }
 
+// farOff is a usable token's exp. A fixed instant, not one read off the
+// clock: a test compares the token a document carries with the one a request
+// sent, and a second ticking over between the two calls changed it.
+var farOff = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // AccessToken is the access token Document gives this login.
 func (l Login) AccessToken() string {
 	exp := l.Expires
 	if exp.IsZero() {
-		exp = time.Now().Add(240 * time.Hour)
+		exp = farOff
 	}
 	return JWT(map[string]any{"exp": exp.Unix(), "jti": l.Token})
 }

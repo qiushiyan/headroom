@@ -1,13 +1,13 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -15,31 +15,37 @@ import (
 
 // sessionActions owns routing and launch effects. The picker supplies terminal
 // restoration as the commit boundary; action tests need no terminal object.
+//
+// It holds the discovered set and the surface's one read of `.current`, and
+// derives everything else from those two — the accounts whose registries
+// gate a mutation, the current account, whether launches choose — so no two
+// of them can describe different accounts.
 type sessionActions struct {
-	cfg     config.Scope
-	st      *state.Store
-	refs    []sessions.AccountRef
-	set     accounts.Set
-	current string
-	// auto says bare launches choose for themselves: there is then no current
-	// account, and wherever this surface would fall back to one it asks the
-	// placement rule instead.
-	auto         bool
+	st           *state.Store
+	set          accounts.Set
+	routing      accounts.Routing
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
+}
+
+// auto says bare launches choose for themselves: there is then no current
+// account, and wherever this surface would fall back to one it asks the
+// placement rule instead.
+func (actions *sessionActions) auto() bool {
+	return actions.routing.Mode == "auto"
 }
 
 func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool, error) {
 	if actions.liveNow(s) == sessions.Live {
 		return false, fmt.Errorf("open in another terminal — switch there instead")
 	}
-	if !s.DirOK {
-		return false, fmt.Errorf("project directory is gone — dd deletes the session")
-	}
 	if actions.cdFile != "" && strings.Contains(s.CWD, "\n") {
 		return false, fmt.Errorf("project path contains a newline — not representable in the cd file")
 	}
+	// Asked now, not taken from the listing: a dir gone since it was drawn
+	// refuses, one back since resumes, and an unrecovered cwd ("") fails the
+	// stat like any other missing dir.
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
@@ -79,7 +85,10 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		}
 	}
 	argv := append(append([]string{}, actions.claudeArgs...), "--resume", s.ID)
-	if err := execSessions(out.prepared.Path, out.prepared.Binary, argv, envWithPWD(out.prepared.Env, s.CWD)); err != nil {
+	// The launch surface's exec edge, which execs the path Prepare resolved
+	// before the chdir above — so a relative PATH entry in the project
+	// directory can never supply the binary.
+	if err := execVendor(out.prepared.Path, out.prepared.Binary, argv, envWithPWD(out.prepared.Env, s.CWD)); err != nil {
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil
@@ -95,28 +104,34 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 // moves the session to the least-loaded of the *other* accounts — moving means
 // somewhere other than where it is.
 func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) (placement.Intent, bool) {
-	known := func(name string) bool {
-		for _, a := range actions.set.Accounts {
-			if a.Name == name {
-				return name != ""
-			}
-		}
-		return false
-	}
+	_, owned := accountNamed(actions.set, s.Owner)
+	_, pinned := accountNamed(actions.set, actions.routing.Current)
 	switch {
-	case !override && known(s.Owner):
+	case !override && owned:
 		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}, true
-	case actions.auto && override:
+	case actions.auto() && override:
 		return placement.Intent{Exclude: s.Owner}, true
-	case actions.auto:
+	case actions.auto():
 		return placement.Intent{}, true
-	case known(actions.current):
+	case pinned:
 		// Degraded attribution — no evidence, or an owner the filesystem no
 		// longer has — falls back to the *current* account; the row's owner
 		// tag already says so.
-		return placement.Intent{Kind: placement.Forced, Account: actions.current, Reason: "pinned"}, true
+		return placement.Intent{Kind: placement.Forced, Account: actions.routing.Current, Reason: "pinned"}, true
 	}
 	return placement.Intent{}, false
+}
+
+// accountNamed finds the set's account by name. A name the set does not hold
+// — an owner whose dir is gone, the empty current of unresolvable routing —
+// is not one this surface can route to.
+func accountNamed(set accounts.Set, name string) (accounts.Account, bool) {
+	for _, a := range set.Accounts {
+		if name != "" && a.Name == name {
+			return a, true
+		}
+	}
+	return accounts.Account{}, false
 }
 
 // liveNow re-establishes the selected session's liveness at action time —
@@ -124,7 +139,7 @@ func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) 
 // picker drew must still gate every mutation and the resume refusal. The
 // fresh answer also lands back on the row so the display tells the truth.
 func (actions *sessionActions) liveNow(s *sessions.Session) sessions.LiveState {
-	s.Live = sessions.LiveNow(s.ID, actions.refs, psProbe)
+	s.Live = sessions.LiveNow(s.ID, accountRefs(actions.set), pidProbe)
 	return s.Live
 }
 
@@ -160,11 +175,28 @@ func writeCDFile(path, cwd string) error {
 	return f.Close()
 }
 
-// A fresh registry sample gates each vendor mutation, including the commit
-// after the user has spent time editing a title or confirming deletion.
-func (actions *sessionActions) rename(s *sessions.Session, title string) error {
+// The two vendor mutations' refusals while the session may be open, said in
+// the same words by the gate when the key is pressed and by the commit.
+var (
+	errOpenRename = errors.New("session is open elsewhere — rename there (Ctrl+R)")
+	errOpenDelete = errors.New("session is open elsewhere — not deleting")
+)
+
+// mutable is the one gate on r and dd: a fresh registry sample, and refusal
+// unless the session is verifiably not open — the vendor's writer may hold the
+// file, and "could not tell" is not "closed". The picker asks when the key is
+// pressed, and the commit asks again after the user has spent time editing a
+// title or confirming deletion. refusal is the mutation's own word for it.
+func (actions *sessionActions) mutable(s *sessions.Session, refusal error) error {
 	if actions.liveNow(s) != sessions.NotLive {
-		return fmt.Errorf("session is open elsewhere — rename there (Ctrl+R)")
+		return refusal
+	}
+	return nil
+}
+
+func (actions *sessionActions) rename(s *sessions.Session, title string) error {
+	if err := actions.mutable(s, errOpenRename); err != nil {
+		return err
 	}
 	if err := sessions.AppendCustomTitle(s.Path, s.ID, title); err != nil {
 		return fmt.Errorf("rename failed: %w", err)
@@ -173,8 +205,8 @@ func (actions *sessionActions) rename(s *sessions.Session, title string) error {
 }
 
 func (actions *sessionActions) delete(s *sessions.Session) (bool, error) {
-	if actions.liveNow(s) != sessions.NotLive {
-		return false, fmt.Errorf("session is open elsewhere — not deleting")
+	if err := actions.mutable(s, errOpenDelete); err != nil {
+		return false, err
 	}
 	if err := sessions.DeleteTranscript(s); err != nil {
 		return false, fmt.Errorf("delete failed: %w", err)

@@ -91,6 +91,16 @@ func TestNoLoginIsLinkedBetweenDirs(t *testing.T) {
 					t.Errorf("%s not shared: %v", n, shared)
 				}
 			}
+			if target, _ := os.Readlink(filepath.Join(dir, "settings.json")); target != filepath.Join(src, "settings.json") {
+				t.Errorf("settings.json → %q, want the source's", target)
+			}
+			if name == "whitelist" {
+				for _, n := range shared {
+					if !slices.Contains(SharedConfigEntries(config.Claude), n) {
+						t.Errorf("%s shared outside the whitelist", n)
+					}
+				}
+			}
 			for _, n := range []string{".credentials.json", ".claude.json", "history.jsonl", "sessions"} {
 				if slices.Contains(shared, n) {
 					t.Errorf("%s was linked", n)

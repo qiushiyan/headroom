@@ -75,22 +75,8 @@ type Listing struct {
 // any threshold worth a cache or a skeleton frame, and a cache over vendor
 // files would be a second source of truth with its own invalidation bugs.
 func Collect(in Input) Listing {
-	owners := in.Owners
-	names := map[string]bool{}
-	hists := map[string]History{}
-	var registry []RegistryEntry
-	unreadableRegistry := false
-	for _, a := range in.Accounts {
-		names[a.Name] = true
-		if f, err := os.Open(filepath.Join(a.Dir, "history.jsonl")); err == nil {
-			hists[a.Name] = ParseHistory(f)
-			f.Close()
-		}
-		reg := ReadRegistry(a.Name, a.Dir)
-		registry = append(registry, reg.Entries...)
-		unreadableRegistry = unreadableRegistry || reg.Unreadable
-	}
-	processes := Inspect(registry, in.Probe)
+	live := readLiveness(in.Accounts, in.Probe)
+	owners := readOwnerEvidence(in.Accounts, in.Owners, true)
 
 	repos := repoCache{}
 	byID := map[string]*Session{}
@@ -140,11 +126,9 @@ func Collect(in Input) Listing {
 		}
 		s.Local = (s.RepoKey != "" && s.RepoKey == localKey) ||
 			(s.RepoKey == "" && s.DirOK && canon(s.CWD) == localKey)
-		s.Live = processes[s.ID].State
-		if unreadableRegistry && s.Live != Live {
-			s.Live = LiveUnknown
-		}
-		s.Owner, s.OwnerState = resolveOwner(s.ID, processes[s.ID], owners, hists, names)
+		process := live.of(s.ID)
+		s.Live = process.State
+		s.Owner, s.OwnerState = owners.resolve(s.ID, process)
 		out.Sessions = append(out.Sessions, s)
 	}
 	sort.Slice(out.Sessions, func(i, j int) bool {
@@ -208,30 +192,44 @@ func readSession(storeDir, storeDirName, name string) *Session {
 // evidence is that session's process evidence from the caller's one registry
 // inspection; owners are the explicit re-homes.
 func OwnerOf(id string, accts []AccountRef, evidence ProcessEvidence, owners map[string]OwnerRec) (string, OwnerState) {
-	names := map[string]bool{}
-	hists := map[string]History{}
-	for _, a := range accts {
-		names[a.Name] = true
-		if evidence.State == Live {
-			continue // a verified live claim outranks every history
-		}
-		if f, err := os.Open(filepath.Join(a.Dir, "history.jsonl")); err == nil {
-			hists[a.Name] = ParseHistory(f)
-			f.Close()
-		}
-	}
-	return resolveOwner(id, evidence, owners, hists, names)
+	// A verified live claim outranks every history, so none is read for one.
+	return readOwnerEvidence(accts, owners, evidence.State != Live).resolve(id, evidence)
 }
 
-// resolveOwner is the affinity contract: the owner is the newest account
-// claim headroom can observe or was explicitly given — not unobservable
-// ground truth. A verified live registry entry outranks everything (that
-// account is driving the session at this instant); otherwise the explicit
-// re-home record and each account's newest prompt compete on one honest
-// axis, event time on this machine's clock. Nothing is ever re-stamped, so
-// stale evidence can't be promoted.
-func resolveOwner(id string, process ProcessEvidence,
-	owners map[string]OwnerRec, hists map[string]History, names map[string]bool) (string, OwnerState) {
+// ownerEvidence is what the owner rule weighs besides a session's process:
+// which accounts exist, each one's prompt history, and the explicit re-homes.
+type ownerEvidence struct {
+	names  map[string]bool
+	hists  map[string]History
+	owners map[string]OwnerRec
+}
+
+// readOwnerEvidence assembles it for Collect and OwnerOf alike — one reading
+// of the accounts, so the listing and a launch naming one session resolve an
+// owner from the same files. history is false only when the answer is
+// already decided without it.
+func readOwnerEvidence(accts []AccountRef, owners map[string]OwnerRec, history bool) ownerEvidence {
+	ev := ownerEvidence{names: map[string]bool{}, hists: map[string]History{}, owners: owners}
+	for _, a := range accts {
+		ev.names[a.Name] = true
+		if !history {
+			continue
+		}
+		if h, ok := ReadHistory(a.Dir); ok {
+			ev.hists[a.Name] = h
+		}
+	}
+	return ev
+}
+
+// resolve is the affinity contract: the owner is the newest account claim
+// headroom can observe or was explicitly given — not unobservable ground
+// truth. A verified live registry entry outranks everything (that account is
+// driving the session at this instant); otherwise the explicit re-home record
+// and each account's newest prompt compete on one honest axis, event time on
+// this machine's clock. Nothing is ever re-stamped, so stale evidence can't be
+// promoted.
+func (ev ownerEvidence) resolve(id string, process ProcessEvidence) (string, OwnerState) {
 	if process.State == Live {
 		return process.Account, OwnerLive
 	}
@@ -251,8 +249,8 @@ func resolveOwner(id string, process ProcessEvidence,
 			conflict = true
 		}
 	}
-	if rec, ok := owners[id]; ok {
-		if names[rec.Account] {
+	if rec, ok := ev.owners[id]; ok {
+		if ev.names[rec.Account] {
 			consider(rec.Account, rec.AtMS, OwnerRehome)
 		} else {
 			// The re-homed-to account is gone. Surfacing that beats silently
@@ -261,7 +259,7 @@ func resolveOwner(id string, process ProcessEvidence,
 			consider("", rec.AtMS, OwnerMissing)
 		}
 	}
-	for acct, h := range hists {
+	for acct, h := range ev.hists {
 		if ts, ok := h.Newest[id]; ok {
 			consider(acct, ts, OwnerHistory)
 		}
