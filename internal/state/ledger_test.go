@@ -240,6 +240,21 @@ func TestLaunchesFromBeforeHomesBelongToTheLedgersHome(t *testing.T) {
 	}
 }
 
+// A home that kept its own ledger before it shared another's still carries
+// those sections in its own file, and nothing reads them now: a damaged one is
+// no problem of the home's document, whose audit is of its re-homes.
+func TestAHomesLeftoverLedgerIsNotAuditedAsItsOwn(t *testing.T) {
+	h := twoHomes(t)
+	write(t, filepath.Join(h.secondRoot, "state.json"), `{"version":1,"placements":"x","sessions":{"s":{}}}`)
+	docs := h.second.Load().Documents()
+	if len(docs) != 2 || docs[1].Name != "home" {
+		t.Fatalf("documents = %+v", docs)
+	}
+	if p := docs[1].Problems; len(p) != 1 || p[0].Section != "sessions" {
+		t.Errorf("the home's problems = %+v, want its unreadable re-homes alone", p)
+	}
+}
+
 // Placements from both homes, started together, all land: the ledger's lock
 // is the one every launch takes first, whichever home it comes from.
 func TestLaunchesFromTwoHomesAllLand(t *testing.T) {

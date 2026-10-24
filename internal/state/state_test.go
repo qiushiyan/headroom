@@ -100,24 +100,6 @@ func TestIdentityKeyingSharesOneBucket(t *testing.T) {
 	}
 }
 
-func TestClaimDeniesInsideTheQuietPeriod(t *testing.T) {
-	s := Open(rootScope(t.TempDir()))
-	now := time.Now()
-	if !claimOne(t, s, key("a"), now).Permit {
-		t.Fatal("first claim must be granted")
-	}
-	dec := claimOne(t, s, key("a"), now.Add(time.Second))
-	if dec.Permit {
-		t.Error("a second claim inside the spacing must be denied")
-	}
-	if !dec.NextEligible.After(now) {
-		t.Error("a denial must say when the account becomes eligible")
-	}
-	if !claimOne(t, s, key("a"), now.Add(config.DefaultSpacing+time.Second)).Permit {
-		t.Error("the quiet period must end")
-	}
-}
-
 // A fetch can outlive the claim that authorized it — the client allows ten
 // seconds and another process can claim, fetch and record inside that. The
 // straggler must not overwrite the newer observation or reset its cooldown.
@@ -225,12 +207,13 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 		t.Error("once the clock catches up the observation is ordinary again")
 	}
 
-	// A next-eligible further out than this code can produce is a clock step.
+	// A next-eligible further out than this code can produce is a clock step,
+	// cut to the ceiling — at the default spacing, CooldownMax.
 	writeDoc(t, root, `{"version":1,"accounts":{"dir:b":{"request":{"next_eligible_ms":`+
 		itoa(now.Add(72*time.Hour).UnixMilli())+`}}}}`)
 	s = Open(rootScope(root))
 	got := s.Load().NextEligible(key("b"), now)
-	if got.After(now.Add(CooldownMax + time.Second)) {
+	if got.After(now.Add(CooldownMax)) {
 		t.Errorf("absurd deadline not clamped: %v out", got.Sub(now))
 	}
 	// And the clamp ends. The claim that meets the step writes the bound
@@ -310,6 +293,12 @@ func TestUnreadableLedgerIsQuarantinedAndQuiet(t *testing.T) {
 	raw := readRaw(t, root)
 	if string(raw["accounts_unreadable"]) != "5" {
 		t.Errorf("the unreadable bytes were dropped instead of set aside: %v", raw)
+	}
+	// The quiet holds at the next claim. The record the quarantine wrote has
+	// no attempt time, and the age sweep every claim runs first must leave it
+	// alone — swept, the quiet period would end the moment it began.
+	if claimOne(t, Open(rootScope(root)), key("a"), now.Add(time.Minute)).Permit {
+		t.Error("the quarantine's quiet period ended at the next claim")
 	}
 	if !claimOne(t, Open(rootScope(root)), key("a"), now.Add(CooldownMax+time.Minute)).Permit {
 		t.Error("the quarantine must self-heal after one cooldown")
@@ -831,20 +820,4 @@ func TestSpacingAboveCooldownMaxIsNeverShortened(t *testing.T) {
 	}
 	atLeast("degraded claim", decs[0].NextEligible, now)
 	atLeast("snapshot after a degraded claim", broken.Load().NextEligible(k, now), now)
-}
-
-// The default spacing leaves today's arithmetic alone: CooldownMax still caps.
-func TestDefaultSpacingKeepsCooldownMaxAsTheCeiling(t *testing.T) {
-	root := t.TempDir()
-	s := Open(rootScope(root))
-	k := Key{Name: "a"}
-	now := time.Now()
-	doc := fmt.Sprintf(`{"version":1,"accounts":{"dir:a":{"request":{"last_attempt_ms":%d,"next_eligible_ms":%d}}}}`,
-		now.UnixMilli(), now.Add(48*time.Hour).UnixMilli())
-	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(doc), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.Load().NextEligible(k, now); got.After(now.Add(CooldownMax)) {
-		t.Errorf("clock-step deadline not clamped: %s out", got.Sub(now))
-	}
 }

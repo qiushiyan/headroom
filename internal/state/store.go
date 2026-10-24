@@ -308,8 +308,12 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 // accounts this machine has ever logged into, so it needs no operation of its
 // own and no caller has to remember to call one.
 //
-// A record with no attempt time is left alone: this code always writes one, so
-// its absence means a document shape this binary does not fully understand.
+// A record with no attempt time is left alone, because Claim writes such
+// records itself: a quiet period reserved without an attempt. The quarantine
+// of an unreadable ledger starts every account it is asked about that way, and
+// so does the bound written down for a clock-stepped checkpoint on an account
+// with no record yet. Swept by its zero attempt time, that quiet period would
+// end at the very next claim.
 func (d *doc) sweepStale(now time.Time) {
 	if d.badAccounts {
 		return
