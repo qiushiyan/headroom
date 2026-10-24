@@ -175,7 +175,7 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 		if !noArgs() {
 			return 2
 		}
-		return check.Run(cfg, os.Stdout, stdoutIsTTY(), psProbe)
+		return check.Run(cfg, os.Stdout, stdoutIsTTY(), pidProbe)
 	case "limits":
 		scopes, ok := reported()
 		if !ok {

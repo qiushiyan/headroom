@@ -27,7 +27,14 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-// psProbe keeps absent processes distinct from failed inspection.
+// pidProbe answers when a pid started: the one probe behind every liveness
+// read — registry claims for placement and the picker, a headless run's
+// report and the runs proven over, check's and remove's live-session
+// refusals — injected so tests can stand in for the process table.
+var pidProbe sessions.PIDProbe = psProbe
+
+// psProbe is pidProbe's real answer, from ps(1). It keeps an absent process
+// distinct from a failed inspection.
 func psProbe(pid int) (int64, error) {
 	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
@@ -62,7 +69,7 @@ func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, accou
 		CWD:         cwd,
 		Accounts:    accountRefs(set),
 		Owners:      st.Load().Owners(),
-		Probe:       psProbe,
+		Probe:       pidProbe,
 	})
 	// Strict, exactly as launch resolves it: corrupt or dangling `.current`
 	// yields "" — no current — rather than a primary nobody chose. Rows fall

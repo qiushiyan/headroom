@@ -122,7 +122,7 @@ func runAccountsRemove(cfg config.Scope, args []string) int {
 		return refuseCodexRemove(os.Stderr, cfg, args)
 	}
 	return runAccountsRemoveTo(os.Stdout, os.Stderr, cfg, args, removeDeps{
-		probe:          psProbe,
+		probe:          pidProbe,
 		deleteKeychain: creds.DeleteKeychainItem,
 		stdin:          os.Stdin,
 		// Both ends, as the board requires: the picker draws on stdout and

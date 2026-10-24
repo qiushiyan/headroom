@@ -139,7 +139,7 @@ func accountNamed(set accounts.Set, name string) (accounts.Account, bool) {
 // picker drew must still gate every mutation and the resume refusal. The
 // fresh answer also lands back on the row so the display tells the truth.
 func (actions *sessionActions) liveNow(s *sessions.Session) sessions.LiveState {
-	s.Live = sessions.LiveNow(s.ID, accountRefs(actions.set), psProbe)
+	s.Live = sessions.LiveNow(s.ID, accountRefs(actions.set), pidProbe)
 	return s.Live
 }
 

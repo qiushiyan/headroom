@@ -41,9 +41,6 @@ var (
 		raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
 		return raw
 	}
-	// pidProbe answers when a pid started: the one probe behind registry
-	// liveness, a headless run's report and the runs proven over.
-	pidProbe sessions.PIDProbe = psProbe
 )
 
 // placeCandidate is one account as a placement read it: what the rule is
@@ -294,8 +291,8 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 	}
 	who := map[string]claimant{}
 	var claims []sessions.RegistryEntry
+	out.refs = accountRefs(set)
 	for _, a := range set.Accounts {
-		out.refs = append(out.refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
 		who[a.Name] = claimant{keys[a.Name], home, true}
 		claims = append(claims, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
 	}
