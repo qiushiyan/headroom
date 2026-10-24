@@ -462,3 +462,48 @@ func TestLoginHoldsAPrimaryWhoseIdentityIsUnknown(t *testing.T) {
 		t.Errorf("primary not checked against the vendor's email: exit %d\n%s", code, out.String())
 	}
 }
+
+// The opener's variables are headroom's to set, never inherited: each appears
+// once, with this sign-in's value. A shell vendor keeps the last of two
+// duplicate entries, which is why the binary tests cannot see this, but a Go
+// or Node child reads the first — the inherited one — and would record the
+// sign-in in some other run's file. Off macOS at the machine nothing is set,
+// and an inherited value is still dropped.
+func TestTheOpenerEnvironmentIsNeverInherited(t *testing.T) {
+	base := []string{
+		"PATH=/bin", browser.SigninEnv + "=/inherited/signin", browser.ProfileEnv + "=Profile 9", "BROWSER=firefox",
+	}
+	count := func(env []string, name string) (n int, value string) {
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, name+"="); ok {
+				n, value = n+1, v
+			}
+		}
+		return n, value
+	}
+	for _, pg := range []approvalPage{{remote: true}, {profile: browser.Profile{Dir: "Profile 7"}}} {
+		env, err := pg.env(base, "/mine/signin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pg.recorded() {
+			if n, _ := count(env, browser.SigninEnv); n != 0 {
+				t.Errorf("remote=%v: an inherited sign-in reached a vendor headroom does not open for: %q", pg.remote, env)
+			}
+			continue
+		}
+		if n, v := count(env, browser.SigninEnv); n != 1 || v != "/mine/signin" {
+			t.Errorf("remote=%v: %s appears %d times, last %q: %q", pg.remote, browser.SigninEnv, n, v, env)
+		}
+		if n, _ := count(env, "BROWSER"); n != 1 {
+			t.Errorf("remote=%v: BROWSER appears %d times: %q", pg.remote, n, env)
+		}
+		want := 1
+		if pg.remote {
+			want = 0
+		}
+		if n, _ := count(env, browser.ProfileEnv); n != want {
+			t.Errorf("remote=%v: %s appears %d times, want %d: %q", pg.remote, browser.ProfileEnv, n, want, env)
+		}
+	}
+}
