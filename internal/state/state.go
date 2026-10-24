@@ -571,10 +571,12 @@ type AuditRecord struct {
 	NextEligibleMS int64
 }
 
-// Audit lists every ledger entry in the document.
+// Audit lists every ledger entry in the document, in key order, so a report
+// built from it reads the same on every run.
 func (s Snapshot) Audit() []AuditRecord {
 	out := make([]AuditRecord, 0, len(s.d.accounts))
-	for id, r := range s.d.accounts {
+	for _, id := range slices.Sorted(maps.Keys(s.d.accounts)) {
+		r := s.d.accounts[id]
 		rec := AuditRecord{
 			ID:             id,
 			Name:           r.Name,
