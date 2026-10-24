@@ -182,7 +182,8 @@ func TestResolveOwner(t *testing.T) {
 			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerConflict},
 	}
 	for _, c := range cases {
-		acct, st := resolveOwner("s", Inspect(c.registry, probe)["s"], c.owners, c.hists, names)
+		evidence, _ := InspectClaims(c.registry, probe)
+		acct, st := ownerEvidence{names: names, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
 		if acct != c.wantAcct || st != c.wantState {
 			t.Errorf("%s: = (%q, %v), want (%q, %v)", c.name, acct, st, c.wantAcct, c.wantState)
 		}
@@ -207,7 +208,7 @@ func TestLiveness(t *testing.T) {
 			return 0, os.ErrNotExist
 		}
 	}
-	m := Inspect(entries, probe)
+	m, _ := InspectClaims(entries, probe)
 	if m["live"].State != Live {
 		t.Errorf("live = %v", m["live"].State)
 	}
@@ -215,8 +216,8 @@ func TestLiveness(t *testing.T) {
 	// proof outranks uncertainty — Live, never LiveUnknown, or the resume
 	// guard (which refuses only Live) would resume a session proven open.
 	both := append(entries[:1:1], RegistryEntry{Account: "b", SessionID: "live", PID: 99, OK: false})
-	if got := Inspect(both, probe)["live"].State; got != Live {
-		t.Errorf("verified live + unverifiable claim = %v, want Live", got)
+	if got, _ := InspectClaims(both, probe); got["live"].State != Live {
+		t.Errorf("verified live + unverifiable claim = %v, want Live", got["live"].State)
 	}
 	if m["recycled"].State != NotLive {
 		t.Errorf("recycled pid must not read live: %v", m["recycled"].State)
@@ -326,6 +327,79 @@ func TestCollectGroupsAndSorts(t *testing.T) {
 	}
 	if !byID["s-main"].DirOK || byID["s-wt"].RepoKey != byID["s-main"].RepoKey {
 		t.Errorf("repo identity: main=%+v wt=%+v", byID["s-main"], byID["s-wt"])
+	}
+}
+
+// Collect is the picker's and --json's only path to each account's evidence:
+// its prompt history names the owner, its live registry says what is open,
+// an unreadable registry makes every unproven answer unknown, and the
+// re-homes it is handed compete with the history. The rules themselves are
+// TestResolveOwner's and TestRegistryProblemsKeepTheirScope's; this is the
+// wiring, which those cannot see — cutting any one input here must fail it.
+func TestCollectWiresEachAccountsEvidence(t *testing.T) {
+	projects, write := storeFixture(t)
+	cwd := t.TempDir()
+	now := time.Now()
+	for i, id := range []string{"s-hist", "s-live", "s-rehome", "s-none"} {
+		write(Munge(cwd), id+".jsonl", rec(id, cwd, id), now.Add(-time.Duration(i)*time.Minute))
+	}
+	dirA, dirB := t.TempDir(), t.TempDir()
+	// Both accounts drove s-hist; a did so last.
+	os.WriteFile(filepath.Join(dirA, "history.jsonl"), []byte(`{"sessionId":"s-hist","timestamp":100}`+"\n"), 0o644)
+	os.WriteFile(filepath.Join(dirB, "history.jsonl"), []byte(`{"sessionId":"s-hist","timestamp":50}`+"\n"), 0o644)
+	os.MkdirAll(filepath.Join(dirB, "sessions"), 0o755)
+	os.WriteFile(filepath.Join(dirB, "sessions", "42.json"), []byte(`{"sessionId":"s-live","pid":42,"startedAt":5001000}`), 0o644)
+	in := Input{
+		ProjectsDir: projects, CWD: "/nowhere",
+		Accounts: []AccountRef{{Name: "a", Dir: dirA}, {Name: "b", Dir: dirB}},
+		Owners:   map[string]OwnerRec{"s-rehome": {Account: "b", AtMS: 200}},
+		Probe: func(pid int) (int64, error) {
+			if pid == 42 {
+				return 5_000, nil
+			}
+			return 0, os.ErrNotExist
+		},
+	}
+	collect := func() map[string]*Session {
+		t.Helper()
+		by := map[string]*Session{}
+		for _, s := range Collect(in).Sessions {
+			by[s.ID] = s
+		}
+		if len(by) != 4 {
+			t.Fatalf("collected %d sessions, want 4", len(by))
+		}
+		return by
+	}
+
+	by := collect()
+	want := map[string]struct {
+		owner string
+		state OwnerState
+		live  LiveState
+	}{
+		"s-hist":   {"a", OwnerHistory, NotLive},
+		"s-live":   {"b", OwnerLive, Live},
+		"s-rehome": {"b", OwnerRehome, NotLive},
+		"s-none":   {"", OwnerNone, NotLive},
+	}
+	for id, w := range want {
+		if s := by[id]; s.Owner != w.owner || s.OwnerState != w.state || s.Live != w.live {
+			t.Errorf("%s: owner (%q, %v) live %v, want (%q, %v) live %v", id, s.Owner, s.OwnerState, s.Live, w.owner, w.state, w.live)
+		}
+	}
+
+	// One account's registry cannot be listed: nothing unproven reads as
+	// closed, and the proven-open session stays open.
+	sdir := filepath.Join(dirA, "sessions")
+	os.Mkdir(sdir, 0o755)
+	if err := os.Chmod(sdir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(sdir, 0o755) })
+	by = collect()
+	if by["s-none"].Live != LiveUnknown || by["s-live"].Live != Live {
+		t.Errorf("with a registry unreadable: s-none %v, s-live %v — want unknown and live", by["s-none"].Live, by["s-live"].Live)
 	}
 }
 
@@ -586,7 +660,7 @@ func TestProcessEvidenceSamplesOnceAndPreservesUnknown(t *testing.T) {
 		{Account: "other", SessionID: "unknown", PID: 8, StartedAtMS: 100_000, OK: true},
 	}
 	calls := map[int]int{}
-	evidence := Inspect(entries, func(pid int) (int64, error) {
+	evidence, _ := InspectClaims(entries, func(pid int) (int64, error) {
 		calls[pid]++
 		if pid == 8 {
 			return 0, os.ErrPermission

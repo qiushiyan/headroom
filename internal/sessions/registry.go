@@ -133,17 +133,12 @@ func liveRank(s LiveState) int {
 	}
 }
 
-// Inspect samples each PID once. Ownership and liveness consume the same facts.
-func Inspect(entries []RegistryEntry, probe PIDProbe) map[string]ProcessEvidence {
-	evidence, _ := InspectClaims(entries, probe)
-	return evidence
-}
-
-// InspectClaims is Inspect plus the claims it verified as live — the pid runs
-// and its kernel start matches the registry's — from the same one sample per
-// pid, so a session's liveness and an account's live sessions cannot be
-// decided two ways. A claim whose pid was recycled, or whose record is
-// damaged, is not among them.
+// InspectClaims samples each PID once and returns each session's process
+// evidence — ownership and liveness consume the same facts — plus the claims
+// it verified as live: the pid runs and its kernel start matches the
+// registry's. One sample per pid serves both, so a session's liveness and an
+// account's live sessions cannot be decided two ways. A claim whose pid was
+// recycled, or whose record is damaged, is not among them.
 func InspectClaims(entries []RegistryEntry, probe PIDProbe) (map[string]ProcessEvidence, []RegistryEntry) {
 	type sample struct {
 		start int64
@@ -178,18 +173,41 @@ func InspectClaims(entries []RegistryEntry, probe PIDProbe) (map[string]ProcessE
 	return out, live
 }
 
-// LiveNow re-reads claims immediately before an action; collection can age.
-func LiveNow(id string, accts []AccountRef, probe PIDProbe) LiveState {
+// liveness is what every account's registry says is open, from one reading:
+// the evidence per session, and whether any account's registry could not be
+// listed at all.
+type liveness struct {
+	evidence   map[string]ProcessEvidence
+	unreadable bool
+}
+
+// readLiveness reads each account's registry and inspects every claim in one
+// pass — the one assembly behind the listing and the action-time re-check, so
+// the two cannot read the registries by different rules.
+func readLiveness(accts []AccountRef, probe PIDProbe) liveness {
+	var l liveness
 	var entries []RegistryEntry
-	unreadable := false
 	for _, a := range accts {
 		reg := ReadRegistry(a.Name, a.Dir)
 		entries = append(entries, reg.Entries...)
-		unreadable = unreadable || reg.Unreadable
+		l.unreadable = l.unreadable || reg.Unreadable
 	}
-	state := Inspect(entries, probe)[id].State
-	if unreadable && state != Live {
-		return LiveUnknown
+	l.evidence, _ = InspectClaims(entries, probe)
+	return l
+}
+
+// of is one session's evidence. A registry that could not be listed may hold
+// this session's claim, so anything short of verified-live is unknown then:
+// an unreadable directory must never read as "not open".
+func (l liveness) of(id string) ProcessEvidence {
+	e := l.evidence[id]
+	if l.unreadable && e.State != Live {
+		return ProcessEvidence{State: LiveUnknown}
 	}
-	return state
+	return e
+}
+
+// LiveNow re-reads claims immediately before an action; collection can age.
+func LiveNow(id string, accts []AccountRef, probe PIDProbe) LiveState {
+	return readLiveness(accts, probe).of(id).State
 }
