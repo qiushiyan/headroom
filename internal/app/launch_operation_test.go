@@ -114,7 +114,7 @@ func TestTheBoardAndALaunchJudgeAccountsByTheSameEvidence(t *testing.T) {
 	f.observe("b@x.com", 20, 30, time.Minute)
 
 	board := fetchBoards([]config.Scope{f.cfg})[0]
-	_, next := marks(board.list)
+	_, next := marks(board.Accounts)
 	got := f.launch()
 	if got.code != 0 {
 		t.Fatal(got.stderr)

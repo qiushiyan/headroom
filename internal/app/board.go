@@ -16,6 +16,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/round"
 )
 
 // runAccounts is the board. Off a terminal it prints one frame and exits, so
@@ -64,19 +65,19 @@ func printBoard(scopes []config.Scope, layout render.Layout) int {
 // writeBoards prints the pages in vendor order. When two vendors are printed
 // each gets a heading line; with one there is no heading and the frame is
 // what it always was.
-func writeBoards(out io.Writer, p render.Palette, boards []board, now int64, layout render.Layout, width int) {
+func writeBoards(out io.Writer, p render.Palette, boards []round.View, now int64, layout render.Layout, width int) {
 	for n, vb := range boards {
 		if len(boards) > 1 {
 			if n > 0 {
 				fmt.Fprintln(out)
 			}
-			fmt.Fprintln(out, p.Bold+vb.scope.Vendor.Title()+p.Rst)
+			fmt.Fprintln(out, p.Bold+vb.Scope.Vendor.Title()+p.Rst)
 			if layout == render.LayoutBlocks {
 				fmt.Fprintln(out)
 			}
 		}
-		b := p.Board(views(vb.list), now, layout, width)
-		if vb.routing.Mode == "auto" {
+		b := p.Board(views(vb.Accounts), now, layout, width)
+		if vb.Routing.Mode == "auto" {
 			for _, line := range p.AutoHeader(layout) {
 				fmt.Fprintln(out, line)
 			}

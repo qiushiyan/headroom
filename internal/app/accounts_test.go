@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/refresh"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -22,18 +25,19 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys, now); err != nil {
 		t.Fatal(err)
 	}
-	// Rows with something to ask about, as prepare leaves a usable account.
-	asking := func(keys ...state.Key) []*accountData {
-		list := make([]*accountData, len(keys))
+	accts := func(keys ...state.Key) []accountstate.Account {
+		out := make([]accountstate.Account, len(keys))
 		for i, k := range keys {
-			list[i] = &accountData{Key: k, Request: &refresh.Candidate{}}
+			out[i] = accountstate.Account{Key: k}
 		}
-		return list
+		return out
 	}
-	ui := &page{st: st, list: asking(keys...)}
-	ui.schedule()
+	// A round with something to ask about, as prepare leaves a usable account.
+	next := func(st *state.Store, asking bool, keys ...state.Key) time.Time {
+		return nextRound(st.Load(), accts(keys...), asking, config.DefaultSpacing, now)
+	}
 
-	if wait := ui.nextAt.Sub(now); wait < config.DefaultSpacing-2*time.Second {
+	if wait := next(st, true, keys...).Sub(now); wait < config.DefaultSpacing-2*time.Second {
 		t.Errorf("next round in %v; nothing new is obtainable before %v", wait, config.DefaultSpacing)
 	}
 
@@ -46,17 +50,13 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if _, err := st.Claim(keys[1:], now); err != nil {
 		t.Fatal(err)
 	}
-	ui = &page{st: st, list: asking(keys...)}
-	ui.schedule()
-	if wait := ui.nextAt.Sub(now); wait > config.DefaultSpacing/2+2*time.Second {
+	if wait := next(st, true, keys...).Sub(now); wait > config.DefaultSpacing/2+2*time.Second {
 		t.Errorf("next round in %v; the sooner account was ignored", wait)
 	}
 
 	// And an empty ledger — every claim failed, so nothing recorded an
 	// eligibility — must not become a busy loop.
-	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: asking(keys[0])}
-	ui.schedule()
-	if wait := ui.nextAt.Sub(now); wait < refreshFloor-2*time.Second {
+	if wait := next(state.Open(config.Scope{AccountsRoot: t.TempDir()}), true, keys[0]).Sub(now); wait < refreshFloor-2*time.Second {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
 	}
 
@@ -66,9 +66,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	// slowest rate at which it could tell the user anything new. That it
 	// stays under the presence window is TestAnIdleBoardStillComesBack's
 	// business.
-	ui = &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: keys[0]}}}
-	ui.schedule()
-	if wait := ui.nextAt.Sub(now); wait < config.DefaultSpacing-2*time.Second {
+	if wait := next(state.Open(config.Scope{AccountsRoot: t.TempDir()}), false, keys[0]).Sub(now); wait < config.DefaultSpacing-2*time.Second {
 		t.Errorf("idle board polls every %v, at a subprocess spawn per account; want the request spacing", wait)
 	}
 }
@@ -158,7 +156,8 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 // the presence window that gates it.
 func TestAnIdleBoardStillComesBack(t *testing.T) {
 	now := time.Now()
-	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}), list: []*accountData{{Key: state.Key{Name: "a"}}}}
+	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}),
+		round: round.Of(accounts.Set{}, nil, accounts.Routing{}, []accountstate.Account{{Key: state.Key{Name: "a"}}})}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait >= presenceWindow {

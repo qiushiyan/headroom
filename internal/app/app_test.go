@@ -13,11 +13,10 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
-	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -59,8 +58,9 @@ func TestResolveWritesEachAxisOnItsOwn(t *testing.T) {
 		{"a store error rides beside a refusal",
 			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}, StoreErr: state.ErrReadOnly}, prior, state.ErrReadOnly.Error()},
 	} {
-		d := &accountData{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}
-		resolve(d, c.result)
+		r := round.Of(accounts.Set{}, nil, accounts.Routing{}, []accountstate.Account{{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}})
+		r.Apply(c.result)
+		d := r.Accounts()[0]
 		if d.View.Obs != c.obs {
 			t.Errorf("%s: observation %+v, want %+v", c.name, d.View.Obs, c.obs)
 		}
@@ -76,63 +76,15 @@ func TestResolveWritesEachAxisOnItsOwn(t *testing.T) {
 	}
 }
 
-// Regression test for the picker data race: the consumer applies each result
-// and then — like the picker's draw — reads every account's view, while other
-// fetches are still in flight. Fetch goroutines writing views themselves
-// made this fail under -race; launchFetches must keep views single-writer.
-func TestLaunchFetchesSingleWriter(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.Header.Get("Authorization"), "slow") {
-			time.Sleep(50 * time.Millisecond)
-		}
-		w.Write([]byte(`{"limits":[{"kind":"session","percent":5,"resets_at":"2026-08-02T15:00:00Z"}]}`))
-	}))
-	defer srv.Close()
-
-	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
-	list := []*accountData{
-		{Request: candidate(srv.URL, "fast", "fast"),
-			View: accountstate.Facts{Attempt: accountstate.Attempt{State: accountstate.AttemptPending}}},
-		{Request: candidate(srv.URL, "slow", "slow"),
-			View: accountstate.Facts{Attempt: accountstate.Attempt{State: accountstate.AttemptPending}}},
-	}
-	list[0].Acct.Name, list[1].Acct.Name = "fast", "slow"
-	for u := range launchFetches(context.Background(), list, st) {
-		resolve(list[u.Index], u)
-		for _, d := range list {
-			_ = d.View.Attempt.State
-			if d.View.Obs != nil {
-				_ = len(d.View.Obs.Rows)
-			}
-		}
-	}
-	for i, d := range list {
-		if d.View.Attempt.State != accountstate.AttemptOK {
-			t.Errorf("account %d not resolved: attempt %v", i, d.View.Attempt.State)
-		}
-	}
-}
-
 // oneRound is what every surface does: prepare, claim, fetch, resolve. A fresh
 // store handle each time, because every surface is a fresh process — and the
 // bugs below only appear across two rounds, since the first is what leaves the
 // ledger in the state the second one reads.
-func oneRound(t *testing.T, cfg config.Scope, blobs map[string]string, now time.Time) map[string]*accountData {
+func oneRound(t *testing.T, cfg config.Scope, blobs map[string]string, now time.Time) map[string]accountstate.Account {
 	t.Helper()
-	st := state.Open(cfg)
-	list, _ := prepareWith(accounts.Discover(cfg), st.Load(), sources{
-		readRaw: func(a accounts.Account) string { return blobs[a.ConfigDir] },
-		health:  func(string) auth.Status { return auth.Status{} },
-		now:     now,
-	})
-	for u := range launchFetches(context.Background(), list, st) {
-		resolve(list[u.Index], u)
-	}
-	byName := map[string]*accountData{}
-	for _, d := range list {
-		byName[d.Acct.Name] = d
-	}
-	return byName
+	r := preparedWith(cfg, state.Open(cfg), now, blobs, nil)
+	r.Complete(context.Background())
+	return byName(r.Accounts())
 }
 
 // oneAccount builds a home with the primary logged out and one usable account,
@@ -285,11 +237,6 @@ func TestBoardLayoutFlagIsOptIn(t *testing.T) {
 	}
 }
 
-func candidate(url, name, token string) *refresh.Candidate {
-	c, _ := refresh.Prepare(accounts.Account{Scope: config.Scope{UsageURL: url}, Name: name, Readable: true}, creds.Blob{Token: token, ExpiresAtMS: time.Now().Add(time.Hour).UnixMilli()}, true, time.Now())
-	return c
-}
-
 // The board says a bookkeeping failure beside the endpoint's verdict, in both
 // layouts, never instead of it: "rate limited" and "state file unavailable"
 // can both apply. This is the only guard of render's state-file clause; it
@@ -320,35 +267,22 @@ func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
 
 // A refresh that landed answers the manual `r` with "all current" — a 200
 // with no limit windows is as much an answer as one with — and the document
-// carries no error status for it.
+// carries no error status for it. (What a 200 lands as is round's
+// TestASuccessfulFetchIsAnAnswer.)
 func TestSuccessfulRefreshPresentation(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-	}{
-		{"rows", `{"limits":[{"kind":"session","percent":42}]}`},
-		{"empty", `{"limits":[]}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(tc.body))
-			}))
-			defer srv.Close()
-			d := &accountData{Request: candidate(srv.URL, "a", "token")}
-			for r := range launchFetches(context.Background(), []*accountData{d}, state.Open(config.Scope{AccountsRoot: t.TempDir()})) {
-				resolve(d, r)
-			}
-			ui := page{list: []*accountData{d}}
-			if got := ui.ackString(time.Now()); !strings.Contains(got, "all current") {
-				t.Errorf("ack=%q", got)
-			}
-			data, err := jsonDocument(claudeBoard(ui.list, ""), time.Now())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(string(data), `"http_status"`) {
-				t.Errorf("successful attempt gained an error status: %s", data)
-			}
-		})
+	for _, state := range []accountstate.AttemptState{accountstate.AttemptOK, accountstate.AttemptNoLimits} {
+		accts := []accountstate.Account{{Acct: accounts.Account{Name: "a"}, View: accountstate.Facts{Attempt: accountstate.Attempt{State: state, HTTPCode: 200}}}}
+		ui := page{round: round.Of(accounts.Set{}, nil, accounts.Routing{}, accts)}
+		if got := ui.ackString(time.Now()); !strings.Contains(got, "all current") {
+			t.Errorf("%v: ack=%q", state, got)
+		}
+		data, err := jsonDocument(claudeBoard(accts, ""), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), `"http_status"`) {
+			t.Errorf("%v: successful attempt gained an error status: %s", state, data)
+		}
 	}
 }
 
@@ -367,28 +301,4 @@ func captureStderr(t *testing.T, run func()) string {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-// The board reads each credential once, in prepare. Sampling the token again
-// after a 401 is check's diagnostic, and the board makes no such extra read —
-// no `security` spawn per rejected account for evidence it never shows.
-func TestBoardLeaves401CredentialSamplingToChecker(t *testing.T) {
-	bin := t.TempDir()
-	sampled := filepath.Join(t.TempDir(), "sampled")
-	t.Setenv("PATH", bin)
-	t.Setenv("HEADROOM_TEST_CREDENTIAL_SAMPLE", sampled)
-	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\necho sampled > \"$HEADROOM_TEST_CREDENTIAL_SAMPLE\"\nexit 44\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
-	defer srv.Close()
-	d := &accountData{Request: candidate(srv.URL, "a", "token")}
-	for r := range launchFetches(context.Background(), []*accountData{d}, state.Open(config.Scope{AccountsRoot: t.TempDir()})) {
-		if r.Attempt.HTTPCode != 401 || r.TokenAfter401 != refresh.TokenUnknown {
-			t.Fatalf("board's evidence=%+v", r)
-		}
-	}
-	if _, err := os.Stat(sampled); !os.IsNotExist(err) {
-		t.Fatal("board sampled credentials for diagnostic evidence it does not consume")
-	}
 }

@@ -10,23 +10,19 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
-	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/check"
-	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launchop"
-	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/round"
 )
 
 func Run(args []string) int {
@@ -415,237 +411,35 @@ func printUsage(w io.Writer) {
 
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
-// accountData is one account as a surface holds it: the facts accountstate
-// assembled from disk — the account, its ledger key, its view — and, beside
-// them, the candidate a live request would be made from. Only prepare's
-// access step sets Request; a row read from disk alone carries none, so
-// nothing built from it can spend.
-type accountData struct {
-	accountstate.Account
-	Request *refresh.Candidate
-}
-
-// board is one vendor's round, everything a surface reports about that
-// vendor carried together: the scope and store it ran under, the set it
-// discovered, the list built from that set, the one read of `.current` that
-// marked the list, and the problems of the vendor's own state file as the
-// round read it. The picker's page, the one-shot print, --json and limits
-// each hold one per vendor, so mode, current and the marks cannot come from
-// two reads, and nothing is copied out of one carrier into the next.
-//
-// The set travels with the list built from it: selection, recording the
-// current account and the known-extra-dir question are asked of the set,
-// never of one reconstructed from a scope and a list.
-type board struct {
-	scope    config.Scope
-	st       *state.Store
-	set      accounts.Set
-	list     []*accountData
-	routing  accounts.Routing // one read of `.current`: mode and current together
-	problems []state.Problem  // the store's own, as this round loaded it
-}
-
-// sources are the three inputs prepare reads about each account, injected so
-// the pipeline can be table-tested without a Keychain, a Claude Code install,
-// or a network.
-type sources struct {
-	readRaw func(accounts.Account) string
-	health  auth.QueryFunc
-	now     time.Time
-}
-
-// prepare is the local half of a round: it walks the accounts and assembles
-// what is known about each one before any request goes out — whether Claude
-// Code considers it usable, the newest quota figures already on disk, and
-// either a candidate for a live refresh or the attempt state that blocks one.
-// The board it returns carries its one read of `.current` and of the store.
-//
+// roundDeps are the edges a round reads through, as this process has them.
 // probe says whether Claude Code's own health probe runs (`claude auth
-// status` per account, side by side). Without it health falls back to
-// credential evidence, as it does whenever the probe has no answer: the
-// detached refresh runs that way, since a process nobody is watching has no
-// use for a spawn per account, and must not lean on whatever that command
-// does as a side effect.
-//
-// ctx reaches the credential reads, which are where a round can stall: the
-// picker's cancel and the detached refresh's signals stop them there.
-func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe bool) board {
-	set := accounts.Discover(scope)
-	snap := st.Load()
-	src := sources{now: time.Now()}
-	if scope.Vendor == config.Claude {
-		// Only Claude Code's access costs a process and a Keychain read. The
-		// Codex reader works from the auth snapshot discovery already took.
-		src.readRaw = func(a accounts.Account) string {
-			raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
-			return raw
-		}
-		src.health = func(string) auth.Status { return auth.Status{} }
-		if probe {
-			src.health = queryHealthParallel(set.Accounts)
-		}
+// status` per account, side by side).
+func roundDeps(probe bool) round.Deps {
+	d := round.Deps{Creds: func(ctx context.Context, a accounts.Account) string {
+		raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
+		return raw
+	}}
+	if probe {
+		d.Health = round.ProbeHealth
 	}
-	list, routing := prepareWith(set, snap, src)
-	return board{scope: scope, st: st, set: set, list: list, routing: routing, problems: snap.Problems()}
+	return d
 }
 
-// queryHealthParallel runs `claude auth status` for every account at once and
-// hands back a lookup. Serially this would cost one process spawn per account
-// before anything renders; in parallel it is one spawn's latency total.
-func queryHealthParallel(accts []accounts.Account) auth.QueryFunc {
-	results := make([]auth.Status, len(accts))
-	var wg sync.WaitGroup
-	for i, a := range accts {
-		wg.Add(1)
-		go func(i int, dir string) {
-			defer wg.Done()
-			results[i] = auth.Query(dir)
-		}(i, a.ConfigDir)
-	}
-	wg.Wait()
-	byDir := make(map[string]auth.Status, len(accts))
-	for i, a := range accts {
-		byDir[a.ConfigDir] = results[i]
-	}
-	return func(configDir string) auth.Status { return byDir[configDir] }
-}
-
-// prepareWith is prepare with its inputs injected.
-func prepareWith(set accounts.Set, snap state.Snapshot, src sources) ([]*accountData, accounts.Routing) {
-	facts, routing := accountstate.Assemble(set, snap, src.now)
-	list := accountList(facts)
-	for _, d := range list {
-		// The second of the three places a vendor document is read: access —
-		// plan, health, and either a candidate or the attempt state that
-		// blocks one.
-		if d.Acct.Scope.Vendor == config.Codex {
-			codexAccess(d, src.now)
-		} else {
-			claudeAccess(d, src)
-		}
-	}
-	return list, routing
-}
-
-func claudeAccess(d *accountData, src sources) {
-	raw := src.readRaw(d.Acct)
-	blob, ok := creds.Parse(raw)
-	if ok {
-		d.View.Plan = blob.PlanLabel()
-	}
-	d.View.Health = resolveHealth(src.health(d.Acct.ConfigDir), raw, blob, ok, src.now.UnixMilli())
-	d.View.Attempt = accountstate.Attempt{}
-	if d.View.Health == accountstate.HealthOK {
-		d.Request, d.View.Attempt.State = refresh.Prepare(d.Acct, blob, ok, src.now)
-	}
-}
-
-// codexAccess is the Codex health and eligibility table, first match wins.
-// There is no vendor probe on this path; the auth snapshot decides. "Relogin
-// required" is never produced: the document carries no refresh-token expiry,
-// and expiry is read only on positive evidence.
-func codexAccess(d *accountData, now time.Time) {
-	snap := d.Acct.Auth
-	d.View.Attempt = accountstate.Attempt{}
-	switch snap.State {
-	case codexauth.Absent:
-		d.View.Health = accountstate.HealthNoLogin
-	case codexauth.Unreadable, codexauth.NoTokens:
-		d.View.Health = accountstate.HealthBadBlob
-	case codexauth.OtherMode:
-		d.View.Health = accountstate.HealthUnknown
-		d.View.AuthMode = snap.Mode
-	default:
-		d.View.Health = accountstate.HealthOK
-		d.Request, d.View.Attempt.State = refresh.PrepareCodex(d.Acct, now)
-	}
-}
-
-// resolveHealth decides one thing: can Claude Code use this account.
-//
-// Claude Code's own verdict settles it whenever there is one. A credential
-// headroom cannot read blocks *headroom's* request, not the account — that
-// belongs on the attempt axis, and letting it decide health here would
-// recreate the false alarm this rework exists to remove. Credential evidence
-// is the fallback only when the oracle has no answer, and it never infers
-// "expired" from a missing field (see creds.ReloginRequired).
-func resolveHealth(st auth.Status, raw string, blob creds.Blob, blobOK bool, nowMS int64) accountstate.Health {
-	switch st.Outcome {
-	case auth.OutcomeOK:
-		if st.LoggedIn {
-			return accountstate.HealthOK
-		}
-		return accountstate.HealthNoLogin
-	case auth.OutcomeUnparseable:
-		// The oracle ran and answered in a shape we no longer understand.
-		// Guessing from credentials here would paper over vendor drift.
-		return accountstate.HealthUnknown
-	case auth.OutcomeUnrunnable:
-		// The probe's environment could not be built (launch refused the
-		// dir). The credential fallback below reads the same broken spelling
-		// and would report "no login" — a /login errand for a path bug.
-		return accountstate.HealthUnknown
-	}
-	switch {
-	case raw == "":
-		return accountstate.HealthNoLogin
-	case !blobOK:
-		return accountstate.HealthBadBlob
-	case blob.ReloginRequired(nowMS):
-		return accountstate.HealthReloginRequired
-	default:
-		return accountstate.HealthOK
-	}
-}
-
-// Each round owns its channel and list until the channel has closed and drained.
-func launchFetches(ctx context.Context, list []*accountData, st *state.Store) <-chan refresh.Result {
-	requests := make([]*refresh.Candidate, len(list))
-	for i, d := range list {
-		requests[i] = d.Request
-	}
-	return refresh.Start(ctx, st, requests, nil)
-}
-
-func resolve(d *accountData, result refresh.Result) {
-	d.View.Attempt = result.Attempt
-	if result.Observation != nil {
-		d.View.Obs = result.Observation
-		if result.Observation.Plan != "" {
-			d.View.Plan = result.Observation.Plan
-		}
-	}
-	if result.StoreErr != nil {
-		d.View.Attempt.StoreError = result.StoreErr.Error()
-	}
-}
-
-// markBoard sets every row's load and, under auto, the row a launch would
-// take from the figures the board holds, and returns what it gathered, so a
-// board that stays open can mark again as time passes. The mode is the
+// markBoard sets every account's load and, under auto, the account a launch
+// would take from the figures the round holds, and returns what it gathered,
+// so a board that stays open can mark again as time passes. The mode is the
 // round's own reading of `.current`, never a second one.
-func markBoard(b board, now time.Time) *launchop.Marks {
-	accts := make([]accountstate.Account, len(b.list))
-	for i, d := range b.list {
-		accts[i] = d.Account
-	}
-	m := launchop.Mark(b.set, b.st, accts, b.routing.Mode, os.Environ(), now, placeDeps())
-	applyMarks(b.list, m.At(now))
+func markBoard(r *round.Round, now time.Time) *launchop.Marks {
+	m := launchop.Mark(r.Set, r.Store, r.Accounts(), r.Routing.Mode, os.Environ(), now, placeDeps())
+	r.Mark(m.At(now))
 	return m
 }
 
-// applyMarks sets each row's mark; a row the marks do not name has none.
-func applyMarks(list []*accountData, marks map[string]accountstate.Mark) {
-	for _, d := range list {
-		m := marks[d.Acct.Name]
-		d.View.Next, d.View.Load = m.Next, m.Load
-	}
-}
-
-func views(list []*accountData) []accountstate.Facts {
-	vs := make([]accountstate.Facts, len(list))
-	for i, d := range list {
-		vs[i] = d.View
+// views are the facts a renderer draws, one per account.
+func views(accts []accountstate.Account) []accountstate.Facts {
+	vs := make([]accountstate.Facts, len(accts))
+	for i, a := range accts {
+		vs[i] = a.View
 	}
 	return vs
 }

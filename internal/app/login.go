@@ -29,6 +29,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
@@ -80,7 +81,7 @@ type loginRow struct {
 
 func runLogin(scope config.Scope, args []string) int {
 	return runLoginTo(os.Stdout, os.Stderr, scope, args, loginDeps{
-		health: queryHealthParallel,
+		health: round.ProbeHealth,
 		readRaw: func(a accounts.Account) string {
 			raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
 			return raw
@@ -271,7 +272,7 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 		r := &loginRow{
 			acct:   a,
 			email:  loginEmail(a, st),
-			health: resolveHealth(st, raw, blob, ok, now.UnixMilli()),
+			health: round.Health(st, raw, blob, ok, now.UnixMilli()),
 			blob:   blob,
 			blobOK: ok,
 			sealed: deps.sealed && deps.inKeychain(a),

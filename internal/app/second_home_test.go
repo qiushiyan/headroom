@@ -518,8 +518,8 @@ func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
 	f.busy(filepath.Join(f.owner.AccountsRoot, "a@x.com"), 952)
 
 	boards := fetchBoards([]config.Scope{f.owner})
-	if boards[0].routing.Mode != "pinned" {
-		t.Fatalf("mode %q", boards[0].routing.Mode)
+	if boards[0].Routing.Mode != "pinned" {
+		t.Fatalf("mode %q", boards[0].Routing.Mode)
 	}
 	for layout, want := range map[render.Layout][]string{
 		render.LayoutBlocks:  {"sessions: 2 busy (steward-home: 1 busy)", "sessions: 1 launched (steward-home: 1 launched)"},

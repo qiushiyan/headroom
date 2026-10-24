@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/refresh"
@@ -31,7 +32,7 @@ func isCancelKey(k tui.Key) bool {
 // The two reasons are counted apart because they are said apart: an account
 // the vendor has blocked is not "too old", and calling it that would send the
 // user to refresh figures that are perfectly current.
-func notActionable(list []*accountData, now int64) (blocked, stale int) {
+func notActionable(list []accountstate.Account, now int64) (blocked, stale int) {
 	for _, d := range list {
 		switch {
 		case d.View.Obs == nil || d.View.Actionable(now):
@@ -99,7 +100,7 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 			t.Close()
 			// Like enter, this records the visible page's vendor's routing and
 			// nothing else, and starts no session.
-			if err := pg.set.SetAuto(); err != nil {
+			if err := pg.round.Set.SetAuto(); err != nil {
 				fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
 				return 1
 			}
@@ -107,11 +108,11 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 			return 0
 		case stepChoose:
 			pg := ui.page()
-			chosen := pg.list[pg.sel]
+			chosen := pg.accounts()[pg.sel]
 			t.Close()
 			// Enter records this page's vendor's current account and nothing
 			// else: the other vendor's .current is not touched.
-			if err := pg.set.SetCurrent(chosen.Acct); err != nil {
+			if err := pg.round.Set.SetCurrent(chosen.Acct); err != nil {
 				fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
 				return 1
 			}
@@ -172,7 +173,7 @@ func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan t
 		case isCancelKey(k):
 			return stepCancel
 		case k.Kind == tui.KeyEnter:
-			if len(pg.list) > 0 {
+			if len(pg.accounts()) > 0 {
 				return stepChoose
 			}
 		}
@@ -187,12 +188,12 @@ func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan t
 func (ui *picker) show(ctx context.Context, i int) {
 	ui.visible = i
 	pg := ui.pages[i]
-	if pg.list == nil && pg.updates == nil {
+	if pg.round == nil && pg.updates == nil {
 		pg.startRound(ctx, false)
 	}
 	if !pg.opened {
 		pg.opened = true
-		for j, d := range pg.list {
+		for j, d := range pg.accounts() {
 			// Under auto there is no current account; the row a launch would
 			// take is the one worth opening on.
 			if d.View.Current || d.View.Next {
@@ -210,7 +211,8 @@ func (ui *picker) draw() {
 	// mid-draw hits the next tick, never a frame windowed to one screen and
 	// printed to another.
 	w, h := ui.fp.geometry()
-	b := ui.p.Board(views(pg.list), now.Unix(), ui.layout, w)
+	accts := pg.accounts()
+	b := ui.p.Board(views(accts), now.Unix(), ui.layout, w)
 	// The tab bar is part of the header: it ranks with the column headings
 	// when the terminal is too short for everything. One page has no bar, and
 	// its frame is what it always was.
@@ -221,7 +223,7 @@ func (ui *picker) draw() {
 			header = append(header, "")
 		}
 	}
-	if pg.routing.Mode == "auto" {
+	if pg.round != nil && pg.round.Routing.Mode == "auto" {
 		for _, line := range ui.p.AutoHeader(ui.layout) {
 			if line != "" {
 				line = "  " + line
@@ -325,7 +327,8 @@ func (ui *picker) status(now time.Time) string {
 		// so before someone picks it.
 		parts = append(parts, "HEADROOM_HOME set — primary launches refuse")
 	}
-	for _, d := range pg.list {
+	accts := pg.accounts()
+	for _, d := range accts {
 		if !d.View.Current {
 			continue
 		}
@@ -335,13 +338,13 @@ func (ui *picker) status(now time.Time) string {
 		// and the launch's notice cannot disagree about which values go
 		// unsaid.
 		if tgt, err := launch.For(pg.scope.Vendor, d.Acct.ConfigDir); err == nil {
-			if _, unexplained := launch.Unexplained(tgt, pg.set, os.Environ()); unexplained {
+			if _, unexplained := launch.Unexplained(tgt, pg.round.Set, os.Environ()); unexplained {
 				parts = append(parts, "ambient "+pg.scope.Env().HomeVar+" neutralized")
 			}
 		}
 		break
 	}
-	blocked, stale := notActionable(pg.list, now.Unix())
+	blocked, stale := notActionable(accts, now.Unix())
 	if blocked > 0 {
 		// Positive evidence from the vendor, not age: these accounts are not
 		// grounds for a choice whatever their percentages say.

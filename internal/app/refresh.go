@@ -18,6 +18,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launchop"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -83,10 +84,7 @@ func runRefresh(scopes []config.Scope) int {
 		wg.Add(1)
 		go func(scope config.Scope) {
 			defer wg.Done()
-			st := state.Open(scope)
-			p := prepare(ctx, scope, st, false)
-			for range launchFetches(ctx, p.list, st) {
-			}
+			round.Prepare(ctx, scope, state.Open(scope), time.Now(), roundDeps(false)).Complete(ctx)
 		}(scope)
 	}
 	wg.Wait()

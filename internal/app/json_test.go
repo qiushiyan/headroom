@@ -17,7 +17,7 @@ import (
 
 func TestJSONDocument(t *testing.T) {
 	generatedAt := time.Unix(1754121000, 0)
-	list := []*accountData{
+	list := []accountstate.Account{
 		{
 			Acct: accounts.Account{Name: "primary", Email: "p@x.com"},
 			View: accountstate.Facts{

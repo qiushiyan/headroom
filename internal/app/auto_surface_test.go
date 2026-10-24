@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/codexauth/codexauthtest"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
@@ -36,7 +37,7 @@ func boardFixture(t *testing.T, extras ...string) autoFixture {
 	return f
 }
 
-func marks(list []*accountData) (current, next []string) {
+func marks(list []accountstate.Account) (current, next []string) {
 	for _, d := range list {
 		if d.View.Current {
 			current = append(current, d.Acct.Name)
@@ -59,16 +60,16 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 
 	boards := fetchBoards([]config.Scope{f.cfg})
 	board := boards[0]
-	if current, next := marks(board.list); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.routing.Mode != "pinned" {
-		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.routing.Mode)
+	if current, next := marks(board.Accounts); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.Routing.Mode != "pinned" {
+		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.Routing.Mode)
 	}
 
 	f.setCurrent("auto\n")
 	boards = fetchBoards([]config.Scope{f.cfg})
 	board = boards[0]
-	current, next := marks(board.list)
-	if len(current) != 0 || len(next) != 1 || board.routing.Mode != "auto" {
-		t.Fatalf("auto: current %v next %v mode %q", current, next, board.routing.Mode)
+	current, next := marks(board.Accounts)
+	if len(current) != 0 || len(next) != 1 || board.Routing.Mode != "auto" {
+		t.Fatalf("auto: current %v next %v mode %q", current, next, board.Routing.Mode)
 	}
 	if got := f.launch(); got.account(f.cfg) != next[0] {
 		t.Fatalf("the board marked %s and the launch took %s:\n%s", next[0], got.account(f.cfg), got.stderr)
@@ -111,7 +112,7 @@ func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
 		fp: &framePrinter{out: &out, size: func() (int, int, error) { return 120, 60, nil }}}
 	ui.show(context.Background(), 0)
 	next := func() string {
-		_, n := marks(pg.list)
+		_, n := marks(pg.accounts())
 		if len(n) != 1 {
 			t.Fatalf("%d rows marked next", len(n))
 		}

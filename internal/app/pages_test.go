@@ -12,6 +12,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/tui"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -25,25 +26,30 @@ func injectedPage(t *testing.T, vendor config.Vendor, names ...string) (*page, c
 	ch := make(chan refresh.Result, 8)
 	begun := 0
 	pg := newPage(scope)
-	pg.begin = func(_ context.Context, pg *page) (board, <-chan refresh.Result) {
+	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
 		begun++
-		return injectedBoard(pg, names...), ch
+		return injectedRound(pg, injectedAccounts(pg, names...)), ch
 	}
 	return pg, ch, &begun
 }
 
-// injectedBoard is a round's board under the page's own scope and store, its
-// rows as prepare leaves them: usable, and each with a request to make.
-func injectedBoard(pg *page, names ...string) board {
-	b := board{scope: pg.scope, st: pg.st, set: accounts.Set{Scope: pg.scope}, list: make([]*accountData, len(names))}
+// injectedAccounts are accounts as prepare leaves usable ones: healthy, each
+// with a request pending.
+func injectedAccounts(pg *page, names ...string) []accountstate.Account {
+	accts := make([]accountstate.Account, len(names))
 	for i, n := range names {
-		b.list[i] = &accountData{
-			Acct:    accounts.Account{Scope: pg.scope, Name: n},
-			View:    accountstate.Facts{Vendor: pg.scope.Vendor, Label: n, Health: accountstate.HealthOK, Attempt: accountstate.Attempt{State: accountstate.AttemptPending}},
-			Request: &refresh.Candidate{},
+		accts[i] = accountstate.Account{
+			Acct: accounts.Account{Scope: pg.scope, Name: n},
+			View: accountstate.Facts{Vendor: pg.scope.Vendor, Label: n, Health: accountstate.HealthOK, Attempt: accountstate.Attempt{State: accountstate.AttemptPending}},
 		}
 	}
-	return b
+	return accts
+}
+
+// injectedRound is a round over those accounts under the page's own scope and
+// store.
+func injectedRound(pg *page, accts []accountstate.Account) *round.Round {
+	return round.Of(accounts.Set{Scope: pg.scope}, pg.st, accounts.Routing{}, accts)
 }
 
 func observed(percent int) refresh.Result {
@@ -82,10 +88,10 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 	claudeCh <- r
 	ui.step(ctx, tick, keys)
 
-	if got := claude.list[1].View.Obs; got == nil || got.Rows[0].Percent != 61 {
-		t.Errorf("the originating page did not get its result: %+v", claude.list[1].View)
+	if got := claude.accounts()[1].View.Obs; got == nil || got.Rows[0].Percent != 61 {
+		t.Errorf("the originating page did not get its result: %+v", claude.accounts()[1].View)
 	}
-	for i, d := range codex.list {
+	for i, d := range codex.accounts() {
 		if d.View.Obs != nil || d.View.Attempt.State != accountstate.AttemptPending {
 			t.Errorf("codex[%d] was touched by Claude Code's round: %+v", i, d.View)
 		}
@@ -198,11 +204,10 @@ func TestPagesKeepTheirOwnSelectionAndTheTabBar(t *testing.T) {
 func TestAPageOpensOnTheRowEnterWouldConfirm(t *testing.T) {
 	ctx := context.Background()
 	pinned, _, _ := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com", "c2@x.com")
-	rows := pinned.begin
-	pinned.begin = func(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
-		b, ch := rows(ctx, pg)
-		b.list[1].View.Current = true
-		return b, ch
+	pinned.begin = func(ctx context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
+		accts := injectedAccounts(pg, "c0@x.com", "c1@x.com", "c2@x.com")
+		accts[1].View.Current = true
+		return injectedRound(pg, accts), make(chan refresh.Result)
 	}
 	(&picker{pages: []*page{pinned}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
 	if pinned.sel != 1 || pinned.selName != "c1@x.com" {
@@ -217,11 +222,11 @@ func TestAPageOpensOnTheRowEnterWouldConfirm(t *testing.T) {
 	f.observe("b@x.com", 0, 10, time.Minute)
 	auto := newPage(f.cfg)
 	(&picker{pages: []*page{auto}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
-	_, next := marks(auto.list)
-	if len(next) != 1 || next[0] == auto.list[0].Acct.Name {
+	_, next := marks(auto.accounts())
+	if len(next) != 1 || next[0] == auto.accounts()[0].Acct.Name {
 		t.Fatalf("fixture: next %v must be one row other than the first", next)
 	}
-	if got := auto.list[auto.sel].Acct.Name; got != next[0] || auto.selName != next[0] {
+	if got := auto.accounts()[auto.sel].Acct.Name; got != next[0] || auto.selName != next[0] {
 		t.Errorf("auto: opened on %s (%q), want the next row %s", got, auto.selName, next[0])
 	}
 }
@@ -240,11 +245,11 @@ func TestTheSelectionFollowsItsAccountAcrossARediscovery(t *testing.T) {
 	ui.step(ctx, nil, nil)
 
 	// The next round discovers one more account, sorted ahead of the chosen one.
-	pg.begin = func(_ context.Context, pg *page) (board, <-chan refresh.Result) {
-		return injectedBoard(pg, "a@x.com", "aa@x.com", "b@x.com", "c@x.com"), make(chan refresh.Result)
+	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
+		return injectedRound(pg, injectedAccounts(pg, "a@x.com", "aa@x.com", "b@x.com", "c@x.com")), make(chan refresh.Result)
 	}
 	pg.startRound(ctx, false)
-	if got := pg.list[pg.sel].Acct.Name; got != "b@x.com" || pg.sel != 2 {
+	if got := pg.accounts()[pg.sel].Acct.Name; got != "b@x.com" || pg.sel != 2 {
 		t.Errorf("the cursor moved to %s (row %d) when a rediscovery reordered the list; it was on b@x.com", got, pg.sel)
 	}
 }
@@ -252,11 +257,11 @@ func TestTheSelectionFollowsItsAccountAcrossARediscovery(t *testing.T) {
 // The footer names a vendor block as a block — not as figures too old.
 func TestFooterCountsBlockedApartFromStale(t *testing.T) {
 	now := time.Now().Unix()
-	fresh := func(a usage.Allowance, age int64) *accountData {
-		return &accountData{View: accountstate.Facts{Vendor: config.Codex, Health: accountstate.HealthOK,
+	fresh := func(a usage.Allowance, age int64) accountstate.Account {
+		return accountstate.Account{View: accountstate.Facts{Vendor: config.Codex, Health: accountstate.HealthOK,
 			Obs: &accountstate.Observation{Rows: []usage.Row{{Percent: 1}}, Allowance: a, ObservedAt: now - age}}}
 	}
-	list := []*accountData{
+	list := []accountstate.Account{
 		fresh(usage.Allowance{State: usage.AllowanceBlocked}, 1),
 		fresh(usage.Allowance{State: usage.AllowanceAllowed, BlockedFeatures: []string{"code review"}}, 1),
 		fresh(usage.Allowance{State: usage.AllowanceAllowed}, 100000),
@@ -278,8 +283,8 @@ func TestFooterSaysAnUnexplainedInheritedHome(t *testing.T) {
 	a := accounts.Account{Scope: scope, Name: "a@x.com", ConfigDir: filepath.Join(root, "a@x.com")}
 	b := accounts.Account{Scope: scope, Name: "b@x.com", ConfigDir: filepath.Join(root, "b@x.com")}
 	pg := newPage(scope)
-	pg.board = board{scope: scope, st: pg.st, set: accounts.Set{Scope: scope, Accounts: []accounts.Account{a, b}},
-		list: []*accountData{{Acct: a, View: accountstate.Facts{Label: a.Name, Current: true}}}}
+	pg.round = round.Of(accounts.Set{Scope: scope, Accounts: []accounts.Account{a, b}}, pg.st, accounts.Routing{},
+		[]accountstate.Account{{Acct: a, View: accountstate.Facts{Label: a.Name, Current: true}}})
 	ui := &picker{pages: []*page{pg}}
 	now := time.Now()
 	for _, c := range []struct {
