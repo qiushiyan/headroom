@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 )
 
 // History is one account's prompt history distilled to attribution facts:
@@ -12,6 +14,19 @@ type History struct {
 	Newest map[string]int64 // session id → newest prompt timestamp (ms)
 	Lines  int              // complete lines seen
 	Bad    int              // complete lines that failed the contract
+}
+
+// ReadHistory reads the prompt history in one account's config dir, and is
+// the one opener of that file. ok is false when there is no file to read —
+// absent, or not openable — which the owner rule treats as no claims and
+// `check` as nothing to test.
+func ReadHistory(dir string) (History, bool) {
+	f, err := os.Open(filepath.Join(dir, "history.jsonl"))
+	if err != nil {
+		return History{}, false
+	}
+	defer f.Close()
+	return ParseHistory(f), true
 }
 
 // ParseHistory reads one account's history.jsonl. Each line records a prompt

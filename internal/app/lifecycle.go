@@ -380,7 +380,8 @@ func runAccountsRemoveTo(out, errw io.Writer, cfg config.Scope, args []string, d
 			fmt.Fprintf(errw, "headroom accounts remove: %s: live-session registry unreadable (%v) — refusing while liveness cannot be verified\n", name, reg.Problems)
 			return false
 		}
-		for id, evidence := range sessions.Inspect(reg.Entries, deps.probe) {
+		claims, _ := sessions.InspectClaims(reg.Entries, deps.probe)
+		for id, evidence := range claims {
 			switch evidence.State {
 			case sessions.Live:
 				fmt.Fprintf(errw, "headroom accounts remove: %s has a live session (%s) — quit it first\n", name, id)

@@ -393,7 +393,7 @@ func TestEachHomesSessionsStayInItsHome(t *testing.T) {
 	}
 
 	ids := func(s config.Scope) []string {
-		listing, _, _, _ := collectSessions(s, state.Open(s))
+		listing, _, _ := collectSessions(s, state.Open(s))
 		var out []string
 		for _, sess := range listing.Sessions {
 			out = append(out, sess.ID)

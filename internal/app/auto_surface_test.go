@@ -227,7 +227,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	set := accounts.Discover(f.cfg)
 	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
 		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
-			cfg: f.cfg, st: f.st, set: set, auto: set.Routing().Mode == "auto",
+			st: f.st, set: set, routing: set.Routing(),
 		}}
 		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
 		ui.listing.Sessions = []*sessions.Session{s}
@@ -243,7 +243,8 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 
 	// No evidence: placed like a new session, on the least-loaded account.
 	ui, _ := newUI("", sessions.OwnerNone)
-	_, _, env, called := capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, env, called := capturedExec(t)
 	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
 		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, *called, ui.message)
 	}
@@ -256,7 +257,8 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 
 	// An owner that exists is followed, auto or not.
 	ui, _ = newUI("b@x.com", sessions.OwnerHistory)
-	_, _, env, _ = capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, env, _ = capturedExec(t)
 	if done, _ := ui.commitResume(false); !done || account(*env) != "b@x.com" {
 		t.Fatalf("enter on an owned session went to %s", account(*env))
 	}
@@ -271,7 +273,8 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 
 	// The override: the least-loaded of the *other* accounts, re-homed, logged.
 	ui, s := newUI("a@x.com", sessions.OwnerHistory)
-	_, _, env, _ = capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, env, _ = capturedExec(t)
 	if done, code := ui.commitResume(true); !done || code != 0 {
 		t.Fatalf("x: (%v, %d) — %s", done, code, ui.message)
 	}
@@ -292,11 +295,12 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	solo := newAutoFixture(t)
 	solo.setCurrent("auto\n")
 	soloSet := accounts.Discover(solo.cfg)
-	ui = &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, cfg: solo.cfg, st: solo.st, set: soloSet, auto: true}}
+	ui = &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, st: solo.st, set: soloSet, routing: accounts.Routing{Mode: "auto"}}}
 	sess := &sessions.Session{ID: sessB, CWD: proj, DirOK: true, Owner: "qiushi", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{sess}
 	ui.rows = ui.listing.Sessions
-	_, _, _, called = capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, _, called = capturedExec(t)
 	if done, _ := ui.commitResume(true); done || *called || !strings.Contains(ui.message, "already there") {
 		t.Fatalf("x with one account: done %v called %v message %q", done, *called, ui.message)
 	}
