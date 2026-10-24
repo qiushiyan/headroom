@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/qiushiyan/headroom/internal/atomicfile"
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
@@ -530,23 +531,7 @@ func writeLine(root, path, content string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(root, "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.WriteString(content + "\n"); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Write(path, "."+filepath.Base(path)+"-*", []byte(content+"\n"))
 }
 
 // ShareLedger records which accounts root's ledger this Claude Code home

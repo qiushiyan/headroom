@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/atomicfile"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -757,26 +758,7 @@ func commitDoc(d *doc) error {
 		// the only copy, and someone may want to look at it.
 		_ = os.Rename(path, path+".unreadable")
 	}
-	tmp, err := os.CreateTemp(d.root, "state-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	// Sync, not just rename: this document holds re-homes, and losing a human
-	// decision to a crash is not the same class of loss as a forgotten
-	// cooldown.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := atomicfile.Write(path, "state-*.json", data); err != nil {
 		return err
 	}
 	archiveLegacy(d)

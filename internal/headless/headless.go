@@ -20,6 +20,8 @@ import (
 	"regexp"
 	"syscall"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/atomicfile"
 )
 
 // FileName is the token file, beside the accounts it holds tokens for.
@@ -145,21 +147,5 @@ func update(accountsRoot string, change func(map[string]Token) bool) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(accountsRoot, ".headless-*.json") // 0600
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename lands
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), Path(accountsRoot))
+	return atomicfile.Write(Path(accountsRoot), ".headless-*.json", data) // 0600
 }
