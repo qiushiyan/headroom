@@ -24,11 +24,11 @@ import (
 	"github.com/qiushiyan/headroom/internal/atomicfile"
 )
 
-// FileName is the token file, beside the accounts it holds tokens for.
-const FileName = "headless.json"
+// fileName is the token file, beside the accounts it holds tokens for.
+const fileName = "headless.json"
 
 // Path is the token file of one Claude Code accounts root.
-func Path(accountsRoot string) string { return filepath.Join(accountsRoot, FileName) }
+func Path(accountsRoot string) string { return filepath.Join(accountsRoot, fileName) }
 
 // Token is one account's headless credential and what was known when it was
 // minted. Key is the subscription the account's dir was logged in to then —
@@ -50,8 +50,8 @@ func (t Token) Ended(now time.Time) bool { return t.EndsMS > 0 && now.UnixMilli(
 // sk-ant-oat01-… over the URL-safe base64 alphabet.
 var tokenShape = regexp.MustCompile(`^sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,}$`)
 
-// Valid reports whether s has the shape of a vendor OAuth token.
-func Valid(s string) bool { return tokenShape.MatchString(s) }
+// valid reports whether s has the shape of a vendor OAuth token.
+func valid(s string) bool { return tokenShape.MatchString(s) }
 
 // file is the document on disk.
 type file struct {
@@ -99,7 +99,7 @@ func Read(accountsRoot string) (map[string]Token, error) {
 
 // Put stores name's token, replacing any it had.
 func Put(accountsRoot, name string, t Token) error {
-	if !Valid(t.Value) {
+	if !valid(t.Value) {
 		return errors.New("not a vendor OAuth token")
 	}
 	return update(accountsRoot, func(tokens map[string]Token) bool {

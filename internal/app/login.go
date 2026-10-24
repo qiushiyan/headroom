@@ -235,9 +235,6 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 // minting it again, which takes an approval like a login's, and a person
 // learns that one is due where they learn that a login is. Quiet when none is.
 func writeTokenEnds(out io.Writer, rows []*loginRow, deps loginDeps, within time.Duration, now time.Time) {
-	if deps.tokens == nil {
-		return
-	}
 	tokens, err := deps.tokens()
 	if err != nil {
 		fmt.Fprintf(out, "\nheadless tokens: %v\n", err)

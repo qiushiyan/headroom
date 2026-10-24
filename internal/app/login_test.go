@@ -12,6 +12,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/headless"
 )
 
 // loginWorld is the vendor side of `headroom login`: one stored credential
@@ -48,6 +49,7 @@ func (w *loginWorld) deps() loginDeps {
 		inKeychain: func(a accounts.Account) bool { return w.keychain[a.Name] },
 		approver:   approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
 		now:        func() time.Time { return w.now },
+		tokens:     func() (map[string]headless.Token, error) { return map[string]headless.Token{}, nil },
 		login: func(a accounts.Account, _ accounts.Set, page approvalPage) error {
 			where := page.profile.Dir
 			if page.remote {
