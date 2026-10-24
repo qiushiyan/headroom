@@ -9,13 +9,11 @@ package render
 // returns both is how they cannot.
 
 import (
-	"cmp"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
-	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -79,60 +77,24 @@ const (
 )
 
 // A column is one limit window across every account, identified by the
-// vendor's decoded vocabulary — kind, group and the scoped model — and never
-// by the heading derived from it. Known kinds sort by how much they decide
-// the choice: the all-models weekly first (the window that strands an account
-// for days), then the 5h session, then the model-scoped weekly windows, which
-// bind only for work on that one model; unknown vocabulary follows
-// deterministically. A row whose identity failed the contract forms no
-// column, because a limit that cannot say which limit it is has no place to
-// be compared in.
-//
-// A Codex column is identified by feature and window duration as well: two
-// accounts whose `primary` slots run for different lengths are different
-// limits and get different columns. Pages never share a table, so columns are
-// ranked per vendor — Codex's run rate_limit first, then code review, then
-// the additional limits by feature, and inside a group the longer window
-// first, because the weekly window is the one that strands an account for
-// days.
+// vendor's decoded vocabulary — kind, group and the scoped model, and for
+// Codex the feature and the window's duration too (two accounts whose
+// `primary` slots run for different lengths are different limits) — and
+// never by the heading derived from it. Columns run in usage.CompareRows'
+// order, which is the vendor's to decide; pages never share a table, so one
+// vendor's order is all a board needs. A row whose identity failed the
+// contract forms no column, because a limit that cannot say which limit it is
+// has no place to be compared in.
 type column struct {
-	kind, group, model string
-	feature            string
-	seconds            int64
-	label              string
-	width              int
-	resetWidth         int // widest reset token in the column
+	id         usage.Row // the identity every row under it shares; no figure
+	label      string
+	width      int
+	resetWidth int // widest reset token in the column
 }
 
 func (c column) matches(r usage.Row) bool {
-	return c.kind == r.Kind && c.group == r.Group && c.model == r.Model &&
-		c.feature == r.Feature && c.seconds == r.WindowSeconds
-}
-
-func codexGroupRank(group string) int {
-	switch group {
-	case usage.CodexGroupMain:
-		return 0
-	case usage.CodexGroupCodeReview:
-		return 1
-	case usage.CodexGroupAdditional:
-		return 2
-	default:
-		return 3
-	}
-}
-
-func columnRank(kind string) int {
-	switch kind {
-	case "weekly_all":
-		return 0
-	case "session":
-		return 1
-	case "weekly_scoped":
-		return 2
-	default:
-		return 3
-	}
+	return c.id.Kind == r.Kind && c.id.Group == r.Group && c.id.Model == r.Model &&
+		c.id.Feature == r.Feature && c.id.WindowSeconds == r.WindowSeconds
 }
 
 func columns(views []accountstate.Facts) []column {
@@ -148,29 +110,15 @@ func columns(views []accountstate.Facts) []column {
 			if slices.ContainsFunc(cols, func(c column) bool { return c.matches(r) }) {
 				continue
 			}
-			cols = append(cols, column{kind: r.Kind, group: r.Group, model: r.Model,
-				feature: r.Feature, seconds: r.WindowSeconds, label: Sanitize(r.Label)})
+			id := usage.Row{Kind: r.Kind, Group: r.Group, Model: r.Model,
+				Feature: r.Feature, WindowSeconds: r.WindowSeconds}
+			cols = append(cols, column{id: id, label: Sanitize(r.Label)})
 		}
 	}
-	if len(views) > 0 && views[0].Vendor == config.Codex {
-		slices.SortStableFunc(cols, func(a, b column) int {
-			return cmp.Or(
-				cmp.Compare(codexGroupRank(a.group), codexGroupRank(b.group)),
-				cmp.Compare(a.feature, b.feature),
-				cmp.Compare(b.seconds, a.seconds), // longer window first
-				cmp.Compare(a.kind, b.kind),
-			)
-		})
-		return cols
+	if len(cols) > 0 {
+		vendor := views[0].Vendor // a board is one page, so one vendor
+		slices.SortStableFunc(cols, func(a, b column) int { return usage.CompareRows(vendor, a.id, b.id) })
 	}
-	slices.SortStableFunc(cols, func(a, b column) int {
-		return cmp.Or(
-			cmp.Compare(columnRank(a.kind), columnRank(b.kind)),
-			cmp.Compare(a.model, b.model),
-			cmp.Compare(a.kind, b.kind),
-			cmp.Compare(a.group, b.group),
-		)
-	})
 	return cols
 }
 

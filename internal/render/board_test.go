@@ -21,15 +21,15 @@ func fresh(now int64, rows ...usage.Row) *accountstate.Observation {
 }
 
 func session(pct int, resetAt int64) usage.Row {
-	return usage.Row{Label: "5h session", Kind: "session", Group: "session", Percent: pct, ResetAt: resetAt, Severity: "normal"}
+	return usage.Row{Label: "5h session", Kind: usage.KindSession, Group: "session", Percent: pct, ResetAt: resetAt, Severity: "normal"}
 }
 
 func weeklyAll(pct int, resetAt int64) usage.Row {
-	return usage.Row{Label: "All models (7d)", Kind: "weekly_all", Group: "weekly", Percent: pct, ResetAt: resetAt, Severity: "normal"}
+	return usage.Row{Label: "All models (7d)", Kind: usage.KindWeeklyAll, Group: "weekly", Percent: pct, ResetAt: resetAt, Severity: "normal"}
 }
 
 func scoped(model string, pct int, resetAt int64) usage.Row {
-	return usage.Row{Label: model + " (7d)", Kind: "weekly_scoped", Group: "weekly", Model: model, Percent: pct, ResetAt: resetAt, Severity: "normal"}
+	return usage.Row{Label: model + " (7d)", Kind: usage.KindWeeklyScoped, Group: "weekly", Model: model, Percent: pct, ResetAt: resetAt, Severity: "normal"}
 }
 
 // The block layout through Board is the block layout: same lines, same
@@ -79,7 +79,7 @@ func TestCompactColumnsAreIdentityOrderedAndOpen(t *testing.T) {
 	cols := columns(views)
 	var got []string
 	for _, c := range cols {
-		got = append(got, c.kind+"/"+c.model)
+		got = append(got, c.id.Kind+"/"+c.id.Model)
 	}
 	want := []string{"weekly_all/", "session/", "weekly_scoped/Fable", "weekly_scoped/Fable ", "weekly_scoped/Opus", "mystery/"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
