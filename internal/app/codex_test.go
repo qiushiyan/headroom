@@ -72,7 +72,7 @@ func codexUsage(accountID, userID string, percent int) string {
 // round runs one prepare → claim → fetch → resolve round, as the board does.
 func (f codexFixture) round(t *testing.T) map[string]accountstate.Account {
 	t.Helper()
-	r := round.Prepare(context.Background(), f.scope, state.Open(f.scope), time.Now(), roundDeps(true))
+	r := round.Prepare(context.Background(), f.scope, state.Open(f.scope), time.Now(), LiveRound(true))
 	r.Complete(context.Background())
 	return byName(r.Accounts())
 }

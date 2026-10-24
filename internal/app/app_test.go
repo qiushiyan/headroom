@@ -14,67 +14,11 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
-
-// resolve writes one view and nothing else — the store has already been told,
-// by the goroutine that fetched — and it writes each axis on its own. The
-// headline regression: a request that failed says nothing about the account,
-// so it annotates what is known rather than erasing it. Before the three-axis
-// model, a 429 replaced the rows and the whole board read as broken. A
-// reading, zero rows included ("this account reports no limits" is newer
-// truth than any cached bars), replaces the figures with its own stamp:
-// rows without their time are how carried-over data passed itself off as
-// current. And a bookkeeping failure rides beside the endpoint's verdict
-// without replacing it.
-func TestResolveWritesEachAxisOnItsOwn(t *testing.T) {
-	now := time.Now()
-	at := now.Add(-5 * time.Second).Unix()
-	prior := &accountstate.Observation{Rows: []usage.Row{{Label: "5h session", Percent: 42}},
-		ObservedAt: now.Add(-22 * time.Hour).Unix(), Source: accountstate.SourceCache}
-	reading := &accountstate.Observation{Rows: []usage.Row{{Percent: 5}, {Percent: 9}}, ObservedAt: at, Source: accountstate.SourceLive}
-	noLimits := &accountstate.Observation{ObservedAt: at, Source: accountstate.SourceLive}
-
-	for _, c := range []struct {
-		name     string
-		result   refresh.Result
-		obs      *accountstate.Observation // the view's afterwards
-		storeErr string
-	}{
-		{"a reading replaces the figures, stamp intact",
-			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading}, reading, ""},
-		{"no limits replaces old bars",
-			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}, Observation: noLimits}, noLimits, ""},
-		{"a 429 annotates and never erases",
-			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}}, prior, ""},
-		{"a transport failure annotates and never erases",
-			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}}, prior, ""},
-		{"a store error rides beside a reading",
-			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading, StoreErr: state.ErrReadOnly}, reading, state.ErrReadOnly.Error()},
-		{"a store error rides beside a refusal",
-			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}, StoreErr: state.ErrReadOnly}, prior, state.ErrReadOnly.Error()},
-	} {
-		r := round.Of(accounts.Set{}, nil, accounts.Routing{}, []accountstate.Account{{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}})
-		r.Apply(c.result)
-		d := r.Accounts()[0]
-		if d.View.Obs != c.obs {
-			t.Errorf("%s: observation %+v, want %+v", c.name, d.View.Obs, c.obs)
-		}
-		if c.obs == reading && d.View.Obs.ObservedAt != at {
-			t.Errorf("%s: the reading was restamped: %d, want %d", c.name, d.View.Obs.ObservedAt, at)
-		}
-		if d.View.Attempt.State != c.result.Attempt.State || d.View.Attempt.StoreError != c.storeErr {
-			t.Errorf("%s: attempt %+v, want state %v beside store error %q", c.name, d.View.Attempt, c.result.Attempt.State, c.storeErr)
-		}
-		if d.View.Health != accountstate.HealthOK {
-			t.Errorf("%s: a request's outcome changed health: %v", c.name, d.View.Health)
-		}
-	}
-}
 
 // oneRound is what every surface does: prepare, claim, fetch, resolve. A fresh
 // store handle each time, because every surface is a fresh process — and the
@@ -191,58 +135,12 @@ func TestATornAccountFileDoesNotCostTheStoredObservation(t *testing.T) {
 	}
 }
 
-// The retired verb's tombstone: exit 2, actionable stderr, and nothing on
-// stdout a positional reader could consume — its stdout was a decision
-// protocol, and a stale shell function is exactly who still calls it.
-func TestResumeSpellingIsTombstoned(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	prev := os.Stdout
-	os.Stdout = w
-	code := Run([]string{"resume"})
-	w.Close()
-	os.Stdout = prev
-	out := make([]byte, 64)
-	n, _ := r.Read(out)
-
-	if code != 2 {
-		t.Errorf("exit %d, want 2", code)
-	}
-	if n != 0 {
-		t.Errorf("stdout carried %q — must be empty", out[:n])
-	}
-	// --json retires with it: one name, one meaning, across generations.
-	if code := Run([]string{"resume", "--json"}); code != 2 {
-		t.Errorf("resume --json: exit %d, want 2", code)
-	}
-}
-
-// The board's presentation flag is opt-in: absent, the layout is the blocks
-// whatever else is typed, and what follows the flag is left for the
-// no-arguments check to refuse rather than swallowed.
-func TestBoardLayoutFlagIsOptIn(t *testing.T) {
-	if l, rest := boardLayout(nil); l != render.LayoutBlocks || len(rest) != 0 {
-		t.Fatalf("bare board = %v %v, want blocks with nothing left", l, rest)
-	}
-	if l, rest := boardLayout([]string{"--compact"}); l != render.LayoutCompact || len(rest) != 0 {
-		t.Fatalf("--compact = %v %v, want compact with nothing left", l, rest)
-	}
-	if l, rest := boardLayout([]string{"--compact", "extra"}); l != render.LayoutCompact || len(rest) != 1 {
-		t.Fatalf("--compact extra = %v %v, want compact with the stray argument left to refuse", l, rest)
-	}
-	if l, rest := boardLayout([]string{"stray"}); l != render.LayoutBlocks || len(rest) != 1 {
-		t.Fatalf("stray = %v %v, want blocks with the argument left to refuse", l, rest)
-	}
-}
-
 // The board says a bookkeeping failure beside the endpoint's verdict, in both
 // layouts, never instead of it: "rate limited" and "state file unavailable"
 // can both apply. This is the only guard of render's state-file clause; it
 // belongs beside render's TestProvenanceKeepsTheAxesApart and stays here until
-// that suite takes it. (resolve keeping the two apart is
-// TestResolveWritesEachAxisOnItsOwn's; the document's problem entry is
+// that suite takes it. (A round keeping the two apart is round's
+// TestApplyWritesEachAxisOnItsOwn's; the document's problem entry is
 // TestJSONDocument's.)
 func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
 	now := time.Now()
@@ -284,21 +182,4 @@ func TestSuccessfulRefreshPresentation(t *testing.T) {
 			t.Errorf("%v: successful attempt gained an error status: %s", state, data)
 		}
 	}
-}
-
-func captureStderr(t *testing.T, run func()) string {
-	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "stderr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	previous := os.Stderr
-	defer func() { os.Stderr = previous; f.Close() }()
-	os.Stderr = f
-	run()
-	data, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }

@@ -8,8 +8,6 @@ package app
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -59,15 +57,11 @@ type jsonSession struct {
 	Path                 string `json:"path"`
 }
 
-func runSessionsJSON(cfg config.Scope) int {
-	listing, _, routing := collectSessions(cfg, state.Open(cfg))
-	enc := json.NewEncoder(os.Stdout)
+func sessionsJSON(std Streams, cfg config.Scope, probe sessions.PIDProbe) error {
+	listing, _, routing := collectSessions(cfg, state.Open(cfg), probe)
+	enc := json.NewEncoder(std.Out)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(sessionsDoc(listing, routing, time.Now())); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom sessions --json: %v\n", err)
-		return 1
-	}
-	return 0
+	return enc.Encode(sessionsDoc(listing, routing, time.Now()))
 }
 
 // sessionsDoc is the whole wire contract as a pure function of the listing —

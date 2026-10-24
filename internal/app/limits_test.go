@@ -24,8 +24,10 @@ func TestLimitsCommand(t *testing.T) {
 	writeJSON(t, filepath.Join(extraDir, ".claude.json"), `{"oauthAccount":{"emailAddress":"b@x.com"}}`)
 
 	var buf bytes.Buffer
-	if code := runLimitsTo(&buf, []config.Scope{cfg}, []string{"--account", "b@x.com"}); code != 0 {
-		t.Fatalf("exit %d", code)
+	if got := call(func(std Streams) error { return Limits(std, []config.Scope{cfg}, "b@x.com") }); got.code != 0 {
+		t.Fatalf("exit %d", got.code)
+	} else {
+		buf.WriteString(got.stdout)
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
@@ -39,23 +41,9 @@ func TestLimitsCommand(t *testing.T) {
 		t.Errorf("health = %v", accts[0].(map[string]any)["health"])
 	}
 
-	// The refusals, same policy as launch and resolve: an unknown name is an
-	// error, never an empty success, and "" is not a name.
-	for _, c := range []struct {
-		args []string
-		code int
-	}{
-		{[]string{"--account", "nobody@x.com"}, 1},
-		{[]string{"--account", ""}, 2},
-		{[]string{"--account"}, 2},
-		{[]string{"--frobnicate"}, 2},
-	} {
-		buf.Reset()
-		if code := runLimitsTo(&buf, []config.Scope{cfg}, c.args); code != c.code {
-			t.Errorf("args %v: exit %d, want %d", c.args, code, c.code)
-		}
-		if buf.Len() != 0 {
-			t.Errorf("args %v: refused command must emit no document, got %s", c.args, buf.Bytes())
-		}
+	// An unknown name is an error, never an empty success. ("" is not a name
+	// either: the command line refuses it, cmd/headroom's TestGrammar.)
+	if got := call(func(std Streams) error { return Limits(std, []config.Scope{cfg}, "nobody@x.com") }); got.code != 1 || got.stdout != "" {
+		t.Errorf("an unknown name: exit %d, document %q", got.code, got.stdout)
 	}
 }

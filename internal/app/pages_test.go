@@ -25,10 +25,11 @@ func injectedPage(t *testing.T, vendor config.Vendor, names ...string) (*page, c
 	scope := config.Scope{Vendor: vendor, AccountsRoot: t.TempDir()}
 	ch := make(chan refresh.Result, 8)
 	begun := 0
-	pg := newPage(scope)
-	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
+	pg := newPage(scope, BoardDeps{Round: LiveRound(true), Place: quietPlace()})
+	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan round.Result) {
 		begun++
-		return injectedRound(pg, injectedAccounts(pg, names...)), ch
+		r := injectedRound(pg, injectedAccounts(pg, names...))
+		return r, r.Feed(ch)
 	}
 	return pg, ch, &begun
 }
@@ -204,10 +205,11 @@ func TestPagesKeepTheirOwnSelectionAndTheTabBar(t *testing.T) {
 func TestAPageOpensOnTheRowEnterWouldConfirm(t *testing.T) {
 	ctx := context.Background()
 	pinned, _, _ := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com", "c2@x.com")
-	pinned.begin = func(ctx context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
+	pinned.begin = func(ctx context.Context, pg *page) (*round.Round, <-chan round.Result) {
 		accts := injectedAccounts(pg, "c0@x.com", "c1@x.com", "c2@x.com")
 		accts[1].View.Current = true
-		return injectedRound(pg, accts), make(chan refresh.Result)
+		r := injectedRound(pg, accts)
+		return r, r.Feed(make(chan refresh.Result))
 	}
 	(&picker{pages: []*page{pinned}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
 	if pinned.sel != 1 || pinned.selName != "c1@x.com" {
@@ -220,7 +222,7 @@ func TestAPageOpensOnTheRowEnterWouldConfirm(t *testing.T) {
 	f.observe("qiushi", 50, 10, time.Minute)
 	f.observe("a@x.com", 40, 10, time.Minute)
 	f.observe("b@x.com", 0, 10, time.Minute)
-	auto := newPage(f.cfg)
+	auto := newPage(f.cfg, f.boardDeps())
 	(&picker{pages: []*page{auto}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
 	_, next := marks(auto.accounts())
 	if len(next) != 1 || next[0] == auto.accounts()[0].Acct.Name {
@@ -245,8 +247,9 @@ func TestTheSelectionFollowsItsAccountAcrossARediscovery(t *testing.T) {
 	ui.step(ctx, nil, nil)
 
 	// The next round discovers one more account, sorted ahead of the chosen one.
-	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
-		return injectedRound(pg, injectedAccounts(pg, "a@x.com", "aa@x.com", "b@x.com", "c@x.com")), make(chan refresh.Result)
+	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan round.Result) {
+		r := injectedRound(pg, injectedAccounts(pg, "a@x.com", "aa@x.com", "b@x.com", "c@x.com"))
+		return r, r.Feed(make(chan refresh.Result))
 	}
 	pg.startRound(ctx, false)
 	if got := pg.accounts()[pg.sel].Acct.Name; got != "b@x.com" || pg.sel != 2 {
@@ -282,7 +285,7 @@ func TestFooterSaysAnUnexplainedInheritedHome(t *testing.T) {
 	scope := config.Scope{Vendor: config.Claude, AccountsRoot: root}
 	a := accounts.Account{Scope: scope, Name: "a@x.com", ConfigDir: filepath.Join(root, "a@x.com")}
 	b := accounts.Account{Scope: scope, Name: "b@x.com", ConfigDir: filepath.Join(root, "b@x.com")}
-	pg := newPage(scope)
+	pg := newPage(scope, BoardDeps{Round: LiveRound(true), Place: quietPlace()})
 	pg.round = round.Of(accounts.Set{Scope: scope, Accounts: []accounts.Account{a, b}}, pg.st, accounts.Routing{},
 		[]accountstate.Account{{Acct: a, View: accountstate.Facts{Label: a.Name, Current: true}}})
 	ui := &picker{pages: []*page{pg}}

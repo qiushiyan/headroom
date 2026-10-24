@@ -1,0 +1,39 @@
+Usage: headroom login [<account> ...] [flags]
+
+Renew the Claude Code logins that end soon.
+
+Renews Claude Code logins: one claude auth login per account, in turn, its approval page
+opened in the Chrome profile matched to the account's email, or the default browser when
+none matches. Bare, it renews each login that ends within --within days, has ended, or was
+never made; names renew exactly those, and --all every account, so their logins end
+together.
+
+It prints the plan first — every account's login end and where each chosen one's page
+opens (all --dry-run prints) — then reads each credential back after its login: ✓ with the
+new end, or ✗ when nothing changed or the dir is now logged in as another email. It ends on
+the earliest end among the logins renewed, and on a headroom login command naming the ones
+that did not take, if any; then it exits 1.
+
+Over ssh from another machine nothing opens here: open the printed URL where you are, in a
+browser signed in as the account, and paste the code it shows. An ssh session cannot read
+the login Keychain until security unlock-keychain runs in it; accounts whose login lives
+there are left alone and named.
+
+Arguments:
+  <account> ...        The accounts to renew, by email or dir name; bare, the ones that end soon
+                       (optional).
+
+Flags:
+      --all            Renew every account's login, so they end together.
+      --within=DAYS    Renew the logins that end within this many days (default: 7).
+      --dry-run        Print the plan and renew nothing.
+
+Inherited flags:
+  -h, --help           Show context-sensitive help.
+      --version        Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

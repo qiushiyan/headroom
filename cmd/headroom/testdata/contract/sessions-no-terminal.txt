@@ -2,4 +2,4 @@ $ headroom sessions --cd-file $BASE/cwd -- --dangerously-skip-permissions
 exit 1
 --- stdout
 --- stderr
-headroom sessions: execs claude in this terminal — run it without capturing stdin or stdout
+headroom: error: execs claude in this terminal — run it without capturing stdin or stdout

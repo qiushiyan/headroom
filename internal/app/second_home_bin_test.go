@@ -324,14 +324,14 @@ func lastAttempt(t *testing.T, path string, k state.Key) int64 {
 	return doc.Accounts[k.ID()].Request.LastAttemptMS
 }
 
-// A home whose `.ledger` cannot be used refuses every command, and check
-// calls that broken, not untested: a doctor reading exit 2 as "could not
-// test" must not pass a home that cannot launch.
+// A home whose `.ledger` cannot be used refuses every command with exit 1,
+// and check calls that broken, not untested: a doctor reading exit 2 as
+// "could not test" must not pass a home that cannot launch.
 func TestAnUnusableLedgerFailsCheck(t *testing.T) {
 	bin := headroomBinary(t)
 	h := newBinHomes(t, time.Now().Add(time.Hour))
 	writeJSON(t, h.steward.LedgerFile(), filepath.Join(h.ownerRoot, "gone")+"\n")
-	for args, want := range map[string]int{"check": 1, "launch --auto": 2} {
+	for args, want := range map[string]int{"check": 1, "launch --auto": 1} {
 		cmd := exec.Command(bin, strings.Fields(args)...)
 		cmd.Env = h.env()
 		out, err := cmd.CombinedOutput()
@@ -402,7 +402,7 @@ func TestJoiningLeavingAndVersion(t *testing.T) {
 	if code != 0 || !regexp.MustCompile(`^headroom ([0-9a-f]{40}(\+dirty)? \S+|unknown)\n$`).MatchString(out) {
 		t.Errorf("version under an unusable .ledger: exit %d %q", code, out)
 	}
-	if out, code = run("accounts", "ledger"); code != 2 || !strings.Contains(out, "delete it") {
+	if out, code = run("accounts", "ledger"); code != 1 || !strings.Contains(out, "delete it") {
 		t.Errorf("an unusable .ledger: exit %d\n%s", code, out)
 	}
 }

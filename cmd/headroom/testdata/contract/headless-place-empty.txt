@@ -2,4 +2,6 @@ $ headroom headless place --exclude ""
 exit 2
 --- stdout
 --- stderr
-headroom headless place: --exclude needs an account name
+headroom: error: --exclude: an account name cannot be empty
+Usage: headroom headless place [flags]
+Run "headroom headless place --help" for details.

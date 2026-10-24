@@ -1,0 +1,54 @@
+Usage: headroom board [flags]
+
+The account board: every account's limits, live; also headroom accounts.
+
+The account board: a block per account with its usage limits — the five-hour session
+window and the weekly ones, each with its percent used and when it resets — the account's
+health, and the load an automatic launch counts on it. Open on a terminal, it refreshes
+itself as often as the usage endpoint allows and goes quiet after five minutes without a
+key; r asks now. Enter pins the selected account for bare launches and a turns automatic
+placement on; either prints what it recorded and exits. Tab switches vendor, esc cancels.
+
+Off a terminal — a pipe, a script, a hook — it prints the board once and exits 0. --json
+prints it as a document after one refresh round, for a script that wants fresh figures;
+headroom limits prints the same document from disk alone, without probing or asking.
+
+Flags:
+      --vendor=VENDOR    Only this vendor's accounts; every vendor on this machine when absent (one
+                         of: claude, codex).
+      --compact          One row per account: each limit's percent and time to reset, every warning
+                         at the end of the row.
+      --json             Print the board as a JSON document after one refresh round.
+
+Inherited flags:
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Constraints:
+  At most one of --compact, --json.
+
+The JSON document (schema 7):
+  {"schema": 7, "generated_at": RFC3339,
+   "current": {"claude": "<account>", ...},   the account a bare launch of that vendor takes
+   "mode": {"claude": "pinned"|"auto"|"", ...},   "" when .current cannot be resolved
+   "accounts": [{
+     "vendor": "claude"|"codex", "name", "email", "launcher", "plan", "current": bool,
+     "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
+     "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
+       "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",
+       "limits": [{"kind", "group", "model", "label", "percent", "percent_state",
+                   "resets_at": RFC3339|null, "reset_state", "identity_state", ...}]},
+     "attempt": {"state", "http_status", "next_eligible_at"},   the newest request, not the account
+     "load": null | {"value", "busy", "launched", "homes": [...]}}],
+   "problems": [{"vendor", "section", "detail"}]}
+
+  Select limits by kind, group and model, never by label. A *_state of "bad" means the
+  field did not parse: its value is not a reading. usage.observed_at says how old the
+  figures are; load is null from limits, which reads no process table.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

@@ -1,0 +1,30 @@
+Usage: headroom accounts remove [<account>] [flags]
+
+Remove an extra account: its Keychain item and its dir.
+
+Removes an extra account: deletes its Keychain item and its dir, and scrubs .order.
+Refused while a session is live on it, or when that cannot be verified. Bare on a terminal
+it offers a picker of the removable accounts; it asks y/N unless --yes. Transcripts are
+machine-global and survive. Also removes stranded <name>.lock debris. Codex accounts are
+never removed — headroom cannot tell whether a codex session is running on a home — and the
+refusal names the dir to delete by hand.
+
+Arguments:
+  <account>              The account to remove, or <name>.lock debris; a picker on a terminal when
+                         absent (optional).
+
+Flags:
+  -y, --yes              Remove without asking.
+
+Inherited flags:
+      --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
+                         remove act on it, Claude Code when absent (one of: claude, codex).
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

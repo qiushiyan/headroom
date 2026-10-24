@@ -16,6 +16,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // Regression test for the picker data race: the consumer applies each result
@@ -105,5 +106,88 @@ func TestASuccessfulFetchIsAnAnswer(t *testing.T) {
 				t.Errorf("attempt %+v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// Apply writes one view and nothing else — the store has already been told,
+// by the goroutine that fetched — and it writes each axis on its own. The
+// headline regression: a request that failed says nothing about the account,
+// so it annotates what is known rather than erasing it. Before the three-axis
+// model, a 429 replaced the rows and the whole board read as broken. A
+// reading, zero rows included ("this account reports no limits" is newer
+// truth than any cached bars), replaces the figures with its own stamp:
+// rows without their time are how carried-over data passed itself off as
+// current. And a bookkeeping failure rides beside the endpoint's verdict
+// without replacing it.
+func TestApplyWritesEachAxisOnItsOwn(t *testing.T) {
+	now := time.Now()
+	at := now.Add(-5 * time.Second).Unix()
+	prior := &accountstate.Observation{Rows: []usage.Row{{Label: "5h session", Percent: 42}},
+		ObservedAt: now.Add(-22 * time.Hour).Unix(), Source: accountstate.SourceCache}
+	reading := &accountstate.Observation{Rows: []usage.Row{{Percent: 5}, {Percent: 9}}, ObservedAt: at, Source: accountstate.SourceLive}
+	noLimits := &accountstate.Observation{ObservedAt: at, Source: accountstate.SourceLive}
+
+	for _, c := range []struct {
+		name     string
+		result   refresh.Result
+		obs      *accountstate.Observation // the view's afterwards
+		storeErr string
+	}{
+		{"a reading replaces the figures, stamp intact",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading}, reading, ""},
+		{"no limits replaces old bars",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}, Observation: noLimits}, noLimits, ""},
+		{"a 429 annotates and never erases",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}}, prior, ""},
+		{"a transport failure annotates and never erases",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptTransport}}, prior, ""},
+		{"a store error rides beside a reading",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading, StoreErr: state.ErrReadOnly}, reading, state.ErrReadOnly.Error()},
+		{"a store error rides beside a refusal",
+			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}, StoreErr: state.ErrReadOnly}, prior, state.ErrReadOnly.Error()},
+	} {
+		r := Of(accounts.Set{}, nil, accounts.Routing{}, []accountstate.Account{{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}})
+		r.Apply(Result{Result: c.result, of: r})
+		d := r.Accounts()[0]
+		if d.View.Obs != c.obs {
+			t.Errorf("%s: observation %+v, want %+v", c.name, d.View.Obs, c.obs)
+		}
+		if c.obs == reading && d.View.Obs.ObservedAt != at {
+			t.Errorf("%s: the reading was restamped: %d, want %d", c.name, d.View.Obs.ObservedAt, at)
+		}
+		if d.View.Attempt.State != c.result.Attempt.State || d.View.Attempt.StoreError != c.storeErr {
+			t.Errorf("%s: attempt %+v, want state %v beside store error %q", c.name, d.View.Attempt, c.result.Attempt.State, c.storeErr)
+		}
+		if d.View.Health != accountstate.HealthOK {
+			t.Errorf("%s: a request's outcome changed health: %v", c.name, d.View.Health)
+		}
+	}
+}
+
+// A result lands on the round it answers and nowhere else: delivered to
+// another round, its index would name that round's account at the same
+// position, which is somebody else's.
+func TestApplyIgnoresAnotherRoundsResult(t *testing.T) {
+	facts := func() []accountstate.Account {
+		return []accountstate.Account{{View: accountstate.Facts{Label: "a@x.com"}}, {View: accountstate.Facts{Label: "b@x.com"}}}
+	}
+	ours, theirs := Of(accounts.Set{}, nil, accounts.Routing{}, facts()), Of(accounts.Set{}, nil, accounts.Routing{}, facts())
+	src := make(chan refresh.Result, 1)
+	reading := &accountstate.Observation{Rows: []usage.Row{{Percent: 61}}, ObservedAt: time.Now().Unix(), Source: accountstate.SourceLive}
+	src <- refresh.Result{Index: 1, Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading}
+	close(src)
+
+	for res := range theirs.Feed(src) {
+		ours.Apply(res)
+		if got := ours.Accounts()[1].View; got.Obs != nil || got.Attempt.State != accountstate.AttemptNone {
+			t.Errorf("another round's result landed: %+v", got)
+		}
+		theirs.Apply(res)
+	}
+	if got := theirs.Accounts()[1].View.Obs; got != reading {
+		t.Errorf("its own round did not take the result: %+v", got)
+	}
+	if got := theirs.Accounts()[0].View.Obs; got != nil {
+		t.Errorf("the result landed on another index: %+v", got)
 	}
 }

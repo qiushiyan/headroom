@@ -1,0 +1,21 @@
+Usage: headroom check [flags]
+
+Verify the vendor facts headroom relies on, and its own state.
+
+Verifies the reverse-engineered vendor facts headroom relies on — credential, identity and
+usage-response shapes, the binary's seams, the session store's topology and retention —
+and headroom's own state, for every vendor on this machine. Run it after a Claude Code or
+Codex update, or when the board looks wrong. One line per assertion: ok, FAIL, or ?? for
+one it could not test (rate limited, offline, a stale token). It exits 0 when everything
+passed, 1 on any FAIL — a configuration headroom refuses among them — and 2 when nothing
+failed but something could not be tested.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

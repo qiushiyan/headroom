@@ -1,5 +1,9 @@
 $ headroom launch fix it
-exit 2
+exit 0
 --- stdout
 --- stderr
-headroom launch: unknown argument "fix" (claude args go after --)
+headroom launch: p · pinned (a on the board turns auto on)
+--- vendor
+claude fix it
+CLAUDE_CONFIG_DIR=$BASE/home/.claude
+---

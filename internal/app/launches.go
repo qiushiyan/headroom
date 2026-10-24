@@ -7,12 +7,8 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
@@ -21,69 +17,20 @@ import (
 	"github.com/qiushiyan/headroom/internal/render"
 )
 
-const defaultLaunches = 20
+// DefaultLaunches is how many of the newest launches the log lists unless
+// asked for another count.
+const DefaultLaunches = 20
 
-func runLaunches(scopes []config.Scope, args []string) int {
-	return runLaunchesTo(os.Stdout, scopes, args)
-}
-
-func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
-	n, jsonMode, evaluate, nSet := defaultLaunches, false, false, false
-	var since time.Time
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonMode = true
-		case "--eval":
-			evaluate = true
-		case "--since":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom launches: --since needs a span or a date")
-				return 2
-			}
-			i++
-			t, err := parseSince(args[i], time.Now())
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-				return 2
-			}
-			since = t
-		case "-n":
-			nSet = true
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom launches: -n needs a count")
-				return 2
-			}
-			i++
-			v, err := strconv.Atoi(args[i])
-			if err != nil || v < 0 {
-				fmt.Fprintf(os.Stderr, "headroom launches: -n %q is not a count\n", args[i])
-				return 2
-			}
-			n = v // 0 = every record
-		default:
-			fmt.Fprintf(os.Stderr, "headroom launches: unknown argument %q\n", args[i])
-			return 2
-		}
-	}
-	switch {
-	case evaluate && nSet:
-		fmt.Fprintln(os.Stderr, "headroom launches: --eval reads every line — -n does not apply; --since narrows it")
-		return 2
-	case !evaluate && !since.IsZero():
-		fmt.Fprintln(os.Stderr, "headroom launches: --since narrows --eval")
-		return 2
-	case evaluate:
-		return runEval(w, scopes, since, jsonMode, time.Now())
-	}
-
+// Launches lists the newest n launches across the vendors' logs, one line
+// each — or every one, when n is 0 — or, with asJSON, one record per line.
+func Launches(std Streams, scopes []config.Scope, n int, asJSON bool) error {
+	w := std.Out
 	var all []launchlog.Record
 	skipped := 0
 	for _, scope := range scopes {
 		recs, bad, err := launchlog.Read(scope.AccountsRoot)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-			return 1
+			return err
 		}
 		all = append(all, recs...)
 		skipped += bad
@@ -95,19 +42,18 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 		all = all[len(all)-n:]
 	}
 
-	if jsonMode {
+	if asJSON {
 		enc := json.NewEncoder(w)
 		for _, r := range all {
 			if err := enc.Encode(r); err != nil {
-				fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-				return 1
+				return err
 			}
 		}
-		return 0
+		return nil
 	}
 	if len(all) == 0 {
 		fmt.Fprintln(w, "no launches recorded yet")
-		return 0
+		return nil
 	}
 	multi := len(scopes) > 1
 	nameW := 0
@@ -118,9 +64,9 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 		fmt.Fprintln(w, launchesLine(r, nameW, multi))
 	}
 	if skipped > 0 {
-		fmt.Fprintf(os.Stderr, "headroom launches: %d unreadable line(s) skipped\n", skipped)
+		fmt.Fprintf(std.Err, "headroom launches: %d unreadable line(s) skipped\n", skipped)
 	}
-	return 0
+	return nil
 }
 
 // launchesLine is one record on one line: when, where, how it was decided, the

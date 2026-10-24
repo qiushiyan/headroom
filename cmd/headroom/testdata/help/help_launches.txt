@@ -1,0 +1,34 @@
+Usage: headroom launches [flags]
+
+List the newest launches, or judge how automatic placement has done.
+
+The newest launches from the launch log, one line each: when, which account, how it was
+decided, the load and weekly figure it was decided on, how long that week had left, and the
+account that would have been next. --json prints the records as logged, one per line.
+
+--eval judges automatic placement instead, per rule version: windows its launches went into
+that reached a limit while another account had room, weekly room that may have renewed
+unspent, and the launches this binary's rule would decide differently. These are observed
+outcomes, not what another choice would have caused. It reads the launch logs of every home
+on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
+now (7d, 36h, 90m) or from a date (2026-10-01).
+
+Flags:
+      --vendor=VENDOR      Only this vendor's accounts; every vendor on this machine when absent
+                           (one of: claude, codex).
+  -n, --count=INT          How many of the newest launches to list; 0 lists every one (default: 20).
+      --json               Print the records, or with --eval the evaluation, as JSON.
+      --eval               Judge how automatic placement has done instead of listing launches.
+      --since=SPAN|DATE    With --eval, only what happened since: a span back from now (7d, 36h) or
+                           a date (2026-10-01).
+
+Inherited flags:
+  -h, --help               Show context-sensitive help.
+      --version            Print the build this binary is — its commit and the commit's time — and
+                           exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

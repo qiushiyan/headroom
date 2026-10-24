@@ -30,15 +30,15 @@ func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := accounts.Discover(f.cfg)
-	ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}
+	ui, _, _ := f.picker(set, accounts.Routing{Mode: "auto"})
 	s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: "a@x.com", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{s}
 	ui.rows = ui.listing.Sessions
 
 	keepWorkingDir(t)
-	_, _, _, called := recordExec(t)
-	if done, _ := ui.commitResume(true); done || *called {
-		t.Fatalf("x with re-homes unwritable: done %v, exec called %v", done, *called)
+	rec := rearm(ui)
+	if done, _ := ui.commitResume(true); done || rec.called {
+		t.Fatalf("x with re-homes unwritable: done %v, exec called %v", done, rec.called)
 	}
 	if n := len(f.st.Load().Placements().Recent); n != 0 {
 		t.Errorf("a refused resume left %d placement(s) as load", n)
@@ -50,11 +50,11 @@ func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 	// The same picker, the next attempt: an ordinary resume on the owner is
 	// the one launch that happened, counted once.
 	keepWorkingDir(t)
-	_, _, env, called := recordExec(t)
-	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
+	rec = rearm(ui)
+	if done, code := ui.commitResume(false); !done || code != 0 || !rec.called {
 		t.Fatalf("enter after the refusal: (%v, %d) — %s", done, code, ui.message)
 	}
-	if dir, _ := envValue(*env, "CLAUDE_CONFIG_DIR"); filepath.Base(dir) != "a@x.com" {
+	if dir, _ := envValue(rec.env, "CLAUDE_CONFIG_DIR"); filepath.Base(dir) != "a@x.com" {
 		t.Errorf("resumed on %q", dir)
 	}
 	if n := len(f.st.Load().Placements().Recent); n != 1 {
@@ -84,7 +84,7 @@ func loginFixture(t *testing.T, usageURL string, extras ...string) autoFixture {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	// Judged by the launch path's own reader, not a stand-in for it.
-	placementCreds = productionCreds
+	f.edges.Creds = LivePlace().Creds
 	return f
 }
 
@@ -113,7 +113,7 @@ func TestTheBoardAndALaunchJudgeAccountsByTheSameEvidence(t *testing.T) {
 	f.observe("a@x.com", 0, 5, time.Minute)
 	f.observe("b@x.com", 20, 30, time.Minute)
 
-	board := fetchBoards([]config.Scope{f.cfg})[0]
+	board := fetchBoards([]config.Scope{f.cfg}, f.boardDeps())[0]
 	_, next := marks(board.Accounts)
 	got := f.launch()
 	if got.code != 0 {
@@ -143,7 +143,7 @@ func TestTheDocumentCarriesOneRoutingSnapshot(t *testing.T) {
 	f.setCurrent("a@x.com\n")
 	f.credential("a@x.com", time.Now().Add(time.Hour), time.Now().Add(30*24*time.Hour))
 
-	data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}), time.Now())
+	data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}, f.boardDeps()), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +161,6 @@ func TestTheDocumentCarriesOneRoutingSnapshot(t *testing.T) {
 		t.Fatalf("the document contradicts itself: mode %q, current %q, %d account(s) marked current", mode, cur, marked)
 	}
 }
-
-// productionCreds is the launch path's own credential reader, captured before
-// any fixture replaces it.
-var productionCreds = placementCreds
 
 // The launch path reads credentials through the reader the board uses: the
 // Keychain first, then the account's own .credentials.json — the primary's
@@ -301,17 +297,15 @@ func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 	set := accounts.Discover(f.cfg)
 	resume := func(owner string, state sessions.OwnerState) string {
 		t.Helper()
-		ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}
+		ui, rec, errw := f.picker(set, accounts.Routing{Mode: "auto"})
 		ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}}
 		ui.rows = ui.listing.Sessions
 		keepWorkingDir(t)
-		_, _, _, called := recordExec(t)
-		var done bool
-		stderr := captureStderr(t, func() { done, _ = ui.commitResume(false) })
-		if !done || !*called {
-			t.Fatalf("resume: done %v, exec called %v — %s", done, *called, ui.message)
+		done, _ := ui.commitResume(false)
+		if !done || !rec.called {
+			t.Fatalf("resume: done %v, exec called %v — %s", done, rec.called, ui.message)
 		}
-		return stderr
+		return errw.String()
 	}
 
 	stderr := resume("", sessions.OwnerNone)

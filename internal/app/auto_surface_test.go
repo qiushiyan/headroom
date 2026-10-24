@@ -58,14 +58,14 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	f.observe("a@x.com", 0, 40, time.Minute)
 	f.observe("b@x.com", 0, 10, time.Minute)
 
-	boards := fetchBoards([]config.Scope{f.cfg})
+	boards := fetchBoards([]config.Scope{f.cfg}, f.boardDeps())
 	board := boards[0]
 	if current, next := marks(board.Accounts); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.Routing.Mode != "pinned" {
 		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.Routing.Mode)
 	}
 
 	f.setCurrent("auto\n")
-	boards = fetchBoards([]config.Scope{f.cfg})
+	boards = fetchBoards([]config.Scope{f.cfg}, f.boardDeps())
 	board = boards[0]
 	current, next := marks(board.Accounts)
 	if len(current) != 0 || len(next) != 1 || board.Routing.Mode != "auto" {
@@ -106,7 +106,7 @@ func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
 	f.observeWeek("a@x.com", 0, 70, time.Hour, time.Minute)
 	f.observeWeek("b@x.com", 0, 0, 7*time.Hour, time.Minute)
 
-	pg := newPage(f.cfg)
+	pg := newPage(f.cfg, f.boardDeps())
 	var out strings.Builder
 	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now(),
 		fp: &framePrinter{out: &out, size: func() (int, int, error) { return 120, 60, nil }}}
@@ -135,7 +135,7 @@ func TestSchema6SaysTheMode(t *testing.T) {
 	f := boardFixture(t, "a@x.com")
 	doc := func() doc5 {
 		t.Helper()
-		data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}), time.Now())
+		data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}, f.boardDeps()), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,11 +143,11 @@ func TestSchema6SaysTheMode(t *testing.T) {
 	}
 	limits := func() doc5 {
 		t.Helper()
-		var buf bytes.Buffer
-		if code := runLimitsTo(&buf, []config.Scope{f.cfg}, nil); code != 0 {
-			t.Fatalf("limits: exit %d", code)
+		got := call(func(std Streams) error { return Limits(std, []config.Scope{f.cfg}, "") })
+		if got.code != 0 {
+			t.Fatalf("limits: exit %d", got.code)
 		}
-		return decode5(t, buf.Bytes())
+		return decode5(t, []byte(got.stdout))
 	}
 	check := func(name, mode, current string) {
 		t.Helper()
@@ -228,8 +228,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 	set := accounts.Discover(f.cfg)
 	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
-		ui := &resumeUI{beforeLaunch: func() {},
-			st: f.st, set: set, routing: set.Routing()}
+		ui, _, _ := f.picker(set, set.Routing())
 		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
 		ui.listing.Sessions = []*sessions.Session{s}
 		ui.rows = ui.listing.Sessions
@@ -245,11 +244,11 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// No evidence: placed like a new session, on the least-loaded account.
 	ui, _ := newUI("", sessions.OwnerNone)
 	keepWorkingDir(t)
-	_, _, env, called := recordExec(t)
-	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
-		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, *called, ui.message)
+	rec := rearm(ui)
+	if done, code := ui.commitResume(false); !done || code != 0 || !rec.called {
+		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, rec.called, ui.message)
 	}
-	if got := account(*env); got != "a@x.com" {
+	if got := account(rec.env); got != "a@x.com" {
 		t.Fatalf("placed on %s, want a@x.com", got)
 	}
 	if _, ok := f.st.Load().Owner(sessA); ok {
@@ -259,9 +258,9 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// An owner that exists is followed, auto or not.
 	ui, _ = newUI("b@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
-	_, _, env, _ = recordExec(t)
-	if done, _ := ui.commitResume(false); !done || account(*env) != "b@x.com" {
-		t.Fatalf("enter on an owned session went to %s", account(*env))
+	rec = rearm(ui)
+	if done, _ := ui.commitResume(false); !done || account(rec.env) != "b@x.com" {
+		t.Fatalf("enter on an owned session went to %s", account(rec.env))
 	}
 	// Every session headroom starts is a line in the log and load on its
 	// account, a resume on its owner included — once each.
@@ -275,11 +274,11 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	// The override: the least-loaded of the *other* accounts, re-homed, logged.
 	ui, s := newUI("a@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
-	_, _, env, _ = recordExec(t)
+	rec = rearm(ui)
 	if done, code := ui.commitResume(true); !done || code != 0 {
 		t.Fatalf("x: (%v, %d) — %s", done, code, ui.message)
 	}
-	moved := account(*env)
+	moved := account(rec.env)
 	if moved == "a@x.com" {
 		t.Fatal("x left the session where it was")
 	}
@@ -296,14 +295,13 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	solo := newAutoFixture(t)
 	solo.setCurrent("auto\n")
 	soloSet := accounts.Discover(solo.cfg)
-	ui = &resumeUI{beforeLaunch: func() {}, st: solo.st, set: soloSet, routing: accounts.Routing{Mode: "auto"}}
+	ui, rec, _ = solo.picker(soloSet, accounts.Routing{Mode: "auto"})
 	sess := &sessions.Session{ID: sessB, CWD: proj, DirOK: true, Owner: "qiushi", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{sess}
 	ui.rows = ui.listing.Sessions
 	keepWorkingDir(t)
-	_, _, _, called = recordExec(t)
-	if done, _ := ui.commitResume(true); done || *called || !strings.Contains(ui.message, "already there") {
-		t.Fatalf("x with one account: done %v called %v message %q", done, *called, ui.message)
+	if done, _ := ui.commitResume(true); done || rec.called || !strings.Contains(ui.message, "already there") {
+		t.Fatalf("x with one account: done %v called %v message %q", done, rec.called, ui.message)
 	}
 }
 
@@ -316,10 +314,9 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	prevRefresh := startRefresh
 	refreshes := 0
-	startRefresh = func(config.Scope) error { refreshes++; return nil }
-	t.Cleanup(func() { startRefresh = prevRefresh })
+	place := quietPlace()
+	place.Refresh = func(config.Scope) error { refreshes++; return nil }
 
 	f.extra(t, login(1))
 	f.extra(t, login(2))
@@ -375,14 +372,12 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 
 	launch := func(args ...string) (string, string) {
 		t.Helper()
-		_, _, env, called := recordExec(t)
-		var code int
-		stderr := captureStderr(t, func() { code = runLaunch(f.scope, args) })
-		if code != 0 || !*called {
-			t.Fatalf("exit %d called %v: %s", code, *called, stderr)
+		got := launchOn(t, f.scope, place, args...)
+		if got.code != 0 || !got.called {
+			t.Fatalf("exit %d called %v: %s", got.code, got.called, got.stderr)
 		}
-		home, _ := envValue(*env, "CODEX_HOME")
-		return filepath.Base(home), stderr
+		home, _ := envValue(got.env, "CODEX_HOME")
+		return filepath.Base(home), got.stderr
 	}
 	first, stderr := launch("--", "resume", "--all")
 	if first != "u2@x.com" {

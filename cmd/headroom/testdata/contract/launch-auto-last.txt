@@ -2,4 +2,6 @@ $ headroom launch --auto --last --
 exit 2
 --- stdout
 --- stderr
-headroom launch: --auto, --last and --account each decide the account — give one
+headroom: error: --auto and --last can't be used together
+Usage: headroom launch [<args> ...] [flags]
+Run "headroom launch --help" for details.

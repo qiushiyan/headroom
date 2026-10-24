@@ -473,6 +473,17 @@ func (s Scope) PrimaryMeta() string {
 	return filepath.Join(s.Home, ".claude.json")
 }
 
+// RequirePresent is why a command acting on this vendor cannot: the vendor
+// was not found on this machine. Only Codex can be absent, and `accounts
+// add` is how its first directory comes to exist.
+func (s Scope) RequirePresent() error {
+	if s.Present {
+		return nil
+	}
+	return fmt.Errorf("%s was not found on this machine (no %s, no %s) — `headroom accounts add --vendor %s <email>` seeds the first account",
+		s.Vendor.Title(), s.PrimaryDir(), s.AccountsRoot, s.Vendor)
+}
+
 // PrimaryLaunchRefused reports that a primary launch must refuse: the home is
 // re-pointed and the primary would be selected by absence, which the vendor
 // resolves against the real home. A primary spelled out by its dir names the

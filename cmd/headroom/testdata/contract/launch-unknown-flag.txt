@@ -2,4 +2,6 @@ $ headroom launch --resume abc
 exit 2
 --- stdout
 --- stderr
-headroom launch: unknown argument "--resume" (claude args go after --)
+headroom: error: unknown flag --resume
+Usage: headroom launch [<args> ...] [flags]
+Run "headroom launch --help" for details.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
 	t.Helper()
 	cfg := lifecycleConfig(t)
 	for _, n := range []string{"a@x.com", "b@x.com", "c@x.com"} {
-		if code := runAccountsAddTo(io.Discard, io.Discard, cfg, []string{n}); code != 0 {
+		if got := call(func(std Streams) error { return AccountsAdd(std, cfg, AddOptions{Email: n}) }); got.code != 0 {
 			t.Fatalf("seed %s", n)
 		}
 	}
@@ -131,7 +132,7 @@ func resultLine(out, name string) string {
 func TestLoginChoosesExpiringAccounts(t *testing.T) {
 	cfg, w := renewFixture(t)
 	var out, errw bytes.Buffer
-	if code := runLoginTo(&out, &errw, cfg, nil, w.deps()); code != 0 {
+	if code := loginTo(&out, &errw, cfg, nil, w.deps()); code != 0 {
 		t.Fatalf("exit %d: %s\n%s", code, errw.String(), out.String())
 	}
 	want := []string{"primary  ", "a@x.com a@x.com Profile 2", "c@x.com c@x.com "}
@@ -163,7 +164,7 @@ func TestLoginWindowAllNamesAndDryRun(t *testing.T) {
 	for _, c := range cases {
 		cfg, w := renewFixture(t)
 		var out, errw bytes.Buffer
-		if code := runLoginTo(&out, &errw, cfg, c.args, w.deps()); code != 0 {
+		if code := loginTo(&out, &errw, cfg, c.args, w.deps()); code != 0 {
 			t.Fatalf("%v: exit %d: %s", c.args, code, errw.String())
 		}
 		var got []string
@@ -185,7 +186,7 @@ func TestLoginSummaryNamesTheEarliestEndAndTheRetry(t *testing.T) {
 	w.raw["primary"] = blobEnding("old-p", w.now.Add(24*time.Hour)) // a login, no identity: held
 	w.renewEnd["b@x.com"] = w.now.Add(25 * 24 * time.Hour)          // Oct 31, before a's Nov 5
 	var out bytes.Buffer
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"--all"}, w.deps()); code != 1 {
+	if code := loginTo(&out, io.Discard, cfg, []string{"--all"}, w.deps()); code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
 	}
 	closing := ""
@@ -204,18 +205,12 @@ func TestLoginSummaryNamesTheEarliestEndAndTheRetry(t *testing.T) {
 	}
 }
 
+// What the flags accept — --within's value, --all beside names, an empty
+// name — is the command line's: cmd/headroom's TestGrammar.
 func TestLoginFlags(t *testing.T) {
 	cfg, w := renewFixture(t)
-	// "": a caller's expansion bug, never a request for the pinned account,
-	// which is what Select reads "" as. (review r1)
-	for _, args := range [][]string{{"--within"}, {"--within", "x"}, {"--bogus"}, {"--all", "a@x.com"}, {""}} {
-		var errw bytes.Buffer
-		if code := runLoginTo(io.Discard, &errw, cfg, args, w.deps()); code != 2 {
-			t.Errorf("%v: exit %d, want 2", args, code)
-		}
-	}
 	var errw bytes.Buffer
-	if code := runLoginTo(io.Discard, &errw, cfg, []string{"nobody@x.com"}, w.deps()); code != 1 || !strings.Contains(errw.String(), "not a discovered account") {
+	if code := loginTo(io.Discard, &errw, cfg, []string{"nobody@x.com"}, w.deps()); code != 1 || !strings.Contains(errw.String(), "not a discovered account") {
 		t.Errorf("unknown name: exit %d, %s", code, errw.String())
 	}
 	if len(w.logins) != 0 {
@@ -233,7 +228,7 @@ func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
 	w.keychain["a@x.com"] = true
 	delete(w.raw, "a@x.com") // what a sealed read returns
 	var out bytes.Buffer
-	if code := runLoginTo(&out, io.Discard, cfg, nil, w.deps()); code != 0 {
+	if code := loginTo(&out, io.Discard, cfg, nil, w.deps()); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 	for _, l := range w.logins {
@@ -251,13 +246,13 @@ func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
 	_, w2 := renewFixture(t)
 	w2.sealed, w2.keychain["a@x.com"] = true, true
 	out.Reset()
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w2.deps()); code != 1 || len(w2.logins) != 0 {
+	if code := loginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w2.deps()); code != 1 || len(w2.logins) != 0 {
 		t.Errorf("named sealed account: exit %d, logins %q, want 1 and none", code, w2.logins)
 	}
 	// An unsealed Keychain reads normally: the item alone refuses nothing.
 	_, w3 := renewFixture(t)
 	w3.keychain["a@x.com"] = true
-	if code := runLoginTo(io.Discard, io.Discard, cfg, []string{"a@x.com"}, w3.deps()); code != 0 || len(w3.logins) != 1 {
+	if code := loginTo(io.Discard, io.Discard, cfg, []string{"a@x.com"}, w3.deps()); code != 0 || len(w3.logins) != 1 {
 		t.Errorf("unsealed: exit %d, logins %q", code, w3.logins)
 	}
 }
@@ -269,7 +264,7 @@ func TestLoginRemoteAsksForThePastedCode(t *testing.T) {
 	cfg, w := renewFixture(t)
 	w.remote = true
 	var out bytes.Buffer
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w.deps()); code != 0 {
+	if code := loginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w.deps()); code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 	if len(w.logins) != 1 || w.logins[0] != "a@x.com a@x.com remote" {
@@ -425,7 +420,7 @@ func TestLoginReadBack(t *testing.T) {
 		d := w.deps()
 		d.login = func(a accounts.Account, _ accounts.Set, _ approvalPage) error { return c.vendor(w, a) }
 		var out bytes.Buffer
-		code := runLoginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d)
+		code := loginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d)
 		line := resultLine(out.String(), "a@x.com")
 		if (code == 0) != c.ok || strings.HasPrefix(line, "✓") != c.ok || !strings.Contains(line, c.want) {
 			t.Errorf("%s: exit %d, result %q, want ok=%v with %q\n%s", c.name, code, line, c.ok, c.want, out.String())
@@ -440,7 +435,7 @@ func TestLoginHoldsAPrimaryWhoseIdentityIsUnknown(t *testing.T) {
 	cfg, w := renewFixture(t)
 	w.raw["primary"] = blobEnding("old-p", w.now.Add(24*time.Hour))
 	var out bytes.Buffer
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"primary"}, w.deps()); code != 1 {
+	if code := loginTo(&out, io.Discard, cfg, []string{"primary"}, w.deps()); code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
 	}
 	if len(w.logins) != 0 || !strings.Contains(out.String(), "identity unreadable") {
@@ -458,7 +453,7 @@ func TestLoginHoldsAPrimaryWhoseIdentityIsUnknown(t *testing.T) {
 	}
 	w.approveAs["primary"] = "a@x.com"
 	out.Reset()
-	if code := runLoginTo(&out, io.Discard, cfg, []string{"primary"}, d); code != 1 || !strings.Contains(out.String(), "logged in as a@x.com, not p@x.com") {
+	if code := loginTo(&out, io.Discard, cfg, []string{"primary"}, d); code != 1 || !strings.Contains(out.String(), "logged in as a@x.com, not p@x.com") {
 		t.Errorf("primary not checked against the vendor's email: exit %d\n%s", code, out.String())
 	}
 }
@@ -506,4 +501,28 @@ func TestTheOpenerEnvironmentIsNeverInherited(t *testing.T) {
 			t.Errorf("remote=%v: %s appears %d times, want %d: %q", pg.remote, browser.ProfileEnv, n, want, env)
 		}
 	}
+}
+
+// loginTo renews through the login surface, the way the command line spells
+// its flags.
+func loginTo(out, errw io.Writer, cfg config.Scope, args []string, deps loginDeps) int {
+	opts := LoginOptions{Within: DefaultLoginWithin}
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; a {
+		case "--all":
+			opts.All = true
+		case "--dry-run":
+			opts.DryRun = true
+		case "--within":
+			i++
+			days, _ := strconv.Atoi(args[i])
+			opts.Within = time.Duration(days) * 24 * time.Hour
+		default:
+			opts.Names = append(opts.Names, a)
+		}
+	}
+	r := call(func(std Streams) error { return renewLogins(std, cfg, opts, deps) })
+	io.WriteString(out, r.stdout)
+	io.WriteString(errw, r.stderr)
+	return r.code
 }

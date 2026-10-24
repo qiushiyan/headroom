@@ -1,0 +1,24 @@
+Usage: headroom headless list [flags]
+
+List every account's headless token: whether there is one, and when it ends.
+
+For a caller that runs Claude Code sessions headless under a config dir of its own — an
+eval runner — and wants them spread over the subscriptions the way automatic launches
+spread. headroom decides and records; the caller starts the session itself, on the
+account's headless token. The caller's contract is docs/specs/headless.md.
+
+Bare, it lists every account's headless token: whether there is one, when it ends, and why
+a placement would not choose the account. Tokens are never shown here.
+
+Flags:
+      --json       Print the listing as JSON.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

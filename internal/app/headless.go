@@ -19,9 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -38,40 +36,11 @@ import (
 // headlessSchema versions the documents `place` and the listing print.
 const headlessSchema = 1
 
-// Exit statuses of `headless place`: placed, or refused — the document says
-// why, and when to ask again. A placement that could not be decided or
-// recorded exits 1.
-const (
-	exitPlaced  = 0
-	exitRefused = 3
-)
-
-func runHeadless(scope config.Scope, args []string) int {
-	sub := ""
-	if len(args) > 0 {
-		sub, args = args[0], args[1:]
-	}
-	switch sub {
-	case "", "--json":
-		if sub == "--json" {
-			args = append([]string{"--json"}, args...)
-		}
-		return runHeadlessList(os.Stdout, scope, args, time.Now())
-	case "mint":
-		return runHeadlessMint(scope, args)
-	case "place":
-		return runHeadlessPlace(os.Stdout, os.Stderr, scope, args)
-	case "started":
-		return runHeadlessStarted(os.Stderr, scope, args)
-	case "token":
-		return runHeadlessToken(os.Stdout, os.Stderr, scope, args)
-	case "forget":
-		return runHeadlessForget(os.Stdout, os.Stderr, scope, args)
-	default:
-		fmt.Fprintf(os.Stderr, "headroom headless: unknown command %q — mint, place, started, token or forget\n", sub)
-		return 2
-	}
-}
+// ExitRefused is `headless place`'s status for a refusal: every account it
+// could take is near a limit or excluded, and the document printed says why
+// and when to ask again. A placement that could not be decided or recorded
+// fails as any command does.
+const ExitRefused = 3
 
 // ---- deciding ----
 
@@ -191,88 +160,66 @@ func headlessAccounts(d placement.Decision) []headlessAcct {
 	return out
 }
 
-// runHeadlessPlace decides which account the caller's next session spends,
+// HeadlessPlaceOptions are a headless caller's ask: the account its session
+// ran on last, the accounts it will not take, and whether to record nothing.
+type HeadlessPlaceOptions struct {
+	Prefer  string
+	Exclude []string
+	DryRun  bool
+}
+
+// HeadlessPlace decides which account the caller's next session spends,
 // records the decision as load and prints it. It refuses — exit 3, nothing
 // recorded — when every account it could take is near a limit or excluded,
 // and says when room returns.
-func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) int {
-	prefer, dryRun := "", false
-	var excluded []string
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; a {
-		case "--dry-run":
-			dryRun = true
-		case "--prefer", "--exclude":
-			if i+1 >= len(args) || args[i+1] == "" {
-				fmt.Fprintf(errw, "headroom headless place: %s needs an account name\n", a)
-				return 2
-			}
-			i++
-			if a == "--prefer" {
-				prefer = args[i]
-			} else {
-				excluded = append(excluded, args[i])
-			}
-		default:
-			fmt.Fprintf(errw, "headroom headless place: unknown argument %q\n", a)
-			return 2
-		}
-	}
+func HeadlessPlace(std Streams, scope config.Scope, opts HeadlessPlaceOptions, place launchop.Deps) error {
 	tokens, err := headless.Read(scope.AccountsRoot)
 	if err != nil {
-		fmt.Fprintf(errw, "headroom headless place: %v\n", err)
-		return 1
+		return err
 	}
 	set := accounts.Discover(scope)
 	preferred := ""
-	if prefer != "" {
+	if opts.Prefer != "" {
 		// The account a session ran on last: followed while it has room, so
 		// the session's prompt cache stays warm, as a launch follows the owner
 		// of a session it names.
-		a, err := set.Select(prefer)
+		a, err := set.Select(opts.Prefer)
 		if err != nil {
-			fmt.Fprintf(errw, "headroom headless place: %v\n", err)
-			return 1
+			return err
 		}
 		preferred = a.Name
 	}
 	// Names the caller was handed by an earlier placement: one nothing
 	// answers to is a caller's mistake, said rather than silently ignored.
 	exclude := map[string]bool{}
-	for _, name := range excluded {
+	for _, name := range opts.Exclude {
 		a, err := set.Select(name)
 		if err != nil {
-			fmt.Fprintf(errw, "headroom headless place: --exclude: %v\n", err)
-			return 1
+			return fmt.Errorf("--exclude: %w", err)
 		}
 		exclude[a.Name] = true
 	}
 	if exclude[preferred] {
-		fmt.Fprintf(errw, "headroom headless place: %s is both preferred and excluded\n", preferred)
-		return 2
+		return usagef("%s is both preferred and excluded", preferred)
 	}
 	now := time.Now()
 	cwd, _ := os.Getwd()
 	placed := launchop.PlaceHeadless(launchop.HeadlessRequest{
-		Set: set, Store: state.Open(scope), Prefer: preferred, Exclude: exclude, DryRun: dryRun, CWD: cwd, Now: now,
+		Set: set, Store: state.Open(scope), Prefer: preferred, Exclude: exclude, DryRun: opts.DryRun, CWD: cwd, Now: now,
 		Eligible: func(a accounts.Account, key state.Key) string {
 			tok, ok := tokens[a.Name]
 			return headlessExclusion(a, key, tok, ok, now)
 		},
-	}, placeDeps())
+	}, place)
 
-	doc := headlessDoc{Schema: headlessSchema, DryRun: dryRun, Placement: placed.ID, Notes: placed.Notes}
+	doc := headlessDoc{Schema: headlessSchema, DryRun: opts.DryRun, Placement: placed.ID, Notes: placed.Notes}
 	d := placed.Decision
-	failed := placed.Unrecorded != nil
-	if failed {
-		fmt.Fprintf(errw, "headroom headless place: %s\n", d.Refusal)
-	}
 	doc.Rule, doc.Accounts = d.Rule, headlessAccounts(d)
-	code := exitPlaced
+	var outcome error
 	if d.Chosen == "" {
-		doc.Refusal, doc.RetryAt, code = d.Refusal, rfc(d.RoomAt), exitRefused
-		if failed {
-			code = 1
+		doc.Refusal, doc.RetryAt, outcome = d.Refusal, rfc(d.RoomAt), Status(ExitRefused)
+		if placed.Unrecorded != nil {
+			outcome = errors.New(d.Refusal)
 		}
 	} else {
 		doc.Placed, doc.Account, doc.Reason = true, d.Chosen, d.Reason
@@ -283,94 +230,68 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 			}
 		}
 	}
-	enc := json.NewEncoder(out)
+	enc := json.NewEncoder(std.Out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(doc); err != nil {
-		return 1
+		return err
 	}
-	return code
+	return outcome
 }
 
 // ---- the session it became ----
 
-// runHeadlessStarted records the process a caller started on a placement, so
+// HeadlessStarted records the process a caller started on a placement, so
 // the session counts as busy on that account for as long as it runs — not
 // only for the fifteen minutes a placement counts — and is counted once. A
 // process already gone has nothing more to count; its placement still counts
 // for its span.
-func runHeadlessStarted(errw io.Writer, scope config.Scope, args []string) int {
-	if len(args) != 2 || args[0] == "" {
-		fmt.Fprintln(errw, "usage: headroom headless started <placement> <pid>")
-		return 2
-	}
-	id := args[0]
-	pid, err := strconv.Atoi(args[1])
-	if err != nil || pid <= 0 {
-		fmt.Fprintf(errw, "headroom headless started: %q is not a process id\n", args[1])
-		return 2
-	}
-	err = launchop.Started(state.Open(scope), id, pid, time.Now(), placeDeps())
+func HeadlessStarted(std Streams, scope config.Scope, id string, pid int, place launchop.Deps) error {
+	err := launchop.Started(state.Open(scope), id, pid, time.Now(), place)
 	if errors.Is(err, launchop.ErrExited) {
-		fmt.Fprintf(errw, "headroom headless started: process %d has already exited — its placement counts as a launch\n", pid)
-		return 0
+		fmt.Fprintf(std.Err, "headroom headless started: process %d has already exited — its placement counts as a launch\n", pid)
+		return nil
 	}
-	if err != nil {
-		fmt.Fprintf(errw, "headroom headless started: %v\n", err)
-		return 1
-	}
-	return 0
+	return err
 }
 
 // ---- the credential ----
 
-// runHeadlessToken prints one account's headless token and nothing else: the
+// HeadlessToken prints one account's headless token and nothing else: the
 // only path by which a token leaves its file. It refuses a token that has
 // ended, and one minted for another login than the dir now holds.
-func runHeadlessToken(out, errw io.Writer, scope config.Scope, args []string) int {
-	if len(args) != 1 || args[0] == "" {
-		fmt.Fprintln(errw, "usage: headroom headless token <account>")
-		return 2
-	}
-	a, err := accounts.Discover(scope).Select(args[0])
+func HeadlessToken(std Streams, scope config.Scope, name string) error {
+	a, err := accounts.Discover(scope).Select(name)
 	if err != nil {
-		fmt.Fprintf(errw, "headroom headless token: %v\n", err)
-		return 1
+		return err
 	}
 	tokens, err := headless.Read(scope.AccountsRoot)
 	if err != nil {
-		fmt.Fprintf(errw, "headroom headless token: %v\n", err)
-		return 1
+		return err
 	}
 	tok, ok := tokens[a.Name]
 	if why := tokenProblem(a, state.KeyFor(a), tok, ok, time.Now()); why != "" {
-		fmt.Fprintf(errw, "headroom headless token: %s: %s\n", a.Name, why)
-		return 1
+		return fmt.Errorf("%s: %s", a.Name, why)
 	}
-	fmt.Fprintln(out, tok.Value)
-	return 0
+	fmt.Fprintln(std.Out, tok.Value)
+	return nil
 }
 
-func runHeadlessForget(out, errw io.Writer, scope config.Scope, args []string) int {
-	if len(args) != 1 || args[0] == "" {
-		fmt.Fprintln(errw, "usage: headroom headless forget <account>")
-		return 2
-	}
+// HeadlessForget forgets one account's headless token. headroom does not
+// revoke it with the vendor.
+func HeadlessForget(std Streams, scope config.Scope, name string) error {
 	// A name with a stored token is forgotten even if its dir has gone.
-	name := args[0]
 	if a, err := accounts.Discover(scope).Select(name); err == nil {
 		name = a.Name
 	}
 	removed, err := headless.Remove(scope.AccountsRoot, name)
 	if err != nil {
-		fmt.Fprintf(errw, "headroom headless forget: %v\n", err)
-		return 1
+		return err
 	}
 	if !removed {
-		fmt.Fprintf(errw, "headroom headless forget: %s has no headless token\n", name)
-		return 1
+		return fmt.Errorf("%s has no headless token", name)
 	}
-	fmt.Fprintf(out, "forgot %s's headless token — headroom does not revoke it with the vendor\n", name)
-	return 0
+	fmt.Fprintf(std.Out, "forgot %s's headless token — headroom does not revoke it with the vendor\n", name)
+	return nil
 }
 
 // ---- the listing ----
@@ -388,21 +309,13 @@ type headlessListAcct struct {
 	Excluded string  `json:"excluded,omitempty"` // why a placement would not choose it
 }
 
-// runHeadlessList shows which accounts a headless placement chooses from and
+// HeadlessList shows which accounts a headless placement chooses from and
 // when each token ends. Values are never shown.
-func runHeadlessList(out io.Writer, scope config.Scope, args []string, now time.Time) int {
-	asJSON := false
-	for _, a := range args {
-		if a != "--json" {
-			fmt.Fprintf(os.Stderr, "headroom headless: unexpected argument %q\n", a)
-			return 2
-		}
-		asJSON = true
-	}
+func HeadlessList(std Streams, scope config.Scope, asJSON bool, now time.Time) error {
+	out := std.Out
 	tokens, err := headless.Read(scope.AccountsRoot)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom headless: %v\n", err)
-		return 1
+		return err
 	}
 	st := state.Open(scope)
 	facts, _ := accountstate.Assemble(accounts.Discover(scope), st.Load(), now)
@@ -419,10 +332,7 @@ func runHeadlessList(out io.Writer, scope config.Scope, args []string, now time.
 	if asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(doc); err != nil {
-			return 1
-		}
-		return 0
+		return enc.Encode(doc)
 	}
 	nameW := len("account")
 	for _, r := range doc.Accounts {
@@ -445,5 +355,5 @@ func runHeadlessList(out io.Writer, scope config.Scope, args []string, now time.
 		}
 		fmt.Fprintf(out, "  %s  %s\n", render.PadCell(render.Sanitize(r.Account), nameW), strings.Join(says, " · "))
 	}
-	return 0
+	return nil
 }

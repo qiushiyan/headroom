@@ -64,22 +64,20 @@ func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := launchConfig(t)
 			cfg.PrimaryExplicit, cfg.PrimaryRelocated = c.explicit, c.explicit
-			_, args, env, called := recordExec(t)
 			t.Setenv("CLAUDE_CONFIG_DIR", "/leaked/other-account")
-			var code int
-			stderr := captureStderr(t, func() { code = runLaunch(cfg, c.args) })
-			if code != 0 || !*called {
-				t.Fatalf("exit %d, exec called %v: %s", code, *called, stderr)
+			got := launchOn(t, cfg, quietPlace(), c.args...)
+			if got.code != 0 || !got.called {
+				t.Fatalf("exit %d, exec called %v: %s", got.code, got.called, got.stderr)
 			}
-			if got, want := configDirs(*env), c.dirs(cfg); !slices.Equal(got, want) {
+			if got, want := configDirs(got.env), c.dirs(cfg); !slices.Equal(got, want) {
 				t.Errorf("CLAUDE_CONFIG_DIR = %q, want exactly %q", got, want)
 			}
 			var rest []string
 			if i := slices.Index(c.args, "--"); i >= 0 {
 				rest = c.args[i+1:]
 			}
-			if !slices.Equal(*args, rest) {
-				t.Errorf("vendor args = %q, want %q", *args, rest)
+			if !slices.Equal(got.args, rest) {
+				t.Errorf("vendor args = %q, want %q", got.args, rest)
 			}
 			if rec, ok := state.Open(cfg).Load().Owner(sessA); ok {
 				t.Errorf("a launch told where to go re-homed the session it named: %+v", rec)
@@ -93,8 +91,9 @@ func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 // dir, never an empty sentinel, and the kind is what the wrapper's preflight
 // keys on — re-deriving primary-vs-extra from path prefixes is exactly what a
 // HEADROOM_* root override silently breaks. What the framing cannot carry
-// refuses: an empty selector is a caller's expansion bug that would otherwise
-// answer with the recorded account, and a TAB or newline would split the line.
+// refuses: a TAB or newline would split the line. (An empty selector, a
+// caller's expansion bug that would otherwise answer with the recorded
+// account, is the command line's to refuse: cmd/headroom's TestGrammar.)
 func TestResolveProtocol(t *testing.T) {
 	cfg := launchConfig(t)
 	for _, name := range []string{"tab\tname", "new\nline"} {
@@ -103,21 +102,19 @@ func TestResolveProtocol(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		name string
-		args []string
-		code int
-		out  string
+		name     string
+		selector string
+		code     int
+		out      string
 	}{
-		{"no .current: the primary", nil, 0, "qiushi\t" + cfg.PrimaryDir() + "\tprimary\n"},
-		{"an extra", []string{"yan@planlab.ai"}, 0, "yan@planlab.ai\t" + filepath.Join(cfg.AccountsRoot, "yan@planlab.ai") + "\textra\n"},
-		{"an empty selector", []string{""}, 2, ""},
-		{"a name with a TAB", []string{"tab\tname"}, 1, ""},
-		{"a name with a newline", []string{"new\nline"}, 1, ""},
+		{"no .current: the primary", "", 0, "qiushi\t" + cfg.PrimaryDir() + "\tprimary\n"},
+		{"an extra", "yan@planlab.ai", 0, "yan@planlab.ai\t" + filepath.Join(cfg.AccountsRoot, "yan@planlab.ai") + "\textra\n"},
+		{"a name with a TAB", "tab\tname", 1, ""},
+		{"a name with a newline", "new\nline", 1, ""},
 	} {
-		var code int
-		out := captureStdout(t, func() { captureStderr(t, func() { code = runResolve(cfg, c.args) }) })
-		if code != c.code || out != c.out {
-			t.Errorf("%s: exit %d, %q; want exit %d, %q", c.name, code, out, c.code, c.out)
+		got := call(func(std Streams) error { return Resolve(std, cfg, c.selector) })
+		if got.code != c.code || got.stdout != c.out {
+			t.Errorf("%s: exit %d, %q; want exit %d, %q", c.name, got.code, got.stdout, c.code, c.out)
 		}
 	}
 }
@@ -184,13 +181,11 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := c.scope(t)
-			_, _, _, called := recordExec(t)
 			before, _ := os.ReadFile(cfg.CurrentFile())
-			var code int
-			var stderr string
-			stdout := captureStdout(t, func() { stderr = captureStderr(t, func() { code = runLaunch(cfg, c.args) }) })
-			if code != 1 || *called {
-				t.Fatalf("exit %d, exec called %v: %s", code, *called, stderr)
+			got := launchOn(t, cfg, quietPlace(), c.args...)
+			stdout, stderr := got.stdout, got.stderr
+			if got.code != 1 || got.called {
+				t.Fatalf("exit %d, exec called %v: %s", got.code, got.called, stderr)
 			}
 			for _, w := range c.want {
 				if !strings.Contains(stderr, w) {
@@ -214,9 +209,8 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 	// An extra carries its dir explicitly: a re-pointed home leaves it alone.
 	cfg := launchConfig(t)
 	cfg.PrimaryRelocated = true
-	_, _, _, called := recordExec(t)
-	if code := runLaunch(cfg, []string{"--account", "yan@planlab.ai"}); code != 0 || !*called {
-		t.Errorf("extra under a re-pointed home: exit %d, exec called %v", code, *called)
+	if got := launchOn(t, cfg, quietPlace(), "--account", "yan@planlab.ai"); got.code != 0 || !got.called {
+		t.Errorf("extra under a re-pointed home: exit %d, exec called %v", got.code, got.called)
 	}
 }
 
@@ -224,19 +218,18 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 // choice is already recorded, and a failed exec leaves it and says so.
 func TestExecFailureKeepsRememberedChoice(t *testing.T) {
 	cfg := launchConfig(t)
-	prev := execVendor
 	atExec := ""
-	execVendor = func(string, string, []string, []string) error {
+	rec := &execRecord{err: os.ErrPermission, atExec: func() {
 		a, err := accounts.Discover(cfg).Select("")
 		atExec = fmt.Sprintf("%s %v", a.Name, err)
-		return os.ErrPermission
-	}
-	t.Cleanup(func() { execVendor = prev })
-	output := captureStderr(t, func() {
-		if code := runLaunch(cfg, []string{"--remember", "--account", "yan@planlab.ai"}); code != 1 {
-			t.Fatalf("exit %d", code)
-		}
+	}}
+	failed := call(func(std Streams) error {
+		return Launch(std, cfg, launchOptions(t, "--remember", "--account", "yan@planlab.ai"), quietPlace(), rec.exec)
 	})
+	if failed.code != 1 {
+		t.Fatalf("exit %d", failed.code)
+	}
+	output := failed.stderr
 	if atExec != "yan@planlab.ai <nil>" {
 		t.Errorf("at exec .current resolved to %q, want yan@planlab.ai: the choice is recorded first", atExec)
 	}

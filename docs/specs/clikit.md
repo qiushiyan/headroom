@@ -1,10 +1,11 @@
 # The command line on clikit
 
-Status: in progress on the `clikit` branch, 2026-10-24. The working document
-the migration is built from: what the grammar is, which differences callers
-see, how the code is reshaped around it, and the cases that hold it. Written
-against `main` at dd103a3, clikit v0.4.1 and Kong v1.16.1, after one consult
-round (`consult-r1/codex-gpt-6-astra`) whose findings are folded in below.
+Status: built on the `clikit` branch, 2026-10-24, awaiting review. The
+working document the migration is built from: what the grammar is, which
+differences callers see, how the code is reshaped around it, and the cases
+that hold it. Written against `main` at dd103a3, clikit v0.4.1 and Kong
+v1.16.1, after one consult round (`consult-r1/codex-gpt-6-astra`) whose
+findings are folded in below.
 
 ## Summary
 
@@ -96,7 +97,11 @@ headroom check | version | --version
 6. A mistyped command reports `unexpected argument <word>` under the board's
    synopsis: Kong hands unknown words to the default command. A clikit release
    that restates it is a separate change (see Owed).
-7. Kong's wording for flag conflicts; the reason moves to the command's help.
+7. Kong's wording for flag conflicts, the reason moving to the command's help;
+   and for a negative number given to a flag as its own word: `--within -1`
+   and `-n -1` read as a short flag (`expected int value but got "-1" (short
+   flag); perhaps try --within="-1"?`). Still exit 2; `--within=-1` gets
+   headroom's own message.
 8. New spellings: `headroom board`, `headless list`, `accounts --json`,
    `headroom --compact`, `--count`.
 
@@ -120,13 +125,19 @@ eligibility rule and no exec.
 `internal/round` owns one vendor's round: discovery, the facts on disk,
 access (health and the request candidate — the second place vendor documents
 are read), the claim and fetches, and applying results. Results carry their
-round, and a round applies only its own. Callers read presentation facts and
-drive the lifecycle; `FromDisk` is the limits read, which carries no request.
+round (`Fetch` reports through `Feed`, which stamps each one), and `Apply`
+ignores another round's. Callers read presentation facts and drive the
+lifecycle; `FromDisk` is the limits read, which carries no request, and `Of`
+is a round over facts a caller already holds, which asks nobody. When the
+board's next round is due is a pure function of the snapshot, the accounts,
+whether any can be asked, the spacing and the time (`nextRound`).
 
 `internal/app` keeps the surfaces — the board picker and print, the session
 picker, login, headless, the account set, the launch and session logs,
 limits and the JSON documents — each one typed entry taking its writers and
-the edges it uses. No package-level seams, no `os.Stdout`.
+the edges it uses. No package-level seams, no `os.Stdout`. The `$BROWSER`
+opener (`approval.go`) stays here: both of its users, login and mint, are
+surfaces here, and `main` reaches it through `app.Open`.
 
 Dependencies are per module, as function fields: launchop takes the
 credential reader, the process probe and the detached refresh; round the
@@ -139,11 +150,19 @@ differently — the board, the picker and remove need both, mint only stdin.
 - `cmd/headroom/contract_test.go`: the built binary over a fixture home with
   stub vendors and no terminal — 64 caller shapes and refusals, recorded from
   the binary before the migration (`HEADROOM_CONTRACT_UPDATE=1`). A pin
-  changes only for an approved difference, in the commit that causes it.
-- `clikittest.Golden` over every help page (`make golden`).
+  changes only for an approved difference, in the commit that causes it; the
+  grammar switch changed 18, each one of the differences above, every exit
+  status kept but the refused configuration's.
+- `cmd/headroom/grammar_test.go`, in process through `clikittest.Run` with a
+  test `host`: `TestGrammarRefuses` (every argv refusal exits 2 with nothing
+  started and the home unchanged), `TestGrammarDecodes` (what reaches the
+  vendor, names with commas, `--vendor` positions, `-n` presence),
+  `TestBrokenConfiguration`, `TestCommandsOnAnAbsentVendor` (moved from
+  `internal/app`) and `TestHelpPages` (`clikittest.Golden`, `make golden`).
 - Surfaces are tested through their typed entries; launchop and round through
-  their interfaces; `go test` never reaches live state (`TestMain` clears the
-  inherited environment).
+  their interfaces; `go test` never reaches live state (each package's
+  `TestMain` clears the inherited environment). App tests that used to spell
+  argv refusals point to `TestGrammarRefuses`.
 - Final verification runs with `GOWORK=off` against the tagged clikit.
 
 Planned cases, each a trap the consult named:
@@ -166,8 +185,9 @@ Planned cases, each a trap the consult named:
 - `HEADROOM_HOME=relative headroom --help` prints help, exit 0; `check` under
   it prints the `FAIL  config:` line, exit 1.
 - The board prints one frame when stdin or stdout is not a terminal; mint
-  needs only stdin to be one.
-- A round's result applied to another round is ignored.
+  needs only stdin to be one (`TestEachSurfaceReadsTheTerminalFactsItNeeds`).
+- A round's result applied to another round is ignored
+  (`TestApplyIgnoresAnotherRoundsResult`, red without the check).
 
 ## Tenets
 

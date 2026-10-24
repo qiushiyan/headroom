@@ -1,0 +1,33 @@
+Usage: headroom accounts add <email> [flags]
+
+Seed the dir for a new subscription.
+
+Seeds the dir for a new subscription: ~/.claude-accounts/<email> (or ~/.codex-accounts/
+<email> under --vendor codex), its session store linked to the machine-global one so every
+account sees every session. --share-config links a whitelist of the primary's config —
+settings, skills, commands — into it; --share-config=<dir> links every entry of that dir.
+A login, its history and its session registry are never linked, whatever the source holds.
+
+Then log in once: for Claude Code, headroom launch --account <email> and /login in the
+session; for Codex, headroom launch --vendor codex --account <email> -- login.
+
+Arguments:
+  <email>                The new subscription's email: the account's dir name, and the login it must
+                         hold.
+
+Flags:
+      --share-config     Link the primary's config into the new dir; --share-config=<dir> links
+                         every entry of <dir> instead.
+
+Inherited flags:
+      --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
+                         remove act on it, Claude Code when absent (one of: claude, codex).
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

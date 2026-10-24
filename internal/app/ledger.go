@@ -8,10 +8,7 @@ package app
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -21,34 +18,24 @@ import (
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-func runAccountsLedger(cfg config.Config, args []string) int {
-	return runAccountsLedgerTo(os.Stdout, os.Stderr, cfg, args, time.Now())
-}
-
-// runAccountsLedgerTo registers this home in the ledger it uses — joining the
+// AccountsLedger registers this home in the ledger it uses — joining the
 // named one first, when there is one — and lists the homes registered there.
 // Registering is a no-op when this home's record is current; it is done here
 // so a home that has just joined is counted by the others before its first
 // launch.
-func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, now time.Time) int {
+func AccountsLedger(std Streams, cfg config.Config, root string, now time.Time) error {
+	out := std.Out
 	scope := cfg.Claude
-	switch {
-	case len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")):
-		fmt.Fprintln(errw, "usage: headroom accounts ledger [<accounts root>]")
-		return 2
-	case len(args) == 1:
-		root, err := accounts.ShareLedger(cfg.Claude, cfg.Codex, args[0])
+	if root != "" {
+		joined, err := accounts.ShareLedger(cfg.Claude, cfg.Codex, root)
 		if err != nil {
-			fmt.Fprintf(errw, "headroom accounts ledger: %v\n", err)
-			return 1
+			return err
 		}
-		scope.LedgerRoot = root
+		scope.LedgerRoot = joined
 	}
 	st := state.Open(scope)
 	if err := st.Register(now); err != nil {
-		fmt.Fprintf(errw, "headroom accounts ledger: this home could not be registered in %s (%v)\n",
-			filepath.Join(st.Ledger(), "state.json"), err)
-		return 1
+		return fmt.Errorf("this home could not be registered in %s (%v)", filepath.Join(st.Ledger(), "state.json"), err)
 	}
 	snap := st.Load()
 	whose := "this home's own"
@@ -89,5 +76,5 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 		fmt.Fprintf(out, "  %s  %s  %s\n", render.PadCell(render.Sanitize(labels.Of(m.Root)), nameW),
 			render.PadCell(render.Sanitize(m.Root), rootW), note)
 	}
-	return 0
+	return nil
 }

@@ -19,16 +19,18 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/round"
+	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// startRefresh starts one detached refresh round for the scope's vendor and
-// returns at once. The launching process is about to be replaced by the
-// vendor, so it cannot wait for a response — and a request whose answer nobody
-// stays to record would spend the account's budget for nothing. The child is
-// an ordinary headroom running the ordinary round: the claim authorizes, the
+// DetachRefresh starts one detached refresh round for the scope's vendor and
+// returns at once: `headroom refresh --vendor <v>`, an invocation pinned with
+// the callers'. The launching process is about to be replaced by the vendor,
+// so it cannot wait for a response — and a request whose answer nobody stays
+// to record would spend the account's budget for nothing. The child is an
+// ordinary headroom running the ordinary round: the claim authorizes, the
 // completion records, and it has no terminal to disturb.
-var startRefresh = func(scope config.Scope) error {
+func DetachRefresh(scope config.Scope) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -41,17 +43,31 @@ var startRefresh = func(scope config.Scope) error {
 	return cmd.Process.Release()
 }
 
-// placementCreds reads one Claude Code account's credential blob for a
-// placement.
-var placementCreds = func(a accounts.Account) string {
-	raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
-	return raw
+// LivePlace is the edges a placement reads through on this machine: the
+// Keychain (or the credential file), ps(1), and the detached refresh.
+func LivePlace() launchop.Deps {
+	return launchop.Deps{
+		Creds: func(a accounts.Account) string {
+			raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
+			return raw
+		},
+		Probe:   sessions.PS,
+		Refresh: DetachRefresh,
+	}
 }
 
-// placeDeps are the edges a placement reads through, as this process has
-// them.
-func placeDeps() launchop.Deps {
-	return launchop.Deps{Creds: placementCreds, Probe: pidProbe, Refresh: startRefresh}
+// LiveRound is the edges a round reads through on this machine: the
+// credential reader and, when probe is set, Claude Code's own health probe
+// (`claude auth status` per account, side by side).
+func LiveRound(probe bool) round.Deps {
+	d := round.Deps{Creds: func(ctx context.Context, a accounts.Account) string {
+		raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
+		return raw
+	}}
+	if probe {
+		d.Health = round.ProbeHealth
+	}
+	return d
 }
 
 // refreshDeadline bounds the round a launch leaves behind: the claim, and a
@@ -61,7 +77,7 @@ func placeDeps() launchop.Deps {
 // so it must be short, and must stop cleanly when told to.
 const refreshDeadline = 12 * time.Second
 
-// runRefresh is the round with nobody watching: ask about every account the
+// Refresh is the round with nobody watching: ask about every account the
 // claim permits, record the answers, print nothing. It is what an automatic
 // launch leaves running behind it.
 //
@@ -74,19 +90,17 @@ const refreshDeadline = 12 * time.Second
 // mid-request, it leaves a claim that simply expires at its spacing: a claim
 // is a reservation with a deadline, which no reader waits on, and the lock
 // dies with the process.
-func runRefresh(scopes []config.Scope) int {
+func Refresh(scopes []config.Scope, deps round.Deps) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, refreshDeadline)
 	defer cancel()
 	var wg sync.WaitGroup
 	for _, scope := range scopes {
-		wg.Add(1)
-		go func(scope config.Scope) {
-			defer wg.Done()
-			round.Prepare(ctx, scope, state.Open(scope), time.Now(), roundDeps(false)).Complete(ctx)
-		}(scope)
+		wg.Go(func() {
+			round.Prepare(ctx, scope, state.Open(scope), time.Now(), deps).Complete(ctx)
+		})
 	}
 	wg.Wait()
-	return 0
+	return nil
 }

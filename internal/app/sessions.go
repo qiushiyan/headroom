@@ -1,23 +1,14 @@
 package app
 
-// The `headroom sessions` command: its argument contract, the collection the
-// picker and --json share, and the process edges both reach through. The
-// picker's selection, modes and drawing are sessions_picker.go; the actions a
-// commit runs are session_actions.go; the machine listing is
-// sessions_json.go.
+// The `headroom sessions` command: its contract with the shell wrapper and
+// the collection the picker and --json share. The picker's selection, modes
+// and drawing are sessions_picker.go; the actions a commit runs are
+// session_actions.go; the machine listing is sessions_json.go.
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
-
-	"golang.org/x/term"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
@@ -28,31 +19,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-// pidProbe answers when a pid started: the one probe behind every liveness
-// read — registry claims for placement and the picker, a headless run's
-// report and the runs proven over, check's and remove's live-session
-// refusals — injected so tests can stand in for the process table.
-var pidProbe sessions.PIDProbe = psProbe
-
-// psProbe is pidProbe's real answer, from ps(1). It keeps an absent process
-// distinct from a failed inspection.
-func psProbe(pid int) (int64, error) {
-	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0 && len(exit.Stderr) == 0 {
-			return 0, os.ErrNotExist
-		}
-		return 0, err
-	}
-	t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.TrimSpace(string(out)), time.Local)
-	if err != nil {
-		return 0, err
-	}
-	return t.Unix(), nil
-}
-
-func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, accounts.Set, accounts.Routing) {
+func collectSessions(cfg config.Scope, st *state.Store, probe sessions.PIDProbe) (sessions.Listing, accounts.Set, accounts.Routing) {
 	set := accounts.Discover(cfg)
 	cwd, _ := os.Getwd()
 	listing := sessions.Collect(sessions.Input{
@@ -60,7 +27,7 @@ func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, accou
 		CWD:         cwd,
 		Accounts:    launchop.Refs(set),
 		Owners:      st.Load().Owners(),
-		Probe:       pidProbe,
+		Probe:       probe,
 	})
 	// Strict, exactly as launch resolves it: corrupt or dangling `.current`
 	// yields "" — no current — rather than a primary nobody chose. Rows fall
@@ -71,86 +38,84 @@ func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, accou
 	return listing, set, set.Routing()
 }
 
-func runSessions(cfg config.Scope, args []string) int {
-	jsonMode := false
-	cdFile := ""
-	var claudeArgs []string
-parse:
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonMode = true
-		case "--cd-file":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom sessions: --cd-file needs a path")
-				return 2
-			}
-			i++
-			cdFile = args[i]
-		case "--":
-			claudeArgs = args[i+1:]
-			break parse
-		default:
-			fmt.Fprintf(os.Stderr, "headroom sessions: unknown argument %q (claude args go after --)\n", args[i])
-			return 2
-		}
-	}
-	if jsonMode {
-		if cdFile != "" || len(claudeArgs) > 0 {
-			fmt.Fprintln(os.Stderr, "headroom sessions: --json takes no other arguments")
-			return 2
-		}
-		return runSessionsJSON(cfg)
+// SessionsOptions are what the shell wrapper and a person hand the session
+// picker.
+type SessionsOptions struct {
+	// JSON lists the sessions instead of picking one; nothing else applies.
+	JSON bool
+	// CDFile is an absolute path the picker records the entered project dir
+	// in, for the shell's own cd after the session ends: created empty
+	// before anything else, written only when a launch is committed.
+	CDFile string
+	// Args reach claude exactly as given, before the picker's --resume.
+	Args []string
+}
+
+// SessionsDeps are the edges the session picker reaches through: a launch's,
+// and the exec that replaces this process with claude.
+type SessionsDeps struct {
+	Place launchop.Deps
+	Exec  ExecFunc
+}
+
+// Sessions is the session picker: every Claude Code session on this machine,
+// entered in its own project dir and continued, by exec, on the account that
+// last drove it — or, with JSON, the listing as a document.
+func Sessions(std Streams, term Terminal, scope config.Scope, opts SessionsOptions, deps SessionsDeps) error {
+	if opts.JSON {
+		return sessionsJSON(std, scope, deps.Place.Probe)
 	}
 	// This surface's contract is that the picker chooses the session; a
 	// pass-through flag that chooses one contradicts it regardless of how
 	// the vendor would rank the two.
-	for _, a := range claudeArgs {
+	for _, a := range opts.Args {
 		if a == "--resume" || a == "-r" || a == "--continue" || a == "-c" {
-			fmt.Fprintf(os.Stderr, "headroom sessions: %q cannot pass through — the picker chooses the session\n", a)
-			return 2
+			return usagef("%q cannot pass through — the picker chooses the session", a)
 		}
 	}
-	if cdFile != "" {
+	if opts.CDFile != "" {
 		// Absolute, same rule as every path here; created (or truncated) now,
 		// before any side effect, so absence-of-content is observable even
 		// through a wrapper that wrongly reuses a fixed path: empty means "no
 		// launch was committed", non-empty means the dir was entered.
-		if !filepath.IsAbs(cdFile) {
-			fmt.Fprintf(os.Stderr, "headroom sessions: --cd-file %q is not absolute\n", cdFile)
-			return 2
+		if !filepath.IsAbs(opts.CDFile) {
+			return usagef("--cd-file %q is not absolute", opts.CDFile)
 		}
-		f, err := os.OpenFile(cdFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(opts.CDFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom sessions: --cd-file: %v\n", err)
-			return 2
+			return usagef("--cd-file: %v", err)
 		}
 		f.Close()
 	}
 	// Enter execs claude with the fds this process holds. A captured stdout
 	// (`$(headroom sessions)`) would hand claude a pipe and hang the session
 	// — the successor of the old line-protocol capture, refused up front.
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !stdoutIsTTY() {
-		fmt.Fprintln(os.Stderr, "headroom sessions: execs claude in this terminal — run it without capturing stdin or stdout")
-		return 1
+	if !term.In || !term.Out {
+		return errors.New("execs claude in this terminal — run it without capturing stdin or stdout")
 	}
 
-	st := state.Open(cfg)
-	listing, set, routing := collectSessions(cfg, st)
+	st := state.Open(scope)
+	listing, set, routing := collectSessions(scope, st, deps.Place.Probe)
 	t, err := tui.OpenTTY()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
-		return 1
+		return err
 	}
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		st: st, set: set, routing: routing, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}
+		st: st, set: set, routing: routing, cdFile: opts.CDFile, claudeArgs: opts.Args, beforeLaunch: t.Close,
+		errw: std.Err, place: deps.Place, exec: deps.Exec}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment
 		// the user can be told that a re-home they made is not being applied.
 		ui.message = "re-home records unreadable — routing by vendor evidence only (headroom check)"
 	}
-	return ui.run()
+	if code := ui.run(); code != 0 {
+		if ui.failed != nil {
+			return ui.failed
+		}
+		return Status(code)
+	}
+	return nil
 }

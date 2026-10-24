@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -28,6 +29,14 @@ type sessionActions struct {
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
+
+	// The edges a commit crosses, and where it reports what went wrong after
+	// the picker has closed.
+	place launchop.Deps
+	exec  ExecFunc
+	errw  io.Writer
+	// failed is why a committed launch did not start.
+	failed error
 }
 
 // auto says bare launches choose for themselves: there is then no current
@@ -68,13 +77,13 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		// launch: written with it, or the launch does not happen.
 		req.Session.Record, req.MustReHome = s.ID, true
 	}
-	out, err := launchop.Gather(req, placeDeps()).Commit()
+	out, err := launchop.Gather(req, actions.place).Commit()
 	if err != nil {
 		return false, err
 	}
 
 	actions.beforeLaunch()
-	out.Announce(os.Stderr, "headroom sessions: ")
+	out.Announce(actions.errw, "headroom sessions: ")
 	recorded := ""
 	if override {
 		recorded = "; re-home remains recorded for " + out.Account().Name
@@ -84,7 +93,7 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	}
 	if actions.cdFile != "" {
 		if err := writeCDFile(actions.cdFile, s.CWD); err != nil {
-			fmt.Fprintf(os.Stderr, "headroom sessions: cd file: %v (continuing)\n", err)
+			fmt.Fprintf(actions.errw, "headroom sessions: cd file: %v (continuing)\n", err)
 		}
 	}
 	argv := append(append([]string{}, actions.claudeArgs...), "--resume", s.ID)
@@ -92,7 +101,7 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	// before the chdir above — so a relative PATH entry in the project
 	// directory can never supply the binary.
 	p := out.Prepared()
-	if err := execVendor(p.Path, p.Binary, argv, envWithPWD(p.Env, s.CWD)); err != nil {
+	if err := actions.exec(p.Path, p.Binary, argv, envWithPWD(p.Env, s.CWD)); err != nil {
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil
@@ -143,7 +152,7 @@ func accountNamed(set accounts.Set, name string) (accounts.Account, bool) {
 // picker drew must still gate every mutation and the resume refusal. The
 // fresh answer also lands back on the row so the display tells the truth.
 func (actions *sessionActions) liveNow(s *sessions.Session) sessions.LiveState {
-	s.Live = sessions.LiveNow(s.ID, launchop.Refs(actions.set), pidProbe)
+	s.Live = sessions.LiveNow(s.ID, launchop.Refs(actions.set), actions.place.Probe)
 	return s.Live
 }
 

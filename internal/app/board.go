@@ -9,36 +9,41 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
-	"golang.org/x/term"
-
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/round"
 )
 
-// runAccounts is the board. Off a terminal it prints one frame and exits, so
-// `headroom` in a pipe, a script or a non-interactive ssh still answers the
-// question it exists to answer.
+// BoardDeps are the edges the board reads through: a round's, and a
+// placement's for the marks.
+type BoardDeps struct {
+	Round round.Deps
+	Place launchop.Deps
+}
+
+// Board is the account board. Off a terminal it prints one frame and exits,
+// so `headroom` in a pipe, a script or a non-interactive ssh still answers
+// the question it exists to answer.
 //
 // layout is the presentation — the classic blocks or one row per account —
 // and nothing but presentation: both layouts run the same rounds, honour
 // the same claim and commit the same choice.
-func runAccounts(scopes []config.Scope, layout render.Layout) int {
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !stdoutIsTTY() {
-		return printBoard(scopes, layout)
+func Board(std Streams, term Terminal, scopes []config.Scope, layout render.Layout, deps BoardDeps) error {
+	if !term.In || !term.Out {
+		return printBoard(std.Out, term, scopes, layout, deps)
 	}
-	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err != nil || w <= 0 || h <= 0 {
+	if w, h, err := term.size(); err != nil || w <= 0 || h <= 0 {
 		// An interactive tty that won't state its size cannot host the
 		// in-place board: a multi-row redraw over guessed geometry is how
 		// frames duplicate into scrollback. The one-shot print is the honest
 		// rendering there, and the caption says why the picker didn't open.
-		fmt.Fprintln(os.Stderr, "headroom accounts: terminal reports no size — printing the board once")
-		return printBoard(scopes, layout)
+		fmt.Fprintln(std.Err, "headroom accounts: terminal reports no size — printing the board once")
+		return printBoard(std.Out, term, scopes, layout, deps)
 	}
-	return runPicker(scopes, layout)
+	return runPicker(std, term, scopes, layout, deps)
 }
 
 // printBoard is the non-interactive rendering: fetch once, draw once, exit.
@@ -46,20 +51,18 @@ func runAccounts(scopes []config.Scope, layout render.Layout) int {
 // the terminal wraps still says everything. The terminal's width, when
 // there is one, only sizes the compact layout's columns so its rows fit
 // when they can.
-func printBoard(scopes []config.Scope, layout render.Layout) int {
-	boards := fetchBoards(scopes)
-	tty := stdoutIsTTY()
-	p := render.NewPalette(tty)
+func printBoard(w io.Writer, term Terminal, scopes []config.Scope, layout render.Layout, deps BoardDeps) error {
+	boards := fetchBoards(scopes, deps)
+	p := render.NewPalette(term.Out)
 	width := 0
-	if tty {
-		if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-			width = w
+	if term.Out {
+		if cols, _, err := term.size(); err == nil && cols > 0 {
+			width = cols
 		}
 	}
-	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush()
+	out := bufio.NewWriter(w)
 	writeBoards(out, p, boards, time.Now().Unix(), layout, width)
-	return 0
+	return out.Flush()
 }
 
 // writeBoards prints the pages in vendor order. When two vendors are printed

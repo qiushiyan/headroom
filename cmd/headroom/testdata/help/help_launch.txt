@@ -1,0 +1,63 @@
+Usage: headroom launch [<args> ...] [flags]
+
+Run claude, or codex, on the account headroom decides.
+
+Execs claude — or codex under --vendor codex — on the account decided, with the child's
+environment built from that decision alone: an inherited CLAUDE_CONFIG_DIR (for Codex,
+CODEX_HOME and its credential variables) is stripped, never obeyed. The process is
+replaced, so the vendor's exit status is the command's.
+
+How the account is decided:
+  bare          what the board recorded: the pinned account, or under auto the least-loaded
+  --account N   that account, whatever the mode
+  --auto        this one launch placed automatically; the pin is untouched
+  --last        the account of the newest recorded launch
+
+Every launch says on stderr where it went and why before the vendor starts, as one line:
+  headroom launch: a@x.com · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: b@x.com)
+A figure that is not a fresh measurement says so: ≥12% is a lower bound from figures older
+than fifteen minutes, "window ended" a window whose reset has passed, ?% a percent that
+did not parse. Under auto, -- --resume <id> and -- --session-id <id> follow the account
+that last drove that session while it has room, and record where it went.
+
+Codex's sessions are shared across its accounts: headroom launch --vendor codex --account
+<other> -- resume continues one on another account.
+
+Arguments:
+  <args> ...             Arguments for claude (or codex), passed on unchanged; put them after --
+                         (optional; flags are parsed up to its first value; everything after that is
+                         passed on unparsed).
+
+Flags:
+      --vendor=VENDOR    The vendor whose account this acts on (default: claude; one of: claude,
+                         codex).
+      --auto             Place this one launch on the least-loaded account, whatever the board pins.
+      --last             Launch on the account of the newest recorded launch.
+      --account=NAME     Launch on this account, named by email or dir name.
+      --remember         Record the decision for later bare launches: the account, or with --auto
+                         the automatic mode.
+      --dry-run          Print the choice and every account's figures; record, log and start
+                         nothing.
+
+Inherited flags:
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Constraints:
+  At most one of --auto, --last, --account.
+  At most one of --last, --remember.
+  At most one of --remember, --dry-run.
+
+Examples:
+    headroom launch                                   the recorded choice
+    headroom launch --account a@x.com -- --resume 1f2e…   continue a session on a@x.com
+    headroom launch --auto --remember                 turn automatic placement on, and launch
+    headroom launch --dry-run                         what a bare launch would choose, and why
+    headroom launch --vendor codex --account a@x.com -- login
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

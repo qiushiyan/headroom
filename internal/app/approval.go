@@ -13,6 +13,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -134,7 +135,7 @@ func withoutVars(env []string, names ...string) []string {
 // runOpen is the whole of headroom as a vendor's $BROWSER: record in the
 // file signin names which sign-in url belongs to, show url in the profile
 // the page was matched to when open, and nothing else.
-func runOpen(url, signin, profileDir string, open bool) int {
+func runOpen(errw io.Writer, url, signin, profileDir string, open bool) int {
 	if signin != "" {
 		// Best effort: an unrecorded sign-in leaves its code unchecked, never
 		// its page unopened.
@@ -147,9 +148,9 @@ func runOpen(url, signin, profileDir string, open bool) int {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) || len(out) > 0 {
-			fmt.Fprintf(os.Stderr, "headroom: open: %s\n", strings.TrimSpace(string(out)))
+			fmt.Fprintf(errw, "headroom: open: %s\n", strings.TrimSpace(string(out)))
 		} else {
-			fmt.Fprintf(os.Stderr, "headroom: open: %v\n", err)
+			fmt.Fprintf(errw, "headroom: open: %v\n", err)
 		}
 		return 1
 	}

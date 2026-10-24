@@ -29,21 +29,6 @@ func codexLaunchFixture(t *testing.T) config.Scope {
 	return scope
 }
 
-// recordExec captures the exec edge: path, argv[0], args, environment.
-func recordExec(t *testing.T) (binary *string, args, env *[]string, called *bool) {
-	t.Helper()
-	var b string
-	var a, e []string
-	var c bool
-	prev := execVendor
-	execVendor = func(path, bin string, childArgs, environ []string) error {
-		b, a, e, c = bin, childArgs, environ, true
-		return nil
-	}
-	t.Cleanup(func() { execVendor = prev })
-	return &b, &a, &e, &c
-}
-
 func envValue(env []string, name string) (string, bool) {
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, name+"="); ok {
@@ -60,31 +45,30 @@ func envValue(env []string, name string) (string, bool) {
 // variables are left alone.
 func TestCodexLaunchEnvironment(t *testing.T) {
 	scope := codexLaunchFixture(t)
-	binary, args, env, called := recordExec(t)
 	t.Setenv("CODEX_HOME", "/leaked/home")
 	t.Setenv("CODEX_SQLITE_HOME", "/leaked/sqlite")
 	t.Setenv("CODEX_API_KEY", "sk-secret-value")
 	t.Setenv("CODEX_ACCESS_TOKEN", "tok-secret-value")
 	t.Setenv("CLAUDE_CONFIG_DIR", "/accts/claude")
 
-	stderr := captureStderr(t, func() {
-		if code := runLaunch(scope, []string{"--account", "cx@x.com", "--", "resume", "--all"}); code != 0 {
-			t.Fatalf("exit %d", code)
-		}
-	})
-	if !*called || *binary != "codex" || !slices.Equal(*args, []string{"resume", "--all"}) {
-		t.Fatalf("exec: called=%v argv0=%q args=%v", *called, *binary, *args)
+	got := launchOn(t, scope, quietPlace(), "--account", "cx@x.com", "--", "resume", "--all")
+	if got.code != 0 {
+		t.Fatalf("exit %d: %s", got.code, got.stderr)
+	}
+	stderr, env := got.stderr, got.env
+	if !got.called || got.binary != "codex" || !slices.Equal(got.args, []string{"resume", "--all"}) {
+		t.Fatalf("exec: called=%v argv0=%q args=%v", got.called, got.binary, got.args)
 	}
 	want := filepath.Join(scope.AccountsRoot, "cx@x.com")
-	if v, ok := envValue(*env, "CODEX_HOME"); !ok || v != want {
+	if v, ok := envValue(env, "CODEX_HOME"); !ok || v != want {
 		t.Errorf("CODEX_HOME = %q, %v; want %s", v, ok, want)
 	}
 	for _, name := range []string{"CODEX_SQLITE_HOME", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} {
-		if _, ok := envValue(*env, name); ok {
+		if _, ok := envValue(env, name); ok {
 			t.Errorf("%s survived into the child", name)
 		}
 	}
-	if v, _ := envValue(*env, "CLAUDE_CONFIG_DIR"); v != "/accts/claude" {
+	if v, _ := envValue(env, "CLAUDE_CONFIG_DIR"); v != "/accts/claude" {
 		t.Errorf("a Codex launch touched Claude Code's variable: %q", v)
 	}
 	for _, name := range []string{"CODEX_HOME=/leaked/home", "CODEX_SQLITE_HOME=/leaked/sqlite", "CODEX_API_KEY (value not shown)", "CODEX_ACCESS_TOKEN (value not shown)"} {
@@ -97,14 +81,12 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 	}
 
 	// The primary is selected by absence.
-	*called = false
-	captureStderr(t, func() {
-		if code := runLaunch(scope, []string{"--account", "primary"}); code != 0 {
-			t.Fatalf("primary launch exit %d", code)
-		}
-	})
-	if _, ok := envValue(*env, "CODEX_HOME"); ok || !*called {
-		t.Errorf("primary launch: CODEX_HOME present=%v called=%v", ok, *called)
+	primary := launchOn(t, scope, quietPlace(), "--account", "primary")
+	if primary.code != 0 {
+		t.Fatalf("primary launch exit %d: %s", primary.code, primary.stderr)
+	}
+	if _, ok := envValue(primary.env, "CODEX_HOME"); ok || !primary.called {
+		t.Errorf("primary launch: CODEX_HOME present=%v called=%v", ok, primary.called)
 	}
 
 	// An inherited home naming a discovered extra is the ordinary "this shell
@@ -115,7 +97,7 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 	}
 	// The launch still says where it went; what stays unsaid is the inherited
 	// variable.
-	if quiet := captureStderr(t, func() { runLaunch(scope, []string{"--account", "primary"}) }); strings.Contains(quiet, "ignoring inherited") || !strings.Contains(quiet, "primary · named") {
+	if quiet := launchOn(t, scope, quietPlace(), "--account", "primary").stderr; strings.Contains(quiet, "ignoring inherited") || !strings.Contains(quiet, "primary · named") {
 		t.Errorf("a known extra's home was reported: %q", quiet)
 	}
 }
@@ -123,12 +105,9 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 // --remember records Codex's .current, under Codex's root.
 func TestCodexLaunchRemember(t *testing.T) {
 	scope := codexLaunchFixture(t)
-	recordExec(t)
-	captureStderr(t, func() {
-		if code := runLaunch(scope, []string{"--remember", "--account", "cx@x.com"}); code != 0 {
-			t.Fatalf("exit %d", code)
-		}
-	})
+	if got := launchOn(t, scope, quietPlace(), "--remember", "--account", "cx@x.com"); got.code != 0 {
+		t.Fatalf("exit %d: %s", got.code, got.stderr)
+	}
 	if got, _ := os.ReadFile(scope.CurrentFile()); string(got) != "cx@x.com\n" {
 		t.Errorf(".current = %q", got)
 	}
@@ -142,7 +121,7 @@ func TestCodexLaunchRemember(t *testing.T) {
 func TestCodexAccountsAdd(t *testing.T) {
 	scope := config.ForHome(t.TempDir()).Codex // absent: add is how Codex comes to exist
 	var out, errw bytes.Buffer
-	if code := runAccountsAddTo(&out, &errw, scope, []string{"new@x.com"}); code != 0 {
+	if code := addTo(&out, &errw, scope, "new@x.com"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errw.String())
 	}
 	text := out.String()
@@ -158,7 +137,7 @@ func TestCodexAccountsAdd(t *testing.T) {
 	if strings.Contains(text, "/login") || strings.Contains(text, "projects") {
 		t.Errorf("Codex add output speaks Claude Code:\n%s", text)
 	}
-	if code := runAccountsAddTo(&out, &errw, scope, []string{"new@x.com"}); code != 1 {
+	if code := addTo(&out, &errw, scope, "new@x.com"); code != 1 {
 		t.Errorf("seeding over an existing home: exit %d", code)
 	}
 }
@@ -168,33 +147,26 @@ func TestCodexAccountsAdd(t *testing.T) {
 func TestCodexAccountsRemoveRefuses(t *testing.T) {
 	scope := codexLaunchFixture(t)
 	dir := filepath.Join(scope.AccountsRoot, "cx@x.com")
-	for _, args := range [][]string{{"cx@x.com"}, {"cx@x.com", "--yes"}, {"--yes", "cx@x.com"}, {}} {
-		var errw bytes.Buffer
-		if code := refuseCodexRemove(&errw, scope, args); code != 1 {
-			t.Errorf("%v: exit %d, want 1", args, code)
+	for _, c := range []struct {
+		name string
+		yes  bool
+	}{{"cx@x.com", false}, {"cx@x.com", true}, {"", true}, {"", false}} {
+		got := call(func(std Streams) error {
+			return AccountsRemove(std, Terminal{}, scope, c.name, c.yes, quietPlace().Probe)
+		})
+		if got.code != 1 {
+			t.Errorf("%+v: exit %d, want 1", c, got.code)
 		}
 		// The remedy is the token a person acts on; the reason around it is prose.
-		msg := errw.String()
-		if !strings.Contains(msg, "by hand") {
-			t.Errorf("%v: %s", args, msg)
+		if !strings.Contains(got.stderr, "by hand") {
+			t.Errorf("%+v: %s", c, got.stderr)
 		}
-		if len(args) > 0 && args[0] != "--yes" || len(args) == 2 {
-			if !strings.Contains(msg, dir) {
-				t.Errorf("%v: the refusal does not name %s: %s", args, dir, msg)
-			}
+		if c.name != "" && !strings.Contains(got.stderr, dir) {
+			t.Errorf("%+v: the refusal does not name %s: %s", c, dir, got.stderr)
 		}
 		if _, err := os.Stat(dir); err != nil {
-			t.Fatalf("%v: the directory is gone", args)
+			t.Fatalf("%+v: the directory is gone", c)
 		}
-	}
-	// And through the command's own entry point.
-	stderr := captureStderr(t, func() {
-		if code := runAccountsRemove(scope, []string{"cx@x.com", "--yes"}); code != 1 {
-			t.Errorf("exit %d", code)
-		}
-	})
-	if !strings.Contains(stderr, dir) {
-		t.Errorf("stderr = %q", stderr)
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Error("the directory is gone")

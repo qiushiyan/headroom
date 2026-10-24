@@ -8,7 +8,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -97,7 +96,7 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 		t.Error("a present user must get the ordinary cadence back")
 	}
 	// A round already in flight never starts a second one, armed or not.
-	ui.updates = make(chan refresh.Result)
+	ui.updates = make(chan round.Result)
 	ui.armed = true
 	if ui.due(lastKey) {
 		t.Error("rounds must not overlap")
@@ -135,7 +134,7 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 	// During a round it arms too, floor or not: the round in flight only
 	// carries the accounts that were eligible when it started.
 	ui.armed, ui.lastLocal = false, time.Now().Add(-refreshFloor-time.Second)
-	ui.updates = make(chan refresh.Result)
+	ui.updates = make(chan round.Result)
 	ui.refresh(ctx)
 	if !ui.armed || *begun != 2 {
 		t.Errorf("r during a round: armed %v, rounds %d — it must arm and start nothing", ui.armed, *begun)

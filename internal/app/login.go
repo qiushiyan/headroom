@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,8 +78,25 @@ type loginRow struct {
 	page   approvalPage // where its approval goes, for the email it is for
 }
 
-func runLogin(scope config.Scope, args []string) int {
-	return runLoginTo(os.Stdout, os.Stderr, scope, args, loginDeps{
+// LoginOptions say which logins `headroom login` renews: the named ones, or
+// --all, or else each one that ends within Within, has ended or was never
+// made. DryRun prints the plan only.
+type LoginOptions struct {
+	Names  []string
+	All    bool
+	Within time.Duration
+	DryRun bool
+}
+
+// DefaultLoginWithin is how close a login's end must be for a bare
+// `headroom login` to renew it.
+const DefaultLoginWithin = defaultLoginWithin
+
+// Login renews Claude Code logins, one `claude auth login` per account in
+// turn, its approval page opened in the Chrome profile matched to the
+// account's email, and reads each result back.
+func Login(std Streams, scope config.Scope, opts LoginOptions) error {
+	return renewLogins(std, scope, opts, loginDeps{
 		health: round.ProbeHealth,
 		readRaw: func(a accounts.Account) string {
 			raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
@@ -94,58 +110,19 @@ func runLogin(scope config.Scope, args []string) int {
 		inKeychain: func(a accounts.Account) bool { return creds.HasKeychainItem(a.ConfigDir) },
 		approver:   newApprover(scope),
 		now:        time.Now,
-		login:      vendorLogin,
+		login:      newVendorLogin(std),
 		tokens:     func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
 	})
 }
 
-func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps loginDeps) int {
-	var names []string
-	all, dryRun := false, false
-	within := defaultLoginWithin
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--all":
-			all = true
-		case a == "--dry-run":
-			dryRun = true
-		case a == "--within":
-			if i+1 >= len(args) {
-				fmt.Fprintln(errw, "headroom login: --within needs a number of days")
-				return 2
-			}
-			i++
-			days, err := strconv.Atoi(args[i])
-			if err != nil || days < 0 {
-				fmt.Fprintf(errw, "headroom login: --within %q is not a number of days\n", args[i])
-				return 2
-			}
-			within = time.Duration(days) * 24 * time.Hour
-		case strings.HasPrefix(a, "-"):
-			fmt.Fprintf(errw, "headroom login: unknown flag %q\n", a)
-			return 2
-		case a == "":
-			// A caller's expansion bug (`headroom login "$name"`), never a
-			// request for the pinned account, which is what Select reads "" as.
-			fmt.Fprintln(errw, "headroom login: an account name cannot be empty")
-			return 2
-		default:
-			names = append(names, a)
-		}
-	}
-	if all && len(names) > 0 {
-		fmt.Fprintln(errw, "headroom login: --all and account names exclude each other")
-		return 2
-	}
-
+func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginDeps) error {
+	out, names, all, within := std.Out, opts.Names, opts.All, opts.Within
 	set := accounts.Discover(scope)
 	named := map[string]bool{}
 	for _, n := range names {
 		a, err := set.Select(n)
 		if err != nil {
-			fmt.Fprintf(errw, "headroom login: %v\n", err)
-			return 1
+			return err
 		}
 		named[a.Name] = true
 	}
@@ -180,15 +157,15 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 	}
 	if len(chosen) == 0 {
 		if refused > 0 {
-			return 1
+			return Status(1)
 		}
 		if sealed == 0 {
 			fmt.Fprintf(out, "nothing to renew within %s; name an account or pass --all to renew anyway\n", render.Days(within))
 		}
-		return 0
+		return nil
 	}
-	if dryRun {
-		return 0
+	if opts.DryRun {
+		return nil
 	}
 
 	failed := refused
@@ -228,9 +205,9 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 			// refused again until what holds it changes.
 			fmt.Fprintf(out, "retry them: headroom login %s\n", strings.Join(retry, " "))
 		}
-		return 1
+		return Status(1)
 	}
-	return 0
+	return nil
 }
 
 // writeTokenEnds names the headless tokens that end inside the window or have
@@ -400,13 +377,25 @@ func orNobody(email string) string {
 // stdout and stderr are the terminal's: the vendor always prints the URL,
 // and asks there for the code when the browser cannot reach its localhost
 // callback. The code itself comes in through headroom (relayCodes).
-func vendorLogin(acct accounts.Account, set accounts.Set, page approvalPage) error {
+//
+// The terminal's input is read line by line from the first login that asks
+// until the input ends. One reader serves the whole batch: a read cannot be
+// called off, so a reader per login would leave the last one holding the
+// next login's paste.
+func newVendorLogin(std Streams) func(acct accounts.Account, set accounts.Set, page approvalPage) error {
+	pasted := sync.OnceValue(func() <-chan string { return readLines(std.In) })
+	return func(acct accounts.Account, set accounts.Set, page approvalPage) error {
+		return vendorLogin(std, pasted, acct, set, page)
+	}
+}
+
+func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account, set accounts.Set, page approvalPage) error {
 	p, err := launch.Prepare(acct, set, os.Environ())
 	if err != nil {
 		return err
 	}
 	for _, n := range p.Notices {
-		fmt.Fprintln(os.Stderr, "headroom: "+n)
+		fmt.Fprintln(std.Err, "headroom: "+n)
 	}
 	dir, err := os.MkdirTemp("", "headroom-login")
 	if err != nil {
@@ -425,12 +414,12 @@ func vendorLogin(acct accounts.Account, set accounts.Set, page approvalPage) err
 	cmd := exec.Command(p.Path, args...)
 	cmd.Args[0] = p.Binary
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdout, cmd.Stderr = std.Out, std.Err
 	vendorIn, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
-	lines := pastedLines()
+	lines := pasted()
 	drainLines(lines)
 	if err := cmd.Start(); err != nil {
 		return err
@@ -438,7 +427,7 @@ func vendorLogin(acct accounts.Account, set accounts.Set, page approvalPage) err
 	done, relayed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(relayed)
-		relayCodes(lines, vendorIn, os.Stderr, func() string {
+		relayCodes(lines, vendorIn, std.Err, func() string {
 			// The vendor hands $BROWSER the URL just after printing it, so
 			// only a paste typed ahead can beat the record; give it a
 			// moment before calling the state unknown. With no opener of
@@ -457,21 +446,18 @@ func vendorLogin(acct accounts.Account, set accounts.Set, page approvalPage) err
 	return err
 }
 
-// pastedLines is the terminal's input, line by line, read from the first
-// login that asks until the input ends. One reader serves the whole batch:
-// a read cannot be called off, so a reader per login would leave the last
-// one holding the next login's paste.
-var pastedLines = sync.OnceValue(func() <-chan string {
+// readLines is r, line by line, until it ends.
+func readLines(r io.Reader) <-chan string {
 	lines := make(chan string)
 	go func() {
 		defer close(lines)
-		sc := bufio.NewScanner(os.Stdin)
+		sc := bufio.NewScanner(r)
 		for sc.Scan() {
 			lines <- sc.Text()
 		}
 	}()
 	return lines
-})
+}
 
 // drainLines drops the lines entered before a login began: they were meant
 // for an earlier one.

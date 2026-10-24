@@ -252,7 +252,7 @@ func (ui *resumeUI) commitResume(override bool) (bool, int) {
 			ui.message = err.Error()
 			return false, 0
 		}
-		fmt.Fprintf(os.Stderr, "headroom sessions: %v\n", err)
+		ui.failed = err
 		return true, 1
 	}
 	return committed, 0

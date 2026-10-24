@@ -13,47 +13,19 @@ package app
 // claim.
 
 import (
-	"fmt"
-	"io"
-	"os"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/round"
 )
 
-func runLimits(scopes []config.Scope, args []string) int {
-	return runLimitsTo(os.Stdout, scopes, args)
-}
-
-// runLimitsTo is runLimits with the document's destination injected, so the
-// command — flag policy included — is testable without capturing the process's
-// stdout. Diagnostics still go to stderr: the document stream carries JSON or
-// nothing.
-func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
-	account, accountSet := "", false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--account":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "headroom limits: --account needs a value")
-				return 2
-			}
-			i++
-			account, accountSet = args[i], true
-		default:
-			fmt.Fprintf(os.Stderr, "headroom limits: unknown argument %q\n", args[i])
-			return 2
-		}
-	}
-	if accountSet && account == "" {
-		// Same policy as launch and resolve: "" is not a name, and treating
-		// it as "all accounts" would let a caller's expansion bug silently
-		// widen a one-account question.
-		fmt.Fprintln(os.Stderr, "headroom limits: --account needs a non-empty name")
-		return 2
-	}
-
+// Limits is what is already known about limits, as the board's JSON
+// document, read from disk alone: no health probe, no network, never a
+// request spent. account, when set, keeps the accounts of that name: the same
+// email can be an account of both vendors, and then both answer, each under
+// its own vendor.
+func Limits(std Streams, scopes []config.Scope, account string) error {
+	accountSet := account != ""
 	// Every selected vendor, read from disk alone. --account filters by name
 	// inside them: the same email can be an account of both vendors, and then
 	// both rows answer, each under its own "vendor".
@@ -77,14 +49,12 @@ func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
 		boards = append(boards, r.View())
 	}
 	if accountSet && matched == 0 {
-		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", selectErr)
-		return 1
+		return selectErr
 	}
 	data, err := jsonDocument(boards, now)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom limits: %v\n", err)
-		return 1
+		return err
 	}
-	w.Write(append(data, '\n'))
-	return 0
+	_, err = std.Out.Write(append(data, '\n'))
+	return err
 }

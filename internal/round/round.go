@@ -158,11 +158,16 @@ func (r *Round) Asking() bool {
 	return slices.ContainsFunc(r.rows, func(d *row) bool { return d.request != nil })
 }
 
+// Result is one answer of a round's Fetch: the request's result, by the index
+// of the account it answers, and the round it belongs to.
+type Result struct {
+	refresh.Result
+	of *Round
+}
+
 // Fetch is the budget half of the round: the claim, and whatever requests it
-// permits, each result reported by the index of the account it answers. The
-// round owns the channel with its rows until it has closed and drained:
-// results are applied to this round alone (Apply).
-func (r *Round) Fetch(ctx context.Context) <-chan refresh.Result {
+// permits, each result reported as this round's.
+func (r *Round) Fetch(ctx context.Context) <-chan Result {
 	requests := make([]*refresh.Candidate, len(r.rows))
 	for i, d := range r.rows {
 		requests[i] = d.request
@@ -173,12 +178,29 @@ func (r *Round) Fetch(ctx context.Context) <-chan refresh.Result {
 			return refresh.Start(ctx, st, requests, nil)
 		}
 	}
-	return start(ctx, r.Store, requests)
+	return r.Feed(start(ctx, r.Store, requests))
 }
 
-// Apply lands one result of this round's Fetch on the account it answers.
-func (r *Round) Apply(res refresh.Result) {
-	if res.Index < 0 || res.Index >= len(r.rows) {
+// Feed reports what src delivers as this round's results, in order, and
+// closes when src does: Fetch's own requests, or results a test delivers by
+// hand. Its buffer holds an answer per account, so an abandoned round never
+// blocks the requests still in flight.
+func (r *Round) Feed(src <-chan refresh.Result) <-chan Result {
+	out := make(chan Result, max(len(r.rows), cap(src)))
+	go func() {
+		defer close(out)
+		for u := range src {
+			out <- Result{Result: u, of: r}
+		}
+	}()
+	return out
+}
+
+// Apply lands one of this round's results on the account it answers. Another
+// round's result is ignored: its index counts that round's accounts, and the
+// same index here can be someone else's.
+func (r *Round) Apply(res Result) {
+	if res.of != r || res.Index < 0 || res.Index >= len(r.rows) {
 		return
 	}
 	d := r.rows[res.Index]

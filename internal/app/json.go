@@ -8,8 +8,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -263,14 +261,14 @@ func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
 // fetchBoards runs one full round per scope — prepare, the claim and whatever
 // fetches it permits, then the marks — the rounds side by side: each owns its
 // own rows and channel, so the two vendors' results never meet.
-func fetchBoards(scopes []config.Scope) []round.View {
+func fetchBoards(scopes []config.Scope, deps BoardDeps) []round.View {
 	boards := make([]round.View, len(scopes))
 	var wg sync.WaitGroup
 	for i, scope := range scopes {
 		wg.Go(func() {
-			r := round.Prepare(context.Background(), scope, state.Open(scope), time.Now(), roundDeps(true))
+			r := round.Prepare(context.Background(), scope, state.Open(scope), time.Now(), deps.Round)
 			r.Complete(context.Background())
-			markBoard(r, time.Now())
+			markBoard(r, time.Now(), deps.Place)
 			boards[i] = r.View()
 		})
 	}
@@ -278,12 +276,14 @@ func fetchBoards(scopes []config.Scope) []round.View {
 	return boards
 }
 
-func runDashboardJSON(scopes []config.Scope) int {
-	data, err := jsonDocument(fetchBoards(scopes), time.Now())
+// BoardJSON is the board as a versioned document: one full round per vendor
+// — probes and, budget permitting, fetches — for scripts that want a
+// refresh.
+func BoardJSON(std Streams, scopes []config.Scope, deps BoardDeps) error {
+	data, err := jsonDocument(fetchBoards(scopes, deps), time.Now())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom: %v\n", err)
-		return 1
+		return err
 	}
-	os.Stdout.Write(append(data, '\n'))
-	return 0
+	_, err = std.Out.Write(append(data, '\n'))
+	return err
 }

@@ -435,7 +435,23 @@ func headroomBinary(t *testing.T) string {
 	return built.path
 }
 
+// TestMain clears what would re-point a run in this process at the caller's
+// own machine — headroom's variables, the vendors' home and credential
+// variables, a browser, an ssh session — before any test reads it. The
+// contract runs set their environment whole.
 func TestMain(m *testing.M) {
+	ambient := []string{"BROWSER", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"}
+	for _, v := range []config.Vendor{config.Claude, config.Codex} {
+		ambient = append(ambient, v.EnvPolicy().Strip...)
+	}
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "HEADROOM_") {
+			ambient = append(ambient, name)
+		}
+	}
+	for _, v := range ambient {
+		os.Unsetenv(v)
+	}
 	code := m.Run()
 	if built.dir != "" {
 		os.RemoveAll(built.dir)

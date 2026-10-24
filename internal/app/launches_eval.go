@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -32,9 +31,9 @@ const EvalSchema = 1
 // evalListed is how many of each kind of evidence the text report lists.
 const evalListed = 8
 
-// parseSince reads --since: a span back from now ("7d", "36h", "90m") or an
+// ParseSince reads --since: a span back from now ("7d", "36h", "90m") or an
 // instant ("2026-10-01", or RFC3339).
-func parseSince(s string, now time.Time) (time.Time, error) {
+func ParseSince(s string, now time.Time) (time.Time, error) {
 	if n, ok := strings.CutSuffix(s, "d"); ok {
 		if d, err := strconv.Atoi(n); err == nil && d >= 0 {
 			return now.Add(-time.Duration(d) * 24 * time.Hour), nil
@@ -107,17 +106,20 @@ func gatherEval(scope config.Scope, since, now time.Time) (eval.Input, error) {
 	return in, nil
 }
 
-func runEval(w io.Writer, scopes []config.Scope, since time.Time, jsonMode bool, now time.Time) int {
+// LaunchesEval is how automatic placement has done, per rule version, from
+// the launch logs and the usage log since an instant (the zero time: every
+// line).
+func LaunchesEval(std Streams, scopes []config.Scope, since time.Time, asJSON bool, now time.Time) error {
+	w := std.Out
 	var reports []eval.Report
 	for _, scope := range scopes {
 		in, err := gatherEval(scope, since, now)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-			return 1
+			return err
 		}
 		reports = append(reports, eval.Build(in))
 	}
-	if jsonMode {
+	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		doc := struct {
@@ -125,11 +127,7 @@ func runEval(w io.Writer, scopes []config.Scope, since time.Time, jsonMode bool,
 			GeneratedAt string        `json:"generated_at"`
 			Vendors     []eval.Report `json:"vendors"`
 		}{EvalSchema, now.UTC().Format(time.RFC3339), reports}
-		if err := enc.Encode(doc); err != nil {
-			fmt.Fprintf(os.Stderr, "headroom launches: %v\n", err)
-			return 1
-		}
-		return 0
+		return enc.Encode(doc)
 	}
 	for i, rep := range reports {
 		if i > 0 {
@@ -137,7 +135,7 @@ func runEval(w io.Writer, scopes []config.Scope, since time.Time, jsonMode bool,
 		}
 		writeEval(w, rep)
 	}
-	return 0
+	return nil
 }
 
 // writeEval is one vendor's report for a person: a column per rule version

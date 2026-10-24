@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ type evalDoc struct {
 func runEvalJSON(t *testing.T, scope config.Scope, args ...string) evalDoc {
 	t.Helper()
 	var out bytes.Buffer
-	if code := runLaunchesTo(&out, []config.Scope{scope}, append([]string{"--eval", "--json"}, args...)); code != 0 {
+	if code := launchesTo(t, &out, []config.Scope{scope}, append([]string{"--eval", "--json"}, args...)...); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	return decodeEval(t, out.Bytes())
@@ -81,8 +82,12 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if code := runEval(&out, []config.Scope{f.cfg}, time.Time{}, true, read.Add(time.Minute)); code != 0 {
-		t.Fatalf("exit %d", code)
+	if got := call(func(std Streams) error {
+		return LaunchesEval(std, []config.Scope{f.cfg}, time.Time{}, true, read.Add(time.Minute))
+	}); got.code != 0 {
+		t.Fatalf("exit %d", got.code)
+	} else {
+		out.WriteString(got.stdout)
 	}
 	rep := decodeEval(t, out.Bytes()).Vendors[0]
 	if rep.Sources.Launches != 2 || rep.Sources.Logged != 1 || rep.Sources.Homes != 1 || len(rep.Decisions) != 1 {
@@ -97,7 +102,7 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 	}
 
 	out.Reset()
-	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 {
+	if code := launchesTo(t, &out, []config.Scope{f.cfg}, "--eval"); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	// The text is the same report for a person: its vendor, the account, and
@@ -166,7 +171,7 @@ func TestTheEvaluationReadsEveryHomeOnTheLedger(t *testing.T) {
 		t.Errorf("sources = %+v", rep.Sources)
 	}
 	var out bytes.Buffer
-	if code := runLaunchesTo(&out, []config.Scope{f.owner}, []string{"--eval"}); code != 0 || !strings.Contains(out.String(), "partial: "+path) {
+	if code := launchesTo(t, &out, []config.Scope{f.owner}, "--eval"); code != 0 || !strings.Contains(out.String(), "partial: "+path) {
 		t.Errorf("exit %d:\n%s", code, out.String())
 	}
 }
@@ -183,7 +188,7 @@ func TestAReplayFaultIsSaidFirst(t *testing.T) {
 		t.Fatal(got.stderr)
 	}
 	var out bytes.Buffer
-	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 || strings.Contains(out.String(), "fault") {
+	if code := launchesTo(t, &out, []config.Scope{f.cfg}, "--eval"); code != 0 || strings.Contains(out.String(), "fault") {
 		t.Fatalf("a clean log: exit %d\n%s", code, out.String())
 	}
 
@@ -200,7 +205,7 @@ func TestAReplayFaultIsSaidFirst(t *testing.T) {
 			t.Log(out.String())
 		}
 	}()
-	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 {
+	if code := launchesTo(t, &out, []config.Scope{f.cfg}, "--eval"); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	text := out.String()
@@ -214,26 +219,12 @@ func TestAReplayFaultIsSaidFirst(t *testing.T) {
 	}
 }
 
+// What the flags accept — -n beside --eval, --since without it or with no
+// span — is the command line's: cmd/headroom's TestGrammar.
 func TestTheEvaluationsArguments(t *testing.T) {
 	f := newAutoFixture(t)
-	for _, args := range [][]string{
-		{"--eval", "-n", "3"},
-		{"--since", "7d"},
-		{"--eval", "--since"},
-		{"--eval", "--since", "soon"},
-	} {
-		var out bytes.Buffer
-		stderr := captureStderr(t, func() {
-			if code := runLaunchesTo(&out, []config.Scope{f.cfg}, args); code != 2 {
-				t.Errorf("%v: exit %d, want 2", args, code)
-			}
-		})
-		if stderr == "" {
-			t.Errorf("%v: refused without saying why", args)
-		}
-	}
 	var out bytes.Buffer
-	if code := runLaunchesTo(&out, []config.Scope{f.cfg}, []string{"--eval"}); code != 0 || !strings.Contains(out.String(), "nothing recorded yet") {
+	if code := launchesTo(t, &out, []config.Scope{f.cfg}, "--eval"); code != 0 || !strings.Contains(out.String(), "nothing recorded yet") {
 		t.Errorf("an empty log: exit %d\n%s", code, out.String())
 	}
 	if doc := runEvalJSON(t, f.cfg, "--since", "2026-10-01"); doc.Vendors[0].Since == nil {
@@ -250,14 +241,48 @@ func TestParseSince(t *testing.T) {
 		"2026-10-01T08:00:00Z": time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC),
 		"2026-10-01":           time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local),
 	} {
-		got, err := parseSince(in, now)
+		got, err := ParseSince(in, now)
 		if err != nil || !got.Equal(want) {
 			t.Errorf("%s: %v, %v; want %v", in, got, err, want)
 		}
 	}
 	for _, in := range []string{"", "soon", "-3d", "3w"} {
-		if _, err := parseSince(in, now); err == nil {
+		if _, err := ParseSince(in, now); err == nil {
 			t.Errorf("%q parsed", in)
 		}
 	}
+}
+
+// launchesTo lists or evaluates through the launches surfaces, the way the
+// command line spells their flags.
+func launchesTo(t *testing.T, out *bytes.Buffer, scopes []config.Scope, args ...string) int {
+	t.Helper()
+	n, asJSON, eval, since := DefaultLaunches, false, false, time.Time{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--eval":
+			eval = true
+		case "-n":
+			i++
+			n, _ = strconv.Atoi(args[i])
+		case "--since":
+			i++
+			var err error
+			if since, err = ParseSince(args[i], time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("launches flag %q is not one these tests spell", args[i])
+		}
+	}
+	got := call(func(std Streams) error {
+		if eval {
+			return LaunchesEval(std, scopes, since, asJSON, time.Now())
+		}
+		return Launches(std, scopes, n, asJSON)
+	})
+	out.WriteString(got.stdout)
+	return got.code
 }

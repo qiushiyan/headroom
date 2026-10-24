@@ -10,8 +10,8 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
@@ -59,11 +59,10 @@ type picker struct {
 
 func (ui *picker) page() *page { return ui.pages[ui.visible] }
 
-func runPicker(scopes []config.Scope, layout render.Layout) int {
+func runPicker(std Streams, term Terminal, scopes []config.Scope, layout render.Layout, deps BoardDeps) error {
 	t, err := tui.Open()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
-		return 1
+		return err
 	}
 	defer t.Close()
 
@@ -74,12 +73,12 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 
 	ui := &picker{
 		p:       render.NewPalette(true),
-		fp:      &framePrinter{},
+		fp:      &framePrinter{out: std.Out, size: term.Size},
 		layout:  layout,
 		lastKey: time.Now(),
 	}
 	for _, scope := range scopes {
-		ui.pages = append(ui.pages, newPage(scope))
+		ui.pages = append(ui.pages, newPage(scope, deps))
 	}
 	// Every exit — enter, cancel, the deferred Close, a signal death — steps
 	// below the newline-less frame through the same once-guarded path.
@@ -94,18 +93,17 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 		switch ui.step(ctx, tick.C, t.Events()) {
 		case stepCancel:
 			t.Close()
-			return 1
+			return Status(1)
 		case stepAuto:
 			pg := ui.page()
 			t.Close()
 			// Like enter, this records the visible page's vendor's routing and
 			// nothing else, and starts no session.
 			if err := pg.round.Set.SetAuto(); err != nil {
-				fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
-				return 1
+				return err
 			}
-			fmt.Println(autoLine(pg.scope))
-			return 0
+			fmt.Fprintln(std.Out, autoLine(pg.scope))
+			return nil
 		case stepChoose:
 			pg := ui.page()
 			chosen := pg.accounts()[pg.sel]
@@ -113,11 +111,10 @@ func runPicker(scopes []config.Scope, layout render.Layout) int {
 			// Enter records this page's vendor's current account and nothing
 			// else: the other vendor's .current is not touched.
 			if err := pg.round.Set.SetCurrent(chosen.Acct); err != nil {
-				fmt.Fprintf(os.Stderr, "headroom accounts: %v\n", err)
-				return 1
+				return err
 			}
-			fmt.Println(chosenLine(pg.scope, chosen.View.Label))
-			return 0
+			fmt.Fprintln(std.Out, chosenLine(pg.scope, chosen.View.Label))
+			return nil
 		}
 		ui.draw()
 	}
@@ -142,7 +139,7 @@ func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan t
 	// The vendor set is closed at two, so the loop receives from every
 	// page's channel by name. A page with no round in flight has a nil
 	// channel, which never delivers.
-	var second <-chan refresh.Result
+	var second <-chan round.Result
 	if len(ui.pages) > 1 {
 		second = ui.pages[1].updates
 	}

@@ -1,0 +1,21 @@
+Usage: headroom headless mint <account> [flags]
+
+Mint a long-lived token for one account through claude setup-token.
+
+Mints a long-lived token for one account through Claude Code's own claude setup-token,
+approved in the Chrome profile matched to the account — or, over ssh, at the printed URL
+with the code pasted back — and stores it in a file only you can read. It needs a terminal:
+the vendor asks for the approval there, and waits up to ten minutes for it.
+
+Arguments:
+  <account>        The account to mint for; its dir must be logged in to it.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded

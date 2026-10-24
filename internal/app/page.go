@@ -14,7 +14,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchop"
-	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -31,13 +30,14 @@ const presenceWindow = 5 * time.Minute
 type page struct {
 	scope config.Scope
 	st    *state.Store
+	deps  BoardDeps
 	// round is the newest round's: the accounts on screen, the set they were
 	// discovered as and the read of `.current` that marked them — "pinned",
 	// "auto", or "" when the file will not resolve — under the page's scope
 	// and store, which every round keeps. nil until the first round.
 	round *round.Round
 
-	updates <-chan refresh.Result // non-nil while this page's round is in flight
+	updates <-chan round.Result // non-nil while this page's round is in flight
 	sel     int
 	selName string // survives a round that reorders or re-discovers accounts
 	opened  bool   // the first visit has chosen the initial selection
@@ -57,13 +57,13 @@ type page struct {
 	// begin starts a round under the page's scope and store: the local half,
 	// then the claim and whatever fetches it permits. The round it returns
 	// replaces the page's. nil means beginRound; tests inject channels.
-	begin func(ctx context.Context, pg *page) (*round.Round, <-chan refresh.Result)
+	begin func(ctx context.Context, pg *page) (*round.Round, <-chan round.Result)
 }
 
 const ackTTL = 4 * time.Second
 
-func newPage(scope config.Scope) *page {
-	return &page{scope: scope, st: state.Open(scope)}
+func newPage(scope config.Scope, deps BoardDeps) *page {
+	return &page{scope: scope, st: state.Open(scope), deps: deps}
 }
 
 // accounts is the newest round's accounts, as they stand; none before the
@@ -77,7 +77,7 @@ func (pg *page) accounts() []accountstate.Account {
 
 // receive applies one result of this page's own round, or closes the round
 // out when its channel has drained. Only this receiving path updates facts.
-func (pg *page) receive(u refresh.Result, open bool, now time.Time) {
+func (pg *page) receive(u round.Result, open bool, now time.Time) {
 	if open {
 		pg.round.Apply(u)
 		return
@@ -123,8 +123,8 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 // beginRound is a round as the picker runs it, under the picker's ctx: the
 // local half with the health probe, then the claim and whatever fetches it
 // permits, against the page's own store.
-func beginRound(ctx context.Context, pg *page) (*round.Round, <-chan refresh.Result) {
-	r := round.Prepare(ctx, pg.scope, pg.st, time.Now(), roundDeps(true))
+func beginRound(ctx context.Context, pg *page) (*round.Round, <-chan round.Result) {
+	r := round.Prepare(ctx, pg.scope, pg.st, time.Now(), pg.deps.Round)
 	return r, r.Fetch(ctx)
 }
 
@@ -134,7 +134,7 @@ func beginRound(ctx context.Context, pg *page) (*round.Round, <-chan refresh.Res
 // and again when its results have landed. The mode is the round's own reading
 // of `.current`, never a second one.
 func (ui *page) mark(now time.Time) {
-	ui.placed = markBoard(ui.round, now)
+	ui.placed = markBoard(ui.round, now, ui.deps.Place)
 }
 
 // markAt marks the rows again from what the last round gathered, at now. A

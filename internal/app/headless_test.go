@@ -36,15 +36,29 @@ func tokenSuffix(name string) string {
 
 func (f autoFixture) place(args ...string) (headlessDoc, int, string) {
 	f.t.Helper()
-	var out, errw bytes.Buffer
-	code := runHeadlessPlace(&out, &errw, f.cfg, args)
-	var doc headlessDoc
-	if out.Len() > 0 {
-		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
-			f.t.Fatalf("place printed no document: %v\n%s", err, out.String())
+	opts := HeadlessPlaceOptions{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			opts.DryRun = true
+		case "--prefer":
+			i++
+			opts.Prefer = args[i]
+		case "--exclude":
+			i++
+			opts.Exclude = append(opts.Exclude, args[i])
+		default:
+			f.t.Fatalf("place flag %q is not one these tests spell", args[i])
 		}
 	}
-	return doc, code, errw.String()
+	r := call(func(std Streams) error { return HeadlessPlace(std, f.cfg, opts, f.edges) })
+	var doc headlessDoc
+	if r.stdout != "" {
+		if err := json.Unmarshal([]byte(r.stdout), &doc); err != nil {
+			f.t.Fatalf("place printed no document: %v\n%s", err, r.stdout)
+		}
+	}
+	return doc, r.code, r.stderr
 }
 
 func (d headlessDoc) find(name string) headlessAcct {
@@ -68,7 +82,7 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	f.mint("b@x.com", 300*24*time.Hour)
 
 	doc, code, errw := f.place()
-	if code != exitPlaced || !doc.Placed || doc.Account != "b@x.com" || doc.Reason != placement.ReasonLeastLoad || doc.Placement == "" {
+	if code != 0 || !doc.Placed || doc.Account != "b@x.com" || doc.Reason != placement.ReasonLeastLoad || doc.Placement == "" {
 		t.Fatalf("code %d doc %+v stderr %s", code, doc, errw)
 	}
 	if doc.TokenEndsAt == nil || doc.RetryAt != nil || doc.Rule != placement.Rule {
@@ -103,7 +117,7 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if doc, _, _ := f.place(); doc.Account != "a@x.com" {
 		t.Errorf("second placement went to %q", doc.Account)
 	}
-	marks := placementView(accounts.Discover(f.cfg), f.st, time.Now())
+	marks := placementView(accounts.Discover(f.cfg), f.st, time.Now(), f.edges)
 	if n := marks["a@x.com"].Load.Launched; n != 1 {
 		t.Errorf("a launch counts a's headless placement as %d", n)
 	}
@@ -125,7 +139,7 @@ func TestAHeadlessPlacementWaitsRatherThanTakeAnAccountNearALimit(t *testing.T) 
 	f.mint("b@x.com", 300*24*time.Hour)
 
 	doc, code, _ := f.place()
-	if code != exitRefused || doc.Placed || doc.Placement != "" || !strings.Contains(doc.Refusal, "near a limit") {
+	if code != ExitRefused || doc.Placed || doc.Placement != "" || !strings.Contains(doc.Refusal, "near a limit") {
 		t.Fatalf("code %d doc %+v", code, doc)
 	}
 	retry, err := time.Parse(time.RFC3339, deref(doc.RetryAt))
@@ -142,7 +156,7 @@ func TestAHeadlessPlacementWaitsRatherThanTakeAnAccountNearALimit(t *testing.T) 
 	// Nothing near a limit to wait for: refused, and no instant.
 	g := newAutoFixture(t, "a@x.com")
 	doc, code, _ = g.place()
-	if code != exitRefused || doc.RetryAt != nil || !strings.Contains(doc.Refusal, "no headless token") {
+	if code != ExitRefused || doc.RetryAt != nil || !strings.Contains(doc.Refusal, "no headless token") {
 		t.Fatalf("no tokens: %d %+v", code, doc)
 	}
 }
@@ -180,7 +194,7 @@ func TestAStartedSessionCountsAsBusyForItsWholeLife(t *testing.T) {
 	doc, _, _ := f.place()
 	f.live[4242] = time.Now().Unix()
 	var errw bytes.Buffer
-	if code := runHeadlessStarted(&errw, f.cfg, []string{doc.Placement, "4242"}); code != 0 {
+	if code := f.started(&errw, doc.Placement, 4242); code != 0 {
 		t.Fatalf("started: %d %s", code, errw.String())
 	}
 	runs := f.st.Load().Runs()
@@ -189,7 +203,7 @@ func TestAStartedSessionCountsAsBusyForItsWholeLife(t *testing.T) {
 	}
 
 	count := func(at time.Time) *accountstate.Load {
-		return placementView(accounts.Discover(f.cfg), f.st, at)[doc.Account].Load
+		return placementView(accounts.Discover(f.cfg), f.st, at, f.edges)[doc.Account].Load
 	}
 	if c := count(time.Now()); c.Busy != 1 || c.Launched != 0 || c.Value != 1 {
 		t.Fatalf("running: busy %d pending %d load %d", c.Busy, c.Launched, c.Value)
@@ -212,12 +226,12 @@ func TestAStartedSessionCountsAsBusyForItsWholeLife(t *testing.T) {
 	// A process gone before it is reported has nothing more to count; an id
 	// nobody placed is an error.
 	errw.Reset()
-	if code := runHeadlessStarted(&errw, f.cfg, []string{doc.Placement, "999"}); code != 0 || !strings.Contains(errw.String(), "already exited") {
+	if code := f.started(&errw, doc.Placement, 999); code != 0 || !strings.Contains(errw.String(), "already exited") {
 		t.Errorf("gone process: %d %s", code, errw.String())
 	}
 	f.live[777] = time.Now().Unix()
 	errw.Reset()
-	if code := runHeadlessStarted(&errw, f.cfg, []string{"nope", "777"}); code != 1 || !strings.Contains(errw.String(), "no recent placement") {
+	if code := f.started(&errw, "nope", 777); code != 1 || !strings.Contains(errw.String(), "no recent placement") {
 		t.Errorf("unknown placement: %d %s", code, errw.String())
 	}
 }
@@ -233,7 +247,7 @@ func TestHeadlessExclusions(t *testing.T) {
 	writeJSON(t, f.cfg.AccountsRoot+"/c@x.com/.claude.json", `{}`)
 
 	doc, code, _ := f.place("--dry-run")
-	if code != exitRefused || !doc.DryRun {
+	if code != ExitRefused || !doc.DryRun {
 		t.Fatalf("code %d %+v", code, doc)
 	}
 	for name, want := range map[string]string{
@@ -287,7 +301,7 @@ func TestTheTokenIsPrintedOnlyWhenAsked(t *testing.T) {
 	var out, errw bytes.Buffer
 	for _, n := range []string{"a@x.com", "d@x.com", "e@x.com"} {
 		out.Reset()
-		if code := runHeadlessToken(&out, &errw, f.cfg, []string{n}); code != 0 || out.String() != testToken+tokenSuffix(n)+"\n" {
+		if code := f.token(&out, &errw, n); code != 0 || out.String() != testToken+tokenSuffix(n)+"\n" {
 			t.Fatalf("token %s: %d %q %s", n, code, out.String(), errw.String())
 		}
 	}
@@ -296,7 +310,7 @@ func TestTheTokenIsPrintedOnlyWhenAsked(t *testing.T) {
 	} {
 		out.Reset()
 		errw.Reset()
-		if code := runHeadlessToken(&out, &errw, f.cfg, []string{name}); code != 1 || out.Len() != 0 || !strings.Contains(errw.String(), want) {
+		if code := f.token(&out, &errw, name); code != 1 || out.Len() != 0 || !strings.Contains(errw.String(), want) {
 			t.Errorf("%s: %d %q %q", name, code, out.String(), errw.String())
 		}
 	}
@@ -304,21 +318,21 @@ func TestTheTokenIsPrintedOnlyWhenAsked(t *testing.T) {
 	// The listing names every account and says when each token ends; it
 	// never shows one.
 	out.Reset()
-	if code := runHeadlessList(&out, f.cfg, nil, time.Now()); code != 0 || strings.Contains(out.String(), "sk-ant-") ||
+	if code := f.list(&out, false); code != 0 || strings.Contains(out.String(), "sk-ant-") ||
 		!strings.Contains(out.String(), "none — headroom headless mint qiushi") || !strings.Contains(out.String(), "headless token ended") {
 		t.Fatalf("listing %d:\n%s", code, out.String())
 	}
 	out.Reset()
-	runHeadlessList(&out, f.cfg, []string{"--json"}, time.Now())
+	f.list(&out, true)
 	if strings.Contains(out.String(), "sk-ant-") || !strings.Contains(out.String(), `"ends_at"`) {
 		t.Fatalf("json listing:\n%s", out.String())
 	}
 
 	out.Reset()
-	if code := runHeadlessForget(&out, &errw, f.cfg, []string{"a@x.com"}); code != 0 {
+	if code := call(func(std Streams) error { return HeadlessForget(std, f.cfg, "a@x.com") }).code; code != 0 {
 		t.Fatalf("forget: %d", code)
 	}
-	if code := runHeadlessToken(io.Discard, io.Discard, f.cfg, []string{"a@x.com"}); code != 1 {
+	if code := f.token(io.Discard, io.Discard, "a@x.com"); code != 1 {
 		t.Error("a forgotten token was printed")
 	}
 }
@@ -336,6 +350,7 @@ func (w *mintWorld) deps(now time.Time) mintDeps {
 		terminal: true,
 		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}},
 		now:      func() time.Time { return now },
+		wait:     defaultMintTimes.wait,
 		setupToken: func(_ config.Scope, page approvalPage, out *headless.Scanner) error {
 			w.pages = append(w.pages, page)
 			for _, f := range w.frames {
@@ -358,7 +373,7 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	now := time.Now()
 	w := &mintWorld{frames: []string{frameWelcome, frameWelcome + frameSuccess}}
 	var out, errw bytes.Buffer
-	if code := runHeadlessMintTo(&out, &errw, f.cfg, []string{"a@x.com"}, w.deps(now)); code != 0 {
+	if code := mintTo(&out, &errw, f.cfg, "a@x.com", w.deps(now)); code != 0 {
 		t.Fatalf("mint: %d\n%s%s", code, out.String(), errw.String())
 	}
 	if strings.Contains(out.String(), "sk-ant-") || !strings.Contains(out.String(), headless.Withheld) || !strings.Contains(out.String(), "✓ a@x.com: headless token stored") {
@@ -379,7 +394,7 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	// The primary's dir is not named by its email: its login is whoever its
 	// identity says, and the token is counted against that.
 	wp := &mintWorld{frames: []string{frameSuccess}}
-	if code := runHeadlessMintTo(io.Discard, &errw, f.cfg, []string{"qiushi"}, wp.deps(now)); code != 0 {
+	if code := mintTo(io.Discard, &errw, f.cfg, "qiushi", wp.deps(now)); code != 0 {
 		t.Fatalf("mint for the primary: %d %s", code, errw.String())
 	}
 	if tokens, err := headless.Read(f.cfg.AccountsRoot); err != nil || tokens["qiushi"].Key != f.key("qiushi").ID() || tokens["qiushi"].Email != "qiushi@x.com" {
@@ -389,7 +404,7 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	// A run that printed no token stores nothing and replaces nothing.
 	w2 := &mintWorld{frames: []string{frameWelcome, " OAuth error: Request failed with status code 400\n"}, err: &exitError{1}}
 	out.Reset()
-	if code := runHeadlessMintTo(&out, &errw, f.cfg, []string{"a@x.com"}, w2.deps(now.Add(time.Hour))); code != 1 || !strings.Contains(out.String(), "no headless token was minted") {
+	if code := mintTo(&out, &errw, f.cfg, "a@x.com", w2.deps(now.Add(time.Hour))); code != 1 || !strings.Contains(out.String(), "no headless token was minted") {
 		t.Fatalf("failed mint: %d\n%s", code, out.String())
 	}
 	if again, _ := headless.Read(f.cfg.AccountsRoot); again["a@x.com"] != tok {
@@ -412,7 +427,7 @@ func TestMintRefusalsAndARemoteUser(t *testing.T) {
 	for name, want := range map[string]string{"b@x.com": "not logged in", "c@x.com": "logged in as z@x.com"} {
 		w := &mintWorld{frames: []string{frameSuccess}}
 		var errw bytes.Buffer
-		if code := runHeadlessMintTo(io.Discard, &errw, f.cfg, []string{name}, w.deps(now)); code != 1 || len(w.pages) != 0 || !strings.Contains(errw.String(), want) {
+		if code := mintTo(io.Discard, &errw, f.cfg, name, w.deps(now)); code != 1 || len(w.pages) != 0 || !strings.Contains(errw.String(), want) {
 			t.Errorf("%s: %d %s (ran %d)", name, code, errw.String(), len(w.pages))
 		}
 	}
@@ -423,7 +438,7 @@ func TestMintRefusalsAndARemoteUser(t *testing.T) {
 	}
 	w := &mintWorld{frames: []string{frameSuccess}}
 	var torn bytes.Buffer
-	if code := runHeadlessMintTo(io.Discard, &torn, f.cfg, []string{"a@x.com"}, w.deps(now)); code != 1 || len(w.pages) != 0 {
+	if code := mintTo(io.Discard, &torn, f.cfg, "a@x.com", w.deps(now)); code != 1 || len(w.pages) != 0 {
 		t.Errorf("torn token file: %d %s (ran %d)", code, torn.String(), len(w.pages))
 	}
 	os.Remove(headless.Path(f.cfg.AccountsRoot))
@@ -431,13 +446,13 @@ func TestMintRefusalsAndARemoteUser(t *testing.T) {
 	deps := w.deps(now)
 	deps.terminal = false
 	var errw bytes.Buffer
-	if code := runHeadlessMintTo(io.Discard, &errw, f.cfg, []string{"a@x.com"}, deps); code != 1 || len(w.pages) != 0 {
+	if code := mintTo(io.Discard, &errw, f.cfg, "a@x.com", deps); code != 1 || len(w.pages) != 0 {
 		t.Errorf("off a terminal: %d %s", code, errw.String())
 	}
 	deps = w.deps(now)
 	deps.approver.remote = true
 	var out bytes.Buffer
-	if code := runHeadlessMintTo(&out, io.Discard, f.cfg, []string{"a@x.com"}, deps); code != 0 || !w.pages[0].remote || w.pages[0].profile.Dir != "" || !strings.Contains(out.String(), "paste the code it shows") {
+	if code := mintTo(&out, io.Discard, f.cfg, "a@x.com", deps); code != 0 || !w.pages[0].remote || w.pages[0].profile.Dir != "" || !strings.Contains(out.String(), "paste the code it shows") {
 		t.Errorf("remote: %d %+v\n%s", code, w.pages, out.String())
 	}
 }
@@ -455,7 +470,7 @@ func TestTheLoginPlanNamesTokensEndingSoon(t *testing.T) {
 		}, nil
 	}
 	var out bytes.Buffer
-	runLoginTo(&out, io.Discard, cfg, []string{"--dry-run"}, deps)
+	loginTo(&out, io.Discard, cfg, []string{"--dry-run"}, deps)
 	tokenLine := func(name string) string {
 		for _, l := range accountLines(out.String(), name) {
 			if strings.Contains(l, "headless token") {
@@ -481,9 +496,7 @@ func TestMintEndsAVendorThatDoesNotExit(t *testing.T) {
 	bin := t.TempDir()
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TMPDIR", t.TempDir())
-	prevWait, prevGrace := mintWait, mintGrace
-	mintWait, mintGrace = 400*time.Millisecond, 200*time.Millisecond
-	t.Cleanup(func() { mintWait, mintGrace = prevWait, prevGrace })
+	times := mintTimes{wait: 400 * time.Millisecond, grace: 200 * time.Millisecond}
 	scope := claudeScope(t.TempDir(), "qiushi")
 
 	write := func(body string) {
@@ -494,7 +507,7 @@ func TestMintEndsAVendorThatDoesNotExit(t *testing.T) {
 	write("echo waiting; exec sleep 30\n")
 	scan := headless.NewScanner(io.Discard)
 	start := time.Now()
-	err := vendorSetupToken(scope, approvalPage{remote: true}, scan)
+	err := times.setupToken(os.Stdin, scope, approvalPage{remote: true}, scan)
 	if err == nil || !strings.Contains(err.Error(), "no approval within") || time.Since(start) > 5*time.Second {
 		t.Fatalf("unapproved: %v after %v", err, time.Since(start))
 	}
@@ -503,11 +516,11 @@ func TestMintEndsAVendorThatDoesNotExit(t *testing.T) {
 	// seconds to print its first byte on macOS, and this case is about the
 	// grace after the token, not the wait before it. The bound is the
 	// vendor's own 30-second sleep, which the mint must not sit out.
-	mintWait = time.Minute
+	times.wait = time.Minute
 	write("printf ' Your OAuth token (valid for 1 year):\\n\\n " + testToken + "\\n'; exec sleep 30\n")
 	scan = headless.NewScanner(io.Discard)
 	start = time.Now()
-	if err := vendorSetupToken(scope, approvalPage{remote: true}, scan); err != nil || scan.Token() != testToken || time.Since(start) > 20*time.Second {
+	if err := times.setupToken(os.Stdin, scope, approvalPage{remote: true}, scan); err != nil || scan.Token() != testToken || time.Since(start) > 20*time.Second {
 		t.Fatalf("lingering after the token: %v, token %q, after %v", err, scan.Token(), time.Since(start))
 	}
 	if left, _ := os.ReadDir(os.Getenv("TMPDIR")); len(left) != 0 {
@@ -528,7 +541,7 @@ func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
 		f.mint(n, 300*24*time.Hour)
 	}
 	doc, code, _ := f.place("--exclude", "a@x.com")
-	if code != exitPlaced || doc.Account != "b@x.com" {
+	if code != 0 || doc.Account != "b@x.com" {
 		t.Fatalf("placed %q (%d), want the best of the rest", doc.Account, code)
 	}
 	if a := doc.find("a@x.com"); a.Eligible || a.Excluded != "excluded by the caller" {
@@ -544,11 +557,11 @@ func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
 	// Excluding the near account leaves no instant: what is left is open or
 	// excluded, and an excluded account's reset is no reason to wait.
 	doc, code, _ = f.place("--exclude", "a@x.com", "--exclude", "b@x.com", "--dry-run")
-	if code != exitRefused || doc.RetryAt == nil {
+	if code != ExitRefused || doc.RetryAt == nil {
 		t.Fatalf("c is near a limit and left: %d %+v", code, doc)
 	}
 	doc, code, _ = f.place("--exclude", "a@x.com", "--exclude", "b@x.com", "--exclude", "c@x.com")
-	if code != exitRefused || doc.RetryAt != nil || doc.Placement != "" {
+	if code != ExitRefused || doc.RetryAt != nil || doc.Placement != "" {
 		t.Fatalf("all excluded: %d %+v", code, doc)
 	}
 	for _, want := range []string{"a@x.com (excluded by the caller)", "c@x.com (excluded by the caller)", "qiushi (no headless token"} {
@@ -563,10 +576,38 @@ func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
 	if _, code, errw := f.place("--exclude", "nobody@x.com"); code != 1 || !strings.Contains(errw, "nobody@x.com") {
 		t.Errorf("unknown exclusion: %d %s", code, errw)
 	}
-	if _, code, _ := f.place("--exclude"); code != 2 {
-		t.Errorf("--exclude with no name: %d", code)
-	}
+	// --exclude with no name is the grammar's refusal: cmd/headroom's TestGrammar.
 	if _, code, errw := f.place("--prefer", "b@x.com", "--exclude", "b@x.com"); code != 2 || !strings.Contains(errw, "both preferred and excluded") {
 		t.Errorf("preferred and excluded: %d %s", code, errw)
 	}
+}
+
+// started reports a process on a placement through the started surface.
+func (f autoFixture) started(errw *bytes.Buffer, id string, pid int) int {
+	r := call(func(std Streams) error { return HeadlessStarted(std, f.cfg, id, pid, f.edges) })
+	errw.WriteString(r.stderr)
+	return r.code
+}
+
+// token prints an account's token through the token surface.
+func (f autoFixture) token(out, errw io.Writer, name string) int {
+	r := call(func(std Streams) error { return HeadlessToken(std, f.cfg, name) })
+	io.WriteString(out, r.stdout)
+	io.WriteString(errw, r.stderr)
+	return r.code
+}
+
+// list prints the token listing.
+func (f autoFixture) list(out *bytes.Buffer, asJSON bool) int {
+	r := call(func(std Streams) error { return HeadlessList(std, f.cfg, asJSON, time.Now()) })
+	out.WriteString(r.stdout)
+	return r.code
+}
+
+// mintTo mints through the mint surface with the test's edges.
+func mintTo(out, errw io.Writer, cfg config.Scope, name string, deps mintDeps) int {
+	r := call(func(std Streams) error { return headlessMint(std, cfg, name, deps) })
+	io.WriteString(out, r.stdout)
+	io.WriteString(errw, r.stderr)
+	return r.code
 }
