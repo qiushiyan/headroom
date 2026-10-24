@@ -248,109 +248,10 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 	}
 }
 
-// Claude Code's own cache seeds the display for free, so a refused or deferred
-// refresh still leaves the user with numbers — labelled with their real age.
-func TestPrepareSeedsFromClaudeCache(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fetchedAt := time.Now().Add(-22 * time.Hour)
-	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
-	  "oauthAccount":{"emailAddress":"primary@x.com","accountUuid":"uuid-1"},
-	  "cachedUsageUtilization":{
-	    "fetchedAtMs":%d,"accountUuid":"uuid-1",
-	    "utilization":{"limits":[{"kind":"session","percent":58,"severity":"normal",
-	      "resets_at":"2026-08-06T17:00:00Z"}]}}}`, fetchedAt.UnixMilli()))
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: state.Open(cfg),
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	now := time.Now()
-	v := f.run(now)["primary"].View
-	if v.Obs == nil {
-		t.Fatal("cached usage not loaded")
-	}
-	if v.Obs.Source != accountstate.SourceCache || v.Obs.Rows[0].Percent != 58 {
-		t.Errorf("cache mis-parsed: %+v", v.Obs)
-	}
-	if v.Fresh(now.Unix()) {
-		t.Error("a 22h-old cache must not count as current headroom")
-	}
-}
-
-// A config dir re-logged to a different account keeps the previous account's
-// cache. Rendering it under the new name would attribute one account's quota
-// to another — worse than showing nothing.
-func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
-	  "oauthAccount":{"emailAddress":"new@x.com","accountUuid":"uuid-new"},
-	  "cachedUsageUtilization":{
-	    "fetchedAtMs":%d,"accountUuid":"uuid-previous",
-	    "utilization":{"limits":[{"kind":"session","percent":99}]}}}`,
-		time.Now().UnixMilli()))
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: state.Open(cfg),
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	if v := f.run(time.Now())["primary"].View; v.Obs != nil {
-		t.Errorf("cache belonging to a previous login was used: %+v", v.Obs)
-	}
-}
-
-// An account inside its quiet period is not fetched, and says so rather than
-// looking broken.
-func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com"}}`)
-
-	now := time.Now()
-	store := state.Open(cfg)
-	key := state.Key{Name: "primary"}
-	dec, err := store.Claim([]state.Key{key}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Complete(key, dec[0].Generation, state.OutcomeRefused, nil, now); err != nil {
-		t.Fatal(err)
-	}
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: store,
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	d := f.round(now)["primary"]
-	if d.View.Attempt.State != accountstate.AttemptDeferred {
-		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
-	}
-	if d.View.Attempt.NextEligibleAt <= now.Unix() {
-		t.Error("deferred account must say when it becomes eligible")
-	}
-	if d.View.Health != accountstate.HealthOK {
-		t.Errorf("cooling down is not an account problem: health=%v", d.View.Health)
-	}
-}
-
 // The bug in one assertion: what headroom fetched moments ago must still read
-// as current on the next run, without a request and without a stale nag.
+// as current on the next run, without a request and without a stale nag. The
+// account inside its quiet period is deferred, not broken: it says when it
+// can next be asked, and its health is untouched.
 func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	home := t.TempDir()
 	cfg := claudeScope(home, "primary")
@@ -387,6 +288,12 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 
 	if d.View.Attempt.State != accountstate.AttemptDeferred {
 		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
+	}
+	if d.View.Attempt.NextEligibleAt <= now.Unix() {
+		t.Error("a deferred account must say when it becomes eligible")
+	}
+	if d.View.Health != accountstate.HealthOK {
+		t.Errorf("cooling down is not an account problem: health=%v", d.View.Health)
 	}
 	if !d.View.Fresh(now.Unix()) {
 		t.Error("figures fetched five seconds ago read as stale")

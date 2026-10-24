@@ -199,76 +199,44 @@ func TestFinishRacingPrintAlwaysEndsTheOutput(t *testing.T) {
 }
 
 // boardWindow ranks what a chooser needs: the selected block stays visible at
-// every height, the footer stands beside it whenever a body row fits, and on
-// a terminal too short for both the selection wins.
-func TestBoardWindowKeepsTheSelectionAtEveryHeight(t *testing.T) {
-	// A 10-line body whose selected block spans lines 4–7, under a 2-line
-	// footer — the shape of a multi-account board.
-	const selStart, selEnd, bodyLen, footerLen = 4, 8, 10, 2
-	for h := 1; h <= 14; h++ {
-		top, view, keepHeader, keepFooter := boardWindow(0, selStart, selEnd, bodyLen, 0, footerLen, h)
-		if keepHeader != (h >= 1) {
-			t.Fatalf("h=%d: a zero-length header is trivially kept", h)
-		}
-		if view < 1 || top < 0 || top+view > bodyLen {
-			t.Fatalf("h=%d: window [%d,%d) out of a %d-line body", h, top, top+view, bodyLen)
-		}
-		if selStart < top || selStart >= top+view {
-			t.Fatalf("h=%d: selected block's first line %d outside window [%d,%d)", h, selStart, top, top+view)
-		}
-		rows := view
-		if keepFooter {
-			rows += footerLen
-		}
-		if rows > h && h < bodyLen+footerLen {
-			t.Fatalf("h=%d: window emits %d rows", h, rows)
-		}
-		if h >= 3 && !keepFooter {
-			t.Fatalf("h=%d: footer dropped though a body row could stand beside it", h)
-		}
-		if h < 3 && keepFooter {
-			t.Fatalf("h=%d: footer kept at the selection's expense", h)
-		}
-	}
-}
-
-// The compact layout adds a header above the body. It is chrome, not body:
-// it never scrolls, it outlasts the footer, and only the selected row
-// outranks it — a row of figures without its headings is unreadable, while
-// the refresh countdown is the one thing a chooser can do without. The block
-// layout (header length 0) is unchanged by the extra argument.
+// every height; the header (the compact layout's column headings, chrome that
+// never scrolls) comes next, since a row of figures without its headings is
+// unreadable; and the footer goes first, since the refresh countdown is the
+// one thing a chooser can do without. Each renders whenever a body row can
+// stand beside everything that outranks it. The block layout has no header,
+// and the ranking is the same.
 func TestBoardWindowRanksHeaderBetweenSelectionAndFooter(t *testing.T) {
-	const selStart, selEnd, bodyLen, headerLen, footerLen = 4, 5, 10, 1, 2
-	for h := 1; h <= 14; h++ {
-		top, view, keepHeader, keepFooter := boardWindow(0, selStart, selEnd, bodyLen, headerLen, footerLen, h)
-		if view < 1 || top < 0 || top+view > bodyLen {
-			t.Fatalf("h=%d: window [%d,%d) out of a %d-line body", h, top, top+view, bodyLen)
-		}
-		if selStart < top || selStart >= top+view {
-			t.Fatalf("h=%d: selected row %d outside window [%d,%d)", h, selStart, top, top+view)
-		}
-		rows := view
-		if keepHeader {
-			rows += headerLen
-		}
-		if keepFooter {
-			rows += footerLen
-		}
-		if rows > h {
-			t.Fatalf("h=%d: frame emits %d rows", h, rows)
-		}
-		switch {
-		case h == 1:
-			if keepHeader || keepFooter {
-				t.Fatalf("h=1: chrome kept at the selection's expense")
+	const bodyLen, footerLen = 10, 2
+	for _, c := range []struct {
+		name                        string
+		selStart, selEnd, headerLen int
+	}{
+		{"blocks: a four-line block, no header", 4, 8, 0},
+		{"compact: a one-row selection under its headings", 4, 5, 1},
+	} {
+		for h := 1; h <= 14; h++ {
+			top, view, keepHeader, keepFooter := boardWindow(0, c.selStart, c.selEnd, bodyLen, c.headerLen, footerLen, h)
+			if view < 1 || top < 0 || top+view > bodyLen {
+				t.Fatalf("%s, h=%d: window [%d,%d) out of a %d-line body", c.name, h, top, top+view, bodyLen)
 			}
-		case h < 4:
-			if !keepHeader || keepFooter {
-				t.Fatalf("h=%d: want header without footer, got header=%v footer=%v", h, keepHeader, keepFooter)
+			if c.selStart < top || c.selStart >= top+view {
+				t.Fatalf("%s, h=%d: selection's first line %d outside window [%d,%d)", c.name, h, c.selStart, top, top+view)
 			}
-		default:
-			if !keepHeader || !keepFooter {
-				t.Fatalf("h=%d: header and footer both fit; got header=%v footer=%v", h, keepHeader, keepFooter)
+			rows := view
+			if keepHeader {
+				rows += c.headerLen
+			}
+			if keepFooter {
+				rows += footerLen
+			}
+			if rows > h {
+				t.Fatalf("%s, h=%d: frame emits %d rows", c.name, h, rows)
+			}
+			if want := h-c.headerLen >= 1; keepHeader != want {
+				t.Fatalf("%s, h=%d: header kept %v, want %v", c.name, h, keepHeader, want)
+			}
+			if want := h-c.headerLen-footerLen >= 1; keepFooter != want {
+				t.Fatalf("%s, h=%d: footer kept %v, want %v", c.name, h, keepFooter, want)
 			}
 		}
 	}

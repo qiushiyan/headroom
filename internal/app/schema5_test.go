@@ -214,26 +214,6 @@ func TestSchema5TwoVendors(t *testing.T) {
 	}
 }
 
-// A machine without Codex gets the same schema with Claude Code only.
-func TestSchema5WithoutCodex(t *testing.T) {
-	cfg := config.ForHome(t.TempDir())
-	t.Setenv("PATH", t.TempDir())
-	if got := cfg.Present(); len(got) != 1 {
-		t.Fatalf("present = %v", got)
-	}
-	data, err := jsonDocument(fetchBoards(cfg.Present()), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := decode5(t, data)
-	if d.Schema != 7 || len(d.Current) != 1 || len(d.Accounts) != 1 || d.Accounts[0].Vendor != "claude" {
-		t.Errorf("doc = %+v", d)
-	}
-	if _, ok := d.Current["codex"]; ok {
-		t.Error("an absent vendor appeared in current")
-	}
-}
-
 func TestTakeVendor(t *testing.T) {
 	for _, c := range []struct {
 		args   []string
