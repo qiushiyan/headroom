@@ -222,9 +222,11 @@ func (ui *picker) draw() {
 		}
 	}
 	if pg.routing.Mode == "auto" {
-		header = append(header, "  "+ui.p.Dim+autoHeader(ui.layout)+ui.p.Rst)
-		if ui.layout == render.LayoutBlocks {
-			header = append(header, "")
+		for _, line := range ui.p.AutoHeader(ui.layout) {
+			if line != "" {
+				line = "  " + line
+			}
+			header = append(header, line)
 		}
 	}
 	for _, line := range b.Header {

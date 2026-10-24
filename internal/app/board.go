@@ -77,9 +77,8 @@ func writeBoards(out io.Writer, p render.Palette, boards []board, now int64, lay
 		}
 		b := p.Board(views(vb.list), now, layout, width)
 		if vb.routing.Mode == "auto" {
-			fmt.Fprintln(out, p.Dim+autoHeader(layout)+p.Rst)
-			if layout == render.LayoutBlocks {
-				fmt.Fprintln(out)
+			for _, line := range p.AutoHeader(layout) {
+				fmt.Fprintln(out, line)
 			}
 		}
 		for _, line := range b.Header {
@@ -111,14 +110,4 @@ func autoLine(scope config.Scope) string {
 		return "→ auto — bare Codex launches (headroom launch --vendor codex, no --account) now choose the least-loaded account"
 	}
 	return "→ auto — bare launches (no --account) now choose the least-loaded account"
-}
-
-// autoHeader is the one line a board in auto mode puts above its accounts: no
-// row is the current one, and the marked row is where a launch would go now.
-func autoHeader(layout render.Layout) string {
-	mark := "← next"
-	if layout == render.LayoutCompact {
-		mark = "→"
-	}
-	return "bare launches are automatic — " + mark + " marks the account one would take now"
 }

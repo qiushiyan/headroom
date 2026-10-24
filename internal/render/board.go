@@ -57,6 +57,18 @@ func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, wid
 	return b
 }
 
+// AutoHeader is what a board under automatic placement puts above its
+// accounts, in the layout's spacing: one dim line saying no row is the
+// current one and the marked row is where a launch would go now, and in the
+// blocks layout the blank line the blocks keep between them. The one-shot
+// print and the picker both put it there; this is its one spelling.
+func (p Palette) AutoHeader(layout Layout) []string {
+	if layout == LayoutCompact {
+		return []string{p.Dim + "bare launches are automatic — → marks the account one would take now" + p.Rst}
+	}
+	return []string{p.Dim + "bare launches are automatic — ← next marks the account one would take now" + p.Rst, ""}
+}
+
 const (
 	// nameCap is the widest the compact name column grows; an email longer
 	// than this is ellipsized. nameFloor is the narrowest a tight terminal
