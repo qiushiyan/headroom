@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -90,43 +89,4 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 			render.PadCell(render.Sanitize(m.Root), rootW), note)
 	}
 	return 0
-}
-
-// version is set at link time when a build names itself
-// (-ldflags "-X github.com/qiushiyan/headroom/internal/app.version=<v>");
-// otherwise the commit the binary was built from names it.
-var version = ""
-
-// versionLine is `headroom version`: one line, the build's name — the commit
-// it was built from, "+dirty" when the tree had uncommitted changes — and the
-// commit's time. What a caller pins.
-func versionLine() string {
-	rev, at, dirty := "", "", false
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			switch s.Key {
-			case "vcs.revision":
-				rev = s.Value
-			case "vcs.time":
-				at = s.Value
-			case "vcs.modified":
-				dirty = s.Value == "true"
-			}
-		}
-	}
-	v := version
-	if v == "" {
-		v = rev
-		if v == "" {
-			v = "unknown"
-		}
-		if dirty {
-			v += "+dirty"
-		}
-	}
-	line := "headroom " + v
-	if at != "" {
-		line += " " + at
-	}
-	return line
 }
