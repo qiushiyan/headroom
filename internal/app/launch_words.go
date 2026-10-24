@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 )
@@ -142,7 +141,7 @@ func shortLabel(label string) string {
 // account, with what was counted and why an account was left out. busy and
 // pending count every home sharing the ledger; a note says whose were not
 // this home's.
-func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode string, now time.Time, home string, labels map[string]string) {
+func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, home string, labels map[string]string) {
 	if d.Chosen == "" {
 		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
 	} else {
@@ -150,7 +149,7 @@ func writeDryRun(w io.Writer, vendor config.Vendor, d placement.Decision, mode s
 		if d.Reason != "" && d.Reason != mode {
 			how += " · " + d.Reason
 		}
-		fmt.Fprintf(w, "headroom launch --dry-run: would start %s on %s (%s)\n", scopeBinary(vendor), d.Chosen, how)
+		fmt.Fprintf(w, "headroom launch --dry-run: would start %s on %s (%s)\n", binary, d.Chosen, how)
 	}
 	fmt.Fprintf(w, "rule %s — nothing was recorded, logged or started\n\n", d.Rule)
 
@@ -227,11 +226,4 @@ func dryRunNote(c placement.Counted, now time.Time, home string, labels map[stri
 		}
 	}
 	return strings.Join(notes, " · ")
-}
-
-func scopeBinary(v config.Vendor) string {
-	if v == config.Codex {
-		return "codex"
-	}
-	return "claude"
 }

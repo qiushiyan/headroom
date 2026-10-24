@@ -145,16 +145,14 @@ func otherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 	return snap.OtherHomes(scope)
 }
 
-// homeLabels names every home a surface may mention, by accounts root: the
-// home dir's last element ("steward-home" for ~/.steward-home), which is what
-// a person calls it.
-func homeLabels(snap state.Snapshot, self string) map[string]string {
+// homeLabels names every registered home by accounts root: the home dir's
+// last element ("steward-home" for ~/.steward-home), which is what a person
+// calls it. It is read through homeLabel, which names a home that has not
+// registered — this one, before its first write — by its root's parent.
+func homeLabels(snap state.Snapshot) map[string]string {
 	out := map[string]string{}
 	for _, m := range snap.Members() {
 		out[m.Root] = strings.TrimPrefix(filepath.Base(m.Home), ".")
-	}
-	if _, ok := out[self]; !ok {
-		out[self] = strings.TrimPrefix(filepath.Base(filepath.Dir(self)), ".")
 	}
 	return out
 }
@@ -404,7 +402,7 @@ func markPlacement(set accounts.Set, list []*accountData, mode string, st *state
 	}
 	auto := mode == "auto"
 	f := buildCandidates(set, st, snap, src, os.Environ(), auto, now)
-	m := &placeMark{cands: f.rule(), ledger: snap.Placements(), home: st.Home(), labels: homeLabels(snap, st.Home()), auto: auto}
+	m := &placeMark{cands: f.rule(), ledger: snap.Placements(), home: st.Home(), labels: homeLabels(snap), auto: auto}
 	m.mark(list, now)
 	return m
 }
@@ -427,7 +425,7 @@ type placeMark struct {
 // mark sets every row's load and, under auto, Next on the row a launch would
 // take at now.
 func (m *placeMark) mark(list []*accountData, now time.Time) {
-	decision := placement.Choose(m.cands, m.ledger, placement.Intent{Home: m.home}, now)
+	decision := placement.Choose(m.cands, m.ledger, placement.Intent{}, now)
 	for _, d := range list {
 		d.View.Next, d.View.Load = false, nil
 		if c, ok := decision.Find(d.Acct.Name); ok {

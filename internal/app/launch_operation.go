@@ -108,7 +108,7 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 		return out, fmt.Errorf("%s cannot be launched", out.decision.Chosen)
 	}
 	out.prepared, out.account = chosen.prepared, chosen.acct
-	out.home, out.labels = facts.home, homeLabels(facts.snap, facts.home)
+	out.home, out.labels = facts.home, homeLabels(facts.snap)
 
 	switch {
 	case placeErr != nil:

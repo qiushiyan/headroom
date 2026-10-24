@@ -208,7 +208,7 @@ parse:
 			return 1
 		}
 		d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
-		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now, facts.home, homeLabels(facts.snap, facts.home))
+		writeDryRun(os.Stdout, cfg.Binary(), d, mode, now, facts.home, homeLabels(facts.snap))
 		if d.Chosen == "" {
 			return 1
 		}
