@@ -108,10 +108,8 @@ func Parse(raw string) (Blob, bool) {
 	return b, true
 }
 
-// ReadKeychain fetches the raw blob from the Keychain item under the
+// readKeychain fetches the raw blob from the Keychain item under the
 // predicted service name. Empty string = no item (not logged in).
-func ReadKeychain(configDir string) string { return readKeychain(context.Background(), configDir) }
-
 func readKeychain(ctx context.Context, configDir string) string {
 	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
 		"-s", ServiceName(configDir), "-a", username(), "-w")
@@ -176,32 +174,27 @@ const (
 // (empty for the primary); dir is the real directory, including for the
 // primary. A present Keychain item takes precedence over the file.
 func ReadRaw(keychainKey, dir string) (string, Source) {
-	return readRaw(keychainKey, dir, ReadKeychain, os.ReadFile)
+	return ReadRawContext(context.Background(), keychainKey, dir)
 }
 
 // ReadRawContext is ReadRaw for a caller that must be able to stop: the
 // Keychain read is a `security` process, which can stall where the Keychain
-// does, and is killed when ctx ends. A cancelled read reads nothing.
+// does, and is killed when ctx ends. A cancelled read reads nothing — not
+// even the file a killed Keychain read would otherwise fall through to.
 func ReadRawContext(ctx context.Context, keychainKey, dir string) (string, Source) {
 	if ctx.Err() != nil {
 		return "", SourceNone
 	}
-	keychain := func(key string) string { return readKeychain(ctx, key) }
-	raw, source := readRaw(keychainKey, dir, keychain, os.ReadFile)
+	raw, source := "", SourceNone
+	if blob := readKeychain(ctx, keychainKey); blob != "" {
+		raw, source = blob, SourceKeychain
+	} else if data, err := os.ReadFile(filepath.Join(dir, ".credentials.json")); err == nil {
+		raw, source = string(data), SourceFile
+	}
 	if ctx.Err() != nil {
 		return "", SourceNone
 	}
 	return raw, source
-}
-
-func readRaw(keychainKey, dir string, keychain func(string) string, readFile func(string) ([]byte, error)) (string, Source) {
-	if blob := keychain(keychainKey); blob != "" {
-		return blob, SourceKeychain
-	}
-	if data, err := readFile(filepath.Join(dir, ".credentials.json")); err == nil {
-		return string(data), SourceFile
-	}
-	return "", SourceNone
 }
 
 func username() string {
