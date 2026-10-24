@@ -1,11 +1,12 @@
 // Package sessions reads the machine-global Claude Code session store —
 // transcripts under ~/.claude/projects — plus the per-account evidence of
-// which account drove each session: prompt history, the live-session
-// registry, and headroom's own .owners re-home record. It is the one reader
-// of these vendor document types, shared by the resume picker, `--json` and
-// `check`, per the house one-parser rule. Everything here is reverse-
-// engineered and perishable; parsing degrades per field and tags what it
-// couldn't read instead of dropping a session.
+// which account drove each session: prompt history and the live-session
+// registry, weighed against the explicit re-homes headroom's state store
+// hands the collector (see OwnerRec). It is the one reader of these vendor
+// document types, shared by the session picker, `--json` and `check`, per the
+// house one-parser rule. Everything here is reverse-engineered and
+// perishable; parsing degrades per field and tags what it couldn't read
+// instead of dropping a session.
 package sessions
 
 import (
@@ -56,15 +57,26 @@ type Tail struct {
 // newest prompt. Empty means genuinely untitled — the caller renders that
 // visibly, never as a blank row that reads like an empty session.
 func (t Tail) Title() string {
+	title, _ := t.TitleAndSource()
+	return title
+}
+
+// TitleAndSource is Title plus the link of the chain that supplied it, in
+// `--json`'s title_source spelling: custom, ai, last_prompt, last_user or
+// none. One precedence order answers both, so a reordered chain cannot leave
+// the source naming a field the title was not taken from.
+func (t Tail) TitleAndSource() (string, string) {
 	switch {
 	case t.CustomTitle != "":
-		return t.CustomTitle
+		return t.CustomTitle, "custom"
 	case t.AITitle != "":
-		return t.AITitle
+		return t.AITitle, "ai"
 	case t.LastPrompt != "":
-		return t.LastPrompt
+		return t.LastPrompt, "last_prompt"
+	case t.LastUser != "":
+		return t.LastUser, "last_user"
 	default:
-		return t.LastUser
+		return "", "none"
 	}
 }
 

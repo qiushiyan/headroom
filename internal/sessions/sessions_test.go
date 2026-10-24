@@ -44,6 +44,15 @@ func TestParseTailTitleChain(t *testing.T) {
 	if got := ParseTail([]byte(withRename), storeDir, true).Title(); got != "my name" {
 		t.Errorf("custom-title should win: %q", got)
 	}
+
+	// Untitled: the vendor's newest real prompt, and without one the newest
+	// plain user message — never a blank row while the transcript says more.
+	if got := ParseTail([]byte(lines[0]+"\n"+lines[3]+"\n"), storeDir, true).Title(); got != "do the thing" {
+		t.Errorf("untitled with a last prompt: %q, want the last prompt", got)
+	}
+	if got := ParseTail([]byte(lines[0]+"\n"), storeDir, true).Title(); got != "first prompt" {
+		t.Errorf("untitled without a last prompt: %q, want the last user message", got)
+	}
 }
 
 func TestParseTailModel(t *testing.T) {
