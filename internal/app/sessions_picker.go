@@ -456,7 +456,7 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int, int) {
 	if len(ui.rows) == 0 {
 		msg := "no sessions"
 		if ui.query != "" {
-			msg = "no sessions match " + ui.query
+			msg = "no sessions match " + render.Sanitize(ui.query)
 		}
 		lines = append(lines, p.Dim+msg+p.Rst)
 	}
@@ -471,8 +471,15 @@ func (ui *resumeUI) inputLine() string {
 		if ui.mode == modeRename {
 			label = "rename: "
 		}
+		// The rename field opens on the transcript's title, which another
+		// program wrote: what is drawn is sanitized, and the buffer keeps the
+		// text as read for the commit. A cursor on a rune that draws as nothing
+		// still shows as a cell.
 		before, at, after := ui.edit.Split()
-		return label + before + p.Rev + at + p.Rst + after
+		if at = render.Sanitize(at); at == "" {
+			at = " "
+		}
+		return label + render.Sanitize(before) + p.Rev + at + p.Rst + render.Sanitize(after)
 	case modeConfirmD:
 		s := ui.selected()
 		title := ""
@@ -485,7 +492,7 @@ func (ui *resumeUI) inputLine() string {
 			return ui.p.Yel + ui.message + ui.p.Rst
 		}
 		if ui.query != "" {
-			return p.Dim + "filter: " + ui.query + " (/ edits · esc in search clears)" + p.Rst
+			return p.Dim + "filter: " + render.Sanitize(ui.query) + " (/ edits · esc in search clears)" + p.Rst
 		}
 		return ""
 	}
