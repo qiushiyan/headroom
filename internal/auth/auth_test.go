@@ -21,19 +21,22 @@ func TestParse(t *testing.T) {
 // Every failure to get an answer must read as "unknown", never as "logged
 // out". An absent Claude Code binary, a changed output shape, or a crash must
 // not make four healthy accounts look dead — the caller falls back to
-// credential evidence only when Parsed is false.
+// credential evidence only when Parsed is false. And output that no longer
+// parses is drift, distinguishable from a command that never ran: one should
+// fail `check`, the other can't.
 func TestUnanswerableIsUnknownNotLoggedOut(t *testing.T) {
 	for _, raw := range []string{
 		``,
 		`not json`,
-		`{}`,                  // shape drifted: no loggedIn field
-		`{"email":"a@x.com"}`, // partial
-		`{"loggedIn":"yes"}`,  // wrong type
-		`{"loggedIn":null}`,   // explicit null
+		`{}`,                      // shape drifted: no loggedIn field
+		`{"totally":"different"}`, // shape drifted
+		`{"email":"a@x.com"}`,     // partial
+		`{"loggedIn":"yes"}`,      // wrong type
+		`{"loggedIn":null}`,       // explicit null
 	} {
 		st, ok := Parse([]byte(raw))
-		if ok || st.Answered() || st.LoggedIn {
-			t.Errorf("%q: got %+v ok=%v, want unparsed and not logged in", raw, st, ok)
+		if ok || st.Answered() || st.LoggedIn || st.Outcome != OutcomeUnparseable {
+			t.Errorf("%q: got %+v ok=%v, want unparseable and not logged in", raw, st, ok)
 		}
 	}
 }
@@ -47,15 +50,6 @@ func TestZeroStatusIsNoAnswer(t *testing.T) {
 	}
 	if zero.Outcome != OutcomeUnavailable {
 		t.Errorf("zero outcome = %v, want unavailable", zero.Outcome)
-	}
-}
-
-// Output that ran but no longer parses is drift, and must be distinguishable
-// from a command that never ran — one should fail `check`, the other can't.
-func TestParseFailureIsUnparseableNotUnavailable(t *testing.T) {
-	st, ok := Parse([]byte(`{"totally":"different"}`))
-	if ok || st.Outcome != OutcomeUnparseable {
-		t.Errorf("drifted output = %+v ok=%v, want unparseable", st, ok)
 	}
 }
 
