@@ -228,9 +228,23 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 	// A next-eligible further out than this code can produce is a clock step.
 	writeDoc(t, root, `{"version":1,"accounts":{"dir:b":{"request":{"next_eligible_ms":`+
 		itoa(now.Add(72*time.Hour).UnixMilli())+`}}}}`)
-	got := Open(rootScope(root)).Load().NextEligible(key("b"), now)
+	s = Open(rootScope(root))
+	got := s.Load().NextEligible(key("b"), now)
 	if got.After(now.Add(CooldownMax + time.Second)) {
 		t.Errorf("absurd deadline not clamped: %v out", got.Sub(now))
+	}
+	// And the clamp ends. The claim that meets the step writes the bound
+	// down; one measured from each claim's own clock would recede with it and
+	// silence the account for as long as the step.
+	if claimOne(t, s, key("b"), now).Permit {
+		t.Fatal("inside the clamped bound a claim must still be denied")
+	}
+	later := now.Add(ceiling(s.spacing) + time.Second)
+	if !claimOne(t, s, key("b"), later).Permit {
+		t.Error("the clamped deadline receded with the clock: denied one ceiling later")
+	}
+	if got := s.Load().NextEligible(key("b"), later); got.After(later.Add(s.spacing + time.Second)) {
+		t.Errorf("after the permitted claim the deadline is %v out, want one spacing", got.Sub(later))
 	}
 }
 

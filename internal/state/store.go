@@ -202,15 +202,13 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 		for i, k := range keys {
 			id := k.ID()
 			r := d.accounts[id]
-			next := r.Request.NextEligibleMS
-			if d.imported != nil && d.imported.QuietUntilMS > next {
-				next = d.imported.QuietUntilMS
-			}
-			if maxNext := now.Add(ceiling(s.spacing)).UnixMilli(); next > maxNext {
-				// Further out than this code can produce: a clock step, not a
-				// decision. Clamp rather than let it silence the account for
-				// as long as the step.
-				next = maxNext
+			next, stepped := d.deadline(id, now, ceiling(s.spacing))
+			if stepped {
+				// Written down, so the silence ends one ceiling from this
+				// claim rather than receding with every later claim's clock.
+				r.Request.NextEligibleMS = next
+				d.accounts[id] = r
+				d.dirty = true
 			}
 			if now.UnixMilli() < next {
 				out[i] = Decision{Key: k, NextEligible: time.UnixMilli(next)}

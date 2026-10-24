@@ -511,30 +511,34 @@ func (s Snapshot) Observation(k Key, now time.Time) (Observation, bool) {
 // what a *row* says comes from the claim's own answer, so that a rendered
 // deadline is always the one the claim actually applied.
 //
-// A deadline further out than the maximum cooldown cannot have been written by
-// this code and is clamped: a clock step forward while a cooldown was live
-// would otherwise silence an account for as long as the step.
+// A deadline further out than the maximum cooldown is clamped (see deadline).
 func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
 	if s.d.badAccounts || s.d.readOnly() || s.d.migrationErr != nil {
 		// Nothing here can be trusted to say an account is eligible, and
 		// guessing "eligible" is the guess that generates traffic.
 		return now.Add(ceiling(s.spacing))
 	}
-	r, ok := s.d.accounts[k.ID()]
-	next := int64(0)
-	if ok {
-		next = r.Request.NextEligibleMS
-	}
-	if s.d.imported != nil && s.d.imported.QuietUntilMS > next {
-		next = s.d.imported.QuietUntilMS
-	}
+	next, _ := s.d.deadline(k.ID(), now, ceiling(s.spacing))
 	if next == 0 {
 		return time.Time{}
 	}
-	if limit := now.Add(ceiling(s.spacing)); next > limit.UnixMilli() {
-		return limit
-	}
 	return time.UnixMilli(next)
+}
+
+// deadline is when an account may next be asked, in Unix milliseconds: its
+// stored deadline or the imported quiet period, whichever is later. One
+// further out than ceil cannot have been written by this code — a clock
+// stepped forward while a cooldown was live — and is cut to now+ceil with
+// stepped set, so the claim that meets it can write the bound down.
+func (d *doc) deadline(id string, now time.Time, ceil time.Duration) (next int64, stepped bool) {
+	next = d.accounts[id].Request.NextEligibleMS
+	if d.imported != nil && d.imported.QuietUntilMS > next {
+		next = d.imported.QuietUntilMS
+	}
+	if limit := now.Add(ceil).UnixMilli(); next > limit {
+		return limit, true
+	}
+	return next, false
 }
 
 // Owner returns the explicit re-home recorded for a session, if any. Re-homes
