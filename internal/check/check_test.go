@@ -403,7 +403,7 @@ func TestRunVerdicts(t *testing.T) {
 			defer srv.Close()
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
-			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, nil)
+			code := Run(config.Config{Claude: cfg}, &out, false, nil)
 			if code != tc.want || !strings.Contains(out.String(), tc.phrase) || !strings.Contains(out.String(), "retention:") {
 				t.Fatalf("exit=%d want=%d\n%s", code, tc.want, out.String())
 			}
@@ -433,7 +433,7 @@ func TestRunPrimaryCredentialSource(t *testing.T) {
 			defer srv.Close()
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
-			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, nil)
+			code := Run(config.Config{Claude: cfg}, &out, false, nil)
 			if code != tc.wantCode || !strings.Contains(out.String(), tc.wantLine) {
 				t.Fatalf("exit=%d want=%d, missing %q:\n%s", code, tc.wantCode, tc.wantLine, out.String())
 			}
@@ -567,7 +567,7 @@ func TestRunJudgesRegistryStatusOverVerifiedLiveSessions(t *testing.T) {
 			defer srv.Close()
 			cfg.UsageURL = srv.URL
 			var out strings.Builder
-			code := Run(config.Config{Home: home, Claude: cfg}, &out, false, tc.probe)
+			code := Run(config.Config{Claude: cfg}, &out, false, tc.probe)
 			failed := false
 			for _, line := range strings.Split(out.String(), "\n") {
 				if strings.Contains(line, label) && strings.Contains(line, "FAIL") {

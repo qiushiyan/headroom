@@ -288,7 +288,7 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	home := t.TempDir()
 	claude, _ := soundClaudeTree(t, home)
 	claude.UsageURL = srv.URL
-	cfg := config.Config{Home: home, Claude: claude, Codex: config.ForHome(home).Codex}
+	cfg := config.Config{Claude: claude, Codex: config.ForHome(home).Codex}
 
 	var out strings.Builder
 	if code := Run(cfg, &out, false, nil); code != ExitPass {
