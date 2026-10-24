@@ -9,6 +9,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -80,7 +81,7 @@ func runLogin(scope config.Scope, args []string) int {
 	return runLoginTo(os.Stdout, os.Stderr, scope, args, loginDeps{
 		health: queryHealthParallel,
 		readRaw: func(a accounts.Account) string {
-			raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
+			raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
 			return raw
 		},
 		metaEmail: func(a accounts.Account) string {

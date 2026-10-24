@@ -13,6 +13,7 @@ package app
 // endpoint.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ import (
 var (
 	// placementCreds reads one Claude Code account's credential blob.
 	placementCreds = func(a accounts.Account) string {
-		raw, _ := creds.ReadRaw(a.ConfigDir, a.Dir())
+		raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
 		return raw
 	}
 )

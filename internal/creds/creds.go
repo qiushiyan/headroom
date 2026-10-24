@@ -173,15 +173,11 @@ const (
 // ReadRaw resolves the credential for an account. keychainKey is ConfigDir
 // (empty for the primary); dir is the real directory, including for the
 // primary. A present Keychain item takes precedence over the file.
-func ReadRaw(keychainKey, dir string) (string, Source) {
-	return ReadRawContext(context.Background(), keychainKey, dir)
-}
-
-// ReadRawContext is ReadRaw for a caller that must be able to stop: the
-// Keychain read is a `security` process, which can stall where the Keychain
-// does, and is killed when ctx ends. A cancelled read reads nothing — not
-// even the file a killed Keychain read would otherwise fall through to.
-func ReadRawContext(ctx context.Context, keychainKey, dir string) (string, Source) {
+//
+// The Keychain read is a `security` process, which can stall where the
+// Keychain does, and is killed when ctx ends. A cancelled read reads nothing —
+// not even the file a killed Keychain read would otherwise fall through to.
+func ReadRaw(ctx context.Context, keychainKey, dir string) (string, Source) {
 	if ctx.Err() != nil {
 		return "", SourceNone
 	}

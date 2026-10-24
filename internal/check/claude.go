@@ -52,7 +52,7 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 		if !a.IsPrimary() && !hasMeta(a) {
 			continue
 		}
-		raw, source := creds.ReadRaw(a.ConfigDir, a.Dir())
+		raw, source := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
 		blob, ok := creds.Parse(raw)
 		hint := "credential blob did not parse (accessToken missing or format changed)"
 		if source == creds.SourceNone {
@@ -173,7 +173,7 @@ func rereadCredential(primaryDir string) refresh.Reread {
 		if dir == "" {
 			dir = primaryDir
 		}
-		raw, _ := creds.ReadRaw(keychainKey, dir)
+		raw, _ := creds.ReadRaw(context.Background(), keychainKey, dir)
 		blob, ok := creds.Parse(raw)
 		return blob.Token, ok
 	}

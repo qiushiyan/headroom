@@ -68,7 +68,7 @@ func TestReadRaw(t *testing.T) {
 					service = ServiceName(account.key)
 				}
 				stubSecurity(t, service, keychainBlob)
-				raw, source := ReadRaw(account.key, dir)
+				raw, source := ReadRaw(context.Background(), account.key, dir)
 				if raw != tc.wantRaw || source != tc.wantSource {
 					t.Errorf("got %q, %v; want %q, %v", raw, source, tc.wantRaw, tc.wantSource)
 				}
@@ -91,7 +91,7 @@ func TestReadRaw(t *testing.T) {
 		t.Setenv("PATH", bin+":/bin:/usr/bin")
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		if raw, source := ReadRawContext(ctx, "", dir); raw != "" || source != SourceNone {
+		if raw, source := ReadRaw(ctx, "", dir); raw != "" || source != SourceNone {
 			t.Errorf("got %q, %v; want nothing", raw, source)
 		}
 	})

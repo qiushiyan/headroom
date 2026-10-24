@@ -475,7 +475,7 @@ func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe boo
 		// Only Claude Code's access costs a process and a Keychain read. The
 		// Codex reader works from the auth snapshot discovery already took.
 		src.readRaw = func(a accounts.Account) string {
-			raw, _ := creds.ReadRawContext(ctx, a.ConfigDir, a.Dir())
+			raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
 			return raw
 		}
 		src.health = func(string) auth.Status { return auth.Status{} }
