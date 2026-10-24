@@ -332,15 +332,16 @@ func TestCodexCheckProbesAreBoundedAndParallel(t *testing.T) {
 		t.Fatal(err)
 	}
 	prev := loginStatusTimeout
-	loginStatusTimeout = 400 * time.Millisecond
+	loginStatusTimeout = 2 * time.Second
 	t.Cleanup(func() { loginStatusTimeout = prev })
 
 	start := time.Now()
 	r := runCodexCheck(scope, []string{"PATH=" + bin + ":/bin:/usr/bin"})
 	elapsed := time.Since(start)
-	// Five probes (primary, three extras, isolation). Serial would be ≥ 2s;
-	// unbounded would be 30s.
-	if elapsed > 1500*time.Millisecond {
+	// Five probes (primary, three extras, isolation). Serial would be ≥ 10s;
+	// unbounded would be 30s. The slack above one bound is for a loaded
+	// machine, where a freshly written stub can take seconds to start.
+	if elapsed > 8*time.Second {
 		t.Errorf("probes took %v: not bounded, or not parallel", elapsed)
 	}
 	if r.fails != 0 || !r.has("?? isolation: not tested") || !r.has("?? credentials[c@x.com]: not tested") {
