@@ -203,14 +203,10 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 			r := d.accounts[id]
 			next, stepped := d.deadline(id, now, ceiling(s.spacing))
 			if stepped {
-				// Written down — in whichever record held it — so the silence
-				// ends one ceiling from this claim rather than receding with
-				// every later claim's clock.
+				// Written down, so the silence ends one ceiling from this claim
+				// rather than receding with every later claim's clock.
 				r.Request.NextEligibleMS = next
 				d.accounts[id] = r
-				if d.imported != nil && d.imported.QuietUntilMS > next {
-					d.imported.QuietUntilMS = next
-				}
 				d.dirty = true
 			}
 			if now.UnixMilli() < next {
@@ -470,11 +466,11 @@ func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
 	now := l.Now
 	l.Intent.Home = s.root
-	err := s.updatePair(placeWait, func(led, home *doc, homeErr error) (commit, error) {
+	err := s.updatePair(placeWait, func(led, home *doc, homeErr error) (bool, error) {
 		if l.MustReHome && (homeErr != nil || home.badSessions) {
 			// Re-homes are user decisions. Writing a fresh section over bytes
 			// that merely failed to decode would destroy them for good.
-			return commit{}, cmp.Or(homeErr, ErrCorrupt)
+			return false, cmp.Or(homeErr, ErrCorrupt)
 		}
 		// Disposable, like the request ledger: an unreadable record of
 		// launches is set aside and starts from nothing.
@@ -488,17 +484,17 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		out.Ledger = led.placements.Clone()
 		chosen, ok := out.Decision.Find(out.Decision.Chosen)
 		if out.Decision.Chosen == "" || !ok {
-			return commit{ledger: true}, nil
+			return false, nil
 		}
 		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, l.PID, s.root, now)
 		led.dirty = true
 		out.Recorded = true
 		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
-			return commit{ledger: true}, nil
+			return false, nil
 		}
 		if homeErr != nil || home.badSessions {
 			out.SessionErr = cmp.Or(homeErr, ErrCorrupt)
-			return commit{ledger: true}, nil
+			return false, nil
 		}
 		if l.Live != nil {
 			// The sweep runs before the write, so the record this very call
@@ -515,7 +511,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
 		home.dirty = true
 		out.ReHomed = true
-		return commit{ledger: true, home: true, homeFirst: l.MustReHome}, nil
+		return l.MustReHome, nil
 	})
 	var partial pairErr
 	switch {
@@ -615,16 +611,8 @@ func writable(d *doc) error {
 		// Something is in that file and nobody could read it. Writing a fresh
 		// document here is how re-homes get destroyed by an I/O blip.
 		return ErrUnreadable
-	case d.migrationErr != nil:
-		return d.migrationErr
 	}
 	return nil
-}
-
-// commit says which of a pair's documents to write, and in which order.
-type commit struct {
-	ledger, home bool
-	homeFirst    bool
 }
 
 // pairErr is a pair's second write failing after its first landed: half of
@@ -641,8 +629,10 @@ func (e pairErr) Error() string { return e.err.Error() }
 // they are two, the ledger's lock is taken first — the only operation holding
 // two locks takes them in one order, so none can wait on another — and an
 // unusable home document does not stop the ledger: fn is told why (homeErr)
-// and decides what that costs.
-func (s *Store) updatePair(wait time.Duration, fn func(led, home *doc, homeErr error) (commit, error)) error {
+// and decides what that costs. Each document is written when fn dirtied it;
+// homeFirst, fn's answer, says the home's write is the one the operation
+// depends on, so it goes first and a failure there leaves the ledger as it was.
+func (s *Store) updatePair(wait time.Duration, fn func(led, home *doc, homeErr error) (homeFirst bool, err error)) error {
 	if !s.shared() {
 		return s.update(s.root, wait, func(d *doc) error {
 			_, err := fn(d, d, nil)
@@ -668,13 +658,13 @@ func (s *Store) updatePair(wait time.Duration, fn func(led, home *doc, homeErr e
 	if homeErr != nil {
 		home = &doc{root: s.root, sessions: map[string]sessions.OwnerRec{}, badSessions: true}
 	}
-	c, err := fn(led, home, homeErr)
+	homeFirst, err := fn(led, home, homeErr)
 	if err != nil {
 		return err
 	}
-	writeHome := c.home && home.dirty && homeErr == nil
-	writeLedger := c.ledger && led.dirty
-	if c.homeFirst {
+	writeHome := home.dirty && homeErr == nil
+	writeLedger := led.dirty
+	if homeFirst {
 		if writeHome {
 			if err := commitDoc(home); err != nil {
 				return err
@@ -737,8 +727,7 @@ func release(f *os.File) {
 	_ = f.Close()
 }
 
-// commitDoc writes the document atomically to the root it was read from, then
-// retires whatever legacy file it has finished absorbing.
+// commitDoc writes the document atomically to the root it was read from.
 func commitDoc(d *doc) error {
 	data, err := d.marshal()
 	if err != nil {
@@ -750,9 +739,5 @@ func commitDoc(d *doc) error {
 		// the only copy, and someone may want to look at it.
 		_ = os.Rename(path, path+".unreadable")
 	}
-	if err := atomicfile.Write(path, "state-*.json", data); err != nil {
-		return err
-	}
-	archiveLegacy(d)
-	return nil
+	return atomicfile.Write(path, "state-*.json", data)
 }

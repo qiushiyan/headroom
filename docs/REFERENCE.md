@@ -308,12 +308,6 @@ whatever the percentages read, and does not count it as a choice. Only Codex's
 file credential store is read; a keyring login shows as not logged in, and
 `check` says why.
 
-On upgrade, legacy re-homes and outstanding cooldowns are imported into
-`state.json` once, checkpointed before the inputs are archived as `.imported`
-recovery copies. The longest imported cooldown briefly applies to all accounts,
-bounded by 16 minutes. A damaged legacy request ledger waits that full interval;
-unreadable legacy re-homes require repair before migration can commit.
-
 `check` exits 0 for PASS, 1 for failed assertions, or 2 for INCONCLUSIVE.
 Failures identify vendor drift or headroom's own state problems, and name the
 vendor. Rate limiting, transport failure, lock contention, a valid newer state

@@ -379,7 +379,11 @@ func TestRunVerdicts(t *testing.T) {
 		{name: "pass", status: 200, want: ExitPass, phrase: "all checks passed"},
 		{name: "refused", status: 429, want: ExitInconclusive, phrase: "rate limited"},
 		{name: "state failure", status: 200, setup: func(t *testing.T, f fixture) {
-			f.write(filepath.Join(f.cfg.AccountsRoot, ".owners"), "broken", 0600)
+			// Something is in state.json's place and cannot be read, so no
+			// claim can be recorded: headroom's own state, not the vendor's.
+			if err := os.MkdirAll(filepath.Join(f.cfg.AccountsRoot, "state.json"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}, noRequest: true, want: ExitFail, fail: "state[primary]: request bookkeeping", phrase: own, absent: "likely changed a format"},
 		{name: "newer state", status: 200, setup: func(t *testing.T, f fixture) {
 			f.write(filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":999}`, 0600)

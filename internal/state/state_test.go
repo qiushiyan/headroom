@@ -230,18 +230,27 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 		t.Errorf("after the permitted claim the deadline is %v out, want one spacing", got.Sub(later))
 	}
 
-	// The same holds when the step sits in the imported checkpoint, which
-	// every account's deadline is read against, and for a spacing longer
-	// than the maximum cooldown; each claim reads a freshly opened store.
+	// The same holds for a spacing longer than the maximum cooldown, whose
+	// bound is the spacing, each claim reading a freshly opened store. The
+	// document also carries the checkpoint a retired upgrade path wrote, a far
+	// deadline of its own: a section nothing reads, it neither holds the
+	// account quiet nor leaves the file.
 	slow := rootScope(root)
 	slow.Spacing = 2 * CooldownMax
-	writeDoc(t, root, `{"version":1,"legacy_import":{"quiet_until_ms":`+itoa(now.Add(72*time.Hour).UnixMilli())+`}}`)
+	far := itoa(now.Add(72 * time.Hour).UnixMilli())
+	writeDoc(t, root, `{"version":1,"legacy_import":{"quiet_until_ms":`+far+`},"accounts":{"dir:c":{"request":{"next_eligible_ms":`+far+`}}}}`)
 	if claimOne(t, Open(slow), key("c"), now).Permit {
-		t.Fatal("inside the clamped checkpoint a claim must be denied")
+		t.Fatal("inside the clamped bound a claim must be denied")
 	}
 	later = now.Add(ceiling(slow.Spacing) + time.Second)
 	if !claimOne(t, Open(slow), key("c"), later).Permit {
-		t.Error("an anomalous checkpoint receded with the clock: denied one ceiling later")
+		t.Error("the clamped deadline receded with the clock under a long spacing")
+	}
+	if !claimOne(t, Open(slow), key("d"), now).Permit {
+		t.Error("the retired checkpoint's deadline held an account quiet")
+	}
+	if _, kept := readRaw(t, root)["legacy_import"]; !kept {
+		t.Error("a section this binary does not read was dropped by a write")
 	}
 }
 
@@ -349,68 +358,6 @@ func TestNewerSchemaIsReadOnly(t *testing.T) {
 	now := time.Now()
 	if !s.Load().NextEligible(key("a"), now).After(now) {
 		t.Error("a read-only store must not report an account as eligible")
-	}
-}
-
-// Import preserves every record before retiring either input, even when the
-// first claim names a different UUID or no account at all.
-func TestLegacyImportCheckpointsAllRecords(t *testing.T) {
-	root := t.TempDir()
-	now := time.Now()
-	deadline := now.Add(10 * time.Minute).UnixMilli()
-	write(t, filepath.Join(root, ".throttle"), fmt.Sprintf(`{"absent-from-claim":{"next_eligible_ms":%d}}`, deadline))
-	write(t, filepath.Join(root, ".owners"), `{"owners":{"s1":{"account":"a","atMs":100}}}`)
-	write(t, filepath.Join(root, "state.json"), `{"version":1,"sessions":{"s2":{"account":"newer","atMs":300}}}`)
-	write(t, filepath.Join(root, ".owners"), `{"owners":{"s1":{"account":"a","atMs":100},"s2":{"account":"older","atMs":200}}}`)
-	s := Open(rootScope(root))
-	if s.Load().Owners()["s2"].Account != "newer" {
-		t.Fatal("old owner overwrote a newer re-home")
-	}
-	if s.Load().Owners()["s1"].Account != "a" {
-		t.Fatal("read preview lost owner")
-	}
-	if _, err := s.Claim(nil, now); err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range []string{".throttle", ".owners"} {
-		if _, err := os.Stat(filepath.Join(root, file+".imported")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := claimOne(t, s, Key{UUID: "uuid-not-in-first-claim", Name: "absent-from-claim"}, now); got.Permit || got.NextEligible.UnixMilli() != deadline {
-		t.Fatalf("lost deadline: %+v", got)
-	}
-	if got := claimOne(t, s, Key{UUID: "unmapped-identity", Name: "other-directory"}, now); got.Permit || got.NextEligible.UnixMilli() != deadline {
-		t.Fatalf("upgrade guard did not cover another directory: %+v", got)
-	}
-	write(t, filepath.Join(root, ".owners"), `{"owners":{"s1":{"account":"old-writer","atMs":200}}}`)
-	if s.Load().Owners()["s1"].Account != "a" {
-		t.Fatal("checkpoint reimported a retired writer")
-	}
-	if !claimOne(t, s, key("a"), now.Add(time.Hour)).Permit {
-		t.Fatal("upgrade quiet period did not expire")
-	}
-}
-
-func TestIncompleteLegacyImportRetriesWithoutRetirement(t *testing.T) {
-	root := t.TempDir()
-	write(t, filepath.Join(root, ".owners"), `broken`)
-	s := Open(rootScope(root))
-	if _, err := s.Claim(nil, time.Now()); err == nil {
-		t.Fatal("incomplete import committed")
-	}
-	if _, err := os.Stat(filepath.Join(root, ".owners")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "state.json")); !os.IsNotExist(err) {
-		t.Fatal("checkpoint written before preservation")
-	}
-	write(t, filepath.Join(root, ".owners"), `{"owners":{"s":{"account":"a","atMs":1}}}`)
-	if _, err := s.Claim(nil, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if s.Load().Owners()["s"].Account != "a" {
-		t.Fatal("retry lost owner")
 	}
 }
 
@@ -592,9 +539,9 @@ func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	}
 }
 
-// The section that holds human decisions is validated whole, exactly as the
-// .owners reader it replaced was: a record decoding around empty fields would
-// have `check` report the store readable while routing silently ignores it.
+// The section that holds human decisions is validated whole: a record
+// decoding around empty fields would have `check` report the store readable
+// while routing silently ignores it.
 func TestHollowRehomeRecordsAreRefused(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"sessions":{"s1":{"account":"a@x.com","atMs":1},"s2":{}}}`)
@@ -633,92 +580,6 @@ func TestAnUnreadableFileIsNotAnEmptyStore(t *testing.T) {
 	os.Chmod(path, 0o600)
 	if _, ok := Open(rootScope(root)).Load().Owner("s1"); !ok {
 		t.Error("the re-home was destroyed by a write that treated the file as absent")
-	}
-}
-
-func TestLegacyImportCommitFailureKeepsSources(t *testing.T) {
-	root := t.TempDir()
-	write(t, filepath.Join(root, ".owners"), `{"owners":{"s":{"account":"a","atMs":1}}}`)
-	write(t, filepath.Join(root, "state.json.lock"), "")
-	if err := os.Chmod(root, 0500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(root, 0755)
-	st := Open(rootScope(root))
-	if _, err := st.Claim(nil, time.Now()); err == nil {
-		t.Fatal("import succeeded in an unwritable directory")
-	}
-	if _, err := os.Stat(filepath.Join(root, ".owners")); err != nil {
-		t.Fatal("source retired before commit", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "state.json")); !os.IsNotExist(err) {
-		t.Fatal("checkpoint survived failed commit")
-	}
-	os.Chmod(root, 0755)
-	if _, err := st.Claim(nil, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if st.Load().Owners()["s"].Account != "a" {
-		t.Fatal("retry lost re-home")
-	}
-}
-
-func TestLegacyImportKeepsReadableFactsIndependent(t *testing.T) {
-	t.Run("current owners unreadable", func(t *testing.T) {
-		root := t.TempDir()
-		now := time.Now()
-		write(t, filepath.Join(root, "state.json"), `{"version":1,"accounts":{},"sessions":5}`)
-		write(t, filepath.Join(root, ".throttle"), fmt.Sprintf(`{"a":{"next_eligible_ms":%d}}`, now.Add(10*time.Minute).UnixMilli()))
-		got, err := Open(rootScope(root)).Claim([]Key{key("a")}, now)
-		if err == nil && got[0].Permit {
-			t.Fatal("incomplete owner evidence bypassed a live legacy cooldown")
-		}
-	})
-	t.Run("damaged throttle retains owners and recovers quiet", func(t *testing.T) {
-		root := t.TempDir()
-		now := time.Now()
-		write(t, filepath.Join(root, ".throttle"), "broken")
-		write(t, filepath.Join(root, ".owners"), `{"owners":{"s":{"account":"chosen","atMs":100}}}`)
-		s := Open(rootScope(root))
-		snap := s.Load()
-		if !snap.OwnersReadable() || snap.Owners()["s"].Account != "chosen" {
-			t.Errorf("request ledger hid readable owner: %+v, readable=%v", snap.Owners(), snap.OwnersReadable())
-		}
-		got, err := s.Claim([]Key{key("a")}, now)
-		if err != nil {
-			t.Fatalf("disposable ledger could not recover: %v", err)
-		}
-		if got[0].Permit || got[0].NextEligible.Before(now.Add(CooldownMax-time.Second)) {
-			t.Fatalf("recovery did not stay quiet: %+v", got[0])
-		}
-		if !claimOne(t, s, key("a"), now.Add(CooldownMax+time.Second)).Permit {
-			t.Fatal("recovered import never became eligible")
-		}
-		if data, err := os.ReadFile(filepath.Join(root, ".throttle.imported")); err != nil || string(data) != "broken" {
-			t.Fatalf("original not preserved: %q %v", data, err)
-		}
-	})
-	t.Run("unreadable legacy owners are visible", func(t *testing.T) {
-		root := t.TempDir()
-		write(t, filepath.Join(root, ".owners"), "broken")
-		if Open(rootScope(root)).Load().OwnersReadable() {
-			t.Fatal("unreadable legacy re-homes reported as readable")
-		}
-	})
-}
-
-func TestImportedClockAnomalyIsBoundedOnce(t *testing.T) {
-	root := t.TempDir()
-	now := time.Now()
-	write(t, filepath.Join(root, ".throttle"), fmt.Sprintf(`{"a":{"next_eligible_ms":%d}}`, now.Add(24*time.Hour).UnixMilli()))
-	s := Open(rootScope(root))
-	if _, err := s.Claim(nil, now); err != nil {
-		t.Fatal(err)
-	}
-	// This preview is ten minutes later; the bound stays at import time.
-	next := s.Load().NextEligible(key("a"), now.Add(10*time.Minute))
-	if next.Before(now.Add(CooldownMax-time.Second)) || next.After(now.Add(CooldownMax+time.Second)) {
-		t.Fatalf("import deadline moved: %v", next)
 	}
 }
 
