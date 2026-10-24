@@ -192,7 +192,10 @@ func TestGrammarRefuses(t *testing.T) {
 		{[]string{"select"}, "unexpected argument select"},
 		{[]string{"select", "add"}, "unexpected argument select"},
 		{[]string{"--check"}, "unknown flag --check"},
-		{[]string{"lauch"}, "unexpected argument lauch"},
+		// A mistyped command is the root's error; under the board typed by
+		// name, the word is the board's.
+		{[]string{"lauch"}, "unexpected argument lauch, did you mean \"launch\"?\nUsage: headroom [<command>] [flags]"},
+		{[]string{"board", "lauch"}, "unexpected argument lauch\nUsage: headroom board [flags]"},
 		{[]string{"check", "extra"}, "unexpected argument extra"},
 		{[]string{"version", "extra"}, "unexpected argument extra"},
 	} {
