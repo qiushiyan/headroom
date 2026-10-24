@@ -21,17 +21,11 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
-
-// execSessions is the exec edge, injected for tests. ExecPath, not Exec: the
-// executable is resolved before the chdir, so a relative PATH entry in the
-// project directory can never supply the binary.
-var execSessions = launch.ExecPath
 
 // psProbe keeps absent processes distinct from failed inspection.
 func psProbe(pid int) (int64, error) {

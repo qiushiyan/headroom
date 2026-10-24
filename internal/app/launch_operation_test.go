@@ -36,7 +36,8 @@ func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 	ui.listing.Sessions = []*sessions.Session{s}
 	ui.rows = ui.listing.Sessions
 
-	_, _, _, called := capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, _, called := capturedExec(t)
 	if done, _ := ui.commitResume(true); done || *called {
 		t.Fatalf("x with re-homes unwritable: done %v, exec called %v", done, *called)
 	}
@@ -49,7 +50,8 @@ func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 
 	// The same picker, the next attempt: an ordinary resume on the owner is
 	// the one launch that happened, counted once.
-	_, _, env, called := capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, env, called := capturedExec(t)
 	if done, code := ui.commitResume(false); !done || code != 0 || !*called {
 		t.Fatalf("enter after the refusal: (%v, %d) — %s", done, code, ui.message)
 	}
@@ -359,7 +361,8 @@ func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}}
 		ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}}
 		ui.rows = ui.listing.Sessions
-		_, _, _, called := capturedSessionsExec(t)
+		keepWorkingDir(t)
+		_, _, called := capturedExec(t)
 		var done bool
 		stderr := captureStderr(t, func() { done, _ = ui.commitResume(false) })
 		if !done || !*called {

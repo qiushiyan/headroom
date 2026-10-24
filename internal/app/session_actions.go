@@ -84,7 +84,10 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		}
 	}
 	argv := append(append([]string{}, actions.claudeArgs...), "--resume", s.ID)
-	if err := execSessions(out.prepared.Path, out.prepared.Binary, argv, envWithPWD(out.prepared.Env, s.CWD)); err != nil {
+	// The launch surface's exec edge, which execs the path Prepare resolved
+	// before the chdir above — so a relative PATH entry in the project
+	// directory can never supply the binary.
+	if err := execVendor(out.prepared.Path, out.prepared.Binary, argv, envWithPWD(out.prepared.Env, s.CWD)); err != nil {
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil

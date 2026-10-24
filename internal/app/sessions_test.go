@@ -13,25 +13,16 @@ import (
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// capturedSessionsExec swaps the sessions exec edge for a recorder and pins
-// the test's working directory back afterwards — commitResume chdirs.
-func capturedSessionsExec(t *testing.T) (path *string, argv *[]string, env *[]string, called *bool) {
+// keepWorkingDir puts the test's working directory back afterwards: a
+// committed resume chdirs into the session's project before it execs, as the
+// real one does. The exec itself is captured by capturedExec.
+func keepWorkingDir(t *testing.T) {
 	t.Helper()
 	orig, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chdir(orig) })
-	var p string
-	var a, e []string
-	var c bool
-	prev := execSessions
-	execSessions = func(execPath, binary string, claudeArgs, environ []string) error {
-		p, a, e, c = execPath, claudeArgs, environ, true
-		return nil
-	}
-	t.Cleanup(func() { execSessions = prev })
-	return &p, &a, &e, &c
 }
 
 func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
@@ -89,7 +80,8 @@ func claimSession(t *testing.T, accountDir, id string, pid int, started time.Tim
 // the dir — all decided in-process, nothing crossing a protocol.
 func TestSessionsCommitExecsOnOwner(t *testing.T) {
 	ui, s := sessionsFixture(t)
-	_, argv, env, called := capturedSessionsExec(t)
+	keepWorkingDir(t)
+	argv, env, called := capturedExec(t)
 
 	cd := filepath.Join(t.TempDir(), "cwd")
 	if f, err := os.Create(cd); err != nil {
@@ -184,7 +176,8 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ui, s := sessionsFixture(t)
-			_, _, _, called := capturedSessionsExec(t)
+			keepWorkingDir(t)
+			_, _, called := capturedExec(t)
 			cd := filepath.Join(t.TempDir(), "cwd")
 			if f, err := os.Create(cd); err != nil {
 				t.Fatal(err)
@@ -273,7 +266,8 @@ func TestSessionsArgContract(t *testing.T) {
 
 func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 	ui, s := sessionsFixture(t)
-	_, _, _, called := capturedSessionsExec(t)
+	keepWorkingDir(t)
+	_, _, called := capturedExec(t)
 	s.CWD = filepath.Join(ui.set.Scope.Home, "project\nname")
 	if err := os.Mkdir(s.CWD, 0755); err != nil {
 		t.Fatal(err)
@@ -285,9 +279,10 @@ func TestSessionPathWithoutCDFileAcceptsNewline(t *testing.T) {
 
 func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	ui, s := sessionsFixture(t)
-	capturedSessionsExec(t) // also restores cwd
+	keepWorkingDir(t)
+	capturedExec(t) // restores the edge afterwards; the exec fails here
 	ui.st = state.Open(ui.set.Scope)
-	execSessions = func(string, string, []string, []string) error { return os.ErrPermission }
+	execVendor = func(string, string, []string, []string) error { return os.ErrPermission }
 	output := captureStderr(t, func() {
 		if done, code := ui.commitResume(true); !done || code != 1 {
 			t.Fatalf("commit: %v %d %s", done, code, ui.message)
