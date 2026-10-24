@@ -16,8 +16,6 @@ package app
 // sessions on that account cannot. Spec: docs/specs/headless.md.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,10 +29,9 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
-	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -78,35 +75,6 @@ func runHeadless(scope config.Scope, args []string) int {
 
 // ---- deciding ----
 
-// gatherHeadless is gatherPlacement for a headless caller: what every
-// placement reads — figures, busy sessions, recent launches, from every home
-// on the ledger — with each account's eligibility decided by its token instead
-// of by whether its dir can be launched. A token is a grant of its own: the
-// dir's login expiring, or its topology, says nothing about it, so nothing an
-// ordinary launch needs is prepared or consulted here. Credentials are still
-// read: they say which accounts the refresh a placement leaves behind could
-// ask.
-//
-// The caller's own exclusions join them as candidates' exclusions, so the
-// rule decides among the rest in the same locked step that records the
-// choice, and an account the caller will not take is never placed on: a
-// session that ended on an account's usage limit or a token the vendor
-// refused is the caller's to know, and that account reads idle to the rule.
-func gatherHeadless(set accounts.Set, st *state.Store, tokens map[string]headless.Token, exclude map[string]bool, now time.Time) placeFacts {
-	snap := st.Load()
-	f := observeCandidates(set, st, snap, diskSources(set, snap, now), true)
-	for i := range f.cands {
-		c := &f.cands[i]
-		if exclude[c.Name] {
-			c.Excluded = "excluded by the caller"
-			continue
-		}
-		tok, ok := tokens[c.Name]
-		c.Excluded = headlessExclusion(c.acct, c.key, tok, ok, now)
-	}
-	return f
-}
-
 // tokenProblem is why a's headless token must not be used, or "": there is
 // none, it has ended, or it was minted for another subscription than the one
 // a's dir (whose key is key) is logged in to now. Positive evidence only: a
@@ -118,7 +86,7 @@ func tokenProblem(a accounts.Account, key state.Key, tok headless.Token, ok bool
 	case !ok:
 		return "no headless token — headroom headless mint " + a.Name
 	case tok.Ended(now):
-		return "headless token ended " + when(tok.EndsMS, now) + " — headroom headless mint " + a.Name
+		return "headless token ended " + render.When(tok.EndsMS, now) + " — headroom headless mint " + a.Name
 	case key.UUID != "" && key.ID() != tok.Key:
 		return "logged in to another subscription than its headless token — mint it again or forget it"
 	}
@@ -223,13 +191,6 @@ func headlessAccounts(d placement.Decision) []headlessAcct {
 	return out
 }
 
-// newPlacementID names one headless placement.
-func newPlacementID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 // runHeadlessPlace decides which account the caller's next session spends,
 // records the decision as load and prints it. It refuses — exit 3, nothing
 // recorded — when every account it could take is near a limit or excluded,
@@ -263,7 +224,7 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 		return 1
 	}
 	set := accounts.Discover(scope)
-	intent := placement.Intent{Kind: placement.Auto, CanWait: true}
+	preferred := ""
 	if prefer != "" {
 		// The account a session ran on last: followed while it has room, so
 		// the session's prompt cache stays warm, as a launch follows the owner
@@ -273,7 +234,7 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 			fmt.Fprintf(errw, "headroom headless place: %v\n", err)
 			return 1
 		}
-		intent.Owner = a.Name
+		preferred = a.Name
 	}
 	// Names the caller was handed by an earlier placement: one nothing
 	// answers to is a caller's mistake, said rather than silently ignored.
@@ -286,38 +247,25 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 		}
 		exclude[a.Name] = true
 	}
-	if exclude[intent.Owner] {
-		fmt.Fprintf(errw, "headroom headless place: %s is both preferred and excluded\n", intent.Owner)
+	if exclude[preferred] {
+		fmt.Fprintf(errw, "headroom headless place: %s is both preferred and excluded\n", preferred)
 		return 2
 	}
 	now := time.Now()
-	st := state.Open(scope)
-	intent.Home = st.Home()
-	facts := gatherHeadless(set, st, tokens, exclude, now)
+	cwd, _ := os.Getwd()
+	placed := launchop.PlaceHeadless(launchop.HeadlessRequest{
+		Set: set, Store: state.Open(scope), Prefer: preferred, Exclude: exclude, DryRun: dryRun, CWD: cwd, Now: now,
+		Eligible: func(a accounts.Account, key state.Key) string {
+			tok, ok := tokens[a.Name]
+			return headlessExclusion(a, key, tok, ok, now)
+		},
+	}, placeDeps())
 
-	doc := headlessDoc{Schema: headlessSchema, DryRun: dryRun}
-	var d placement.Decision
-	failed := false
-	if dryRun {
-		d = placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
-	} else {
-		id := newPlacementID()
-		placed, err := st.Place(state.Launch{Candidates: facts.rule(), Intent: intent, Now: now, ID: id, Gone: facts.gone})
-		d = placed.Decision
-		switch {
-		case err != nil:
-			// A placement nobody can see is a session the person's launches
-			// cannot steer around, so an unrecorded one is not handed out.
-			d.Chosen, d.Refusal, d.RoomAt = "", fmt.Sprintf("the placement could not be recorded (%v)", err), 0
-			failed = true
-			fmt.Fprintf(errw, "headroom headless place: %s\n", d.Refusal)
-		case d.Chosen != "":
-			doc.Placement = id
-			logHeadless(scope, facts, placed, intent, now, &doc)
-			if refreshWorthStarting(facts, now) {
-				_ = startRefresh(scope)
-			}
-		}
+	doc := headlessDoc{Schema: headlessSchema, DryRun: dryRun, Placement: placed.ID, Notes: placed.Notes}
+	d := placed.Decision
+	failed := placed.Unrecorded != nil
+	if failed {
+		fmt.Fprintf(errw, "headroom headless place: %s\n", d.Refusal)
 	}
 	doc.Rule, doc.Accounts = d.Rule, headlessAccounts(d)
 	code := exitPlaced
@@ -331,7 +279,7 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 		if tok := tokens[d.Chosen]; tok.EndsMS > 0 {
 			doc.TokenEndsAt = rfc(tok.EndsMS / 1000)
 			if left := time.UnixMilli(tok.EndsMS).Sub(now); left < defaultLoginWithin {
-				doc.Notes = append(doc.Notes, fmt.Sprintf("its headless token ends %s — headroom headless mint %s", when(tok.EndsMS, now), d.Chosen))
+				doc.Notes = append(doc.Notes, fmt.Sprintf("its headless token ends %s — headroom headless mint %s", render.When(tok.EndsMS, now), d.Chosen))
 			}
 		}
 	}
@@ -341,17 +289,6 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 		return 1
 	}
 	return code
-}
-
-// logHeadless writes the placement's line in the launch log, as a launch's:
-// `launches --eval` judges the rule by every decision it made.
-func logHeadless(scope config.Scope, facts placeFacts, placed state.Placed, intent placement.Intent, now time.Time, doc *headlessDoc) {
-	rec := launchlog.New(placed.Decision, facts.rule(), placed.Ledger, intent, now)
-	rec.Vendor, rec.Mode, rec.Recorded = string(scope.Vendor), "headless", placed.Recorded
-	rec.CWD, _ = os.Getwd()
-	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
-		doc.Notes = append(doc.Notes, fmt.Sprintf("launch log not written (%v)", err))
-	}
 }
 
 // ---- the session it became ----
@@ -372,37 +309,16 @@ func runHeadlessStarted(errw io.Writer, scope config.Scope, args []string) int {
 		fmt.Fprintf(errw, "headroom headless started: %q is not a process id\n", args[1])
 		return 2
 	}
-	start, err := pidProbe(pid)
-	if errors.Is(err, os.ErrNotExist) {
+	err = launchop.Started(state.Open(scope), id, pid, time.Now(), placeDeps())
+	if errors.Is(err, launchop.ErrExited) {
 		fmt.Fprintf(errw, "headroom headless started: process %d has already exited — its placement counts as a launch\n", pid)
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(errw, "headroom headless started: cannot read when process %d started: %v\n", pid, err)
-		return 1
-	}
-	st := state.Open(scope)
-	gone := goneRuns(st.Load().Runs())
-	if _, err := st.Started(id, pid, start*1000, gone, time.Now()); err != nil {
-		if errors.Is(err, state.ErrNotPlaced) {
-			err = fmt.Errorf("%w (%s): a placement counts for %s and is then forgotten", err, id, placement.PendingFor)
-		}
 		fmt.Fprintf(errw, "headroom headless started: %v\n", err)
 		return 1
 	}
 	return 0
-}
-
-// goneRuns is the runs whose process is proven over, from one sample per pid:
-// what a placement's own reading proves (retiredRuns), for a command that
-// reads nothing else.
-func goneRuns(runs []state.Run) []state.Run {
-	claims := make([]sessions.RegistryEntry, len(runs))
-	for i, r := range runs {
-		claims[i] = runEntry("", r)
-	}
-	evidence, _ := sessions.InspectClaims(claims, pidProbe)
-	return retiredRuns(runs, evidence)
 }
 
 // ---- the credential ----
@@ -520,7 +436,7 @@ func runHeadlessList(out io.Writer, scope config.Scope, args []string, now time.
 		case !r.Token:
 			says = append(says, "none — headroom headless mint "+r.Account)
 		case tok.EndsMS > 0 && !tok.Ended(now):
-			says = append(says, "ends "+when(tok.EndsMS, now))
+			says = append(says, "ends "+render.When(tok.EndsMS, now))
 		case tok.EndsMS == 0:
 			says = append(says, "end not stated by the vendor")
 		}

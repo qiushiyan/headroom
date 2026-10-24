@@ -21,6 +21,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -51,23 +52,13 @@ func psProbe(pid int) (int64, error) {
 	return t.Unix(), nil
 }
 
-// accountRefs is the set as the session collector names accounts: each one's
-// name and the config dir its history and registry live in.
-func accountRefs(set accounts.Set) []sessions.AccountRef {
-	refs := make([]sessions.AccountRef, 0, len(set.Accounts))
-	for _, a := range set.Accounts {
-		refs = append(refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
-	}
-	return refs
-}
-
 func collectSessions(cfg config.Scope, st *state.Store) (sessions.Listing, accounts.Set, accounts.Routing) {
 	set := accounts.Discover(cfg)
 	cwd, _ := os.Getwd()
 	listing := sessions.Collect(sessions.Input{
 		ProjectsDir: cfg.StoreDir(),
 		CWD:         cwd,
-		Accounts:    accountRefs(set),
+		Accounts:    launchop.Refs(set),
 		Owners:      st.Load().Owners(),
 		Probe:       pidProbe,
 	})

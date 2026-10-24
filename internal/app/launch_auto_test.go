@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -77,6 +79,13 @@ func newAutoFixture(t *testing.T, extras ...string) autoFixture {
 	startRefresh = func(config.Scope) error { *f.refreshes++; return nil }
 	t.Cleanup(func() { placementCreds, pidProbe, startRefresh = prevCreds, prevProbe, prevRefresh })
 	return f
+}
+
+// placementView is what an automatic launch would count and choose at now,
+// read the way the board's marks are: every account's mark, by name.
+func placementView(set accounts.Set, st *state.Store, now time.Time) map[string]accountstate.Mark {
+	accts, _ := accountstate.Assemble(set, st.Load(), now)
+	return launchop.Mark(set, st, accts, "auto", os.Environ(), now, placeDeps()).At(now)
 }
 
 func (f autoFixture) key(name string) state.Key {
@@ -533,43 +542,6 @@ func TestUnidentifiedSessionsArePlacedAndNothingIsRecorded(t *testing.T) {
 	for _, r := range f.log() {
 		if r.Session != "" {
 			t.Errorf("a guessed session reached the log: %+v", r.Session)
-		}
-	}
-}
-
-func TestSessionIntent(t *testing.T) {
-	cases := []struct {
-		args []string
-		want sessionRef
-	}{
-		{nil, sessionRef{}},
-		{[]string{"-p", "hello"}, sessionRef{}},
-		{[]string{"--resume", sessA}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"-r", sessA, "--model", "x"}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"--resume=" + sessA}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"--session-id", sessA}, sessionRef{Route: sessA, Record: sessA}},
-		{[]string{"--session-id=" + sessA}, sessionRef{Route: sessA, Record: sessA}},
-		// A fork follows the session it forks from and creates another: the
-		// original is never recorded as having moved.
-		{[]string{"--resume", sessA, "--fork-session"}, sessionRef{Route: sessA}},
-		{[]string{"--resume", sessA, "--fork-session", "--session-id", sessB}, sessionRef{Route: sessA}},
-		{[]string{"--continue"}, sessionRef{Unidentified: true}},
-		{[]string{"-c"}, sessionRef{Unidentified: true}},
-		{[]string{"--resume"}, sessionRef{Unidentified: true}},
-		{[]string{"--resume", "a search term"}, sessionRef{Unidentified: true}},
-		{[]string{"--resume="}, sessionRef{}},
-		{[]string{"--resume=term"}, sessionRef{Unidentified: true}},
-		// Conflicting selectors name nothing headroom can stand behind.
-		{[]string{"--continue", "--resume", sessA}, sessionRef{Unidentified: true}},
-		// After a bare `--` everything is the vendor's positional text.
-		{[]string{"--", "--resume", sessA}, sessionRef{}},
-		{[]string{"-p", "--", "--continue"}, sessionRef{}},
-		// A value that merely follows the flag is not thereby a session id.
-		{[]string{"--session-id", "nope"}, sessionRef{}},
-	}
-	for _, c := range cases {
-		if got := sessionIntent(c.args); got != c.want {
-			t.Errorf("%v → %+v, want %+v", c.args, got, c.want)
 		}
 	}
 }

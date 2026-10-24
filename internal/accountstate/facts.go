@@ -35,6 +35,22 @@ const (
 	SourceCache               // Claude Code's own cache in .claude.json
 )
 
+// Name is the source as the JSON documents and the launch log spell it. A
+// consumer must be able to tell "this run asked the endpoint" from "a previous
+// run asked and this one replayed the answer" — both are headroom's own
+// reading, but only the first was made now.
+func (s Source) Name() string {
+	switch s {
+	case SourceLive:
+		return "live"
+	case SourceStore:
+		return "headroom_cache"
+	case SourceCache:
+		return "claude_cache"
+	}
+	return ""
+}
+
 // Ours groups this process's response and a stored response for captions:
 // both were fetched by headroom at the observation's timestamp. JSON keeps
 // them distinct so consumers can tell which run actually asked.
@@ -134,6 +150,13 @@ type Facts struct {
 	// home that shares the ledger. nil when the surface did not read it: the
 	// limits surface spawns nothing, and reading liveness takes a process
 	// sample per session.
+	Load *Load
+}
+
+// Mark is what a surface showing figures is told about one account by the
+// placement rule: its load, and whether an automatic launch would take it now.
+type Mark struct {
+	Next bool
 	Load *Load
 }
 

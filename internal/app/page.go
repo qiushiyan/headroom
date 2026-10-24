@@ -13,6 +13,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -48,7 +49,7 @@ type page struct {
 
 	// placed is what the last round gathered for the marks, from which every
 	// frame marks again at its own time; nil until a round has marked.
-	placed *placeMark
+	placed *launchop.Marks
 
 	// begin starts a round under the page's scope and store: the local half,
 	// then the claim and whatever fetches it permits. The board it returns
@@ -121,7 +122,7 @@ func beginRound(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
 // and again when its results have landed. The mode is the round's own reading
 // of `.current`, never a second one.
 func (ui *page) mark(now time.Time) {
-	ui.placed = markPlacement(ui.set, ui.list, ui.routing.Mode, ui.st, now)
+	ui.placed = markBoard(ui.board, now)
 }
 
 // markAt marks the rows again from what the last round gathered, at now. A
@@ -129,7 +130,7 @@ func (ui *page) mark(now time.Time) {
 // alone can change the choice; the frame that shows a mark decides it.
 func (ui *page) markAt(now time.Time) {
 	if ui.placed != nil {
-		ui.placed.mark(ui.list, now)
+		applyMarks(ui.list, ui.placed.At(now))
 	}
 }
 

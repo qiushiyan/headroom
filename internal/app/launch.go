@@ -23,6 +23,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -185,36 +186,20 @@ parse:
 	}
 	automatic := intent.Kind == placement.Auto
 
-	st := state.Open(cfg)
-	intent.Home = st.Home()
-	facts := gatherPlacement(set, st, os.Environ(), automatic, now)
-
-	// A launch that names a session follows the account that last drove it,
-	// so its prompt cache and its checkpoints stay usable. Only an automatic
-	// launch asks: a named or pinned one was told where to go. Only Claude
-	// Code has an owner to ask about.
-	var ref sessionRef
-	owner := ""
-	if automatic && cfg.Vendor == config.Claude {
-		ref = sessionIntent(rest)
-		if ref.Route != "" {
-			owner = facts.owner(ref.Route)
-			intent.Owner = owner
-		}
-	}
-
 	cwd, _ := os.Getwd()
-	req := launchRequest{st: st, intent: intent, mode: mode, ref: ref, owner: owner, remember: remember, cwd: cwd, now: now}
+	plan := launchop.Gather(launchop.Request{
+		Set: set, Store: state.Open(cfg), Intent: intent, Mode: mode, VendorArgs: rest,
+		Remember: remember, CWD: cwd, Environ: os.Environ(), Now: now,
+	}, placeDeps())
 	if dryRun {
 		// What the launch would refuse before writing anything is said as the
 		// launch says it; what it would decide is the table.
-		if err := preflight(req, facts); err != nil {
+		chosen, err := plan.Preview(os.Stdout, cfg.Binary())
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 			return 1
 		}
-		d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
-		writeDryRun(os.Stdout, cfg.Binary(), d, mode, now, facts.home, homeLabels(facts.snap))
-		if d.Chosen == "" {
+		if !chosen {
 			return 1
 		}
 		return 0
@@ -222,17 +207,18 @@ parse:
 
 	// --remember is written by the operation, after what it would refuse and
 	// before the placement and the exec.
-	out, err := placeLaunch(req, facts)
+	out, err := plan.Commit()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
 		return 1
 	}
 
-	out.announce(os.Stderr, "headroom launch: ")
-	if err := execVendor(out.prepared.Path, out.prepared.Binary, rest, out.prepared.Env); err != nil {
-		fmt.Fprintf(os.Stderr, "headroom launch: exec %s: %v\n", out.prepared.Binary, err)
+	out.Announce(os.Stderr, "headroom launch: ")
+	p := out.Prepared()
+	if err := execVendor(p.Path, p.Binary, rest, p.Env); err != nil {
+		fmt.Fprintf(os.Stderr, "headroom launch: exec %s: %v\n", p.Binary, err)
 		if remember {
-			current := out.decision.Chosen
+			current := out.Account().Name
 			if automatic {
 				current = accounts.AutoWord
 			}

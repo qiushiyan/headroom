@@ -467,14 +467,11 @@ func TestAHomeThatLeftIsNoLongerCounted(t *testing.T) {
 	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 802)
 	counted := func() int {
 		t.Helper()
-		facts := gatherPlacement(accounts.Discover(f.owner), state.Open(f.owner), os.Environ(), true, time.Now())
-		for _, c := range facts.cands {
-			if c.Name == "a@x.com" {
-				return len(c.Busy)
-			}
+		m, ok := placementView(accounts.Discover(f.owner), state.Open(f.owner), time.Now())["a@x.com"]
+		if !ok {
+			t.Fatal("no a@x.com candidate")
 		}
-		t.Fatal("no a@x.com candidate")
-		return -1
+		return m.Load.Busy
 	}
 	if n := counted(); n != 2 {
 		t.Fatalf("while sharing, the owner counts %d of the second home's sessions, want 2", n)
@@ -492,12 +489,11 @@ func TestAHomeThatLeftIsNoLongerCounted(t *testing.T) {
 func TestOneHomesTwoDirsOnOneSubscriptionShareTheirLoad(t *testing.T) {
 	f := newTwoHomes(t)
 	f.busy(f.steward.PrimaryDir(), 901) // the steward's primary is logged into yan@x.com
-	facts := gatherPlacement(accounts.Discover(f.steward), state.Open(f.steward), os.Environ(), true, time.Now())
-	for _, c := range facts.cands {
-		if (c.Name == "yan" || c.Name == "yan@x.com") && len(c.Busy) != 1 {
-			t.Errorf("%s carries %d busy sessions, want the one on its subscription", c.Name, len(c.Busy))
+	for name, m := range placementView(accounts.Discover(f.steward), state.Open(f.steward), time.Now()) {
+		if (name == "yan" || name == "yan@x.com") && m.Load.Busy != 1 {
+			t.Errorf("%s carries %d busy sessions, want the one on its subscription", name, m.Load.Busy)
 		}
-		if c.Name == "a@x.com" && len(c.Busy) != 0 {
+		if name == "a@x.com" && m.Load.Busy != 0 {
 			t.Errorf("a@x.com carries another subscription's session")
 		}
 	}

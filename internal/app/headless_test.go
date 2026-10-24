@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
@@ -102,15 +103,15 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if doc, _, _ := f.place(); doc.Account != "a@x.com" {
 		t.Errorf("second placement went to %q", doc.Account)
 	}
-	d := placement.Choose(gatherPlacement(accounts.Discover(f.cfg), f.st, os.Environ(), true, time.Now()).rule(), f.st.Load().Placements(), placement.Intent{}, time.Now())
-	if a, _ := d.Find("a@x.com"); a.Pending != 1 {
-		t.Errorf("a launch counts a's headless placement as %d", a.Pending)
+	marks := placementView(accounts.Discover(f.cfg), f.st, time.Now())
+	if n := marks["a@x.com"].Load.Launched; n != 1 {
+		t.Errorf("a launch counts a's headless placement as %d", n)
 	}
-	if b, _ := d.Find("b@x.com"); b.Pending != 1 {
-		t.Errorf("a launch counts b's headless placement as %d", b.Pending)
+	if n := marks["b@x.com"].Load.Launched; n != 1 {
+		t.Errorf("a launch counts b's headless placement as %d", n)
 	}
-	if d.Chosen != "c@x.com" {
-		t.Errorf("a launch went to %q, not the account eval work left alone", d.Chosen)
+	if !marks["c@x.com"].Next {
+		t.Errorf("a launch would not go to the account eval work left alone: %+v", marks)
 	}
 }
 
@@ -187,23 +188,21 @@ func TestAStartedSessionCountsAsBusyForItsWholeLife(t *testing.T) {
 		t.Fatalf("runs %+v", runs)
 	}
 
-	count := func(at time.Time) placement.Counted {
-		facts := gatherPlacement(accounts.Discover(f.cfg), f.st, os.Environ(), true, at)
-		c, _ := placement.Choose(facts.rule(), f.st.Load().Placements(), placement.Intent{}, at).Find(doc.Account)
-		return c
+	count := func(at time.Time) *accountstate.Load {
+		return placementView(accounts.Discover(f.cfg), f.st, at)[doc.Account].Load
 	}
-	if c := count(time.Now()); c.Busy != 1 || c.Pending != 0 || c.Load != 1 {
-		t.Fatalf("running: busy %d pending %d load %d", c.Busy, c.Pending, c.Load)
+	if c := count(time.Now()); c.Busy != 1 || c.Launched != 0 || c.Value != 1 {
+		t.Fatalf("running: busy %d pending %d load %d", c.Busy, c.Launched, c.Value)
 	}
-	if c := count(time.Now().Add(40 * time.Minute)); c.Busy != 1 || c.Load != 1 {
-		t.Fatalf("forty minutes in: busy %d load %d", c.Busy, c.Load)
+	if c := count(time.Now().Add(40 * time.Minute)); c.Busy != 1 || c.Value != 1 {
+		t.Fatalf("forty minutes in: busy %d load %d", c.Busy, c.Value)
 	}
 
 	// The process exits: it is no longer busy, its placement counts out its
 	// span, and the next placement drops the run.
 	delete(f.live, 4242)
-	if c := count(time.Now()); c.Busy != 0 || c.Pending != 1 {
-		t.Fatalf("exited: busy %d pending %d", c.Busy, c.Pending)
+	if c := count(time.Now()); c.Busy != 0 || c.Launched != 1 {
+		t.Fatalf("exited: busy %d pending %d", c.Busy, c.Launched)
 	}
 	f.place()
 	if runs := f.st.Load().Runs(); len(runs) != 0 {

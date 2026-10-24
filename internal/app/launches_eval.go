@@ -20,6 +20,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/eval"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usagelog"
@@ -73,7 +74,7 @@ func gatherEval(scope config.Scope, since, now time.Time) (eval.Input, error) {
 	}
 	known(in.Home, accounts.Discover(scope))
 	homes := []string{in.Home}
-	for _, o := range otherHomes(scope, snap) {
+	for _, o := range launchop.OtherHomes(scope, snap) {
 		homes = append(homes, o.Root)
 		known(o.Root, o.Set)
 	}
@@ -146,10 +147,10 @@ func writeEval(w io.Writer, rep eval.Report) {
 	src := rep.Sources
 	span := "nothing recorded yet"
 	if src.First != nil {
-		span = logWhen(*src.First) + " → " + logWhen(*src.Last)
+		span = render.LogWhen(*src.First) + " → " + render.LogWhen(*src.Last)
 	}
 	if rep.Since != nil {
-		span = "since " + logWhen(*rep.Since) + " · " + span
+		span = "since " + render.LogWhen(*rep.Since) + " · " + span
 	}
 	fmt.Fprintf(w, "%s placement · %s\n", rep.Vendor, span)
 	fmt.Fprintf(w, "  read %d launch line(s) from %d home(s), %d usage-log reading(s), %d reading(s) carried in launch lines",
@@ -371,9 +372,9 @@ func writeEvidence(w io.Writer, title string, n int, lines func(func(string) boo
 }
 
 func episodeLine(ep eval.Episode, home string) string {
-	line := logWhen(ep.NearAt) + "  " + render.Sanitize(ep.Account) + "  " + render.Sanitize(ep.Limit) + fmt.Sprintf(" peak %d%%", ep.Peak)
+	line := render.LogWhen(ep.NearAt) + "  " + render.Sanitize(ep.Account) + "  " + render.Sanitize(ep.Limit) + fmt.Sprintf(" peak %d%%", ep.Peak)
 	if ep.ExhaustedAt != nil {
-		line += " (full at " + logWhen(*ep.ExhaustedAt) + ")"
+		line += " (full at " + render.LogWhen(*ep.ExhaustedAt) + ")"
 	}
 	line += fmt.Sprintf(" · near %s, %s while another had room  %s", evalSpan(ep.NearS), evalSpan(ep.SqueezedS), evalCharged(ep.Rule))
 	if len(ep.Launches) > 0 {
@@ -408,7 +409,7 @@ func roomBasis(r eval.Room) string {
 }
 
 func renewalLine(r eval.Renewal) string {
-	line := logWhen(r.RenewedAt) + "  " + render.Sanitize(r.Account) + "  " + render.Sanitize(r.Limit) +
+	line := render.LogWhen(r.RenewedAt) + "  " + render.Sanitize(r.Account) + "  " + render.Sanitize(r.Limit) +
 		fmt.Sprintf(" used ≥%d%%, read %s before", r.UsedMin, render.Age(r.LastReadS))
 	if r.PeakElsewhere > 0 {
 		line += fmt.Sprintf(" · elsewhere peaked %d%%", r.PeakElsewhere)
@@ -433,9 +434,9 @@ func disagreementLine(d eval.Decision, rule, home string) string {
 	if d.Home != home {
 		// Named by its accounts root, as the launch line names a home with
 		// no registration to name it.
-		where = " on " + render.Sanitize(homeLabel(nil, d.Home))
+		where = " on " + render.Sanitize(state.HomeLabels(nil).Of(d.Home))
 	}
-	line := fmt.Sprintf("%s  %s%s chose %s (%s); %s chooses %s (%s)", logWhen(d.At), d.Rule, where, render.Sanitize(d.Chosen), d.Reason,
+	line := fmt.Sprintf("%s  %s%s chose %s (%s); %s chooses %s (%s)", render.LogWhen(d.At), d.Rule, where, render.Sanitize(d.Chosen), d.Reason,
 		rule, render.Sanitize(replayed), d.Replay.Reason)
 	var after []string
 	if a := d.ChosenAfter; a != nil {
@@ -465,7 +466,7 @@ func otherHomesSaid(byHome map[string]int, home string) string {
 	slices.Sort(roots)
 	var parts []string
 	for _, root := range roots {
-		parts = append(parts, fmt.Sprintf("%d from %s", byHome[root], render.Sanitize(homeLabel(nil, root))))
+		parts = append(parts, fmt.Sprintf("%d from %s", byHome[root], render.Sanitize(state.HomeLabels(nil).Of(root))))
 	}
 	return strings.Join(parts, ", ")
 }

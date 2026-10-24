@@ -24,6 +24,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -100,7 +101,7 @@ func runHeadlessMintTo(out, errw io.Writer, scope config.Scope, args []string, d
 	} else {
 		fmt.Fprintf(out, "approve as %s in %s — headroom cannot check which account approves\n", a.Email, page.phrase())
 	}
-	fmt.Fprintf(out, "it waits up to %s for the approval; ctrl-c does not reach it — close the terminal to stop sooner\n\n", span(mintWait))
+	fmt.Fprintf(out, "it waits up to %s for the approval; ctrl-c does not reach it — close the terminal to stop sooner\n\n", render.Span(mintWait))
 
 	scan := headless.NewScanner(out)
 	runErr := deps.setupToken(scope, page, scan)
@@ -126,21 +127,10 @@ func runHeadlessMintTo(out, errw io.Writer, scope config.Scope, args []string, d
 	}
 	ends := "the vendor did not say when it ends"
 	if known {
-		ends = "ends " + when(tok.EndsMS, now)
+		ends = "ends " + render.When(tok.EndsMS, now)
 	}
 	fmt.Fprintf(out, "\n✓ %s: headless token stored in %s, %s\n", a.Name, headless.Path(scope.AccountsRoot), ends)
 	return 0
-}
-
-// span is a wait in words: "10 minutes".
-func span(d time.Duration) string {
-	if d < time.Minute {
-		return d.String()
-	}
-	if m := int(d.Minutes()); m != 1 {
-		return fmt.Sprintf("%d minutes", m)
-	}
-	return "1 minute"
 }
 
 // vendorSetupToken runs `claude setup-token` with the terminal on its input,
@@ -237,7 +227,7 @@ func vendorSetupToken(scope config.Scope, page approvalPage, scan *headless.Scan
 			grace, afterToken = nil, true
 			stop(nil)
 		case <-deadline.C:
-			stop(fmt.Errorf("no approval within %s — stopped", span(mintWait)))
+			stop(fmt.Errorf("no approval within %s — stopped", render.Span(mintWait)))
 		}
 	}
 }

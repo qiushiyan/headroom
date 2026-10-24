@@ -28,6 +28,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/headless"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
@@ -181,7 +182,7 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 			return 1
 		}
 		if sealed == 0 {
-			fmt.Fprintf(out, "nothing to renew within %s; name an account or pass --all to renew anyway\n", days(within))
+			fmt.Fprintf(out, "nothing to renew within %s; name an account or pass --all to renew anyway\n", render.Days(within))
 		}
 		return 0
 	}
@@ -217,7 +218,7 @@ func runLoginTo(out, errw io.Writer, scope config.Scope, args []string, deps log
 	}
 	// The batch's one date: when the next pass is due on this machine.
 	if earliest != 0 {
-		fmt.Fprintf(out, "\nthe logins renewed here end from %s\n", when(earliest, deps.now()))
+		fmt.Fprintf(out, "\nthe logins renewed here end from %s\n", render.When(earliest, deps.now()))
 	}
 	if failed > 0 {
 		fmt.Fprintf(out, "%d of %d logins did not take\n", failed, len(chosen)+refused)
@@ -251,7 +252,7 @@ func writeTokenEnds(out io.Writer, rows []*loginRow, deps loginDeps, within time
 		if tok.Ended(now) {
 			verb = "ended"
 		}
-		lines = append(lines, fmt.Sprintf("  %-28s headless token %s %s — headroom headless mint %s", r.acct.Name, verb, when(tok.EndsMS, now), r.acct.Name))
+		lines = append(lines, fmt.Sprintf("  %-28s headless token %s %s — headroom headless mint %s", r.acct.Name, verb, render.When(tok.EndsMS, now), r.acct.Name))
 	}
 	if len(lines) > 0 {
 		fmt.Fprintf(out, "\n%s\n", strings.Join(lines, "\n"))
@@ -336,7 +337,7 @@ func loginState(r *loginRow, now time.Time) string {
 	case accountstate.HealthNoLogin:
 		return "not logged in"
 	case accountstate.HealthReloginRequired:
-		return "login ended " + when(r.blob.RefreshExpiresMS, now)
+		return "login ended " + render.When(r.blob.RefreshExpiresMS, now)
 	case accountstate.HealthBadBlob:
 		return "credential unreadable (Claude Code changed its format?)"
 	case accountstate.HealthUnknown:
@@ -345,7 +346,7 @@ func loginState(r *loginRow, now time.Time) string {
 	if !r.blobOK || r.blob.RefreshState != tag.OK {
 		return "logged in, end date not recorded"
 	}
-	return "login ends " + when(r.blob.RefreshExpiresMS, now)
+	return "login ends " + render.When(r.blob.RefreshExpiresMS, now)
 }
 
 // readBack decides whether a login took, against the credential as it stood
@@ -383,24 +384,7 @@ func endPhrase(b creds.Blob, now time.Time) string {
 	if b.RefreshState != tag.OK {
 		return ""
 	}
-	return ", login ends " + when(b.RefreshExpiresMS, now)
-}
-
-// when is an instant as a date plus its distance from now.
-func when(ms int64, now time.Time) string {
-	t := time.UnixMilli(ms)
-	d := t.Sub(now)
-	if d < 0 {
-		return t.Local().Format("Jan 2") + " (" + days(-d) + " ago)"
-	}
-	return t.Local().Format("Jan 2") + " (in " + days(d) + ")"
-}
-
-func days(d time.Duration) string {
-	if d < 24*time.Hour {
-		return strconv.Itoa(int(d.Hours())) + "h"
-	}
-	return strconv.Itoa(int(d.Hours()/24)) + "d"
+	return ", login ends " + render.When(b.RefreshExpiresMS, now)
 }
 
 func orNobody(email string) string {

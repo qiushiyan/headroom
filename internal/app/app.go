@@ -23,6 +23,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -616,6 +617,28 @@ func resolve(d *accountData, result refresh.Result) {
 	}
 	if result.StoreErr != nil {
 		d.View.Attempt.StoreError = result.StoreErr.Error()
+	}
+}
+
+// markBoard sets every row's load and, under auto, the row a launch would
+// take from the figures the board holds, and returns what it gathered, so a
+// board that stays open can mark again as time passes. The mode is the
+// round's own reading of `.current`, never a second one.
+func markBoard(b board, now time.Time) *launchop.Marks {
+	accts := make([]accountstate.Account, len(b.list))
+	for i, d := range b.list {
+		accts[i] = d.Account
+	}
+	m := launchop.Mark(b.set, b.st, accts, b.routing.Mode, os.Environ(), now, placeDeps())
+	applyMarks(b.list, m.At(now))
+	return m
+}
+
+// applyMarks sets each row's mark; a row the marks do not name has none.
+func applyMarks(list []*accountData, marks map[string]accountstate.Mark) {
+	for _, d := range list {
+		m := marks[d.Acct.Name]
+		d.View.Next, d.View.Load = m.Next, m.Load
 	}
 }
 

@@ -155,16 +155,6 @@ var attemptNames = map[accountstate.AttemptState]string{
 	accountstate.AttemptIdentityUnknown:      "identity_unknown",
 }
 
-// A consumer must be able to tell "this run asked the endpoint" from "a
-// previous run asked and this one replayed the answer" — both are headroom's
-// own reading, but only the first was made now. observed_at already carries
-// the age; source carries who.
-var sourceNames = map[accountstate.Source]string{
-	accountstate.SourceLive:  "live",
-	accountstate.SourceStore: "headroom_cache",
-	accountstate.SourceCache: "claude_cache",
-}
-
 // jsonDocument serializes one board per vendor. Each vendor's `current` and
 // `mode` are its board's routing — the read of `.current` that marked the
 // rows — so the envelope and the per-account flags say one thing even if the
@@ -234,7 +224,7 @@ func (doc *jsonDoc) appendAccounts(b board, now int64) {
 		if v.Obs != nil {
 			u := &jsonUsage{
 				ObservedAt: time.Unix(v.Obs.ObservedAt, 0).UTC().Format(time.RFC3339),
-				Source:     sourceNames[v.Obs.Source],
+				Source:     v.Obs.Source.Name(),
 				Fresh:      v.Fresh(now),
 
 				Allowance:       v.Obs.Allowance.State.Name(),
@@ -283,7 +273,7 @@ func fetchBoards(scopes []config.Scope) []board {
 			for u := range launchFetches(context.Background(), b.list, b.st) {
 				resolve(b.list[u.Index], u)
 			}
-			markPlacement(b.set, b.list, b.routing.Mode, b.st, time.Now())
+			markBoard(b, time.Now())
 			boards[i] = b
 		}(i, scope)
 	}

@@ -211,7 +211,7 @@ func TestEveryAttemptStateHasAWireName(t *testing.T) {
 		}
 	}
 	for i := range declared(t, "Source") {
-		if sourceNames[accountstate.Source(i)] == "" {
+		if accountstate.Source(i).Name() == "" {
 			t.Errorf("source %d has no wire name", i)
 		}
 	}

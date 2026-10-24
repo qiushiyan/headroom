@@ -16,6 +16,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 )
@@ -125,7 +126,7 @@ func runLaunchesTo(w io.Writer, scopes []config.Scope, args []string) int {
 // launchesLine is one record on one line: when, where, how it was decided, the
 // load it was decided on, and the account that would have been next.
 func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
-	when := logWhen(r.At)
+	when := render.LogWhen(r.At)
 	how := r.Mode
 	if r.Reason != "" && r.Reason != r.Mode {
 		how += "/" + r.Reason
@@ -144,7 +145,7 @@ func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
 			// reads as what it was. A record from before the field, or a
 			// window nothing dated, says nothing.
 			week := placement.Week{Left: c.Week.LeftS, LeftBasis: placement.TimeBasis(c.Week.LeftBasis)}
-			if left := weekLeft(week); left != "—" {
+			if left := launchop.WeekLeft(week); left != "—" {
 				line.WriteString(", " + left + " left")
 			}
 			break
@@ -157,14 +158,4 @@ func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
 		line.WriteString("  (not recorded)")
 	}
 	return line.String()
-}
-
-// logWhen is one of the logs' RFC3339 instants as both launches surfaces
-// print it: the local date and minute. A time that does not parse is printed
-// as it stands.
-func logWhen(s string) string {
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.Local().Format("01-02 15:04")
-	}
-	return s
 }

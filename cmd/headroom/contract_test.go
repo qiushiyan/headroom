@@ -193,7 +193,7 @@ func newWorld(t *testing.T) *world {
 
 	reset := func(d time.Duration) string { return time.Now().Add(d).UTC().Format(time.RFC3339) }
 	observe(t, w.claude, map[string]string{
-		"p": fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":12,"resets_at":%q},{"kind":"weekly_all","group":"weekly","percent":40,"resets_at":%q}]}`, reset(150*time.Minute), reset(100*time.Hour)),
+		"p":       fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":12,"resets_at":%q},{"kind":"weekly_all","group":"weekly","percent":40,"resets_at":%q}]}`, reset(150*time.Minute), reset(100*time.Hour)),
 		"a@x.com": fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":3,"resets_at":%q},{"kind":"weekly_all","group":"weekly","percent":22,"resets_at":%q}]}`, reset(200*time.Minute), reset(50*time.Hour)),
 		"b@x.com": fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":85,"resets_at":%q},{"kind":"weekly_all","group":"weekly","percent":61,"resets_at":%q}]}`, reset(30*time.Minute), reset(130*time.Hour)),
 	})

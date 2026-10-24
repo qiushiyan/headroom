@@ -16,6 +16,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -56,15 +57,15 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 	}
 	fmt.Fprintf(out, "ledger  %s — %s\n", filepath.Join(st.Ledger(), "state.json"), whose)
 	members := snap.Members()
-	labels := homeLabels(snap)
+	labels := snap.HomeLabels()
 	counted := map[string]bool{st.Home(): true}
-	for _, h := range otherHomes(scope, snap) {
+	for _, h := range launchop.OtherHomes(scope, snap) {
 		counted[h.Root] = true
 	}
 	fmt.Fprintf(out, "homes   %d registered\n", len(members))
 	nameW, rootW := 0, 0
 	for _, m := range members {
-		nameW = max(nameW, render.Cells(render.Sanitize(homeLabel(labels, m.Root))))
+		nameW = max(nameW, render.Cells(render.Sanitize(labels.Of(m.Root))))
 		rootW = max(rootW, render.Cells(render.Sanitize(m.Root)))
 	}
 	for _, m := range members {
@@ -85,7 +86,7 @@ func runAccountsLedgerTo(out, errw io.Writer, cfg config.Config, args []string, 
 		} else {
 			note += "seen " + age + " ago"
 		}
-		fmt.Fprintf(out, "  %s  %s  %s\n", render.PadCell(render.Sanitize(homeLabel(labels, m.Root)), nameW),
+		fmt.Fprintf(out, "  %s  %s  %s\n", render.PadCell(render.Sanitize(labels.Of(m.Root)), nameW),
 			render.PadCell(render.Sanitize(m.Root), rootW), note)
 	}
 	return 0
