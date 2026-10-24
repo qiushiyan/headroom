@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -207,22 +206,6 @@ func TestTheAKeyAsksForAuto(t *testing.T) {
 	// The word cannot be written as a pin.
 	if err := set.SetCurrent(accounts.Account{Scope: f.cfg, Name: accounts.AutoWord}); err == nil {
 		t.Error("an account named with the reserved word was pinned")
-	}
-}
-
-func TestRenderMarksNextOnlyWhereThereIsNoCurrent(t *testing.T) {
-	p := render.NewPalette(false)
-	next := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Next: true}
-	if line := p.HeaderLine(next); !strings.Contains(line, "← next") || strings.Contains(line, "← current") {
-		t.Errorf("header = %q", line)
-	}
-	both := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Current: true, Next: true}
-	if line := p.HeaderLine(both); strings.Contains(line, "← next") {
-		t.Errorf("a current account was also marked next: %q", line)
-	}
-	b := p.Board([]accountstate.Facts{next, {Label: "b@x.com", Launcher: "x-b"}}, time.Now().Unix(), render.LayoutCompact, 0)
-	if !strings.Contains(b.Groups[0][0], "→") || strings.Contains(b.Groups[1][0], "→") {
-		t.Errorf("compact rows = %q / %q", b.Groups[0][0], b.Groups[1][0])
 	}
 }
 

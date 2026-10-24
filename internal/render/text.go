@@ -65,14 +65,14 @@ func PadCell(s string, width int) string {
 		return ""
 	}
 	if Cells(s) > width {
-		s = TrimCells(s, width-1) + "…"
+		s = trimCells(s, width-1) + "…"
 	}
 	return s + strings.Repeat(" ", width-Cells(s))
 }
 
-// TrimCells truncates a plain string to at most the given cell width. A wide
+// trimCells truncates a plain string to at most the given cell width. A wide
 // rune that would straddle the boundary is dropped whole.
-func TrimCells(s string, width int) string {
+func trimCells(s string, width int) string {
 	var b strings.Builder
 	cols := 0
 	for _, r := range s {

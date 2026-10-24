@@ -58,6 +58,14 @@ type Row struct {
 	Unstarted bool
 }
 
+// The Claude Code kinds this binary knows. The set is open: an unknown kind
+// is carried, labels itself and sorts after these.
+const (
+	KindSession      = "session"       // the 5h window, opened by the first request after one ends
+	KindWeeklyAll    = "weekly_all"    // the all-models weekly window
+	KindWeeklyScoped = "weekly_scoped" // a weekly window scoped to one model (Model names it)
+)
+
 // Drifted reports whether any field was present but unparseable.
 func (r Row) Drifted() bool {
 	return r.PercentState == tag.Bad || r.ResetState == tag.Bad || r.IdentityState == tag.Bad
@@ -119,12 +127,12 @@ func parseEntry(e map[string]any) Row {
 	case kind == "":
 		// kind is the selector consumers use to identify a limit.
 		identState = tag.Bad
-	case kind == "weekly_scoped" && model == "":
+	case kind == KindWeeklyScoped && model == "":
 		// A scoped row that no longer names its scope. Left untagged it
 		// would either masquerade under the all-models label or vanish from
 		// every consumer's match — both silent.
 		identState = tag.Bad
-	case (kind == "session" || kind == "weekly_all") && model != "":
+	case (kind == KindSession || kind == KindWeeklyAll) && model != "":
 		// The known unscoped kinds contradicted by a model scope: a "5h
 		// session" carrying a model is drift wearing a valid selector.
 		// Unknown kinds stay untagged — new vendor vocabulary is carried
@@ -139,11 +147,11 @@ func parseEntry(e map[string]any) Row {
 	// says more than "weekly").
 	var label string
 	switch {
-	case kind == "session":
+	case kind == KindSession:
 		label = "5h session"
 	case model != "":
 		label = model + " (7d)"
-	case kind == "weekly_all" || (group == "weekly" && kind != "weekly_scoped"):
+	case kind == KindWeeklyAll || (group == "weekly" && kind != KindWeeklyScoped):
 		label = "All models (7d)"
 	case kind != "":
 		label = kind
@@ -195,8 +203,9 @@ func parseReset(v any) (int64, tag.State) {
 		}
 		return 0, tag.Bad
 	case float64:
-		// Numeric epoch seconds: accepted here (the jq reference marked
-		// numbers bad); a drift to numbers is handled, not papered over.
+		// Numeric epoch seconds: Claude Code has only ever sent a string
+		// here, but a drift to numbers is handled, not papered over — and
+		// Codex's reset_at has only ever been one.
 		if sec := int64(t); sec > 0 {
 			return sec, tag.OK
 		}
@@ -215,9 +224,9 @@ func contradictsGroup(kind, group string) bool {
 		return false
 	}
 	switch kind {
-	case "session":
+	case KindSession:
 		return group != "session"
-	case "weekly_all", "weekly_scoped":
+	case KindWeeklyAll, KindWeeklyScoped:
 		return group != "weekly"
 	}
 	return false

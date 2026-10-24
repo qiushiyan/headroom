@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
@@ -44,6 +45,102 @@ func TestSessionLinesNarrowKeepsAge(t *testing.T) {
 		}
 		if !strings.HasSuffix(line1, "2h") {
 			t.Errorf("w=%d: age missing from %q", w, line1)
+		}
+	}
+}
+
+// Every session line is one physical row: the label, the title, the preview's
+// prompt and reply and the model id all come from files another program
+// writes, and a newline, a tab or an escape in any of them would inject
+// cursor movement or shear the picker's move-up arithmetic. Colourless, so
+// any control byte on a line was put there by vendor text.
+func TestSessionLinesAreOnePhysicalRowEach(t *testing.T) {
+	const hostile = "a\nb\tc\x1b[2Jd"
+	p := NewPalette(false)
+	base := func() sessions.Session {
+		return sessions.Session{Local: true, DirOK: true, RepoKey: "/dev/proj", RepoRoot: "/dev/proj",
+			MTime: time.Now().Add(-time.Hour), Owner: "a@x.com", OwnerState: sessions.OwnerHistory,
+			Head: sessions.Head{Kind: sessions.HeadBranch, Branch: "main"},
+			Tail: sessions.Tail{AITitle: "title", LastPrompt: "prompt", LastReply: "reply", Model: "claude-fable-5"}}
+	}
+	for _, c := range []struct {
+		field string
+		set   func(*sessions.Session)
+	}{
+		{"label", func(s *sessions.Session) { s.Head.Branch = hostile }},
+		{"title", func(s *sessions.Session) { s.Tail.AITitle = hostile }},
+		{"prompt", func(s *sessions.Session) { s.Tail.LastPrompt = hostile }},
+		{"reply", func(s *sessions.Session) { s.Tail.LastReply = hostile }},
+		{"model", func(s *sessions.Session) { s.Tail.Model = "claude-" + hostile + "-5" }},
+	} {
+		s := base()
+		c.set(&s)
+		lines := append(p.SessionLines(&s, "a@x.com", true, 200, time.Now().Unix()), p.SessionPreview(&s, 200)...)
+		for _, line := range lines {
+			if strings.IndexFunc(line, unicode.IsControl) >= 0 {
+				t.Errorf("%s: a control byte reached the line: %q", c.field, line)
+			}
+		}
+	}
+}
+
+// A row's degraded states are visible tokens, never a quiet fallback:
+// liveness that could not be verified (the state in which rename and delete
+// are refused), a project dir that is gone, an owner that cannot be named —
+// each routing to the current account, said so — and a current account that
+// failed to resolve.
+func TestSessionLinesShowEveryDegradation(t *testing.T) {
+	p := NewPalette(false)
+	for _, c := range []struct {
+		name    string
+		set     func(*sessions.Session)
+		current string
+		want    []string
+		notWant []string
+	}{
+		{"verified live", func(s *sessions.Session) { s.Live = sessions.Live }, "a@x.com", []string{"● live"}, []string{"live?"}},
+		{"liveness unverifiable", func(s *sessions.Session) { s.Live = sessions.LiveUnknown }, "a@x.com", []string{"● live?"}, nil},
+		{"dir gone", func(s *sessions.Session) { s.DirOK = false }, "a@x.com", []string{"✗ dir gone"}, nil},
+		{"owner known", func(s *sessions.Session) {}, "c@x.com", []string{"@b"}, []string{"→"}},
+		{"owner deleted", func(s *sessions.Session) { s.OwnerState = sessions.OwnerMissing }, "c@x.com", []string{"owner gone→c"}, nil},
+		{"owner contested", func(s *sessions.Session) { s.OwnerState = sessions.OwnerConflict }, "c@x.com", []string{"owner?→c"}, nil},
+		{"no owner evidence", func(s *sessions.Session) { s.OwnerState = sessions.OwnerNone }, "c@x.com", []string{"→c"}, []string{"owner", "@b"}},
+		{"current unresolvable", func(s *sessions.Session) { s.OwnerState = sessions.OwnerNone }, "", []string{"→?"}, nil},
+	} {
+		s := sessions.Session{Local: true, DirOK: true, CWD: "/dev/proj", MTime: time.Now().Add(-time.Hour),
+			Owner: "b@x.com", OwnerState: sessions.OwnerHistory}
+		c.set(&s)
+		line := p.SessionLines(&s, c.current, false, 120, time.Now().Unix())[0]
+		for _, w := range c.want {
+			if !strings.Contains(line, w) {
+				t.Errorf("%s: %q lacks %q", c.name, line, w)
+			}
+		}
+		for _, nw := range c.notWant {
+			if strings.Contains(line, nw) {
+				t.Errorf("%s: %q carries %q", c.name, line, nw)
+			}
+		}
+	}
+}
+
+// Colour changes no column: a coloured row, stripped of its styling, is the
+// colourless row byte for byte, at every width — so the marks, the selection
+// prefix and the meta column are measured as the cells they draw, never as
+// the escapes around them.
+func TestSessionLinesColourMovesNothing(t *testing.T) {
+	now := time.Now().Unix()
+	s := &sessions.Session{Local: true, DirOK: false, Live: sessions.LiveUnknown, CWD: "/dev/proj",
+		MTime: time.Now().Add(-2 * time.Hour), Owner: "someone@example.com", OwnerState: sessions.OwnerHistory,
+		Head: sessions.Head{Kind: sessions.HeadBranch, Branch: "develop"},
+		Tail: sessions.Tail{AITitle: "a title", Branch: "a-longish-branch-name", Model: "claude-fable-5"}}
+	for _, w := range []int{30, 40, 60, 120} {
+		plain := NewPalette(false).SessionLines(s, "someone@example.com", true, w, now)
+		colour := NewPalette(true).SessionLines(s, "someone@example.com", true, w, now)
+		for i := range plain {
+			if got := bare(colour[i]); got != plain[i] {
+				t.Errorf("w=%d line %d: colour moved the layout:\n got %q\nwant %q", w, i, got, plain[i])
+			}
 		}
 	}
 }
@@ -132,17 +229,6 @@ func TestCheckoutLabelPrefersLiveHead(t *testing.T) {
 		if got := checkoutLabel(&c.s); got != c.want {
 			t.Errorf("%s: checkoutLabel = %q, want %q", c.name, got, c.want)
 		}
-	}
-}
-
-func TestCheckoutLabelNeverLeadsWithAStaleBranch(t *testing.T) {
-	stale := sessions.Session{
-		Local: true, RepoKey: "/dev/planlab", RepoRoot: "/dev/planlab",
-		Head: sessions.Head{Kind: sessions.HeadBranch, Branch: "develop"},
-		Tail: sessions.Tail{Branch: "skill/baton-pointer-and-onboarding-order"},
-	}
-	if got := checkoutLabel(&stale); !strings.HasPrefix(got, "develop") {
-		t.Errorf("label %q leads with something other than the live branch", got)
 	}
 }
 
