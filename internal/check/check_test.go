@@ -21,6 +21,42 @@ import (
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
+// testReport is a report printing to a buffer, colour off, for a test that
+// drives one group of assertions directly.
+func testReport() (*report, *strings.Builder) {
+	var out strings.Builder
+	return newReport(&out, false), &out
+}
+
+// printed splits what a report printed into its ok, FAIL and ?? lines, each
+// without its marker: "label" for an ok line, "label — hint" otherwise.
+func printed(out *strings.Builder) (oks, fails, skips []string) {
+	for _, l := range strings.Split(out.String(), "\n") {
+		switch {
+		case strings.HasPrefix(l, " ok   "):
+			oks = append(oks, strings.TrimPrefix(l, " ok   "))
+		case strings.HasPrefix(l, "FAIL  "):
+			fails = append(fails, strings.TrimPrefix(l, "FAIL  "))
+		case strings.HasPrefix(l, " ??   "):
+			skips = append(skips, strings.TrimPrefix(l, " ??   "))
+		}
+	}
+	return
+}
+
+// hasLine reports a line carrying every token of want, the tokens separated
+// by " … ".
+func hasLine(lines []string, want string) bool {
+	return slices.ContainsFunc(lines, func(l string) bool {
+		for _, tok := range strings.Split(want, " … ") {
+			if !strings.Contains(l, tok) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 // The overlap carry is the subtle part: a needle split across a chunk
 // boundary must still be found, for every split position and even when the
 // needle is longer than the read buffer.
@@ -74,145 +110,94 @@ func TestSearchReader(t *testing.T) {
 // checkRouting is deliberately independent of state.json — it must report
 // corrupt `.current` and an inherited CLAUDE_CONFIG_DIR even when the state
 // document was written by a newer headroom and the state audit
-// short-circuits. These cases cover the routing decisions directly;
-// TestRunVerdicts exercises their composition with fixture processes and HTTP.
+// short-circuits. Every failure here is headroom's own, never vendor drift;
+// TestRunVerdicts exercises the composition with fixture processes and HTTP.
 func TestCheckRouting(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "qiushi")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
+	mkdir := func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	accts := accounts.Discover(cfg)
-
-	run := func(environ []string) (ownFails, envLines []string) {
-		chk := func(ok bool, label, hint string) {
-			if ok {
-				envLines = append(envLines, label)
+	current := func(t *testing.T, cfg config.Scope, body string) {
+		t.Helper()
+		mkdir(t, cfg.AccountsRoot)
+		if err := os.WriteFile(cfg.CurrentFile(), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		setup    func(t *testing.T, cfg config.Scope)
+		environ  []string
+		wantOK   []string
+		wantFail []string // own failures, each one line
+		absent   string
+	}{
+		// Absent .current is the documented default, and a clean environment
+		// earns no env line.
+		{name: "clean", wantOK: []string{"current: .current resolves to a launchable account (qiushi)"}, absent: "env:"},
+		// Corrupt (empty) .current is headroom's file, never vendor drift.
+		{name: "empty .current", setup: func(t *testing.T, cfg config.Scope) { current(t, cfg, "") }, wantFail: []string{"current:"}},
+		// An inherited variable — present-but-empty included, which is
+		// unverified vendor territory rather than the verified absent state —
+		// earns the ok-with-detail line.
+		{name: "inherited", environ: []string{"CLAUDE_CONFIG_DIR=/leak"}, wantOK: []string{`env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches ("/leak")`}},
+		{name: "present but empty", environ: []string{"CLAUDE_CONFIG_DIR="}, wantOK: []string{`env: inherited CLAUDE_CONFIG_DIR is neutralized by managed launches ("")`}},
+		// A non-empty relative value is the stale-wrapper incident's
+		// signature: unmanaged claude in that shell runs as the primary while
+		// writing state beside the cwd.
+		{name: "relative ambient", environ: []string{"CLAUDE_CONFIG_DIR=yan@planlab.ai"}, wantFail: []string{"env: inherited CLAUDE_CONFIG_DIR is relative"}},
+		// A stranded `<dir>.lock` is skipped by discovery; check is where it
+		// gets named — an ok-with-detail line, never a failure.
+		{name: "lock debris", setup: func(t *testing.T, cfg config.Scope) { mkdir(t, filepath.Join(cfg.AccountsRoot, "a@x.com.lock")) },
+			wantOK: []string{"root: a@x.com.lock is vendor lock debris"}},
+		// The topology assertion runs per extra account through the same
+		// verifier launch refuses with, so the gate and the report cannot
+		// disagree.
+		{name: "forked projects/", setup: func(t *testing.T, cfg config.Scope) {
+			mkdir(t, filepath.Join(cfg.AccountsRoot, "yan@planlab.ai", "projects")) // a real dir: the fork
+			mkdir(t, cfg.StoreDir())
+		}, wantFail: []string{"topology[yan@planlab.ai]: projects/ resolves to the canonical store"}},
+		// Automatic placement is a routing state, not a missing one.
+		{name: "auto", setup: func(t *testing.T, cfg config.Scope) { current(t, cfg, "auto\n") },
+			wantOK: []string{"current: .current says auto"}},
+		// And still fails the file when the word is ambiguous.
+		{name: "auto beside an account named auto", setup: func(t *testing.T, cfg config.Scope) {
+			current(t, cfg, "auto\n")
+			mkdir(t, filepath.Join(cfg.AccountsRoot, "auto"))
+			mkdir(t, cfg.StoreDir())
+			if err := os.Symlink(cfg.StoreDir(), filepath.Join(cfg.AccountsRoot, "auto", "projects")); err != nil {
+				t.Fatal(err)
 			}
-		}
-		own := func(ok bool, label, hint string) {
-			if !ok {
-				ownFails = append(ownFails, label)
+		}, wantFail: []string{"current: … reserved"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := claudeScope(home, "qiushi")
+			if tc.setup != nil {
+				tc.setup(t, cfg)
 			}
-		}
-		checkRouting(accts, environ, chk, own)
-		return
-	}
-
-	// Absent .current: the documented default — no failure, and a clean
-	// environment earns no env line.
-	if fails, lines := run([]string{"HOME=" + home}); len(fails) != 0 || len(lines) != 0 {
-		t.Errorf("clean state: ownFails=%v envLines=%v", fails, lines)
-	}
-
-	// Corrupt (empty) .current: an own-state FAIL — headroom's file, never
-	// vendor drift.
-	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if fails, _ := run([]string{"HOME=" + home}); len(fails) != 1 {
-		t.Errorf("empty .current: want one own FAIL, got %v", fails)
-	}
-	if err := os.Remove(cfg.CurrentFile()); err != nil {
-		t.Fatal(err)
-	}
-
-	// An inherited variable — present-but-empty included, which is
-	// unverified vendor territory rather than the verified absent state —
-	// earns the ok-with-detail line.
-	if _, lines := run([]string{"CLAUDE_CONFIG_DIR=/leak"}); len(lines) != 1 {
-		t.Errorf("inherited value: want env line, got %v", lines)
-	}
-	if _, lines := run([]string{"CLAUDE_CONFIG_DIR="}); len(lines) != 1 {
-		t.Errorf("present-but-empty: want env line, got %v", lines)
-	}
-}
-
-// A stranded `<dir>.lock` in the accounts root is skipped by discovery; the
-// checker is where it gets named — an ok-with-detail line, never a failure.
-func TestCheckRoutingNamesLockDebris(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "qiushi")
-	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "a@x.com.lock"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	accts := accounts.Discover(cfg)
-	if len(accts.Accounts) != 1 {
-		t.Fatalf("debris must not be discovered: %v", accts)
-	}
-	var noted bool
-	chk := func(ok bool, label, hint string) {
-		if ok && strings.Contains(label, "a@x.com.lock") {
-			noted = true
-		}
-	}
-	own := func(ok bool, label, hint string) {
-		if !ok {
-			t.Errorf("debris must not fail check: %s", label)
-		}
-	}
-	checkRouting(accts, []string{"HOME=" + home}, chk, own)
-	if !noted {
-		t.Error("stranded lock dir was not named by check")
-	}
-}
-
-// A non-empty relative inherited value is the stale-wrapper incident's
-// signature — unmanaged claude in that shell runs as the primary while
-// writing state beside the cwd — and fails as own-state, never as drift.
-func TestCheckRoutingFailsRelativeAmbientDir(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "qiushi")
-	accts := accounts.Discover(cfg)
-
-	var ownFails []string
-	own := func(ok bool, label, hint string) {
-		if !ok {
-			ownFails = append(ownFails, label)
-		}
-	}
-	chk := func(bool, string, string) {}
-	checkRouting(accts, []string{"CLAUDE_CONFIG_DIR=yan@planlab.ai"}, chk, own)
-	found := false
-	for _, l := range ownFails {
-		if strings.Contains(l, "relative") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("relative ambient dir did not fail: %v", ownFails)
-	}
-}
-
-// The topology assertion runs per extra account through the same verifier
-// launch refuses with, so the gate and the report cannot disagree.
-func TestCheckRoutingAssertsTopology(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "qiushi")
-	extra := filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")
-	if err := os.MkdirAll(filepath.Join(extra, "projects"), 0o755); err != nil { // real dir: the fork
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(cfg.StoreDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	accts := accounts.Discover(cfg)
-
-	var ownFails []string
-	own := func(ok bool, label, hint string) {
-		if !ok {
-			ownFails = append(ownFails, label)
-		}
-	}
-	checkRouting(accts, nil, func(bool, string, string) {}, own)
-	found := false
-	for _, l := range ownFails {
-		if strings.Contains(l, "topology[yan@planlab.ai]") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("forked topology not reported: %v", ownFails)
+			r, out := testReport()
+			checkRouting(accounts.Discover(cfg), append([]string{"HOME=" + home}, tc.environ...), r)
+			oks, fails, _ := printed(out)
+			for _, w := range tc.wantOK {
+				if !hasLine(oks, w) {
+					t.Errorf("no ok line %q in:\n%s", w, out)
+				}
+			}
+			for _, w := range tc.wantFail {
+				if !hasLine(fails, w) {
+					t.Errorf("no FAIL line %q in:\n%s", w, out)
+				}
+			}
+			if len(fails) != len(tc.wantFail) || r.ownFails != len(fails) {
+				t.Errorf("want %d own failure(s), got %d (%d own):\n%s", len(tc.wantFail), len(fails), r.ownFails, out)
+			}
+			if tc.absent != "" && strings.Contains(out.String(), tc.absent) {
+				t.Errorf("unexpected %q line:\n%s", tc.absent, out)
+			}
+		})
 	}
 }
 
@@ -285,34 +270,23 @@ func TestCheckRetention(t *testing.T) {
 				write(filepath.Join(forked, "settings.json"), tc.forked)
 			}
 
-			var oks, fails, skips []string
-			own := func(ok bool, label, hint string) {
-				if ok {
-					oks = append(oks, label)
-				} else {
-					fails = append(fails, label+" — "+hint)
-				}
-			}
-			skip := func(label, why string) { skips = append(skips, label) }
-			checkRetention(accounts.Discover(cfg), own, skip)
-
-			has := func(lines []string, want string) bool {
-				return slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, want) })
-			}
+			r, out := testReport()
+			checkRetention(accounts.Discover(cfg), r)
+			oks, fails, skips := printed(out)
 			for _, w := range tc.wantOK {
-				if !has(oks, w) {
+				if !hasLine(oks, w) {
 					t.Errorf("want ok %q, got ok=%v fail=%v", w, oks, fails)
 				}
 			}
 			for _, w := range tc.wantFail {
-				if !has(fails, w) {
+				if !hasLine(fails, w) {
 					t.Errorf("want fail %q, got ok=%v fail=%v", w, oks, fails)
 				}
 			}
-			if len(fails) != len(tc.wantFail) {
-				t.Errorf("want %d fail(s), got %v", len(tc.wantFail), fails)
+			if len(fails) != len(tc.wantFail) || r.ownFails != len(fails) {
+				t.Errorf("want %d own fail(s), got %v (%d own)", len(tc.wantFail), fails, r.ownFails)
 			}
-			if (tc.wantSkip != "" && !has(skips, tc.wantSkip)) || (tc.wantSkip == "" && len(skips) != 0) {
+			if (tc.wantSkip != "" && !hasLine(skips, tc.wantSkip)) || (tc.wantSkip == "" && len(skips) != 0) {
 				t.Errorf("want skip %q, got %v", tc.wantSkip, skips)
 			}
 		})
@@ -344,26 +318,17 @@ func TestRequestVerdictsSeparateStateFailureAndVendorEvidence(t *testing.T) {
 		{"codex other 4xx is still drift", refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 403}}, 1, 0, 0, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			vendor, own, unknown := 0, 0, 0
-			var labels []string
-			v := config.Claude
+			r, out := testReport()
 			if tc.codex {
-				v = config.Codex
+				r.group(config.Codex, "")
 			}
-			reportRequest(v, "a", tc.result, time.Now(), func(ok bool, _, _ string) {
-				if !ok {
-					vendor++
-				}
-			}, func(ok bool, _, _ string) {
-				if !ok {
-					own++
-				}
-			}, func(label, _ string) { unknown++; labels = append(labels, label) })
-			if tc.wantLabel != "" && !strings.Contains(strings.Join(labels, "\n"), tc.wantLabel) {
-				t.Errorf("inconclusive labels=%v, want %q", labels, tc.wantLabel)
+			r.request("a", tc.result, time.Now())
+			_, _, skips := printed(out)
+			if tc.wantLabel != "" && !hasLine(skips, tc.wantLabel) {
+				t.Errorf("inconclusive lines=%v, want %q", skips, tc.wantLabel)
 			}
-			if vendor != tc.vendor || own != tc.own || unknown != tc.unknown {
-				t.Fatalf("verdicts: vendor=%d own=%d inconclusive=%d", vendor, own, unknown)
+			if vendor := r.fails - r.ownFails; vendor != tc.vendor || r.ownFails != tc.own || r.unknowns != tc.unknown {
+				t.Fatalf("verdicts: vendor=%d own=%d inconclusive=%d", vendor, r.ownFails, r.unknowns)
 			}
 		})
 	}
@@ -496,15 +461,9 @@ func soundClaudeTree(t *testing.T, home string) (config.Scope, func(path, body s
 // binary has not met is not drift, and is reported as untested.
 func TestCheckRegistryStatus(t *testing.T) {
 	run := func(entries ...sessions.RegistryEntry) (fails, oks, skips []string) {
-		chk := func(ok bool, label, hint string) {
-			if ok {
-				oks = append(oks, label)
-			} else {
-				fails = append(fails, label+" — "+hint)
-			}
-		}
-		skip := func(label, why string) { skips = append(skips, label+" — "+why) }
-		checkRegistryStatus(entries, chk, skip)
+		r, out := testReport()
+		checkRegistryStatus(entries, r)
+		oks, fails, skips = printed(out)
 		return
 	}
 	entry := func(status string, state tag.State) sessions.RegistryEntry {
@@ -581,45 +540,6 @@ func TestRunJudgesRegistryStatusOverVerifiedLiveSessions(t *testing.T) {
 	}
 }
 
-// Automatic placement is a routing state, not a missing one: check passes it,
-// and still fails the file when the word is ambiguous.
-func TestCheckRoutingUnderAuto(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "qiushi")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfg.CurrentFile(), []byte("auto\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run := func() (passed, failed []string) {
-		own := func(ok bool, label, hint string) {
-			if ok {
-				passed = append(passed, label)
-			} else {
-				failed = append(failed, label+" — "+hint)
-			}
-		}
-		checkRouting(accounts.Discover(cfg), []string{"HOME=" + home}, func(bool, string, string) {}, own)
-		return
-	}
-	passed, failed := run()
-	if len(failed) != 0 || len(passed) == 0 || !strings.Contains(passed[0], ".current says auto") {
-		t.Fatalf("auto: passed %v failed %v", passed, failed)
-	}
-	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, "auto"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	_, failed = run()
-	reserved := false
-	for _, f := range failed {
-		reserved = reserved || (strings.Contains(f, "current:") && strings.Contains(f, "reserved"))
-	}
-	if !reserved {
-		t.Fatalf("auto beside an account named auto: %v", failed)
-	}
-}
-
 // A login, history or registry linked between dirs makes two dirs one login,
 // and an account dir that belongs to two homes would run one home's sessions
 // on the other's: both are headroom's own state, and both fail.
@@ -633,7 +553,7 @@ func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	run := func() (passed, failed []string) {
+	run := func() (passed, failed []string, own int) {
 		st := state.Open(second)
 		if err := st.Register(time.Now()); err != nil {
 			t.Fatal(err)
@@ -641,17 +561,12 @@ func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
 		if err := state.Open(owner).Register(time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		note := func(ok bool, label, hint string) {
-			if ok {
-				passed = append(passed, label)
-			} else {
-				failed = append(failed, label+" — "+hint)
-			}
-		}
-		checkHomes(accounts.Discover(second), st.Load(), note, note)
-		return
+		r, out := testReport()
+		checkHomes(accounts.Discover(second), st.Load(), r)
+		passed, failed, _ = printed(out)
+		return passed, failed, r.ownFails
 	}
-	passed, failed := run()
+	passed, failed, _ := run()
 	if len(failed) != 0 {
 		t.Fatalf("a clean second home failed: %v", failed)
 	}
@@ -670,13 +585,15 @@ func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
 	if err := os.Symlink(filepath.Join(owner.AccountsRoot, "a@x.com"), filepath.Join(second.AccountsRoot, "a@x.com")); err != nil {
 		t.Fatal(err)
 	}
-	_, failed = run()
-	got := strings.Join(failed, "\n")
-	if !strings.Contains(got, "logins:") || !strings.Contains(got, ".credentials.json is a link") {
+	_, failed, own := run()
+	if !hasLine(failed, "logins: … .credentials.json is a link") {
 		t.Errorf("a linked login did not fail: %v", failed)
 	}
-	if !strings.Contains(got, "homes: no account dir belongs to two homes") {
+	if !hasLine(failed, "homes: no account dir belongs to two homes") {
 		t.Errorf("a dir shared by two homes did not fail: %v", failed)
+	}
+	if own != len(failed) {
+		t.Errorf("%d of %d failures are headroom's own: %v", own, len(failed), failed)
 	}
 }
 
@@ -699,32 +616,23 @@ func TestEachDocumentIsAuditedOnItsOwn(t *testing.T) {
 		}
 	}
 	audit := func() (failed, skipped []string) {
-		checkOwnState(state.Open(second).Load(),
-			func(ok bool, label, hint string) {
-				if !ok {
-					failed = append(failed, label)
-				}
-			},
-			func(ok bool, label, hint string) {
-				if !ok {
-					failed = append(failed, label)
-				}
-			},
-			func(label, why string) { skipped = append(skipped, label) })
+		r, out := testReport()
+		checkOwnState(state.Open(second).Load(), r)
+		_, failed, skipped = printed(out)
 		return
 	}
 
 	write(second.AccountsRoot, `{"version":999}`)
 	write(owner.AccountsRoot, `{"version":1,"accounts":"not a ledger"}`)
 	failed, skipped := audit()
-	if !slices.ContainsFunc(failed, func(l string) bool { return strings.Contains(l, "ledger accounts") }) {
+	if !hasLine(failed, "ledger accounts") {
 		t.Errorf("a newer home file hid the damaged ledger: failed %v, skipped %v", failed, skipped)
 	}
 
 	write(second.AccountsRoot, `{"version":1,"sessions":{"x":{}}}`)
 	write(owner.AccountsRoot, `{"version":999}`)
 	failed, skipped = audit()
-	if !slices.ContainsFunc(failed, func(l string) bool { return strings.Contains(l, "sessions") }) {
+	if !hasLine(failed, "sessions") {
 		t.Errorf("a newer ledger hid this home's damaged re-homes: failed %v, skipped %v", failed, skipped)
 	}
 }
@@ -752,14 +660,10 @@ func TestCheckHomesJudgesOnlyCurrentMembers(t *testing.T) {
 		}
 	}
 	shareDirs := func() bool {
-		var failed bool
-		note := func(ok bool, label, hint string) {
-			if !ok && strings.Contains(label, "belongs to two homes") {
-				failed = true
-			}
-		}
-		checkHomes(accounts.Discover(second), state.Open(second).Load(), note, note)
-		return failed
+		r, out := testReport()
+		checkHomes(accounts.Discover(second), state.Open(second).Load(), r)
+		_, failed, _ := printed(out)
+		return hasLine(failed, "belongs to two homes")
 	}
 	if err := os.WriteFile(third.LedgerFile(), []byte(owner.AccountsRoot+"\n"), 0o644); err != nil {
 		t.Fatal(err)

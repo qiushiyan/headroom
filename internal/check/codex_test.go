@@ -35,41 +35,32 @@ exit 1
 	}
 }
 
+// codexRun is one Codex group run through a report: its lines, each marked
+// "ok ", "FAIL " or "?? ", and its counts (fails includes own).
 type codexRun struct {
 	lines             []string
 	fails, own, skips int
 }
 
 func (r *codexRun) has(sub string) bool {
-	for _, l := range r.lines {
-		if strings.Contains(l, sub) {
-			return true
-		}
-	}
-	return false
+	return hasLine(r.lines, sub)
 }
 
 func runCodexCheck(scope config.Scope, environ []string) *codexRun {
-	r := &codexRun{}
-	chk := func(ok bool, label, hint string) {
-		if !ok {
-			r.fails++
-			r.lines = append(r.lines, "FAIL "+label+" — "+hint)
-			return
-		}
-		r.lines = append(r.lines, "ok "+label)
+	rep, out := testReport()
+	rep.group(config.Codex, "")
+	checkCodex(scope, environ, rep)
+	r := &codexRun{fails: rep.fails, own: rep.ownFails, skips: rep.unknowns}
+	oks, fails, skips := printed(out)
+	for _, l := range oks {
+		r.lines = append(r.lines, "ok "+l)
 	}
-	own := func(ok bool, label, hint string) {
-		if !ok {
-			r.own++
-		}
-		chk(ok, label, hint)
+	for _, l := range fails {
+		r.lines = append(r.lines, "FAIL "+l)
 	}
-	skip := func(label, why string) {
-		r.skips++
-		r.lines = append(r.lines, "?? "+label+" — "+why)
+	for _, l := range skips {
+		r.lines = append(r.lines, "?? "+l)
 	}
-	checkCodex(scope, environ, chk, own, skip)
 	return r
 }
 
