@@ -34,7 +34,8 @@ func Run(args []string) int {
 	if len(args) > 0 {
 		cmd, rest = args[0], args[1:]
 	}
-	// headroom as a vendor's $BROWSER, set by `headroom login`: record the
+	// headroom as a vendor's $BROWSER, set by `login` and `headless mint`
+	// (approval.go): record the
 	// sign-in the one URL belongs to, open it in the profile named if one is,
 	// and do nothing else. Before configuration, since the vendor's
 	// environment is not one headroom needs to accept.
