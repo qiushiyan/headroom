@@ -30,7 +30,7 @@ func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := accounts.Discover(f.cfg)
-	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}}
+	ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}
 	s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: "a@x.com", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{s}
 	ui.rows = ui.listing.Sessions
@@ -301,7 +301,7 @@ func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 	set := accounts.Discover(f.cfg)
 	resume := func(owner string, state sessions.OwnerState) string {
 		t.Helper()
-		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}}
+		ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, routing: accounts.Routing{Mode: "auto"}}
 		ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}}
 		ui.rows = ui.listing.Sessions
 		keepWorkingDir(t)

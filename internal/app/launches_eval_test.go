@@ -116,7 +116,7 @@ func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 
 // reportRow is the first line of a report holding a token, "" when none does.
 func reportRow(text, token string) string {
-	for _, l := range strings.Split(text, "\n") {
+	for l := range strings.SplitSeq(text, "\n") {
 		if strings.Contains(l, token) {
 			return l
 		}

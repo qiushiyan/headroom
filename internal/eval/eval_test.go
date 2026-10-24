@@ -200,7 +200,7 @@ func TestFrozenLinesOfThisRuleAreDecidedAlike(t *testing.T) {
 		t.Fatalf("no frozen lines for rule %s (%v): freeze them with -update once its choices are final", placement.Rule, err)
 	}
 	var launches []Launch
-	for _, raw := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+	for raw := range bytes.SplitSeq(bytes.TrimSpace(data), []byte("\n")) {
 		var r launchlog.Record
 		if err := json.Unmarshal(raw, &r); err != nil {
 			t.Fatal(err)

@@ -322,30 +322,30 @@ func writeEval(w io.Writer, rep eval.Report) {
 	}
 
 	writeEvidence(w, "windows that reached "+strconv.Itoa(t.NearPercent)+"%", len(rep.Episodes), func(yield func(string) bool) {
-		for i := len(rep.Episodes) - 1; i >= 0; i-- {
-			if !yield(episodeLine(rep.Episodes[i], rep.Home)) {
+		for _, v := range slices.Backward(rep.Episodes) {
+			if !yield(episodeLine(v, rep.Home)) {
 				return
 			}
 		}
 	})
 	writeEvidence(w, "weekly renewals", len(rep.Renewals), func(yield func(string) bool) {
-		for i := len(rep.Renewals) - 1; i >= 0; i-- {
-			if !yield(renewalLine(rep.Renewals[i])) {
+		for _, v := range slices.Backward(rep.Renewals) {
+			if !yield(renewalLine(v)) {
 				return
 			}
 		}
 	})
 	writeEvidence(w, "replay faults — lines "+rep.Rule+" decided and now decides differently", len(faults), func(yield func(string) bool) {
-		for i := len(faults) - 1; i >= 0; i-- {
-			if !yield(disagreementLine(faults[i], rep.Rule, rep.Home)) {
+		for _, fault := range slices.Backward(faults) {
+			if !yield(disagreementLine(fault, rep.Rule, rep.Home)) {
 				return
 			}
 		}
 	})
 	writeEvidence(w, "replay disagreements — what "+rep.Rule+" would choose from the same input; each account's window as observed, not as the other choice would have left it",
 		len(differ), func(yield func(string) bool) {
-			for i := len(differ) - 1; i >= 0; i-- {
-				if !yield(disagreementLine(differ[i], rep.Rule, rep.Home)) {
+			for _, d := range slices.Backward(differ) {
+				if !yield(disagreementLine(d, rep.Rule, rep.Home)) {
 					return
 				}
 			}

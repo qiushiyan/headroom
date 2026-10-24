@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -66,12 +67,7 @@ type EnvPolicy struct {
 
 // IsSecret reports whether name's value must never reach a notice.
 func (p EnvPolicy) IsSecret(name string) bool {
-	for _, s := range p.Secret {
-		if s == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.Secret, name)
 }
 
 // EnvPolicy is the vendor's row of the environment policy table. The zero

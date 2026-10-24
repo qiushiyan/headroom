@@ -59,7 +59,7 @@ type page struct {
 const ackTTL = 4 * time.Second
 
 func newPage(scope config.Scope) *page {
-	return &page{board: board{scope: scope, st: state.Open(scope)}}
+	return &page{scope: scope, st: state.Open(scope)}
 }
 
 // receive applies one result of this page's own round, or closes the round

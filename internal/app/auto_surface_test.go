@@ -84,7 +84,7 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 			t.Errorf("layout %v does not say the mode:\n%s", layout, text)
 		}
 		marked := 0
-		for _, line := range strings.Split(text, "\n") {
+		for line := range strings.SplitSeq(text, "\n") {
 			if strings.Contains(line, next[0]) && strings.Contains(line, mark) {
 				marked++
 			}
@@ -227,9 +227,8 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 	set := accounts.Discover(f.cfg)
 	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
-		ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
-			st: f.st, set: set, routing: set.Routing(),
-		}}
+		ui := &resumeUI{beforeLaunch: func() {},
+			st: f.st, set: set, routing: set.Routing()}
 		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
 		ui.listing.Sessions = []*sessions.Session{s}
 		ui.rows = ui.listing.Sessions
@@ -296,7 +295,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	solo := newAutoFixture(t)
 	solo.setCurrent("auto\n")
 	soloSet := accounts.Discover(solo.cfg)
-	ui = &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {}, st: solo.st, set: soloSet, routing: accounts.Routing{Mode: "auto"}}}
+	ui = &resumeUI{beforeLaunch: func() {}, st: solo.st, set: soloSet, routing: accounts.Routing{Mode: "auto"}}
 	sess := &sessions.Session{ID: sessB, CWD: proj, DirOK: true, Owner: "qiushi", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{sess}
 	ui.rows = ui.listing.Sessions

@@ -385,7 +385,7 @@ func TestJoiningLeavingAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the owner's listing: %v\n%s", err, listing)
 	}
-	for _, line := range strings.Split(string(listing), "\n") {
+	for line := range strings.SplitSeq(string(listing), "\n") {
 		if strings.Contains(line, h.steward.AccountsRoot) && !strings.Contains(line, "left — not counted") {
 			t.Errorf("the departed home is listed as a member:\n%s", listing)
 		}

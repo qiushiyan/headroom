@@ -184,7 +184,7 @@ func (e *evaluator) readUsage() {
 			rd.rows = append(rd.rows, row{
 				id: rowID(u.Kind, u.Label, u.WindowSeconds), label: u.Label, session: i == session,
 				period: int64(usage.Period(vendor, u) / time.Second), window: u.WindowSeconds,
-				point: point{at: rd.at, percent: u.Percent, bad: u.PercentState == tag.Bad, reset: u.ResetAt},
+				at: rd.at, percent: u.Percent, bad: u.PercentState == tag.Bad, reset: u.ResetAt,
 			})
 		}
 		e.readings[r.Key] = append(e.readings[r.Key], rd)
@@ -208,7 +208,7 @@ func (e *evaluator) readUsage() {
 				rd.rows = append(rd.rows, row{
 					id: rowID(lim.Kind, lim.Label, lim.WindowS), label: lim.Label, session: lim.Session,
 					period: lim.PeriodS, window: lim.WindowS,
-					point: point{at: rd.at, percent: lim.Percent, bad: lim.Basis == string(placement.BasisBad), reset: unix(lim.ResetsAt)},
+					at: rd.at, percent: lim.Percent, bad: lim.Basis == string(placement.BasisBad), reset: unix(lim.ResetsAt),
 				})
 			}
 			e.readings[k] = append(e.readings[k], rd)

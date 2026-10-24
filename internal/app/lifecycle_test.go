@@ -151,7 +151,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 		t.Errorf("missing: exit %d", code)
 	}
 	listed := func(name, state string) bool {
-		for _, l := range strings.Split(errw.String(), "\n") {
+		for l := range strings.SplitSeq(errw.String(), "\n") {
 			if strings.Contains(l, name) && strings.Contains(l, state) {
 				return true
 			}

@@ -416,7 +416,7 @@ func TestRotationWhenNothingWasEverObserved(t *testing.T) {
 	var ledger Ledger
 	var got []string
 	clock := now
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		d := Choose(cands, ledger, Intent{}, clock)
 		if d.Reason != ReasonRotation {
 			t.Fatalf("reason = %q", d.Reason)

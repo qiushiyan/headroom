@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
@@ -129,32 +130,33 @@ func launchesLine(r launchlog.Record, nameW int, vendor bool) string {
 	if r.Reason != "" && r.Reason != r.Mode {
 		how += "/" + r.Reason
 	}
-	line := when + "  "
+	var line strings.Builder
+	line.WriteString(when + "  ")
 	if vendor {
-		line += render.PadCell(r.Vendor, 6) + "  "
+		line.WriteString(render.PadCell(r.Vendor, 6) + "  ")
 	}
-	line += render.PadCell(render.Sanitize(r.Chosen), nameW) + "  " + render.PadCell(how, 16)
+	line.WriteString(render.PadCell(render.Sanitize(r.Chosen), nameW) + "  " + render.PadCell(how, 16))
 	for _, c := range r.Candidates {
 		if c.Name == r.Chosen {
-			line += fmt.Sprintf("  load %d  week %3d%%", c.Load, c.Weekly)
+			line.WriteString(fmt.Sprintf("  load %d  week %3d%%", c.Load, c.Weekly))
 			// How long that week had left at the launch: what decides
 			// between equally loaded accounts, so a choice of the fuller one
 			// reads as what it was. A record from before the field, or a
 			// window nothing dated, says nothing.
 			week := placement.Week{Left: c.Week.LeftS, LeftBasis: placement.TimeBasis(c.Week.LeftBasis)}
 			if left := weekLeft(week); left != "—" {
-				line += ", " + left + " left"
+				line.WriteString(", " + left + " left")
 			}
 			break
 		}
 	}
 	if r.RunnerUp != "" {
-		line += "  next " + render.Sanitize(r.RunnerUp)
+		line.WriteString("  next " + render.Sanitize(r.RunnerUp))
 	}
 	if !r.Recorded {
-		line += "  (not recorded)"
+		line.WriteString("  (not recorded)")
 	}
-	return line
+	return line.String()
 }
 
 // logWhen is one of the logs' RFC3339 instants as both launches surfaces

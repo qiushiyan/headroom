@@ -37,12 +37,11 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	// picker carries is the one read a real run takes.
 	writeJSON(t, cfg.CurrentFile(), "yan@planlab.ai\n")
 	set := accounts.Discover(cfg)
-	ui := &resumeUI{sessionActions: sessionActions{beforeLaunch: func() {},
+	ui := &resumeUI{beforeLaunch: func() {},
 		st:         state.Open(cfg),
 		set:        set,
 		routing:    set.Routing(),
-		claudeArgs: []string{"--dangerously-skip-permissions"},
-	}}
+		claudeArgs: []string{"--dangerously-skip-permissions"}}
 	s := &sessions.Session{
 		ID: "11111111-2222-3333-4444-555555555555", CWD: proj, DirOK: true,
 		Owner: "yan@planlab.ai", OwnerState: sessions.OwnerHistory,

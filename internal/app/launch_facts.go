@@ -202,8 +202,8 @@ func observeCandidates(set accounts.Set, st *state.Store, snap state.Snapshot, s
 	f.refs, f.evidence, f.gone = load.refs, load.evidence, load.gone
 
 	for i, s := range src {
-		c := placeCandidate{acct: s.acct, key: s.key, obs: s.obs}
-		c.Candidate = placement.Candidate{Name: s.acct.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
+		c := placeCandidate{acct: s.acct, key: s.key, obs: s.obs,
+			Name: s.acct.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
 		if blobs != nil {
 			c.cred = blobs[i]

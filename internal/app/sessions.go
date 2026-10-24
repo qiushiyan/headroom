@@ -154,7 +154,7 @@ parse:
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		sessionActions: sessionActions{st: st, set: set, routing: routing, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}}
+		st: st, set: set, routing: routing, cdFile: cdFile, claudeArgs: claudeArgs, beforeLaunch: t.Close}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded
 		// attribution is supposed to be visible, and this is the only moment
