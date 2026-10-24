@@ -36,7 +36,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // headlessSchema versions the documents `place` and the listing print.
@@ -101,33 +100,43 @@ func gatherHeadless(set accounts.Set, st *state.Store, tokens map[string]headles
 			c.Excluded = "excluded by the caller"
 			continue
 		}
-		c.Excluded = headlessExclusion(a, f.keys[i], tok, ok, f.obs[i], now)
+		c.Excluded = headlessExclusion(a, f.keys[i], tok, ok, now)
 	}
 	return f
 }
 
-// headlessExclusion is why a headless placement must not land on an account,
-// or "". A token decides, with one more condition: the dir must still be
-// logged in to the subscription the token was minted for, since that login
-// is how headroom reads the figures — and so the load — the rule weighs.
-func headlessExclusion(a accounts.Account, key state.Key, tok headless.Token, ok bool, obs *accountstate.Observation, now time.Time) string {
+// tokenProblem is why a's headless token must not be used, or "": there is
+// none, it has ended, or it was minted for another subscription than the one
+// a's dir (whose key is key) is logged in to now. Positive evidence only: a
+// dir that is logged out, or whose identity cannot be read just now, still
+// holds the subscription its token was minted for. `headless token` refuses
+// on it alone; a placement asks more (headlessExclusion).
+func tokenProblem(a accounts.Account, key state.Key, tok headless.Token, ok bool, now time.Time) string {
 	switch {
 	case !ok:
-		return "no headless token"
+		return "no headless token — headroom headless mint " + a.Name
 	case tok.Ended(now):
-		return "headless token ended " + when(tok.EndsMS, now)
-	case key.ID() == tok.Key:
-	case !a.Readable:
-		return "its login could not be read just now"
-	case key.UUID == "":
-		return "not logged in, so its figures cannot be read — headroom login " + a.Name
-	default:
+		return "headless token ended " + when(tok.EndsMS, now) + " — headroom headless mint " + a.Name
+	case key.UUID != "" && key.ID() != tok.Key:
 		return "logged in to another subscription than its headless token — mint it again or forget it"
 	}
-	if obs != nil && obs.Allowance.State == usage.AllowanceBlocked {
-		return "blocked by the vendor"
-	}
 	return ""
+}
+
+// headlessExclusion is why a headless placement must not land on an account,
+// or "". The token decides, with one more condition: the dir must be logged
+// in, to the subscription the token was minted for, since that login is how
+// headroom reads the figures — and so the load — the rule weighs.
+func headlessExclusion(a accounts.Account, key state.Key, tok headless.Token, ok bool, now time.Time) string {
+	switch why := tokenProblem(a, key, tok, ok, now); {
+	case why != "":
+		return why
+	case key.UUID != "":
+		return ""
+	case !a.Readable:
+		return "its login could not be read just now"
+	}
+	return "not logged in, so its figures cannot be read — headroom login " + a.Name
 }
 
 // headlessDoc is what `place` prints: the decision, and every account as the
@@ -221,8 +230,8 @@ func newPlacementID() string {
 
 // runHeadlessPlace decides which account the caller's next session spends,
 // records the decision as load and prints it. It refuses — exit 3, nothing
-// recorded — when every account it could take is near a limit, excluded, or
-// blocked, and says when room returns.
+// recorded — when every account it could take is near a limit or excluded,
+// and says when room returns.
 func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) int {
 	prefer, dryRun := "", false
 	var excluded []string
@@ -419,19 +428,8 @@ func runHeadlessToken(out, errw io.Writer, scope config.Scope, args []string) in
 		return 1
 	}
 	tok, ok := tokens[a.Name]
-	now := time.Now()
-	key := state.KeyFor(a)
-	switch {
-	case !ok:
-		fmt.Fprintf(errw, "headroom headless token: %s has no headless token — headroom headless mint %s\n", a.Name, a.Name)
-		return 1
-	case tok.Ended(now):
-		fmt.Fprintf(errw, "headroom headless token: %s's headless token ended %s — headroom headless mint %s\n", a.Name, when(tok.EndsMS, now), a.Name)
-		return 1
-	case key.UUID != "" && key.ID() != tok.Key:
-		// Positive evidence only: a dir whose identity cannot be read right
-		// now still holds the subscription the token was minted for.
-		fmt.Fprintf(errw, "headroom headless token: %s is now logged in to another subscription than its token — mint it again or forget it\n", a.Name)
+	if why := tokenProblem(a, state.KeyFor(a), tok, ok, time.Now()); why != "" {
+		fmt.Fprintf(errw, "headroom headless token: %s: %s\n", a.Name, why)
 		return 1
 	}
 	fmt.Fprintln(out, tok.Value)
@@ -497,7 +495,7 @@ func runHeadlessList(out io.Writer, scope config.Scope, args []string, now time.
 	doc := headlessListDoc{Schema: headlessSchema}
 	for _, fa := range facts {
 		tok, ok := tokens[fa.Acct.Name]
-		row := headlessListAcct{Account: fa.Acct.Name, Token: ok, Excluded: headlessExclusion(fa.Acct, fa.Key, tok, ok, fa.View.Obs, now)}
+		row := headlessListAcct{Account: fa.Acct.Name, Token: ok, Excluded: headlessExclusion(fa.Acct, fa.Key, tok, ok, now)}
 		if ok {
 			row.MintedAt = rfc(tok.MintedMS / 1000)
 			row.EndsAt = rfc(tok.EndsMS / 1000)

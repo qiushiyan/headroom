@@ -73,8 +73,8 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if doc.TokenEndsAt == nil || doc.RetryAt != nil || doc.Rule != placement.Rule {
 		t.Errorf("ends %v retry %v rule %q", doc.TokenEndsAt, doc.RetryAt, doc.Rule)
 	}
-	for name, why := range map[string]string{"c@x.com": "no headless token", "qiushi": "no headless token"} {
-		if a := doc.find(name); a.Eligible || a.Excluded != why {
+	for _, name := range []string{"c@x.com", "qiushi"} {
+		if a := doc.find(name); a.Eligible || !strings.HasPrefix(a.Excluded, "no headless token") || !strings.Contains(a.Excluded, "headroom headless mint "+name) {
 			t.Errorf("%s: %+v", name, a)
 		}
 	}
@@ -552,7 +552,7 @@ func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
 	if code != exitRefused || doc.RetryAt != nil || doc.Placement != "" {
 		t.Fatalf("all excluded: %d %+v", code, doc)
 	}
-	for _, want := range []string{"a@x.com (excluded by the caller)", "c@x.com (excluded by the caller)", "qiushi (no headless token)"} {
+	for _, want := range []string{"a@x.com (excluded by the caller)", "c@x.com (excluded by the caller)", "qiushi (no headless token"} {
 		if !strings.Contains(doc.Refusal, want) {
 			t.Errorf("refusal %q lacks %q", doc.Refusal, want)
 		}
