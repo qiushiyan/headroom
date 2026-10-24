@@ -12,7 +12,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -80,7 +79,7 @@ func TestPrepareFileBackedPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	list := prepare(cfg, state.Open(cfg)).list
+	list := prepare(context.Background(), cfg, state.Open(cfg), true).list
 	if len(list) == 0 || list[0].View.Plan != "max 20x" || list[0].Request == nil {
 		t.Fatalf("primary did not get a usable file-backed credential: %+v", list)
 	}
@@ -140,8 +139,11 @@ func TestPrepareWith(t *testing.T) {
 		t.Fatalf("got %d accounts: %v", len(byName), byName)
 	}
 
-	if v := byName["primary"].View; v.Health != accountstate.HealthNoLogin || v.Label != "primary@x.com" {
-		t.Errorf("primary: health=%v label=%q", v.Health, v.Label)
+	// The primary's name is never its email (a configured name, or the email's
+	// local part), and that is not a mismatch: only an extra's dir, named for
+	// one login and holding another, is.
+	if v := byName["primary"].View; v.Health != accountstate.HealthNoLogin || v.Label != "primary@x.com" || v.DirMismatch != "" {
+		t.Errorf("primary: health=%v label=%q mismatch=%q", v.Health, v.Label, v.DirMismatch)
 	}
 	good := byName["good@x.com"]
 	if v := good.View; v.Health != accountstate.HealthOK || !v.Current || v.Plan != "max 20x" ||
@@ -176,8 +178,19 @@ func TestPrepareWith(t *testing.T) {
 	}
 }
 
-// Claude Code's own verdict decides identity; a credential that fails the
-// contract still outranks it, because that is drift worth seeing.
+// Health answers one question — can Claude Code use this account — and
+// Claude Code's own verdict settles it whenever there is one. A credential
+// headroom cannot read blocks *headroom's* request, never the account: it
+// belongs on the attempt axis, and reporting it as an account problem is the
+// false alarm the three-axis model exists to remove. Credential evidence
+// decides only when the oracle has no answer.
+//
+// And only a usable account is asked about: every row whose health is not OK
+// leaves no request and no attempt. Deleting the HealthOK gate in
+// claudeAccess must fail the logged-out row — an account Claude Code reports
+// logged out, over an access token that has not expired, would otherwise
+// claim a ledger slot and spend a request every round, its caption reading
+// as fetched over a "/login" health line.
 func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 	home := t.TempDir()
 	cfg := claudeScope(home, "primary")
@@ -187,146 +200,58 @@ func TestPrepareHealthPrefersAuthStatus(t *testing.T) {
 	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com"}}`)
 
 	now := time.Now()
-	// A blob whose refresh token expired long ago, but Claude Code says the
-	// account is logged in — the first-party answer wins.
-	blob := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","refreshTokenExpiresAt":%d}}`,
+	usable := `{"claudeAiOauth":{"accessToken":"t"}}`
+	// The refresh token expired long ago, the access token carries no expiry.
+	expiredRefresh := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","refreshTokenExpiresAt":%d}}`,
 		now.Add(-100*time.Hour).UnixMilli())
-	f := prepareFixture{
-		cfg:   cfg,
-		store: state.Open(cfg),
-		blobs: map[string]string{"": blob},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthOK {
-		t.Errorf("auth status ignored: health=%v", v.Health)
-	}
+	loggedIn := auth.Status{LoggedIn: true, Outcome: auth.OutcomeOK}
 
-	f.auth = map[string]auth.Status{"": {LoggedIn: false, Outcome: auth.OutcomeOK}}
-	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthNoLogin {
-		t.Errorf("logged-out account not surfaced: health=%v", v.Health)
-	}
-
-	// An unreadable credential blocks headroom's request but is not an
-	// account-health verdict — the first-party oracle still decides that.
-	f.auth = map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}}
-	f.blobs = map[string]string{"": `not json`}
-	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthOK ||
-		v.Attempt.State != accountstate.AttemptCredentialUnreadable {
-		t.Errorf("unreadable credential mishandled: health=%v attempt=%v", v.Health, v.Attempt.State)
-	}
-
-	// The oracle answering in a shape we no longer parse is drift, and must
-	// not be papered over with a credential guess.
-	f.auth = map[string]auth.Status{"": {Outcome: auth.OutcomeUnparseable}}
-	f.blobs = map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`}
-	if v := f.run(now)["primary"].View; v.Health != accountstate.HealthUnknown {
-		t.Errorf("auth output drift not surfaced: health=%v", v.Health)
-	}
-}
-
-// Claude Code's own cache seeds the display for free, so a refused or deferred
-// refresh still leaves the user with numbers — labelled with their real age.
-func TestPrepareSeedsFromClaudeCache(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fetchedAt := time.Now().Add(-22 * time.Hour)
-	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
-	  "oauthAccount":{"emailAddress":"primary@x.com","accountUuid":"uuid-1"},
-	  "cachedUsageUtilization":{
-	    "fetchedAtMs":%d,"accountUuid":"uuid-1",
-	    "utilization":{"limits":[{"kind":"session","percent":58,"severity":"normal",
-	      "resets_at":"2026-08-06T17:00:00Z"}]}}}`, fetchedAt.UnixMilli()))
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: state.Open(cfg),
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	now := time.Now()
-	v := f.run(now)["primary"].View
-	if v.Obs == nil {
-		t.Fatal("cached usage not loaded")
-	}
-	if v.Obs.Source != accountstate.SourceCache || v.Obs.Rows[0].Percent != 58 {
-		t.Errorf("cache mis-parsed: %+v", v.Obs)
-	}
-	if v.Fresh(now.Unix()) {
-		t.Error("a 22h-old cache must not count as current headroom")
-	}
-}
-
-// A config dir re-logged to a different account keeps the previous account's
-// cache. Rendering it under the new name would attribute one account's quota
-// to another — worse than showing nothing.
-func TestPrepareRejectsCacheFromAnotherAccount(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeJSON(t, cfg.PrimaryMeta(), fmt.Sprintf(`{
-	  "oauthAccount":{"emailAddress":"new@x.com","accountUuid":"uuid-new"},
-	  "cachedUsageUtilization":{
-	    "fetchedAtMs":%d,"accountUuid":"uuid-previous",
-	    "utilization":{"limits":[{"kind":"session","percent":99}]}}}`,
-		time.Now().UnixMilli()))
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: state.Open(cfg),
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	if v := f.run(time.Now())["primary"].View; v.Obs != nil {
-		t.Errorf("cache belonging to a previous login was used: %+v", v.Obs)
-	}
-}
-
-// An account inside its quiet period is not fetched, and says so rather than
-// looking broken.
-func TestPrepareDefersInsideQuietPeriod(t *testing.T) {
-	home := t.TempDir()
-	cfg := claudeScope(home, "primary")
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com"}}`)
-
-	now := time.Now()
-	store := state.Open(cfg)
-	key := state.Key{Name: "primary"}
-	dec, err := store.Claim([]state.Key{key}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Complete(key, dec[0].Generation, state.OutcomeRefused, nil, now); err != nil {
-		t.Fatal(err)
-	}
-
-	f := prepareFixture{
-		cfg:   cfg,
-		store: store,
-		blobs: map[string]string{"": `{"claudeAiOauth":{"accessToken":"t"}}`},
-		auth:  map[string]auth.Status{"": {LoggedIn: true, Outcome: auth.OutcomeOK}},
-	}
-	d := f.round(now)["primary"]
-	if d.View.Attempt.State != accountstate.AttemptDeferred {
-		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
-	}
-	if d.View.Attempt.NextEligibleAt <= now.Unix() {
-		t.Error("deferred account must say when it becomes eligible")
-	}
-	if d.View.Health != accountstate.HealthOK {
-		t.Errorf("cooling down is not an account problem: health=%v", d.View.Health)
+	for _, c := range []struct {
+		name       string
+		oracle     auth.Status
+		credential string
+		health     accountstate.Health
+		attempt    accountstate.AttemptState
+		request    bool
+	}{
+		{"the oracle's logged in outranks an expired refresh token", loggedIn, expiredRefresh,
+			accountstate.HealthOK, accountstate.AttemptPending, true},
+		{"the oracle's logged out outranks a usable credential, and nothing is asked",
+			auth.Status{Outcome: auth.OutcomeOK}, usable, accountstate.HealthNoLogin, accountstate.AttemptNone, false},
+		{"an unparseable credential is an attempt fact, not an account one", loggedIn, `not json`,
+			accountstate.HealthOK, accountstate.AttemptCredentialUnreadable, false},
+		{"a missing credential is an attempt fact, not an account one", loggedIn, "",
+			accountstate.HealthOK, accountstate.AttemptCredentialUnreadable, false},
+		{"oracle drift is unknown, never papered over with a credential guess",
+			auth.Status{Outcome: auth.OutcomeUnparseable}, usable, accountstate.HealthUnknown, accountstate.AttemptNone, false},
+		// A probe whose environment the launch seam refused (a relative dir):
+		// the credential fallback reads the same broken spelling and would
+		// send the user to /login for a path bug.
+		{"an unrunnable probe is unknown, never logged out",
+			auth.Status{Outcome: auth.OutcomeUnrunnable}, "", accountstate.HealthUnknown, accountstate.AttemptNone, false},
+		{"no oracle and no credential is no login", auth.Status{}, "",
+			accountstate.HealthNoLogin, accountstate.AttemptNone, false},
+		{"no oracle and a credential off the contract is drift", auth.Status{}, `not json`,
+			accountstate.HealthBadBlob, accountstate.AttemptNone, false},
+	} {
+		f := prepareFixture{
+			cfg:   cfg,
+			store: state.Open(cfg),
+			blobs: map[string]string{"": c.credential},
+			auth:  map[string]auth.Status{"": c.oracle},
+		}
+		d := f.run(now)["primary"]
+		if d.View.Health != c.health || d.View.Attempt.State != c.attempt || (d.Request != nil) != c.request {
+			t.Errorf("%s: health %v attempt %v request %v, want %v %v %v", c.name,
+				d.View.Health, d.View.Attempt.State, d.Request != nil, c.health, c.attempt, c.request)
+		}
 	}
 }
 
 // The bug in one assertion: what headroom fetched moments ago must still read
-// as current on the next run, without a request and without a stale nag.
+// as current on the next run, without a request and without a stale nag. The
+// account inside its quiet period is deferred, not broken: it says when it
+// can next be asked, and its health is untouched.
 func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	home := t.TempDir()
 	cfg := claudeScope(home, "primary")
@@ -364,6 +289,12 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	if d.View.Attempt.State != accountstate.AttemptDeferred {
 		t.Errorf("attempt = %v, want deferred", d.View.Attempt.State)
 	}
+	if d.View.Attempt.NextEligibleAt <= now.Unix() {
+		t.Error("a deferred account must say when it becomes eligible")
+	}
+	if d.View.Health != accountstate.HealthOK {
+		t.Errorf("cooling down is not an account problem: health=%v", d.View.Health)
+	}
 	if !d.View.Fresh(now.Unix()) {
 		t.Error("figures fetched five seconds ago read as stale")
 	}
@@ -372,15 +303,5 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	}
 	if p := render.NewPalette(false).ProvenanceLine(d.View, now.Unix()); p != "" {
 		t.Errorf("a nag was printed over current figures: %q", p)
-	}
-}
-
-// A probe whose environment the launch seam refused (a relative dir) answers
-// "unknown", never "not logged in": the credential fallback reads the same
-// broken spelling and would send the user to /login for a path bug.
-func TestUnrunnableProbeIsUnknownNotLoggedOut(t *testing.T) {
-	h := resolveHealth(auth.Status{Outcome: auth.OutcomeUnrunnable}, "", creds.Blob{}, false, 0)
-	if h != accountstate.HealthUnknown {
-		t.Errorf("health = %v, want HealthUnknown", h)
 	}
 }

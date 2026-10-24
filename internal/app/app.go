@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -227,6 +228,45 @@ The session picker is now `+"`headroom sessions`"+` (listing: `+"`headroom sessi
 	}
 }
 
+// version is set at link time when a build names itself
+// (-ldflags "-X github.com/qiushiyan/headroom/internal/app.version=<v>");
+// otherwise the commit the binary was built from names it.
+var version = ""
+
+// versionLine is `headroom version`: one line, the build's name — the commit
+// it was built from, "+dirty" when the tree had uncommitted changes — and the
+// commit's time. What a caller pins.
+func versionLine() string {
+	rev, at, dirty := "", "", false
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.time":
+				at = s.Value
+			case "vcs.modified":
+				dirty = s.Value == "true"
+			}
+		}
+	}
+	v := version
+	if v == "" {
+		v = rev
+		if v == "" {
+			v = "unknown"
+		}
+		if dirty {
+			v += "+dirty"
+		}
+	}
+	line := "headroom " + v
+	if at != "" {
+		line += " " + at
+	}
+	return line
+}
+
 // takeVendor lifts `--vendor <v>` (or `--vendor=<v>`) out of a command's own
 // arguments. It stops at `--`: whatever follows belongs to the launched child,
 // and a child's `--vendor` is not headroom's to read.
@@ -373,11 +413,34 @@ func printUsage(w io.Writer) {
 
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
+// accountData is one account as a surface holds it: the facts accountstate
+// assembled from disk — the account, its ledger key, its view — and, beside
+// them, the candidate a live request would be made from. Only prepare's
+// access step sets Request; a row read from disk alone carries none, so
+// nothing built from it can spend.
 type accountData struct {
-	Acct    accounts.Account
-	Key     state.Key
-	View    accountstate.Facts
+	accountstate.Account
 	Request *refresh.Candidate
+}
+
+// board is one vendor's round, everything a surface reports about that
+// vendor carried together: the scope and store it ran under, the set it
+// discovered, the list built from that set, the one read of `.current` that
+// marked the list, and the problems of the vendor's own state file as the
+// round read it. The picker's page, the one-shot print, --json and limits
+// each hold one per vendor, so mode, current and the marks cannot come from
+// two reads, and nothing is copied out of one carrier into the next.
+//
+// The set travels with the list built from it: selection, recording the
+// current account and the known-extra-dir question are asked of the set,
+// never of one reconstructed from a scope and a list.
+type board struct {
+	scope    config.Scope
+	st       *state.Store
+	set      accounts.Set
+	list     []*accountData
+	routing  accounts.Routing // one read of `.current`: mode and current together
+	problems []state.Problem  // the store's own, as this round loaded it
 }
 
 // sources are the three inputs prepare reads about each account, injected so
@@ -389,42 +452,22 @@ type sources struct {
 	now     time.Time
 }
 
-// prepare walks accounts and assembles what is known about each one before
-// any request goes out: whether Claude Code considers it usable, the newest
-// quota figures already on disk, and whether a live refresh is affordable.
-// It also returns the current-target name it marked the views with —
-// consumers that report the current account must use this value, not re-read
-// the state file, or a concurrent `select` could make the two disagree.
-// prepared is one local half of a round. The discovered set stays with the
-// list built from it: selection, recording the current account and the
-// known-extra-dir question are asked of the set, never of one reconstructed
-// from a scope and a list.
-type prepared struct {
-	set     accounts.Set
-	list    []*accountData
-	routing accounts.Routing // one read of `.current`: mode and current together
-	snap    state.Snapshot
-}
-
-func prepare(scope config.Scope, st *state.Store) prepared {
-	return prepareVia(context.Background(), scope, st, queryHealthParallel)
-}
-
-// prepareUnprobed is prepare without the vendor's health probe: health falls
-// back to credential evidence, as it does whenever the probe has no answer.
-// It is what the detached refresh runs — a process nobody is watching has no
-// use for a `claude auth status` spawn per account, and must not lean on
-// whatever that command does as a side effect.
+// prepare is the local half of a round: it walks the accounts and assembles
+// what is known about each one before any request goes out — whether Claude
+// Code considers it usable, the newest quota figures already on disk, and
+// either a candidate for a live refresh or the attempt state that blocks one.
+// The board it returns carries its one read of `.current` and of the store.
 //
-// It stops when ctx does: the detached refresh is ended with the job that
-// launched it, and its credential reads are where it can stall.
-func prepareUnprobed(ctx context.Context, scope config.Scope, st *state.Store) prepared {
-	return prepareVia(ctx, scope, st, func([]accounts.Account) auth.QueryFunc {
-		return func(string) auth.Status { return auth.Status{} }
-	})
-}
-
-func prepareVia(ctx context.Context, scope config.Scope, st *state.Store, health func([]accounts.Account) auth.QueryFunc) prepared {
+// probe says whether Claude Code's own health probe runs (`claude auth
+// status` per account, side by side). Without it health falls back to
+// credential evidence, as it does whenever the probe has no answer: the
+// detached refresh runs that way, since a process nobody is watching has no
+// use for a spawn per account, and must not lean on whatever that command
+// does as a side effect.
+//
+// ctx reaches the credential reads, which are where a round can stall: the
+// picker's cancel and the detached refresh's signals stop them there.
+func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe bool) board {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -435,10 +478,13 @@ func prepareVia(ctx context.Context, scope config.Scope, st *state.Store, health
 			raw, _ := creds.ReadRawContext(ctx, a.ConfigDir, a.Dir())
 			return raw
 		}
-		src.health = health(set.Accounts)
+		src.health = func(string) auth.Status { return auth.Status{} }
+		if probe {
+			src.health = queryHealthParallel(set.Accounts)
+		}
 	}
 	list, routing := prepareWith(set, snap, src)
-	return prepared{set, list, routing, snap}
+	return board{scope: scope, st: st, set: set, list: list, routing: routing, problems: snap.Problems()}
 }
 
 // queryHealthParallel runs `claude auth status` for every account at once and

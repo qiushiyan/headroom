@@ -2,6 +2,10 @@ package app
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -36,13 +40,43 @@ func TestJSONDocument(t *testing.T) {
 							PercentState: tag.OK, ResetState: tag.None},
 					},
 				},
-				Attempt: accountstate.Attempt{State: accountstate.AttemptOK},
+				// Its next request's spacing: an answer that just landed names no retry.
+				Attempt: accountstate.Attempt{State: accountstate.AttemptOK, NextEligibleAt: generatedAt.Unix() + 90},
 			},
 		},
 		{
 			Acct: accounts.Account{ConfigDir: "/x", Name: "b@x.com"},
 			View: accountstate.Facts{Label: "b@x.com", Launcher: "x-b", Health: accountstate.HealthOK,
 				Attempt: accountstate.Attempt{State: accountstate.AttemptHTTP, HTTPCode: 401}},
+		},
+		// "These figures are old, and the refresh that would have replaced
+		// them was refused — and the refusal could not be recorded" is three
+		// facts. Schema 1 forced a choice between the limits and the error.
+		{
+			Acct: accounts.Account{Name: "a@x.com"},
+			View: accountstate.Facts{
+				Launcher: "x-a", Health: accountstate.HealthOK,
+				Obs: &accountstate.Observation{
+					ObservedAt: generatedAt.Add(-22 * time.Hour).Unix(),
+					Source:     accountstate.SourceCache,
+					Rows:       []usage.Row{{Label: "5h session", Percent: 58, Severity: "normal"}},
+				},
+				Attempt: accountstate.Attempt{
+					State: accountstate.AttemptRefused, HTTPCode: 429,
+					NextEligibleAt: generatedAt.Add(3 * time.Minute).Unix(),
+					StoreError:     "state file unavailable",
+				},
+			},
+		},
+		// A 200 reporting no limit windows is not "ok", and does name when the
+		// account can next be asked.
+		{
+			Acct: accounts.Account{Name: "n@x.com"},
+			View: accountstate.Facts{
+				Launcher: "x-n", Health: accountstate.HealthOK,
+				Obs:     &accountstate.Observation{ObservedAt: generatedAt.Unix(), Source: accountstate.SourceLive},
+				Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits, NextEligibleAt: generatedAt.Unix() + 90},
+			},
 		},
 	}
 	data, err := jsonDocument(claudeBoard(list, "primary"), generatedAt)
@@ -62,12 +96,15 @@ func TestJSONDocument(t *testing.T) {
 	}
 
 	accts := doc["accounts"].([]any)
-	if len(accts) != 2 {
+	if len(accts) != 4 {
 		t.Fatalf("got %d accounts", len(accts))
 	}
 	a0 := accts[0].(map[string]any)
 	if a0["health"] != "ok" || a0["current"] != true || a0["launcher"] != "x-primary" {
 		t.Errorf("account 0: %v", a0)
+	}
+	if at0 := a0["attempt"].(map[string]any); at0["state"] != "ok" || at0["next_eligible_at"] != nil || at0["http_status"] != nil {
+		t.Errorf("a successful attempt gained error or retry fields: %v", at0)
 	}
 	u0 := a0["usage"].(map[string]any)
 	if u0["source"] != "live" || u0["fresh"] != true || u0["observed_at"] != "2025-08-02T07:49:50Z" {
@@ -126,69 +163,82 @@ func TestJSONDocument(t *testing.T) {
 	if _, present := a1["email"]; present {
 		t.Errorf("empty email should be omitted: %v", a1)
 	}
+
+	a2 := accts[2].(map[string]any)
+	if a2["health"] != "ok" {
+		t.Errorf("rate limiting leaked into health: %v", a2["health"])
+	}
+	u2 := a2["usage"].(map[string]any)
+	if u2["source"] != "claude_cache" || u2["fresh"] != false || len(u2["limits"].([]any)) != 1 {
+		t.Errorf("22h-old cached figures: %v — known figures must survive a failed refresh, marked not fresh", u2)
+	}
+	at2 := a2["attempt"].(map[string]any)
+	if at2["state"] != "rate_limited" || at2["http_status"] != float64(429) || at2["next_eligible_at"] != "2025-08-02T07:53:00Z" {
+		t.Errorf("account 2 attempt: %v", at2)
+	}
+	// The bookkeeping failure is headroom's own problem, filed under the
+	// request it belongs to, beside the endpoint's verdict above.
+	var problems []string
+	listed, _ := doc["problems"].([]any)
+	for _, p := range listed {
+		p := p.(map[string]any)
+		problems = append(problems, p["vendor"].(string)+":"+p["section"].(string))
+	}
+	if len(problems) != 1 || problems[0] != "claude:request[a@x.com]" {
+		t.Errorf("problems = %v, want the one request's bookkeeping under its vendor", problems)
+	}
+
+	if at3 := accts[3].(map[string]any)["attempt"].(map[string]any); at3["state"] != "no_limits" || at3["next_eligible_at"] != "2025-08-02T07:51:30Z" {
+		t.Errorf("account 3 attempt: %v", at3)
+	}
 }
 
-// A consumer must be able to read "these figures are old, and the refresh
-// that would have replaced them was refused" as two separate facts. Schema 1
-// forced a choice between the limits and the error.
-func TestJSONSeparatesStaleDataFromFailedRefresh(t *testing.T) {
-	generatedAt := time.Unix(1754121000, 0)
-	list := []*accountData{{
-		Acct: accounts.Account{Name: "a@x.com"},
-		View: accountstate.Facts{
-			Launcher: "x-a", Health: accountstate.HealthOK,
-			Obs: &accountstate.Observation{
-				ObservedAt: generatedAt.Add(-22 * time.Hour).Unix(),
-				Source:     accountstate.SourceCache,
-				Rows:       []usage.Row{{Label: "5h session", Percent: 58, Severity: "normal"}},
-			},
-			Attempt: accountstate.Attempt{
-				State: accountstate.AttemptRefused, HTTPCode: 429,
-				NextEligibleAt: generatedAt.Add(3 * time.Minute).Unix(),
-			},
-		},
-	}}
-	data, err := jsonDocument(claudeBoard(list, "a@x.com"), generatedAt)
+// Every attempt state, health and source needs a wire name. A missing map
+// entry serialises as "", which is worse than a wrong value: a consumer can't
+// tell it from an absent field, and the schema is a versioned contract. The
+// states are counted from their declarations, not up to a named constant: a
+// loop bounded by one stops being complete the day a state is appended after
+// it, which is how state_unavailable and identity_unknown went unchecked.
+func TestEveryAttemptStateHasAWireName(t *testing.T) {
+	for i := range declared(t, "AttemptState") {
+		if attemptNames[accountstate.AttemptState(i)] == "" {
+			t.Errorf("attempt state %d has no wire name", i)
+		}
+	}
+	for i := range declared(t, "Health") {
+		if healthNames[accountstate.Health(i)] == "" {
+			t.Errorf("health state %d has no wire name", i)
+		}
+	}
+	for i := range declared(t, "Source") {
+		if sourceNames[accountstate.Source(i)] == "" {
+			t.Errorf("source %d has no wire name", i)
+		}
+	}
+}
+
+// declared counts the constants of the iota block that declares typ in
+// accountstate's facts.go, read from the source.
+func declared(t *testing.T, typ string) int {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "accountstate", "facts.go"), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatal(err)
-	}
-	a := doc["accounts"].([]any)[0].(map[string]any)
-
-	if a["health"] != "ok" {
-		t.Errorf("rate limiting leaked into health: %v", a["health"])
-	}
-	u := a["usage"].(map[string]any)
-	if u["source"] != "claude_cache" {
-		t.Errorf("source not exposed: %v", u["source"])
-	}
-	if u["fresh"] != false {
-		t.Error("22h-old figures reported as fresh")
-	}
-	if len(u["limits"].([]any)) != 1 {
-		t.Error("known figures dropped because the refresh failed")
-	}
-	at := a["attempt"].(map[string]any)
-	if at["state"] != "rate_limited" || at["next_eligible_at"] != "2025-08-02T07:53:00Z" {
-		t.Errorf("attempt: %v", at)
-	}
-}
-
-// Every attempt state a run can actually produce needs a wire name. A missing
-// map entry serialises as "", which is worse than a wrong value: a consumer
-// can't tell it from an absent field, and the schema is a versioned contract.
-func TestEveryAttemptStateHasAWireName(t *testing.T) {
-	for s := accountstate.AttemptNone; s <= accountstate.AttemptNoLimits; s++ {
-		if attemptNames[s] == "" {
-			t.Errorf("attempt state %d has no wire name", s)
+	for _, decl := range f.Decls {
+		g, ok := decl.(*ast.GenDecl)
+		if !ok || g.Tok != token.CONST {
+			continue
 		}
-	}
-	for h := accountstate.HealthOK; h <= accountstate.HealthUnprobed; h++ {
-		if healthNames[h] == "" {
-			t.Errorf("health state %d has no wire name", h)
+		if id, ok := g.Specs[0].(*ast.ValueSpec).Type.(*ast.Ident); !ok || id.Name != typ {
+			continue
 		}
+		n := 0
+		for _, s := range g.Specs {
+			n += len(s.(*ast.ValueSpec).Names)
+		}
+		return n
 	}
+	t.Fatalf("facts.go declares no %s constants", typ)
+	return 0
 }

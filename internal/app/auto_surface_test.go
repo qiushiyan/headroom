@@ -56,16 +56,18 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	f.observe("a@x.com", 0, 40, time.Minute)
 	f.observe("b@x.com", 0, 10, time.Minute)
 
-	board := fetchBoards([]config.Scope{f.cfg})[0]
-	if current, next := marks(board.list); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.mode != "pinned" {
-		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.mode)
+	boards := fetchBoards([]config.Scope{f.cfg})
+	board := boards[0]
+	if current, next := marks(board.list); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.routing.Mode != "pinned" {
+		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.routing.Mode)
 	}
 
 	f.setCurrent("auto\n")
-	board = fetchBoards([]config.Scope{f.cfg})[0]
+	boards = fetchBoards([]config.Scope{f.cfg})
+	board = boards[0]
 	current, next := marks(board.list)
-	if len(current) != 0 || len(next) != 1 || board.mode != "auto" {
-		t.Fatalf("auto: current %v next %v mode %q", current, next, board.mode)
+	if len(current) != 0 || len(next) != 1 || board.routing.Mode != "auto" {
+		t.Fatalf("auto: current %v next %v mode %q", current, next, board.routing.Mode)
 	}
 	if got := f.launch(); got.account(f.cfg) != next[0] {
 		t.Fatalf("the board marked %s and the launch took %s:\n%s", next[0], got.account(f.cfg), got.stderr)
@@ -75,7 +77,7 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	p := render.NewPalette(false)
 	for layout, mark := range map[render.Layout]string{render.LayoutBlocks: "← next", render.LayoutCompact: "→"} {
 		var out bytes.Buffer
-		writeBoards(&out, p, []vendorBoard{board}, time.Now().Unix(), layout, 0)
+		writeBoards(&out, p, boards, time.Now().Unix(), layout, 0)
 		text := out.String()
 		if !strings.Contains(text, "bare launches are automatic") || strings.Contains(text, "← current") || strings.Contains(text, "●") {
 			t.Errorf("layout %v does not say the mode:\n%s", layout, text)

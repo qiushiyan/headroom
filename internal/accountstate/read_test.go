@@ -9,7 +9,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/state"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 func writeJSON(t *testing.T, path, body string) {
@@ -58,7 +57,7 @@ func TestReadDiskFacts(t *testing.T) {
 
 	t.Setenv("PATH", t.TempDir())
 	disk := Read(cfg, st, now)
-	list, current := disk.Accounts, disk.Current
+	list, current := disk.Accounts, disk.Routing.Current
 	if current != "b@x.com" {
 		t.Errorf("current = %q", current)
 	}
@@ -184,20 +183,5 @@ func TestReadSelectsTheNewestObservation(t *testing.T) {
 					v.Obs.ObservedAt, storedAt.Unix())
 			}
 		})
-	}
-}
-
-func TestActionableRequiresHealthAndFreshness(t *testing.T) {
-	now := time.Now().Unix()
-	fresh := &Observation{Rows: []usage.Row{{Label: "5h session"}}, ObservedAt: now - 5}
-	if (Facts{Health: HealthNoLogin, Obs: fresh}).Actionable(now) {
-		t.Error("a logged-out account with a fresh cache was reported as actionable")
-	}
-	if !(Facts{Health: HealthOK, Obs: fresh}).Actionable(now) {
-		t.Error("a healthy account with fresh figures should be actionable")
-	}
-	old := &Observation{Rows: []usage.Row{{Label: "5h session"}}, ObservedAt: now - 100000}
-	if (Facts{Health: HealthOK, Obs: old}).Actionable(now) {
-		t.Error("stale figures are not grounds for a choice")
 	}
 }
