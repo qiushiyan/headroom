@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +43,8 @@ type doc5 struct {
 		} `json:"usage"`
 	} `json:"accounts"`
 	Problems []struct {
-		Vendor string `json:"vendor"`
+		Vendor  string `json:"vendor"`
+		Section string `json:"section"`
 	} `json:"problems"`
 }
 
@@ -275,25 +277,86 @@ func join(s []string) string {
 	return out
 }
 
-// A problem in a state file is attributed to the vendor whose file it is, and
-// --vendor filters problems with everything else.
+// An unreadable store must be distinguishable from "nothing has ever been
+// observed": both serialize usage as null, and only the problems section says
+// which one the consumer is looking at — in the `limits` document and the
+// `--json` board's alike, since each builds its board from its own read of
+// the store. A problem is attributed to the vendor whose file it is, --vendor
+// filters problems with everything else, and a healthy store carries none:
+// the section is a signal, not a fixture. Dropping the store's problems from
+// either surface's board must fail here.
 func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
 	f := newCodexFixture(t, "http://127.0.0.1:1")
 	f.extra(t, login(1))
-	if err := os.WriteFile(filepath.Join(f.scope.AccountsRoot, "state.json"), []byte(`{"version":1,"accounts":"broken"}`), 0o600); err != nil {
+	t.Setenv("PATH", t.TempDir()) // the board's probes and credential reads answer "unavailable"
+	limits := func(scopes ...config.Scope) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		if code := runLimitsTo(&buf, scopes, nil); code != 0 {
+			t.Fatal("limits failed")
+		}
+		return buf.Bytes()
+	}
+	board := func(scopes ...config.Scope) []byte {
+		t.Helper()
+		data, err := jsonDocument(fetchBoards(scopes), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	// The file's own sections. A request the board made against the broken
+	// ledger reports its bookkeeping too, as request[<name>]; that is the
+	// attempt's problem, not the file's.
+	fileProblems := func(d doc5) (out []string) {
+		for _, p := range d.Problems {
+			if !strings.HasPrefix(p.Section, "request[") {
+				out = append(out, p.Vendor+":"+p.Section)
+			}
+		}
+		return out
+	}
+	both := []config.Scope{f.cfg.Claude, f.scope}
+	claudeState := filepath.Join(f.cfg.Claude.AccountsRoot, "state.json")
+	codexState := filepath.Join(f.scope.AccountsRoot, "state.json")
+	if err := os.MkdirAll(f.cfg.Claude.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var buf bytes.Buffer
-	if code := runLimitsTo(&buf, []config.Scope{f.cfg.Claude, f.scope}, nil); code != 0 {
-		t.Fatal("limits failed")
-	}
-	d := decode5(t, buf.Bytes())
-	if len(d.Problems) != 1 || d.Problems[0].Vendor != "codex" {
-		t.Errorf("problems = %+v, want the one Codex problem under its vendor", d.Problems)
-	}
-	buf.Reset()
-	runLimitsTo(&buf, []config.Scope{f.cfg.Claude}, nil)
-	if d := decode5(t, buf.Bytes()); len(d.Problems) != 0 {
-		t.Errorf("--vendor claude reported Codex's problem: %+v", d.Problems)
+
+	for surface, run := range map[string]func(...config.Scope) []byte{"limits": limits, "--json": board} {
+		doc := func(scopes ...config.Scope) doc5 { t.Helper(); return decode5(t, run(scopes...)) }
+		for _, file := range []string{claudeState, codexState} {
+			if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+		var clean map[string]json.RawMessage
+		if err := json.Unmarshal(run(both...), &clean); err != nil {
+			t.Fatal(err)
+		}
+		if p, present := clean["problems"]; present {
+			t.Errorf("%s: a healthy store must omit problems: %s", surface, p)
+		}
+
+		// One section of Codex's file unreadable: one problem, under its vendor.
+		writeJSON(t, codexState, `{"version":1,"accounts":"broken"}`)
+		if got := fileProblems(doc(both...)); len(got) != 1 || got[0] != "codex:accounts" {
+			t.Errorf("%s: problems = %v, want the one Codex problem under its vendor", surface, got)
+		}
+		if d := doc(f.cfg.Claude); len(d.Problems) != 0 {
+			t.Errorf("%s: --vendor claude reported Codex's problem: %+v", surface, d.Problems)
+		}
+
+		// Claude Code's whole file unreadable: still said, under its vendor.
+		writeJSON(t, claudeState, `not json at all`)
+		got := fileProblems(doc(f.cfg.Claude))
+		if len(got) == 0 {
+			t.Errorf("%s: corrupt store invisible: a first run and an unreadable file serialize alike", surface)
+		}
+		for _, p := range got {
+			if !strings.HasPrefix(p, "claude:") {
+				t.Errorf("%s: a problem in Claude Code's file filed as %q", surface, p)
+			}
+		}
 	}
 }

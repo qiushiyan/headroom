@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -166,20 +165,11 @@ var sourceNames = map[accountstate.Source]string{
 	accountstate.SourceCache: "claude_cache",
 }
 
-// vendorBoard is one vendor's share of a reporting surface: the scope, what
-// was prepared under it, the current-target name those views were marked
-// with, and the problems of that vendor's own state file.
-type vendorBoard struct {
-	scope    config.Scope
-	set      accounts.Set
-	st       *state.Store
-	list     []*accountData
-	current  string
-	mode     string // "pinned" | "auto" | "" (unresolvable)
-	problems []state.Problem
-}
-
-func jsonDocument(boards []vendorBoard, generatedAt time.Time) ([]byte, error) {
+// jsonDocument serializes one board per vendor. Each vendor's `current` and
+// `mode` are its board's routing — the read of `.current` that marked the
+// rows — so the envelope and the per-account flags say one thing even if the
+// file is rewritten while a round is in flight.
+func jsonDocument(boards []board, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
 		// 7: `load` on every account — busy sessions and recent launches,
@@ -198,8 +188,8 @@ func jsonDocument(boards []vendorBoard, generatedAt time.Time) ([]byte, error) {
 		Accounts:    []jsonAccount{},
 	}
 	for _, b := range boards {
-		doc.Current[string(b.scope.Vendor)] = b.current
-		doc.Mode[string(b.scope.Vendor)] = b.mode
+		doc.Current[string(b.scope.Vendor)] = b.routing.Current
+		doc.Mode[string(b.scope.Vendor)] = b.routing.Mode
 		for _, p := range b.problems {
 			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.scope.Vendor), Section: p.Section, Detail: p.Detail})
 		}
@@ -208,9 +198,8 @@ func jsonDocument(boards []vendorBoard, generatedAt time.Time) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-func (doc *jsonDoc) appendAccounts(b vendorBoard, now int64) {
-	list := b.list
-	for _, d := range list {
+func (doc *jsonDoc) appendAccounts(b board, now int64) {
+	for _, d := range b.list {
 		v := d.View
 		a := jsonAccount{
 			Vendor:      string(b.scope.Vendor),
@@ -280,29 +269,22 @@ func (doc *jsonDoc) appendAccounts(b vendorBoard, now int64) {
 	}
 }
 
-// fetchBoards prepares every scope and runs one refresh round per scope, the
-// rounds side by side: each owns its own list, store and channel, so the two
-// vendors' results never meet.
-func fetchBoards(scopes []config.Scope) []vendorBoard {
-	boards := make([]vendorBoard, len(scopes))
+// fetchBoards runs one full round per scope — prepare, the claim and whatever
+// fetches it permits, then the marks — the rounds side by side: each owns its
+// own board and channel, so the two vendors' results never meet.
+func fetchBoards(scopes []config.Scope) []board {
+	boards := make([]board, len(scopes))
 	var wg sync.WaitGroup
 	for i, scope := range scopes {
 		wg.Add(1)
 		go func(i int, scope config.Scope) {
 			defer wg.Done()
-			st := state.Open(scope)
-			// current comes from prepare's snapshot: envelope and per-account
-			// flags must agree even if a concurrent select rewrites .current
-			// mid-fetch.
-			p := prepare(context.Background(), scope, st, true)
-			for u := range launchFetches(context.Background(), p.list, st) {
-				resolve(p.list[u.Index], u)
+			b := prepare(context.Background(), scope, state.Open(scope), true)
+			for u := range launchFetches(context.Background(), b.list, b.st) {
+				resolve(b.list[u.Index], u)
 			}
-			// Mode, current and the marker all come from prepare's one read of
-			// `.current`: the document must say one thing about routing even
-			// if the file is rewritten while the round is in flight.
-			boards[i] = vendorBoard{scope: scope, set: p.set, st: st, list: p.list, current: p.routing.Current, mode: p.routing.Mode, problems: p.snap.Problems()}
-			markPlacement(p.set, p.list, p.routing.Mode, st, time.Now())
+			markPlacement(b.set, b.list, b.routing.Mode, b.st, time.Now())
+			boards[i] = b
 		}(i, scope)
 	}
 	wg.Wait()

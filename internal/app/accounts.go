@@ -23,7 +23,6 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
@@ -113,7 +112,7 @@ func printBoard(scopes []config.Scope, layout render.Layout) int {
 // writeBoards prints the pages in vendor order. When two vendors are printed
 // each gets a heading line; with one there is no heading and the frame is
 // what it always was.
-func writeBoards(out io.Writer, p render.Palette, boards []vendorBoard, now int64, layout render.Layout, width int) {
+func writeBoards(out io.Writer, p render.Palette, boards []board, now int64, layout render.Layout, width int) {
 	for n, vb := range boards {
 		if len(boards) > 1 {
 			if n > 0 {
@@ -125,7 +124,7 @@ func writeBoards(out io.Writer, p render.Palette, boards []vendorBoard, now int6
 			}
 		}
 		b := p.Board(views(vb.list), now, layout, width)
-		if vb.mode == "auto" {
+		if vb.routing.Mode == "auto" {
 			fmt.Fprintln(out, p.Dim+autoHeader(layout)+p.Rst)
 			if layout == render.LayoutBlocks {
 				fmt.Fprintln(out)
@@ -151,11 +150,12 @@ func writeBoards(out io.Writer, p render.Palette, boards []vendorBoard, now int6
 // land on the page that started the round, never on whichever page happens to
 // be visible when it arrives.
 type page struct {
-	scope config.Scope
-	st    *state.Store
+	// board is the newest round's: the rows on screen, the set they were
+	// discovered as and the read of `.current` that marked them — "pinned",
+	// "auto", or "" when the file will not resolve — under the page's scope
+	// and store, which every round keeps.
+	board
 
-	set     accounts.Set // what the current list was discovered as
-	list    []*accountData
 	updates <-chan refresh.Result // non-nil while this page's round is in flight
 	sel     int
 	selName string // survives a round that reorders or re-discovers accounts
@@ -170,18 +170,14 @@ type page struct {
 	wanted    int // accounts the last round had anything to ask about
 	top       int // first body line in view when the board outgrows the terminal
 
-	// mode is what a bare launch of this page's vendor does, as the round's
-	// own read of `.current` found it: "pinned", "auto", or "" when the file
-	// will not resolve.
-	mode string
-
 	// placed is what the last round gathered for the marks, from which every
 	// frame marks again at its own time; nil until a round has marked.
 	placed *placeMark
 
-	// begin starts a round: the local half, then the claim and whatever
-	// fetches it permits. nil means the real thing; tests inject channels.
-	begin func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result)
+	// begin starts a round under the page's scope and store: the local half,
+	// then the claim and whatever fetches it permits. The board it returns
+	// replaces the page's. nil means beginRound; tests inject channels.
+	begin func(ctx context.Context, pg *page) (board, <-chan refresh.Result)
 }
 
 // picker is the interactive board: the pages, which one is visible, and the
@@ -201,7 +197,7 @@ func (ui *picker) page() *page { return ui.pages[ui.visible] }
 const ackTTL = 4 * time.Second
 
 func newPage(scope config.Scope) *page {
-	return &page{scope: scope, st: state.Open(scope)}
+	return &page{board: board{scope: scope, st: state.Open(scope)}}
 }
 
 func runPicker(scopes []config.Scope, layout render.Layout) int {
@@ -408,16 +404,10 @@ func (pg *page) receive(u refresh.Result, open bool, now time.Time) {
 func (ui *page) startRound(ctx context.Context, manual bool) {
 	begin := ui.begin
 	if begin == nil {
-		begin = func(ctx context.Context, pg *page) (accounts.Set, []*accountData, <-chan refresh.Result) {
-			p := prepare(ctx, pg.scope, pg.st, true)
-			// The mode comes from the same read of `.current` that marked
-			// the rows, so the header and the marks are one statement.
-			pg.mode = p.routing.Mode
-			return p.set, p.list, launchFetches(ctx, p.list, pg.st)
-		}
+		begin = beginRound
 	}
-	set, list, updates := begin(ctx, ui)
-	ui.set, ui.list = set, list
+	b, updates := begin(ctx, ui)
+	ui.board = b
 	ui.mark(time.Now())
 	ui.restoreSelection()
 	ui.lastLocal = time.Now()
@@ -425,12 +415,20 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	ui.manual = manual
 	// Scheduling distinguishes an idle account set from a deferred refresh.
 	ui.wanted = 0
-	for _, d := range list {
+	for _, d := range ui.list {
 		if d.Request != nil {
 			ui.wanted++
 		}
 	}
 	ui.updates = updates
+}
+
+// beginRound is a round as the picker runs it, under the picker's ctx: the
+// local half with the health probe, then the claim and whatever fetches it
+// permits, against the page's own store.
+func beginRound(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
+	b := prepare(ctx, pg.scope, pg.st, true)
+	return b, launchFetches(ctx, b.list, b.st)
 }
 
 // mark gathers what the marks are decided from and sets every row's load and,
@@ -442,7 +440,7 @@ func (ui *page) mark(now time.Time) {
 	if ui.st == nil {
 		return
 	}
-	ui.placed = markPlacement(ui.set, ui.list, ui.mode, ui.st, now)
+	ui.placed = markPlacement(ui.set, ui.list, ui.routing.Mode, ui.st, now)
 }
 
 // markAt marks the rows again from what the last round gathered, at now. A
@@ -611,7 +609,7 @@ func (ui *picker) draw() {
 			header = append(header, "")
 		}
 	}
-	if pg.mode == "auto" {
+	if pg.routing.Mode == "auto" {
 		header = append(header, "  "+ui.p.Dim+autoHeader(ui.layout)+ui.p.Rst)
 		if ui.layout == render.LayoutBlocks {
 			header = append(header, "")

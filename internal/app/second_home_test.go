@@ -466,7 +466,7 @@ func TestTheBoardShowsTheOtherHomesLoad(t *testing.T) {
 		t.Errorf("the compact board lacks the load clause:\n%s", compact)
 	}
 
-	data, err := jsonDocument([]vendorBoard{{scope: f.owner, set: set, st: st, list: list, mode: routing.Mode}}, now)
+	data, err := jsonDocument([]board{{scope: f.owner, set: set, st: st, list: list, routing: routing}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,8 +561,8 @@ func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
 	f.busy(filepath.Join(f.steward.AccountsRoot, "a@x.com"), 951)
 
 	boards := fetchBoards([]config.Scope{f.owner})
-	if boards[0].mode != "pinned" {
-		t.Fatalf("mode %q", boards[0].mode)
+	if boards[0].routing.Mode != "pinned" {
+		t.Fatalf("mode %q", boards[0].routing.Mode)
 	}
 	var out strings.Builder
 	writeBoards(&out, render.NewPalette(false), boards, time.Now().Unix(), render.LayoutBlocks, 0)

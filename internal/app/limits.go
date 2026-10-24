@@ -59,15 +59,13 @@ func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
 	// inside them: the same email can be an account of both vendors, and then
 	// both rows answer, each under its own "vendor".
 	now := time.Now()
-	var boards []vendorBoard
+	var boards []board
 	var selectErr error
 	matched := 0
 	for _, scope := range scopes {
-		st := state.Open(scope)
-		disk := accountstate.Read(scope, st, now)
-		b := vendorBoard{scope: scope, set: disk.Set, st: st, list: accountList(disk.Accounts), current: disk.Current, mode: disk.Mode, problems: disk.Store.Problems()}
+		b := diskBoard(scope, now)
 		if accountSet {
-			a, err := disk.Set.Select(account)
+			a, err := b.set.Select(account)
 			if err != nil {
 				if selectErr == nil {
 					selectErr = err
@@ -95,10 +93,21 @@ func runLimitsTo(w io.Writer, scopes []config.Scope, args []string) int {
 	return 0
 }
 
+// diskBoard is a vendor's board read from disk alone, through accountstate:
+// discovery, `.current`, the newest stored observation and the store's
+// problems. Health is unprobed, no credential is read, and no row carries a
+// candidate, so the document built from it cannot spend a request.
+func diskBoard(scope config.Scope, now time.Time) board {
+	st := state.Open(scope)
+	disk := accountstate.Read(scope, st, now)
+	return board{scope: scope, st: st, set: disk.Set, list: accountList(disk.Accounts), routing: disk.Routing, problems: disk.Store.Problems()}
+}
+
+// accountList holds disk facts as rows, none of them carrying a candidate.
 func accountList(facts []accountstate.Account) []*accountData {
-	list := make([]*accountData, 0, len(facts))
-	for _, a := range facts {
-		list = append(list, &accountData{Acct: a.Acct, Key: a.Key, View: a.View})
+	list := make([]*accountData, len(facts))
+	for i, a := range facts {
+		list[i] = &accountData{Account: a}
 	}
 	return list
 }

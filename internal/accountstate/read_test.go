@@ -58,7 +58,7 @@ func TestReadDiskFacts(t *testing.T) {
 
 	t.Setenv("PATH", t.TempDir())
 	disk := Read(cfg, st, now)
-	list, current := disk.Accounts, disk.Current
+	list, current := disk.Accounts, disk.Routing.Current
 	if current != "b@x.com" {
 		t.Errorf("current = %q", current)
 	}

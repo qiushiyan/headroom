@@ -413,11 +413,34 @@ func printUsage(w io.Writer) {
 
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
+// accountData is one account as a surface holds it: the facts accountstate
+// assembled from disk — the account, its ledger key, its view — and, beside
+// them, the candidate a live request would be made from. Only prepare's
+// access step sets Request; a row read from disk alone carries none, so
+// nothing built from it can spend.
 type accountData struct {
-	Acct    accounts.Account
-	Key     state.Key
-	View    accountstate.Facts
+	accountstate.Account
 	Request *refresh.Candidate
+}
+
+// board is one vendor's round, everything a surface reports about that
+// vendor carried together: the scope and store it ran under, the set it
+// discovered, the list built from that set, the one read of `.current` that
+// marked the list, and the problems of the vendor's own state file as the
+// round read it. The picker's page, the one-shot print, --json and limits
+// each hold one per vendor, so mode, current and the marks cannot come from
+// two reads, and nothing is copied out of one carrier into the next.
+//
+// The set travels with the list built from it: selection, recording the
+// current account and the known-extra-dir question are asked of the set,
+// never of one reconstructed from a scope and a list.
+type board struct {
+	scope    config.Scope
+	st       *state.Store
+	set      accounts.Set
+	list     []*accountData
+	routing  accounts.Routing // one read of `.current`: mode and current together
+	problems []state.Problem  // the store's own, as this round loaded it
 }
 
 // sources are the three inputs prepare reads about each account, injected so
@@ -429,22 +452,11 @@ type sources struct {
 	now     time.Time
 }
 
-// prepared is one local half of a round. The discovered set stays with the
-// list built from it: selection, recording the current account and the
-// known-extra-dir question are asked of the set, never of one reconstructed
-// from a scope and a list.
-type prepared struct {
-	set     accounts.Set
-	list    []*accountData
-	routing accounts.Routing // one read of `.current`: mode and current together
-	snap    state.Snapshot
-}
-
 // prepare is the local half of a round: it walks the accounts and assembles
 // what is known about each one before any request goes out — whether Claude
 // Code considers it usable, the newest quota figures already on disk, and
 // either a candidate for a live refresh or the attempt state that blocks one.
-// Mode, current and the marks all come from its one read of `.current`.
+// The board it returns carries its one read of `.current` and of the store.
 //
 // probe says whether Claude Code's own health probe runs (`claude auth
 // status` per account, side by side). Without it health falls back to
@@ -455,7 +467,7 @@ type prepared struct {
 //
 // ctx reaches the credential reads, which are where a round can stall: the
 // picker's cancel and the detached refresh's signals stop them there.
-func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe bool) prepared {
+func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe bool) board {
 	set := accounts.Discover(scope)
 	snap := st.Load()
 	src := sources{now: time.Now()}
@@ -472,7 +484,7 @@ func prepare(ctx context.Context, scope config.Scope, st *state.Store, probe boo
 		}
 	}
 	list, routing := prepareWith(set, snap, src)
-	return prepared{set, list, routing, snap}
+	return board{scope: scope, st: st, set: set, list: list, routing: routing, problems: snap.Problems()}
 }
 
 // queryHealthParallel runs `claude auth status` for every account at once and
