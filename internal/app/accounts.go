@@ -167,7 +167,6 @@ type page struct {
 	manual    bool      // current round was asked for by hand: acknowledge on completion
 	ack       string    // transient acknowledgement after a manual round
 	ackUntil  time.Time
-	wanted    int // accounts the last round had anything to ask about
 	top       int // first body line in view when the board outgrows the terminal
 
 	// placed is what the last round gathered for the marks, from which every
@@ -413,13 +412,6 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	ui.lastLocal = time.Now()
 	ui.armed = false
 	ui.manual = manual
-	// Scheduling distinguishes an idle account set from a deferred refresh.
-	ui.wanted = 0
-	for _, d := range ui.list {
-		if d.Request != nil {
-			ui.wanted++
-		}
-	}
 	ui.updates = updates
 }
 
@@ -437,9 +429,6 @@ func beginRound(ctx context.Context, pg *page) (board, <-chan refresh.Result) {
 // and again when its results have landed. The mode is the round's own reading
 // of `.current`, never a second one.
 func (ui *page) mark(now time.Time) {
-	if ui.st == nil {
-		return
-	}
 	ui.placed = markPlacement(ui.set, ui.list, ui.routing.Mode, ui.st, now)
 }
 
@@ -484,7 +473,9 @@ func (ui *page) schedule() {
 	now := time.Now()
 	snap := ui.st.Load()
 	var next time.Time
+	asking := false // the round had anything to ask about
 	for _, d := range ui.list {
+		asking = asking || d.Request != nil
 		if e := snap.NextEligible(d.Key, now); e.After(now) && (next.IsZero() || e.Before(next)) {
 			next = e
 		}
@@ -504,7 +495,7 @@ func (ui *page) schedule() {
 	// presence window, which is measured from the same instant and would
 	// otherwise have expired by the time the round came due — a poll scheduled
 	// past its own gate never fires at all.
-	if ui.wanted == 0 {
+	if !asking {
 		next = now.Add(ui.scope.RequestSpacing())
 	}
 	ui.nextAt = next
@@ -545,18 +536,11 @@ func (ui *page) due(lastKey time.Time) bool {
 // round fires the moment the floor passes, unattended included.
 func (ui *page) refresh(ctx context.Context) {
 	ui.ack, ui.ackUntil = "", time.Time{} // a new ask supersedes the old answer
-	if !ui.refreshNow(time.Now()) {
+	if ui.updates != nil || time.Now().Before(ui.lastLocal.Add(refreshFloor)) {
 		ui.armed = true
 		return
 	}
 	ui.startRound(ctx, true)
-}
-
-// refreshNow reports whether `r` may run a round this instant, as opposed to
-// arming one. Split from refresh so the dispatch is testable without running
-// prepare's subprocess spawns.
-func (ui *page) refreshNow(now time.Time) bool {
-	return ui.updates == nil && !now.Before(ui.lastLocal.Add(refreshFloor))
 }
 
 func (ui *page) move(delta int) {
