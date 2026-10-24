@@ -35,43 +35,12 @@ func storeFixture(t *testing.T) (string, func(string, string, string, time.Time)
 		}
 	}
 }
-func TestOwnersGCReadsStoreAtWriteTime(t *testing.T) {
-	projects, write := storeFixture(t)
-	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
-	live := func() (map[string]bool, bool) { return sessions.TranscriptIDs(projects) }
-	now := time.Now()
-	write("-tmp-p", "s-old.jsonl", "", now)
 
-	// A re-home for a session that has since lost its transcript…
-	if err := rehome(st, "s-gone", "a@x.com", now.Add(-time.Hour), live); err != nil {
-		t.Fatal(err)
-	}
-	// …and one for a session whose transcript does not exist *yet*: a first
-	// turn's id is known before the vendor has written a line of it.
-	if err := rehome(st, "s-starting", "d@x.com", now.Add(-time.Minute), live); err != nil {
-		t.Fatal(err)
-	}
-	// …then s-new appears (created after any earlier listing), is re-homed…
-	write("-tmp-p", "s-new.jsonl", "", now)
-	if err := rehome(st, "s-new", "b@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	// …and a further write GCs: s-gone (no transcript) goes, s-new stays.
-	if err := rehome(st, "s-old", "c@x.com", now, live); err != nil {
-		t.Fatal(err)
-	}
-	m := st.Load().Owners()
-	if _, ok := m["s-gone"]; ok {
-		t.Error("transcriptless record must be swept")
-	}
-	if m["s-new"].Account != "b@x.com" || m["s-old"].Account != "c@x.com" {
-		t.Errorf("live records must survive every write: %v", m)
-	}
-	if m["s-starting"].Account != "d@x.com" {
-		t.Errorf("a record younger than its transcript must not be swept as an orphan: %v", m)
-	}
-}
-
+// TranscriptIDs is the sweep's predicate, so a walk that failed anywhere must
+// conclude nothing: a partial set would delete every re-home whose transcript
+// sits in the dir it could not read. The sweep itself — gone ones go, young
+// and present ones stay — is owned by app's
+// TestALaunchThatRecordsASessionSweepsTheGoneOnes, through a real launch.
 func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 	projects, write := storeFixture(t)
 	st := state.Open(config.Scope{AccountsRoot: t.TempDir()})
@@ -79,7 +48,9 @@ func TestOwnersGCSkipsOnPartialEnumeration(t *testing.T) {
 	now := time.Now()
 	write("-p-hidden", "s-hidden.jsonl", "", now)
 	write("-p-open", "s-open.jsonl", "", now)
-	if err := rehome(st, "s-hidden", "a@x.com", now, live); err != nil {
+	// Old enough that the sweep's grace for a transcript not yet written does
+	// not cover it: only the refusal to conclude from a partial walk keeps it.
+	if err := rehome(st, "s-hidden", "a@x.com", now.Add(-time.Hour), live); err != nil {
 		t.Fatal(err)
 	}
 	hidden := filepath.Join(projects, "-p-hidden")

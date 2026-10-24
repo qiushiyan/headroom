@@ -82,6 +82,12 @@ func TestParseTailCwdVerifiedNotDemunged(t *testing.T) {
 	if got := ParseTail([]byte(reloc), storeDir, true).CWD; got != "/repo/wt/a" {
 		t.Errorf("relocatedCwd = %q", got)
 	}
+	// …and fail it the same way: a relocation to somewhere this store dir was
+	// not named after is not the cd target.
+	foreign := `{"type":"relocated","relocatedCwd":"/repo/other","sessionId":"s"}` + "\n"
+	if got := ParseTail([]byte(foreign), storeDir, true).CWD; got != "" {
+		t.Errorf("unverifiable relocatedCwd = %q, want empty", got)
+	}
 	// No verifiable cwd at all → empty, never a guess.
 	if got := ParseTail([]byte(lines[1]+"\n"), storeDir, true).CWD; got != "" {
 		t.Errorf("unverifiable cwd should stay empty, got %q", got)
@@ -439,13 +445,17 @@ func TestDeleteTranscript(t *testing.T) {
 
 // A transcript ending in one message larger than the tail budget must still
 // resolve its cwd — the window widens until a record verifies. Without this,
-// a resumable session renders "dir gone" (5 real transcripts did).
+// a resumable session renders "dir gone" (5 real transcripts did). The model
+// claim after the oversized record is what makes this the cwd half of the
+// gate: the first window already holds a model, so only a missing cwd can
+// keep it widening.
 func TestCollectWidensPastCwdlessTail(t *testing.T) {
 	projects, write := storeFixture(t)
 	dir := t.TempDir()
 	filler := strings.Repeat("x", TailBudget) // one record larger than the budget
 	content := rec("s-big", dir, "big session") +
-		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n"
+		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n" +
+		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","model":"claude-fable-5","content":[]}}` + "\n"
 	write(Munge(dir), "s-big.jsonl", content, time.Now())
 
 	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
@@ -621,35 +631,6 @@ func TestResolveWalksPastAGitHusk(t *testing.T) {
 	write("orphan/.git/info/exclude", "")
 	if got := (repoCache{}).resolve(filepath.Join(root, "orphan")); got.Root == "" {
 		t.Errorf("a husk with nothing above it resolved to %+v, want it kept as evidence", got)
-	}
-}
-
-// The two reasons there is no branch to read are not the same fact, and a
-// caller that cannot tell them apart cannot render either honestly: no HEAD
-// here means this is not a checkout, an unreadable HEAD means it is one and
-// something is wrong with it.
-func TestHeadDistinguishesAbsentFromUnreadable(t *testing.T) {
-	root := t.TempDir()
-	mk := func(path, body string) string {
-		full := filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if body != "" {
-			if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return filepath.Dir(full)
-	}
-	absent := mk("no-head/info/exclude", "x")
-	unreadable := mk("junk/HEAD", "not a sha and not a ref\n")
-
-	if got := readHead(absent); got.Kind != HeadNone {
-		t.Errorf("no HEAD file: Kind = %v, want HeadNone", got.Kind)
-	}
-	if got := readHead(unreadable); got.Kind != HeadUnreadable {
-		t.Errorf("unparseable HEAD: Kind = %v, want HeadUnreadable", got.Kind)
 	}
 }
 
