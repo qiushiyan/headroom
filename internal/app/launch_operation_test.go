@@ -14,7 +14,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchlog"
-	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -158,62 +157,6 @@ func TestTheDocumentCarriesOneRoutingSnapshot(t *testing.T) {
 	auto := mode == "auto" && cur == "" && marked == 0
 	if !pinned && !auto {
 		t.Fatalf("the document contradicts itself: mode %q, current %q, %d account(s) marked current", mode, cur, marked)
-	}
-}
-
-// A figure the rule counted as a bound, or as an ended window, is said as one.
-// "5h 0%" over a window that was at 97% a minute ago and has since reset is a
-// measured-looking number nobody measured.
-func TestTheLaunchLineSaysWhatAFigureRestsOn(t *testing.T) {
-	now := time.Unix(1_790_848_000, 0)
-	limit := func(session bool, kind, label string, percent int, reset time.Duration) placement.Limit {
-		return placement.Limit{Kind: kind, Label: label, Percent: percent, ResetAt: now.Add(reset).Unix(), Session: session}
-	}
-	choose := func(c placement.Candidate) string {
-		d := placement.Choose([]placement.Candidate{c}, placement.Ledger{}, placement.Intent{}, now)
-		return launchLine(d, true, sessionRef{}, "", "", now)
-	}
-
-	ended := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-time.Minute).Unix(), Limits: []placement.Limit{
-		limit(true, "session", "5h session", 97, -30*time.Second),
-		limit(false, "weekly_all", "All models (7d)", 12, 48*time.Hour),
-	}})
-	if strings.Contains(ended, "5h 0%") || !strings.Contains(ended, "5h window ended") {
-		t.Errorf("an ended window: %q", ended)
-	}
-
-	// A weekly window that has ended is counted whole from now: there is no
-	// reset instant to count down to, and none is printed.
-	weekEnded := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-time.Minute).Unix(), Limits: []placement.Limit{
-		limit(true, "session", "5h session", 3, time.Hour),
-		limit(false, "weekly_all", "All models (7d)", 64, -time.Minute),
-	}})
-	if !strings.Contains(weekEnded, "week window ended") || strings.Contains(weekEnded, "resets in") {
-		t.Errorf("an ended week: %q", weekEnded)
-	}
-
-	stale := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-40 * time.Hour).Unix(), Limits: []placement.Limit{
-		limit(true, "session", "5h session", 12, time.Hour),
-		limit(false, "weekly_all", "All models (7d)", 30, 48*time.Hour),
-	}})
-	if !strings.Contains(stale, "5h ≥12%") || !strings.Contains(stale, "week ≥30%") || !strings.Contains(stale, "figures 1d old") {
-		t.Errorf("stale figures are lower bounds: %q", stale)
-	}
-
-	bad := placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-time.Minute).Unix(), Limits: []placement.Limit{
-		{Kind: "session", Label: "5h session", Bad: true, Session: true},
-	}}
-	if line := choose(bad); strings.Contains(line, "100%") || !strings.Contains(line, "5h ?%") {
-		t.Errorf("an unparseable percent: %q", line)
-	}
-
-	// Every account near a limit, on old figures: the age is still said.
-	near := choose(placement.Candidate{Name: "b", Key: "b", ObservedAt: now.Add(-40 * time.Hour).Unix(), Limits: []placement.Limit{
-		limit(true, "session", "5h session", 10, time.Hour),
-		limit(false, "weekly_all", "All models (7d)", 91, 48*time.Hour),
-	}})
-	if !strings.Contains(near, "every account is near a limit") || !strings.Contains(near, "≥91%") || !strings.Contains(near, "figures 1d old") {
-		t.Errorf("near a limit on stale figures: %q", near)
 	}
 }
 

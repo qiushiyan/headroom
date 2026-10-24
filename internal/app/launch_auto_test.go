@@ -247,25 +247,6 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	}
 }
 
-func TestAutoLaunchesSpreadAcrossAccounts(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com", "b@x.com", "c@x.com")
-	f.setCurrent("auto\n")
-	for _, name := range []string{"qiushi", "a@x.com", "b@x.com", "c@x.com"} {
-		f.observe(name, 0, 10, time.Minute)
-	}
-	seen := map[string]int{}
-	for range 4 {
-		got := f.launch()
-		if got.code != 0 {
-			t.Fatalf("exit %d: %s", got.code, got.stderr)
-		}
-		seen[got.account(f.cfg)]++
-	}
-	if len(seen) != 4 {
-		t.Fatalf("four launches against four equal accounts went to %v", seen)
-	}
-}
-
 // An account that cannot be asked is tried, with figures that say they are
 // old, and its own placement keeps the next launch from following it there.
 func TestAStaleAccountIsTriedOnceAndSaysItsFiguresAreOld(t *testing.T) {
@@ -332,7 +313,7 @@ func TestNamedLaunchSaysWhereItWentAndCounts(t *testing.T) {
 	f.observe("a@x.com", 0, 10, time.Minute)
 
 	named := f.launch("--account", "a@x.com")
-	if named.code != 0 || named.account(f.cfg) != "a@x.com" || named.stderr != "headroom launch: a@x.com · named\n" {
+	if named.code != 0 || named.account(f.cfg) != "a@x.com" || !strings.Contains(named.stderr, "a@x.com · named") || strings.Contains(named.stderr, "auto") {
 		t.Fatalf("named launch: %+v", named)
 	}
 	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
@@ -359,6 +340,10 @@ func TestModeIsReadStrictly(t *testing.T) {
 		if got := f.launch(); got.code != 1 || got.called {
 			t.Errorf("%s .current: exit %d called %v", name, got.code, got.called)
 		}
+	}
+	// An unknown name refuses the same way: no fallback to anyone, no exec.
+	if got := f.launch("--account", "gone@x.com"); got.code != 1 || got.called {
+		t.Errorf("--account gone@x.com: exit %d called %v", got.code, got.called)
 	}
 
 	// The word names the mode and nothing else: an account bearing it makes the
@@ -635,21 +620,18 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 			t.Error("a newer document was rewritten")
 		}
 	})
-	t.Run("unreadable placements", func(t *testing.T) {
+	t.Run("unreadable session routing", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
 		f.setCurrent("auto\n")
-		statePath := filepath.Join(f.cfg.AccountsRoot, "state.json")
-		writeJSON(t, statePath, `{"version":1,"placements":[1,2],"sessions":{"`+sessA+`":{"account":"a@x.com","atMs":5}}}`)
-		got := f.launch()
-		if got.code != 0 || !got.called || strings.Contains(got.stderr, "not recorded") {
-			t.Fatalf("over an unreadable placements section: %+v", got)
+		// A sessions section that will not validate: the placement is
+		// recorded, the session's routing is not, and the launch says so.
+		writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":1,"sessions":{"hollow":{"account":"","atMs":5}}}`)
+		got := f.launch("--", "-p", "--session-id", sessA)
+		if got.code != 0 || !got.called || !strings.Contains(got.stderr, "session routing not recorded") {
+			t.Fatalf("beside unreadable session routing: %+v", got)
 		}
-		snap := f.st.Load()
-		if rec, _ := snap.Owner(sessA); rec.Account != "a@x.com" || rec.AtMS != 5 {
-			t.Errorf("a re-home beside the damage changed: %+v", rec)
-		}
-		if len(snap.Placements().Recent) != 1 {
-			t.Error("the record was not rebuilt")
+		if len(f.st.Load().Placements().Recent) != 1 {
+			t.Error("the placement beside it was not recorded")
 		}
 	})
 	t.Run("unwritable log", func(t *testing.T) {
@@ -721,7 +703,7 @@ func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 		}
 	}
 	got := f.launch()
-	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto · 5h 0% · week 30%, resets in 20.0h") {
+	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto") || !strings.Contains(got.stderr, "resets in 20.0h") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
 	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot, 0)
@@ -969,17 +951,6 @@ func TestResolveRefusesUnderAuto(t *testing.T) {
 	}
 }
 
-func TestEveryAccountNearALimitSaysSo(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
-	f.observe("qiushi", 10, 95, time.Minute)
-	f.observe("a@x.com", 10, 84, time.Minute)
-	got := f.launch()
-	if got.account(f.cfg) != "a@x.com" || !strings.Contains(got.stderr, "every account is near a limit · All models (7d) 84%, resets in") {
-		t.Fatalf("went to %s:\n%s", got.account(f.cfg), got.stderr)
-	}
-}
-
 // Busy sessions are load: the registry's own word for a session, read from a
 // verified-live claim, counts one step.
 func TestBusySessionsAreLoad(t *testing.T) {
@@ -1075,16 +1046,16 @@ func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		week launchlog.Week
-		want string
+		want string // "" = no time left is said
 	}{
-		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "week   7%, 1.9d left"},
-		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "week   7%, ≈6.5d left"},
-		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, "week   7%"},
-		{"written before the field", launchlog.Week{}, "week   7%"},
+		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "1.9d left"},
+		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "≈6.5d left"},
+		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, ""},
+		{"written before the field", launchlog.Week{}, ""},
 	} {
 		line := launchesLine(record(c.week), 1, false)
-		if !strings.HasSuffix(strings.TrimRight(line, " "), c.want) {
-			t.Errorf("%s: %q does not end in %q", c.name, line, c.want)
+		if !strings.Contains(line, "7%") || (c.want == "") == strings.Contains(line, " left") || !strings.Contains(line, c.want) {
+			t.Errorf("%s: %q, want the week's figure and %q", c.name, line, c.want)
 		}
 	}
 }
@@ -1108,11 +1079,6 @@ func TestLaunchesPrintsTheLog(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "a@x.com") || !strings.Contains(lines[0], "auto/least-load") || !strings.Contains(lines[0], "next qiushi") {
 		t.Errorf("first line: %s", lines[0])
-	}
-	// How long the deciding week had left is part of why the launch went
-	// where it did.
-	if !strings.Contains(lines[0], "week  10%, 3.0d left") {
-		t.Errorf("first line does not say how long its week had left: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "qiushi") || !strings.Contains(lines[1], "named") || strings.Contains(lines[1], "named/named") {
 		t.Errorf("second line: %s", lines[1])

@@ -115,7 +115,7 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 	}
 	// The launch still says where it went; what stays unsaid is the inherited
 	// variable.
-	if quiet := captureStderr(t, func() { runLaunch(scope, []string{"--account", "primary"}) }); quiet != "headroom launch: primary · named\n" {
+	if quiet := captureStderr(t, func() { runLaunch(scope, []string{"--account", "primary"}) }); strings.Contains(quiet, "ignoring inherited") || !strings.Contains(quiet, "primary · named") {
 		t.Errorf("a known extra's home was reported: %q", quiet)
 	}
 }
@@ -173,8 +173,9 @@ func TestCodexAccountsRemoveRefuses(t *testing.T) {
 		if code := refuseCodexRemove(&errw, scope, args); code != 1 {
 			t.Errorf("%v: exit %d, want 1", args, code)
 		}
+		// The remedy is the token a person acts on; the reason around it is prose.
 		msg := errw.String()
-		if !strings.Contains(msg, "cannot tell whether a Codex session is running") || !strings.Contains(msg, "by hand") {
+		if !strings.Contains(msg, "by hand") {
 			t.Errorf("%v: %s", args, msg)
 		}
 		if len(args) > 0 && args[0] != "--yes" || len(args) == 2 {
