@@ -588,12 +588,9 @@ func checkRouting(set accounts.Set, environ []string,
 	// the health probe had seeded a skeleton .claude.json inside). Discovery
 	// skips them; this line is where a stranded one is named instead of
 	// silently vanishing from every surface.
-	if entries, err := os.ReadDir(cfg.AccountsRoot); err == nil {
-		for _, e := range entries {
-			if e.IsDir() && accounts.LockArtifact(e.Name()) {
-				chk(true, fmt.Sprintf("root: %s is vendor lock debris, not an account (skipped by discovery)", e.Name()),
-					"")
-			}
+	if debris, err := accounts.LockDebris(cfg); err == nil {
+		for _, name := range debris {
+			chk(true, fmt.Sprintf("root: %s is vendor lock debris, not an account (skipped by discovery)", name), "")
 		}
 	}
 

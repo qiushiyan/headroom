@@ -105,20 +105,11 @@ func Discover(cfg config.Scope) Set {
 
 	if data, err := os.ReadFile(cfg.OrderFile()); err == nil {
 		for line := range strings.SplitSeq(string(data), "\n") {
-			line, _, _ = strings.Cut(line, "#")
-			line = strings.Map(func(r rune) rune {
-				if unicode.IsSpace(r) {
-					return -1
-				}
-				return r
-			}, line)
-			if line == "" {
+			name := orderEntry(line)
+			if name == "" || LockArtifact(name) {
 				continue
 			}
-			if LockArtifact(line) {
-				continue
-			}
-			d := filepath.Join(cfg.AccountsRoot, line)
+			d := filepath.Join(cfg.AccountsRoot, name)
 			if isDir(d) && !seen[d] {
 				dirs = append(dirs, d)
 				seen[d] = true
@@ -157,6 +148,20 @@ func Discover(cfg config.Scope) Set {
 	return Set{Scope: cfg, Accounts: accts}
 }
 
+// orderEntry is the account name one `.order` line lists, "" for none: a `#`
+// starts a comment, and whitespace anywhere is not part of a name. Discovery
+// and removal's scrub both read the file through it, so the line discovery
+// honours is the line removal takes out.
+func orderEntry(line string) string {
+	line, _, _ = strings.Cut(line, "#")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, line)
+}
+
 // readIdentity is the first of the three places a vendor document is read:
 // who is logged in here, from decoded fields of the vendor's own file.
 func (a *Account) readIdentity() {
@@ -184,6 +189,27 @@ func (a *Account) readIdentity() {
 // `.lock`; a dir named that way is debris, skipped here and named by `check`
 // so it disappears from the board without disappearing from sight.
 func LockArtifact(name string) bool { return strings.HasSuffix(name, ".lock") }
+
+// LockDebris names the lock debris directories in the scope's accounts root:
+// what discovery skips, `check` names and `accounts remove` offers. An absent
+// root holds none; one that cannot be read is the error, so "no debris" is
+// never said over a root that was merely unreadable.
+func LockDebris(s config.Scope) ([]string, error) {
+	entries, err := os.ReadDir(s.AccountsRoot)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() && LockArtifact(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
 
 // isDir follows symlinks, like the shell glob the launchers use.
 func isDir(path string) bool {
@@ -317,12 +343,10 @@ func PrimaryName(cfg config.Scope, email string) string {
 
 // Launcher is the command advertised for an account: cfg.LauncherFormat
 // applied to the guaranteed identity — the account's full name, never a
-// short local-part alias. Short aliases (x-yan) are a shell convenience
-// headroom neither knows nor advertises: the old shared naming policy
-// ("keep the two in sync") was a cross-repo contract that could drift, and
-// the board promising a command that resolves is worth more than promising
-// the shortest one. By default that command is `headroom launch --account
-// <name>`, which exists on every install; a shell integration re-spells it.
+// short alias a shell may define, which headroom neither knows nor
+// advertises: the board promises a command that resolves. By default that
+// command is `headroom launch --account <name>`, which exists on every
+// install; a shell integration re-spells it.
 func Launcher(a Account) string {
 	if a.Scope.LauncherFormat == "" {
 		return EngineLauncher(a)

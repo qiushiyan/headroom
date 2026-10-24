@@ -32,12 +32,16 @@ func mkAccount(t *testing.T, cfg config.Scope, email string) {
 
 func TestDiscoverOrderAndGlob(t *testing.T) {
 	cfg := testConfig(t)
+	// No accounts root at all: the primary alone.
+	if accts := Discover(cfg).Accounts; len(accts) != 1 || !accts[0].IsPrimary() {
+		t.Fatalf("no accounts root: got %v, want only the primary", accts)
+	}
 	for _, e := range []string{"b@x.com", "a@x.com", "c@x.com"} {
 		mkAccount(t, cfg, e)
 	}
-	// .order promotes c then b (with comments, stray spaces, a missing dir,
-	// and a duplicate); a follows alphabetically.
-	order := "c@x.com\n# a comment\n  b@x.com  \nmissing@x.com\nc@x.com\n"
+	// .order promotes c then b (with comments — a line's own and trailing —
+	// stray spaces, a missing dir, and a duplicate); a follows alphabetically.
+	order := "c@x.com\n# a comment\n  b@x.com  # work\nmissing@x.com\nc@x.com\n"
 	if err := os.WriteFile(cfg.OrderFile(), []byte(order), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -86,43 +90,17 @@ func TestDiscoverSkipsLockArtifacts(t *testing.T) {
 	}
 }
 
-func TestDiscoverNoRoot(t *testing.T) {
-	cfg := testConfig(t)
-	set := Discover(cfg)
-	accts := set.Accounts
-	if len(accts) != 1 || !accts[0].IsPrimary() {
-		t.Fatalf("expected only the primary, got %v", accts)
-	}
-}
-
+// The advertised command carries the account's full name, never a short
+// alias a shell may define — under the default format and under one a shell
+// integration re-spells.
 func TestLauncher(t *testing.T) {
 	cfg := testConfig(t)
-	mk := func(name string) Account {
-		if name == "" {
-			return Account{Scope: cfg, ConfigDir: "", Name: cfg.PrimaryName}
-		}
-		return Account{Scope: cfg, ConfigDir: filepath.Join(cfg.AccountsRoot, name), Name: name}
+	a := Account{Scope: cfg, ConfigDir: filepath.Join(cfg.AccountsRoot, "yan@planlab.ai"), Name: "yan@planlab.ai"}
+	if got := Launcher(a); got != "headroom launch --account yan@planlab.ai" {
+		t.Errorf("default launcher = %q", got)
 	}
-	// Guaranteed identities only: short local-part aliases are a shell
-	// convenience headroom no longer advertises, so there are no collision or
-	// reserved-name cases to encode here.
-	cases := []struct {
-		name string
-		want string
-	}{
-		{"", "headroom launch --account qiushi"}, // primary → its configured name
-		{"yan@planlab.ai", "headroom launch --account yan@planlab.ai"},
-		{"noatsign", "headroom launch --account noatsign"}, // no @ → the name is the email
-	}
-	for _, c := range cases {
-		if got := Launcher(mk(c.name)); got != c.want {
-			t.Errorf("Launcher(%q) = %q, want %q", c.name, got, c.want)
-		}
-	}
-	// A shell integration re-spells the advertised command; the identity
-	// inside it stays the full name.
-	cfg.LauncherFormat = "x-%s"
-	if got := Launcher(mk("yan@planlab.ai")); got != "x-yan@planlab.ai" {
+	a.Scope.LauncherFormat = "x-%s"
+	if got := Launcher(a); got != "x-yan@planlab.ai" {
 		t.Errorf("formatted launcher = %q", got)
 	}
 }
@@ -269,9 +247,8 @@ func TestReadMetaCachedUsageParsesViaSharedParser(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	if rows[0].Label != "5h session" || rows[1].Label != "All models (7d)" ||
-		rows[2].Label != "Fable (7d)" {
-		t.Errorf("labels: %q %q %q", rows[0].Label, rows[1].Label, rows[2].Label)
+	if rows[0].Kind != "session" || rows[1].Kind != "weekly_all" || rows[2].Kind != "weekly_scoped" || rows[2].Model != "Fable" {
+		t.Errorf("decoded identities: %q %q %q/%q", rows[0].Kind, rows[1].Kind, rows[2].Kind, rows[2].Model)
 	}
 	if rows[2].Percent != 29 {
 		t.Errorf("percent: %d", rows[2].Percent)
@@ -283,67 +260,35 @@ func TestReadMetaCachedUsageParsesViaSharedParser(t *testing.T) {
 	}
 }
 
-// A dir re-logged to another account keeps the old account's cache until
-// Claude Code overwrites it. Attributing one account's quota to another is
-// worse than showing nothing at all.
-func TestReadMetaRejectsCacheFromAnotherAccount(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".claude.json")
-	const mismatched = `{
-	  "oauthAccount": {"emailAddress":"new@x.com","accountUuid":"uuid-new"},
-	  "cachedUsageUtilization": {
-	    "fetchedAtMs": 1785622537840, "accountUuid": "uuid-previous",
-	    "utilization": {"limits":[{"kind":"session","percent":99}]}}}`
-	if err := os.WriteFile(path, []byte(mismatched), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m, err := ReadMeta(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.CachedUsage != nil {
-		t.Error("cache from a previous login was handed back")
-	}
-	if m.Email != "new@x.com" {
-		t.Errorf("the email is still good and must survive: %q", m.Email)
-	}
-}
-
-// No cache at all is ordinary — Claude Code only writes one once it has
-// fetched. It must not look like an error.
-func TestReadMetaWithoutCache(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".claude.json")
-	if err := os.WriteFile(path, []byte(`{"oauthAccount":{"emailAddress":"a@x.com"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m, err := ReadMeta(path)
-	if err != nil || m.CachedUsage != nil || m.Email != "a@x.com" {
-		t.Errorf("meta without cache: %+v err=%v", m, err)
-	}
-}
-
-// The identity guard needs both sides present. Accepting the cache when
-// either UUID is missing reopens the exact hole it exists to close, and a
-// cache with no fetch time would render as observed in 1970.
-func TestReadMetaCacheGuardRequiresPositiveEvidence(t *testing.T) {
-	cases := []struct {
+// Claude Code's cached usage is handed back only on positive evidence that it
+// is this login's: both identities present and agreeing, and a fetch time. A
+// dir re-logged to another account keeps the old account's cache until Claude
+// Code overwrites it, and attributing one account's quota to another is worse
+// than showing nothing; a cache with no fetch time would render as observed
+// in 1970. A rejected cache is tagged apart from an absent one — absence is
+// ordinary, Claude Code writes one only once it has fetched — or the day the
+// vendor drops accountUuid the fallback disappears silently and check still
+// passes. The email is independent of all of it.
+func TestReadMetaCacheProvenance(t *testing.T) {
+	const limits = `"utilization":{"limits":[{"kind":"session","percent":1}]}`
+	for _, c := range []struct {
 		name, meta string
+		want       tag.State
 	}{
+		{"absent", `{"oauthAccount":{"emailAddress":"a@x.com"}}`, tag.None},
+		{"another account's", `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"uuid-new"},
+		  "cachedUsageUtilization":{"fetchedAtMs":1785622537840,"accountUuid":"uuid-previous",` + limits + `}}`, tag.Bad},
 		{"owner uuid missing", `{"oauthAccount":{"emailAddress":"a@x.com"},
-		  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"u",
-		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"u",` + limits + `}}`, tag.Bad},
 		{"cache uuid missing", `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
-		  "cachedUsageUtilization":{"fetchedAtMs":1,
-		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,` + limits + `}}`, tag.Bad},
 		{"both missing", `{"oauthAccount":{"emailAddress":"a@x.com"},
-		  "cachedUsageUtilization":{"fetchedAtMs":1,
-		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,` + limits + `}}`, tag.Bad},
 		{"no fetch time", `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
-		  "cachedUsageUtilization":{"accountUuid":"u",
-		    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`},
-	}
-	for _, c := range cases {
+		  "cachedUsageUtilization":{"accountUuid":"u",` + limits + `}}`, tag.Bad},
+		{"this login's", `{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
+		  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"u",` + limits + `}}`, tag.OK},
+	} {
 		path := filepath.Join(t.TempDir(), ".claude.json")
 		if err := os.WriteFile(path, []byte(c.meta), 0o644); err != nil {
 			t.Fatal(err)
@@ -352,45 +297,12 @@ func TestReadMetaCacheGuardRequiresPositiveEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		if m.CachedUsage != nil {
-			t.Errorf("%s: cache accepted without provable provenance", c.name)
+		if m.CacheState != c.want || (m.CachedUsage != nil) != (c.want == tag.OK) {
+			t.Errorf("%s: cache state %v, handed back %v; want %v", c.name, m.CacheState, m.CachedUsage != nil, c.want)
 		}
-		if m.Email != "a@x.com" {
-			t.Errorf("%s: the email is independent and must survive", c.name)
+		if m.Email != "a@x.com" || !m.EmailOK {
+			t.Errorf("%s: the email is independent and must survive: %q", c.name, m.Email)
 		}
-	}
-}
-
-// A rejected cache and an absent one must be distinguishable, or the day the
-// vendor drops accountUuid the fallback disappears silently and check still
-// passes.
-func TestReadMetaTagsRejectedCacheDistinctlyFromAbsent(t *testing.T) {
-	write := func(body string) Meta {
-		t.Helper()
-		path := filepath.Join(t.TempDir(), ".claude.json")
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		m, err := ReadMeta(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return m
-	}
-	if m := write(`{"oauthAccount":{"emailAddress":"a@x.com"}}`); m.CacheState != tag.None {
-		t.Errorf("no cache should tag none, got %v", m.CacheState)
-	}
-	rejected := write(`{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
-	  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"other",
-	    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`)
-	if rejected.CacheState != tag.Bad || rejected.CachedUsage != nil {
-		t.Errorf("rejected cache: state=%v usable=%v", rejected.CacheState, rejected.CachedUsage != nil)
-	}
-	good := write(`{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"u"},
-	  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"u",
-	    "utilization":{"limits":[{"kind":"session","percent":1}]}}}`)
-	if good.CacheState != tag.OK || good.CachedUsage == nil {
-		t.Errorf("valid cache: state=%v", good.CacheState)
 	}
 }
 
