@@ -203,13 +203,11 @@ parse:
 	}
 
 	if dryRun {
-		if intent.Kind == placement.Forced {
-			if err := facts.prepareErr[intent.Account]; err != nil {
-				fmt.Fprintf(os.Stderr, "headroom launch: %v\n", err)
-				return 1
-			}
+		if c, ok := facts.find(intent.Account); intent.Kind == placement.Forced && ok && c.prepareErr != nil {
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", c.prepareErr)
+			return 1
 		}
-		d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now)
+		d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
 		writeDryRun(os.Stdout, cfg.Vendor, d, mode, now, facts.home, homeLabels(facts.snap, facts.home))
 		if d.Chosen == "" {
 			return 1
@@ -224,20 +222,19 @@ parse:
 		// would have the next bare `x` go somewhere else. A launch that no
 		// account can take records nothing either.
 		var err error
+		c, found := facts.find(intent.Account)
 		switch {
 		case automatic:
-			if d := placement.Choose(facts.cands, facts.snap.Placements(), intent, now); d.Chosen == "" {
+			if d := placement.Choose(facts.rule(), facts.snap.Placements(), intent, now); d.Chosen == "" {
 				fmt.Fprintf(os.Stderr, "headroom launch: %s\n", d.Refusal)
 				return 1
 			}
 			err = set.SetAuto()
-		case facts.prepareErr[intent.Account] != nil:
-			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", facts.prepareErr[intent.Account])
+		case found && c.prepareErr != nil:
+			fmt.Fprintf(os.Stderr, "headroom launch: %v\n", c.prepareErr)
 			return 1
-		default:
-			if a, ok := facts.account(intent.Account); ok {
-				err = set.SetCurrent(a)
-			}
+		case found:
+			err = set.SetCurrent(c.acct)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "headroom launch: could not record .current (%v) — not launching\n", err)

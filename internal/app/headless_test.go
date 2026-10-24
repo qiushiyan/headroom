@@ -103,7 +103,7 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if doc, _, _ := f.place(); doc.Account != "a@x.com" {
 		t.Errorf("second placement went to %q", doc.Account)
 	}
-	d := placement.Choose(gatherPlacement(accounts.Discover(f.cfg), f.st, os.Environ(), true, time.Now()).cands, f.st.Load().Placements(), placement.Intent{}, time.Now())
+	d := placement.Choose(gatherPlacement(accounts.Discover(f.cfg), f.st, os.Environ(), true, time.Now()).rule(), f.st.Load().Placements(), placement.Intent{}, time.Now())
 	if a, _ := d.Find("a@x.com"); a.Pending != 1 {
 		t.Errorf("a launch counts a's headless placement as %d", a.Pending)
 	}
@@ -174,7 +174,7 @@ func TestAStartedSessionCountsAsBusyForItsWholeLife(t *testing.T) {
 
 	count := func(at time.Time) placement.Counted {
 		facts := gatherPlacement(accounts.Discover(f.cfg), f.st, os.Environ(), true, at)
-		c, _ := placement.Choose(facts.cands, f.st.Load().Placements(), placement.Intent{}, at).Find(doc.Account)
+		c, _ := placement.Choose(facts.rule(), f.st.Load().Placements(), placement.Intent{}, at).Find(doc.Account)
 		return c
 	}
 	if c := count(time.Now()); c.Busy != 1 || c.Pending != 0 || c.Load != 1 {

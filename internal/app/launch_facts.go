@@ -43,42 +43,61 @@ var (
 	placementProbe sessions.PIDProbe = psProbe
 )
 
+// placeCandidate is one account as a placement read it: what the rule is handed,
+// and beside it what the operation around the rule needs of the same account.
+// It is one value, built once per account, so a candidate's figures can never
+// be read under another's key or launched with another's preparation.
+type placeCandidate struct {
+	placement.Candidate
+
+	acct accounts.Account
+	key  state.Key                 // the ledger key its figures and claims are filed under
+	obs  *accountstate.Observation // the observation its figures came from, as handed in
+
+	// cred is the account's stored credential, read only when the rule
+	// chooses: "" when it was not read, and when it could not be.
+	cred string
+
+	// prepared is the launch an ordinary launch on this account would run, and
+	// prepareErr why none can run here at all. A headless placement prepares
+	// nothing: its caller starts the session.
+	prepared   launch.Prepared
+	prepareErr error
+}
+
 // placeFacts is everything one placement read. The discovered set travels with
 // what was built from it, as everywhere else.
 type placeFacts struct {
 	set   accounts.Set
 	snap  state.Snapshot
 	home  string // this home's accounts root, as the ledger names it
-	cands []placement.Candidate
-	keys  []state.Key // the ledger key of each candidate, in order
-
-	// askable marks the candidates whose stored token could carry a usage
-	// request right now. Known only when credentials were read.
-	askable []bool
-
-	// prepared holds the launch each launchable account would run; prepareErr
-	// holds why the others cannot be launched at all.
-	prepared   map[string]launch.Prepared
-	prepareErr map[string]error
+	cands []placeCandidate
 
 	refs     []sessions.AccountRef
 	evidence map[string]sessions.ProcessEvidence
-
-	// obs is each candidate's observation, in order, as it was handed in.
-	obs []*accountstate.Observation
 
 	// gone are the headless runs this reading proved over, for the next write
 	// of the ledger to drop.
 	gone []state.Run
 }
 
-func (f placeFacts) account(name string) (accounts.Account, bool) {
-	for _, a := range f.set.Accounts {
-		if a.Name == name {
-			return a, true
+// rule is the candidates as the rule and the store take them.
+func (f placeFacts) rule() []placement.Candidate {
+	out := make([]placement.Candidate, len(f.cands))
+	for i, c := range f.cands {
+		out[i] = c.Candidate
+	}
+	return out
+}
+
+// find is the candidate of that name.
+func (f placeFacts) find(name string) (placeCandidate, bool) {
+	for _, c := range f.cands {
+		if c.Name == name {
+			return c, true
 		}
 	}
-	return accounts.Account{}, false
+	return placeCandidate{}, false
 }
 
 // owner resolves the session a launch names to the account that last drove
@@ -96,18 +115,22 @@ type placeSource struct {
 	obs  *accountstate.Observation
 }
 
-// gatherPlacement reads what is known on disk about every account of the set:
-// what a launch chooses from.
-func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic bool, now time.Time) placeFacts {
-	snap := st.Load()
+// diskSources is every account of the set with its newest usable stored
+// observation: the disk's view, which a launch and a headless placement read.
+func diskSources(set accounts.Set, snap state.Snapshot, now time.Time) []placeSource {
 	facts, _ := accountstate.Assemble(set, snap, now)
 	src := make([]placeSource, len(facts))
 	for i, fa := range facts {
 		src[i] = placeSource{acct: fa.Acct, key: fa.Key, obs: fa.View.Obs}
 	}
-	f := buildCandidates(set, src, env, automatic, now, st.Home(), otherHomes(set.Scope, snap), snap.Runs())
-	f.snap = snap
-	return f
+	return src
+}
+
+// gatherPlacement reads what is known on disk about every account of the set,
+// and which of them an ordinary launch may run on: what a launch chooses from.
+func gatherPlacement(set accounts.Set, st *state.Store, env []string, automatic bool, now time.Time) placeFacts {
+	snap := st.Load()
+	return buildCandidates(set, st, snap, diskSources(set, snap, now), env, automatic, now)
 }
 
 // otherHomes is the other homes spending against this home's ledger today,
@@ -143,37 +166,28 @@ func homeLabel(labels map[string]string, root string) string {
 	return strings.TrimPrefix(filepath.Base(filepath.Dir(root)), ".")
 }
 
-// buildCandidates is the one place an account becomes a placement candidate,
-// for a launch and for the board's mark alike: the two differ only in which
-// observations they hand in — the disk's, or the ones on screen. Everything
-// that decides whether an account may be chosen is read here, the same way,
-// so the mark and the launch cannot hold two opinions of one account.
-//
-// automatic says the rule will choose. Only then are credentials read: they
-// are the evidence that a login has expired, which matters to a choice made
-// for the person and not to a launch on an account they named — launching a
-// logged-out account by name is how one logs in.
-//
-// An account is excluded from an automatic choice only on positive evidence:
-// its identity document parsed and names nobody, its refresh token is
-// demonstrably expired, or the vendor says it is blocked. A credential that
-// could not be read excludes nothing. With a locked Keychain every account
-// reads that way, and in auto mode a usable account must never be refused for
-// want of bookkeeping. The vendor's health probe is not consulted: it can say
-// "logged in" over a refresh token that has expired, and a launch has only
-// the credential to go by.
+// observeCandidates is what every placement reads of the accounts, whoever
+// decides which of them may be chosen: each one's figures, the busy sessions
+// on its subscription and the headless runs still working on it, and — with
+// credentials — its stored login, for the refresh a choice leaves behind and
+// the evidence that a login has expired. The recent launches each is counted
+// against are the ledger's, read by the rule itself.
 //
 // Busy sessions are the subscription's, not the dir's: two dirs on one
 // account, in this home or in another home sharing the ledger, spend one
 // quota, so every verified-live busy session on that account counts on each
 // candidate that spends it — and so does every headless run whose process
 // still runs.
-func buildCandidates(set accounts.Set, src []placeSource, env []string, automatic bool, now time.Time, home string, others []accounts.Home, runs []state.Run) placeFacts {
+//
+// Who may be chosen is each caller's own policy over these facts, and none is
+// set here: an ordinary launch's is its preparation and positive evidence
+// (buildCandidates); a headless placement's is its token (gatherHeadless).
+func observeCandidates(set accounts.Set, st *state.Store, snap state.Snapshot, src []placeSource, credentials bool) placeFacts {
 	scope := set.Scope
-	f := placeFacts{set: set, home: home, prepared: map[string]launch.Prepared{}, prepareErr: map[string]error{}}
+	f := placeFacts{set: set, snap: snap, home: st.Home(), cands: make([]placeCandidate, len(src))}
 
 	var blobs []string
-	if automatic && scope.Vendor == config.Claude {
+	if credentials && scope.Vendor == config.Claude {
 		accts := make([]accounts.Account, len(src))
 		for i, s := range src {
 			accts[i] = s.acct
@@ -184,37 +198,54 @@ func buildCandidates(set accounts.Set, src []placeSource, env []string, automati
 	for _, s := range src {
 		keys[s.acct.Name] = s.key.ID()
 	}
-	load := readSessionLoad(set, keys, home, others, runs)
+	load := readSessionLoad(set, keys, f.home, otherHomes(scope, snap), snap.Runs())
 	f.refs, f.evidence, f.gone = load.refs, load.evidence, load.gone
 
 	for i, s := range src {
-		a := s.acct
-		c := placement.Candidate{Name: a.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
-		raw := ""
+		c := placeCandidate{acct: s.acct, key: s.key, obs: s.obs}
+		c.Candidate = placement.Candidate{Name: s.acct.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
+		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
 		if blobs != nil {
-			raw = blobs[i]
+			c.cred = blobs[i]
 		}
-		if p, err := launch.Prepare(a, set, env); err != nil {
-			f.prepareErr[a.Name] = err
+		f.cands[i] = c
+	}
+	return f
+}
+
+// buildCandidates is the one place an account becomes a candidate for an
+// ordinary launch, for a launch and for the board's mark alike: the two differ
+// only in which observations they hand in — the disk's, or the ones on screen.
+// Everything that decides whether an account may be chosen is read here, the
+// same way, so the mark and the launch cannot hold two opinions of one
+// account.
+//
+// automatic says the rule will choose. Only then are credentials read: they
+// are the evidence that a login has expired, which matters to a choice made
+// for the person and not to a launch on an account they named — launching a
+// logged-out account by name is how one logs in.
+//
+// An account that cannot be launched at all — its preparation fails — is
+// excluded from every choice, a forced one included. Otherwise it is excluded
+// from an automatic choice only on positive evidence: its identity document
+// parsed and names nobody, its refresh token is demonstrably expired, or the
+// vendor says it is blocked. A credential that could not be read excludes
+// nothing. With a locked Keychain every account reads that way, and in auto
+// mode a usable account must never be refused for want of bookkeeping. The
+// vendor's health probe is not consulted: it can say "logged in" over a
+// refresh token that has expired, and a launch has only the credential to go
+// by.
+func buildCandidates(set accounts.Set, st *state.Store, snap state.Snapshot, src []placeSource, env []string, automatic bool, now time.Time) placeFacts {
+	f := observeCandidates(set, st, snap, src, automatic)
+	for i := range f.cands {
+		c := &f.cands[i]
+		if p, err := launch.Prepare(c.acct, set, env); err != nil {
+			c.prepareErr = err
 			c.Excluded, c.Unlaunchable = err.Error(), true
 		} else {
-			f.prepared[a.Name] = p
-			c.Excluded = avoidReason(a, s.obs, raw, now)
+			c.prepared = p
+			c.Excluded = avoidReason(c.acct, c.obs, c.cred, now)
 		}
-		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
-		f.cands = append(f.cands, c)
-		f.keys = append(f.keys, s.key)
-		f.obs = append(f.obs, s.obs)
-		askable := false
-		switch {
-		case !automatic:
-		case scope.Vendor == config.Codex:
-			askable = a.Auth.State == codexauth.OK && !a.Auth.TokenStale(now.Unix())
-		default:
-			blob, ok := creds.Parse(raw)
-			askable = ok && a.Readable && blob.TokenUsable(now.UnixMilli())
-		}
-		f.askable = append(f.askable, askable)
 	}
 	return f
 }
@@ -372,8 +403,8 @@ func markPlacement(set accounts.Set, list []*accountData, mode string, st *state
 		src[i] = placeSource{acct: d.Acct, key: d.Key, obs: d.View.Obs}
 	}
 	auto := mode == "auto"
-	f := buildCandidates(set, src, os.Environ(), auto, now, st.Home(), otherHomes(set.Scope, snap), snap.Runs())
-	m := &placeMark{cands: f.cands, ledger: snap.Placements(), home: st.Home(), labels: homeLabels(snap, st.Home()), auto: auto}
+	f := buildCandidates(set, st, snap, src, os.Environ(), auto, now)
+	m := &placeMark{cands: f.rule(), ledger: snap.Placements(), home: st.Home(), labels: homeLabels(snap, st.Home()), auto: auto}
 	m.mark(list, now)
 	return m
 }

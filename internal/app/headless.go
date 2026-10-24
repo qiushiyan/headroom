@@ -79,11 +79,14 @@ func runHeadless(scope config.Scope, args []string) int {
 
 // ---- deciding ----
 
-// gatherHeadless is gatherPlacement for a headless caller: the candidates a
-// launch builds — figures, busy sessions, recent launches, from every home on
-// the ledger — with each account's eligibility decided by its token instead
+// gatherHeadless is gatherPlacement for a headless caller: what every
+// placement reads — figures, busy sessions, recent launches, from every home
+// on the ledger — with each account's eligibility decided by its token instead
 // of by whether its dir can be launched. A token is a grant of its own: the
-// dir's login expiring, or its topology, says nothing about it.
+// dir's login expiring, or its topology, says nothing about it, so nothing an
+// ordinary launch needs is prepared or consulted here. Credentials are still
+// read: they say which accounts the refresh a placement leaves behind could
+// ask.
 //
 // The caller's own exclusions join them as candidates' exclusions, so the
 // rule decides among the rest in the same locked step that records the
@@ -91,17 +94,16 @@ func runHeadless(scope config.Scope, args []string) int {
 // session that ended on an account's usage limit or a token the vendor
 // refused is the caller's to know, and that account reads idle to the rule.
 func gatherHeadless(set accounts.Set, st *state.Store, tokens map[string]headless.Token, exclude map[string]bool, now time.Time) placeFacts {
-	f := gatherPlacement(set, st, os.Environ(), true, now)
+	snap := st.Load()
+	f := observeCandidates(set, st, snap, diskSources(set, snap, now), true)
 	for i := range f.cands {
 		c := &f.cands[i]
-		a, _ := f.account(c.Name)
-		tok, ok := tokens[c.Name]
-		c.Unlaunchable = false
 		if exclude[c.Name] {
 			c.Excluded = "excluded by the caller"
 			continue
 		}
-		c.Excluded = headlessExclusion(a, f.keys[i], tok, ok, f.obs[i], now)
+		tok, ok := tokens[c.Name]
+		c.Excluded = headlessExclusion(c.acct, c.key, tok, ok, c.obs, now)
 	}
 	return f
 }
@@ -288,10 +290,10 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 	var d placement.Decision
 	failed := false
 	if dryRun {
-		d = placement.Choose(facts.cands, facts.snap.Placements(), intent, now)
+		d = placement.Choose(facts.rule(), facts.snap.Placements(), intent, now)
 	} else {
 		id := newPlacementID()
-		placed, err := st.Place(state.Launch{Candidates: facts.cands, Intent: intent, Now: now, ID: id, Gone: facts.gone})
+		placed, err := st.Place(state.Launch{Candidates: facts.rule(), Intent: intent, Now: now, ID: id, Gone: facts.gone})
 		d = placed.Decision
 		switch {
 		case err != nil:
@@ -335,7 +337,7 @@ func runHeadlessPlace(out, errw io.Writer, scope config.Scope, args []string) in
 // logHeadless writes the placement's line in the launch log, as a launch's:
 // `launches --eval` judges the rule by every decision it made.
 func logHeadless(scope config.Scope, facts placeFacts, placed state.Placed, intent placement.Intent, now time.Time, doc *headlessDoc) {
-	rec := launchlog.New(placed.Decision, facts.cands, placed.Ledger, intent, now)
+	rec := launchlog.New(placed.Decision, facts.rule(), placed.Ledger, intent, now)
 	rec.Vendor, rec.Mode, rec.Recorded = string(scope.Vendor), "headless", placed.Recorded
 	rec.CWD, _ = os.Getwd()
 	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {

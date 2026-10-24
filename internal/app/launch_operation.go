@@ -80,12 +80,13 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	if req.intent.Kind == placement.Forced {
 		// The account was named — by flag, by pin, or as a session's owner:
 		// its own preparation error is the answer, said the way it always was.
-		if err := facts.prepareErr[req.intent.Account]; err != nil {
-			return out, err
+		if c, ok := facts.find(req.intent.Account); ok && c.prepareErr != nil {
+			return out, c.prepareErr
 		}
 	}
+	cands := facts.rule()
 	launch := state.Launch{
-		Candidates: facts.cands, Intent: req.intent, PID: os.Getpid(), Now: req.now,
+		Candidates: cands, Intent: req.intent, PID: os.Getpid(), Now: req.now,
 		Session: req.ref.Record, MustReHome: req.mustReHome, Gone: facts.gone,
 	}
 	if req.ref.Record != "" {
@@ -99,15 +100,14 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	if out.decision.Chosen == "" {
 		return out, errors.New(out.decision.Refusal)
 	}
-	prepared, ok := facts.prepared[out.decision.Chosen]
-	acct, found := facts.account(out.decision.Chosen)
-	if !ok || !found {
-		if err := facts.prepareErr[out.decision.Chosen]; err != nil {
-			return out, err
+	chosen, found := facts.find(out.decision.Chosen)
+	if !found || chosen.prepareErr != nil {
+		if found {
+			return out, chosen.prepareErr
 		}
 		return out, fmt.Errorf("%s cannot be launched", out.decision.Chosen)
 	}
-	out.prepared, out.account = prepared, acct
+	out.prepared, out.account = chosen.prepared, chosen.acct
 	out.home, out.labels = facts.home, homeLabels(facts.snap, facts.home)
 
 	switch {
@@ -121,7 +121,7 @@ func placeLaunch(req launchRequest, facts placeFacts) (launchOutcome, error) {
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
 	}
-	rec := launchlog.New(out.decision, facts.cands, placed.Ledger, req.intent, req.now)
+	rec := launchlog.New(out.decision, cands, placed.Ledger, req.intent, req.now)
 	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.cwd, req.mode, placed.Recorded
 	rec.Session = req.ref.Route
 	if err := cmp.Or(placeErr, placed.RecordErr); err != nil {

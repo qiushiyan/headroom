@@ -12,6 +12,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/codexauth/codexauthtest"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -327,12 +328,16 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	prevRefresh := startRefresh
-	startRefresh = func(config.Scope) error { return nil }
+	refreshes := 0
+	startRefresh = func(config.Scope) error { refreshes++; return nil }
 	t.Cleanup(func() { startRefresh = prevRefresh })
 
 	f.extra(t, login(1))
 	f.extra(t, login(2))
 	f.extra(t, login(3))
+	// A home whose auth.json holds no tokens: never observed, so the emptiest
+	// of all, and no login a launch could run on.
+	codexauthtest.WriteRaw(t, f.extra(t, login(4)), []byte(`{"auth_mode":"chatgpt"}`))
 	st := state.Open(f.scope)
 	store := func(n, percent int, edit ...[2]string) {
 		t.Helper()
@@ -350,7 +355,8 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 				k = state.Key{UUID: a.AccountID, Name: a.Name}
 			}
 		}
-		at := time.Now().Add(-time.Minute)
+		// Past the quiet period, so a launch's refresh has someone to ask.
+		at := time.Now().Add(-3 * time.Minute)
 		dec, err := st.Claim([]state.Key{k}, at)
 		if err != nil || !dec[0].Permit {
 			t.Fatalf("claim: %+v %v", dec, err)
@@ -408,6 +414,9 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 		if c.Name == "u3@x.com" && c.Excluded != "blocked by the vendor" {
 			t.Errorf("u3 excluded %q", c.Excluded)
 		}
+		if c.Name == "u4@x.com" && c.Excluded != "login unreadable" {
+			t.Errorf("u4 excluded %q", c.Excluded)
+		}
 		if c.Busy != 0 || len(c.Statuses) != 0 {
 			t.Errorf("%s carries busy sessions Codex cannot report: %+v", c.Name, c)
 		}
@@ -421,6 +430,14 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	}
 	if recs[0].Vendor != "codex" || recs[0].Reason != placement.ReasonLeastLoad {
 		t.Errorf("log = %+v", recs[0])
+	}
+	// Each choice the rule made leaves a refresh for the next one, as a
+	// Claude Code launch's does; a launch on a named account chose nothing.
+	if refreshes != 2 {
+		t.Errorf("%d refreshes after two automatic launches, want 2", refreshes)
+	}
+	if named, stderr := launch("--account", "u1@x.com"); named != "u1@x.com" || refreshes != 2 {
+		t.Errorf("a named launch went to %q and left %d refreshes in all:\n%s", named, refreshes, stderr)
 	}
 	if _, err := os.Stat(claudeCurrent); err == nil {
 		t.Error("a Codex launch wrote Claude Code's .current")
