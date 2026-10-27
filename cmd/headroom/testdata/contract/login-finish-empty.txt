@@ -1,0 +1,7 @@
+$ headroom login finish a@x.com
+exit 2
+--- stdout
+--- stderr
+headroom: error: finish reads the code#state the sign-in page showed from stdin, and stdin was empty
+Usage: headroom login finish <account> [flags]
+Run "headroom login finish --help" for details.

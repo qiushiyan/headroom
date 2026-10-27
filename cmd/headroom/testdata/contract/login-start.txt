@@ -1,0 +1,22 @@
+$ headroom login start a@x.com
+exit 0
+--- stdout
+{
+  "schema": 1,
+  "account": "a@x.com",
+  "email": "a@x.com",
+  "state": "awaiting_code",
+  "reason": null,
+  "problem": null,
+  "url": "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=contract-state",
+  "started_at": "<time>",
+  "expires_at": "<time>",
+  "finished_at": null,
+  "login_ends_at": null,
+  "reused": false
+}
+--- stderr
+--- vendor
+claude auth login --email a@x.com
+CLAUDE_CONFIG_DIR=$BASE/home/.claude-accounts/a@x.com
+---

@@ -1,0 +1,16 @@
+$ headroom login finish a@x.com
+exit 1
+--- stdout
+{
+  "schema": 1,
+  "account": "a@x.com",
+  "email": "a@x.com",
+  "state": "none",
+  "reason": "no_attempt",
+  "problem": "no sign-in was started for a@x.com — headroom login start a@x.com",
+  "started_at": null,
+  "expires_at": null,
+  "finished_at": null,
+  "login_ends_at": null
+}
+--- stderr

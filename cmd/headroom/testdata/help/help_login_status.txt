@@ -1,0 +1,21 @@
+Usage: headroom login status <account> [flags]
+
+Print one account's started sign-in as JSON.
+
+Prints the account's sign-in as start and finish print it: awaiting_code or exchanging while
+it is live, and how it ended after — kept until the next start of the account; none when no
+sign-in was ever started. It exits 0.
+
+Arguments:
+  <account>        The account whose sign-in to print.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded; login start,
+       finish or cancel refused, nothing spent or sent: the document's reason says why

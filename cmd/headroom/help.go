@@ -152,6 +152,38 @@ browser signed in as the account, and paste the code it shows. An ssh session ca
 the login Keychain until security unlock-keychain runs in it; accounts whose login lives
 there are left alone and named.`
 
+const handoffHelp = `For an approver elsewhere — an agent with shell access, which cannot keep a terminal open —
+start and finish renew one account's login in two commands that each return: start prints
+the sign-in URL as JSON and leaves a holder waiting for the code; finish sends it the
+code#state the page showed, read from stdin, and prints whether the login took. status and
+cancel inspect and end the sign-in. Nothing opens on this machine. The contract is
+docs/specs/login-handoff.md.`
+
+const loginStartHelp = `Starts the account's sign-in for an approver elsewhere and prints it as JSON on stdout:
+  {"schema": 1, "account", "email", "state", "reason", "problem", "url", "started_at",
+   "expires_at", "finished_at", "login_ends_at", "reused"}
+Nothing opens on this machine: open url in a browser signed in to claude.ai as the account,
+click Authorize, and send the code#state the page shows to headroom login finish. A holder
+waits for it until expires_at, ten minutes; a second start returns the same sign-in, reused
+true.
+
+It exits 0 with state awaiting_code; 3 when the account cannot be renewed from this session,
+before any approval is spent — reason says why (keychain_unreadable, keychain_unknown,
+identity_unreadable, busy, exchanging) and problem what opens it; 1 when the sign-in could
+not be started (no_url, screen_changed, holder_failed).`
+
+const loginFinishHelp = `Reads one line from stdin, the code#state the sign-in page showed, sends it to the
+account's waiting sign-in, and prints the sign-in as start does, with the verdict. The code
+is sent only when it carries the state of the URL start printed and the account's login can
+still be read where it was; a code is never sent twice.
+
+It exits 0 with state renewed, login_ends_at the new end. It exits 3 when the code was
+refused and nothing was sent (code_malformed, code_other_signin, keychain_closed): the
+sign-in still waits — fix what reason names and finish again. It exits 1 when the sign-in
+ended without a renewal (vendor_rejected, wrong_account, stored_elsewhere, expired, …) —
+start again — and on no_reply, when the answer was lost and the code may have been sent:
+ask headroom login status, never start.`
+
 const headlessHelp = `For a caller that runs Claude Code sessions headless under a config dir of its own — an
 eval runner — and wants them spread over the subscriptions the way automatic launches
 spread. headroom decides and records; the caller starts the session itself, on the

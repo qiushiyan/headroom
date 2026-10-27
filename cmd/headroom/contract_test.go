@@ -40,87 +40,102 @@ func TestContracts(t *testing.T) {
 	}
 	cdFile := filepath.Join(w.base, "cwd")
 	for _, c := range []struct {
-		name string
-		args []string
+		name  string
+		args  []string
+		stdin string
 	}{
 		// Read before anything is launched: the board, the documents, the line
 		// shell preflight splits on tabs, and the version a host install pins.
-		{"version", []string{"version"}},
-		{"version-flag", []string{"--version"}},
-		{"limits", []string{"limits"}},
-		{"limits-claude", []string{"limits", "--vendor", "claude"}},
-		{"limits-account", []string{"limits", "--account", "a@x.com"}},
-		{"board-json", []string{"--json"}},
-		{"board", nil},
-		{"accounts", []string{"accounts"}},
-		{"accounts-compact", []string{"accounts", "--compact"}},
-		{"accounts-compact-codex", []string{"accounts", "--compact", "--vendor", "codex"}},
-		{"resolve", []string{"resolve", "a@x.com"}},
-		{"resolve-current", []string{"resolve"}},
-		{"resolve-codex", []string{"resolve", "--vendor", "codex", "c@x.com"}},
-		{"sessions-json", []string{"sessions", "--json"}},
-		{"headless-list", []string{"headless"}},
-		{"headless-json", []string{"headless", "--json"}},
-		{"login-dry-run", []string{"login", "--dry-run"}},
-		{"launch-dry-run", []string{"launch", "--dry-run"}},
-		{"check", []string{"check"}},
-		{"refresh", []string{"refresh", "--vendor", "claude"}},
+		{"version", []string{"version"}, ""},
+		{"version-flag", []string{"--version"}, ""},
+		{"limits", []string{"limits"}, ""},
+		{"limits-claude", []string{"limits", "--vendor", "claude"}, ""},
+		{"limits-account", []string{"limits", "--account", "a@x.com"}, ""},
+		{"board-json", []string{"--json"}, ""},
+		{"board", nil, ""},
+		{"accounts", []string{"accounts"}, ""},
+		{"accounts-compact", []string{"accounts", "--compact"}, ""},
+		{"accounts-compact-codex", []string{"accounts", "--compact", "--vendor", "codex"}, ""},
+		{"resolve", []string{"resolve", "a@x.com"}, ""},
+		{"resolve-current", []string{"resolve"}, ""},
+		{"resolve-codex", []string{"resolve", "--vendor", "codex", "c@x.com"}, ""},
+		{"sessions-json", []string{"sessions", "--json"}, ""},
+		{"headless-list", []string{"headless"}, ""},
+		{"headless-json", []string{"headless", "--json"}, ""},
+		{"login-dry-run", []string{"login", "--dry-run"}, ""},
+		{"launch-dry-run", []string{"launch", "--dry-run"}, ""},
+		{"check", []string{"check"}, ""},
+		{"refresh", []string{"refresh", "--vendor", "claude"}, ""},
 
 		// Launches, in the shapes the launchers and envoy prefixes send.
-		{"launch-named", []string{"launch", "--account", "a@x.com", "--"}},
-		{"launch-named-dashdash", []string{"launch", "--account", "a@x.com", "--", "--", "--fast"}},
-		{"launch-bare", []string{"launch", "--", "--dangerously-skip-permissions", "--settings", `{"fastMode":true}`}},
+		{"launch-named", []string{"launch", "--account", "a@x.com", "--"}, ""},
+		{"launch-named-dashdash", []string{"launch", "--account", "a@x.com", "--", "--", "--fast"}, ""},
+		{"launch-bare", []string{"launch", "--", "--dangerously-skip-permissions", "--settings", `{"fastMode":true}`}, ""},
 		{"launch-auto", []string{"launch", "--auto", "--", "-p", "--output-format", "stream-json", "--verbose",
-			"--resume", "12345678-1234-4123-8123-123456789abc"}},
-		{"launch-codex-named", []string{"launch", "--vendor", "codex", "--account", "c@x.com", "--", "resume", "--all"}},
-		{"launch-codex-bare", []string{"launch", "--vendor", "codex", "--"}},
-		{"launch-codex-exec", []string{"launch", "--vendor", "codex", "--", "exec", "--json", "hello"}},
-		{"launches", []string{"launches"}},
-		{"launches-json", []string{"launches", "--json"}},
-		{"launches-n", []string{"launches", "-n", "2"}},
-		{"launches-eval-json", []string{"launches", "--eval", "--json"}},
+			"--resume", "12345678-1234-4123-8123-123456789abc"}, ""},
+		{"launch-codex-named", []string{"launch", "--vendor", "codex", "--account", "c@x.com", "--", "resume", "--all"}, ""},
+		{"launch-codex-bare", []string{"launch", "--vendor", "codex", "--"}, ""},
+		{"launch-codex-exec", []string{"launch", "--vendor", "codex", "--", "exec", "--json", "hello"}, ""},
+		{"launches", []string{"launches"}, ""},
+		{"launches-json", []string{"launches", "--json"}, ""},
+		{"launches-n", []string{"launches", "-n", "2"}, ""},
+		{"launches-eval-json", []string{"launches", "--eval", "--json"}, ""},
 
 		// The session picker needs a terminal; the cd file says nothing was entered.
-		{"sessions-no-terminal", []string{"sessions", "--cd-file", cdFile, "--", "--dangerously-skip-permissions"}},
+		{"sessions-no-terminal", []string{"sessions", "--cd-file", cdFile, "--", "--dangerously-skip-permissions"}, ""},
 
 		// Headless placement, as the eval runner drives it.
-		{"headless-place", []string{"headless", "place", "--prefer", "a@x.com", "--exclude", "b@x.com"}},
-		{"headless-place-refused", []string{"headless", "place", "--exclude", "a@x.com", "--exclude", "b@x.com"}},
-		{"headless-token", []string{"headless", "token", "a@x.com"}},
-		{"headless-forget", []string{"headless", "forget", "b@x.com"}},
+		{"headless-place", []string{"headless", "place", "--prefer", "a@x.com", "--exclude", "b@x.com"}, ""},
+		{"headless-place-refused", []string{"headless", "place", "--exclude", "a@x.com", "--exclude", "b@x.com"}, ""},
+		{"headless-token", []string{"headless", "token", "a@x.com"}, ""},
+		{"headless-forget", []string{"headless", "forget", "b@x.com"}, ""},
 
 		// The account set, in the three spellings of --share-config in use.
-		{"accounts-add-share-dir", []string{"accounts", "add", "--share-config=" + share, "d@x.com"}},
-		{"accounts-add-codex-share", []string{"accounts", "add", "--vendor", "codex", "--share-config", "e@x.com"}},
-		{"accounts-add-share-after", []string{"accounts", "add", "f@x.com", "--share-config"}},
-		{"accounts-remove-yes", []string{"accounts", "remove", "--yes", "f@x.com"}},
-		{"accounts-remove-no-terminal", []string{"accounts", "remove"}},
-		{"accounts-ledger", []string{"accounts", "ledger"}},
-		{"accounts-ledger-own", []string{"accounts", "ledger", w.claude.AccountsRoot}},
+		{"accounts-add-share-dir", []string{"accounts", "add", "--share-config=" + share, "d@x.com"}, ""},
+		{"accounts-add-codex-share", []string{"accounts", "add", "--vendor", "codex", "--share-config", "e@x.com"}, ""},
+		{"accounts-add-share-after", []string{"accounts", "add", "f@x.com", "--share-config"}, ""},
+		{"accounts-remove-yes", []string{"accounts", "remove", "--yes", "f@x.com"}, ""},
+		{"accounts-remove-no-terminal", []string{"accounts", "remove"}, ""},
+		{"accounts-ledger", []string{"accounts", "ledger"}, ""},
+		{"accounts-ledger-own", []string{"accounts", "ledger", w.claude.AccountsRoot}, ""},
 
 		// Refusals a caller can meet.
-		{"resume-tombstone", []string{"resume", "--json"}},
-		{"resume-help", []string{"resume", "--help"}},
-		{"resume-version", []string{"resume", "--version"}},
-		{"launch-empty-account", []string{"launch", "--account", "", "--"}},
-		{"launch-unknown-flag", []string{"launch", "--resume", "abc"}},
-		{"launch-auto-last", []string{"launch", "--auto", "--last", "--"}},
-		{"check-argument", []string{"check", "extra"}},
-		{"unknown-command", []string{"lauch"}},
-		{"accounts-board-flag-before-remove", []string{"accounts", "--compact", "remove", "--yes", "a@x.com"}},
-		{"json-before-command", []string{"--json", "sessions"}},
-		{"launch-words-without-dashdash", []string{"launch", "fix", "it"}},
-		{"launches-eval-n-default", []string{"launches", "--eval", "-n", "20"}},
-		{"launches-eval-n-zero", []string{"launches", "--eval", "-n", "0"}},
-		{"launches-since-without-eval", []string{"launches", "--since", "7d"}},
-		{"login-within-negative", []string{"login", "--dry-run", "--within", "-1"}},
-		{"headless-place-comma", []string{"headless", "place", "--dry-run", "--exclude", "a@x.com,b@x.com"}},
-		{"headless-place-empty", []string{"headless", "place", "--exclude", ""}},
-		{"accounts-remove-empty", []string{"accounts", "remove", ""}},
-		{"accounts-vendor-before-add", []string{"accounts", "--vendor", "codex", "add", "g@x.com"}},
-		{"accounts-ledger-codex", []string{"accounts", "ledger", "--vendor", "codex"}},
+		{"resume-tombstone", []string{"resume", "--json"}, ""},
+		{"resume-help", []string{"resume", "--help"}, ""},
+		{"resume-version", []string{"resume", "--version"}, ""},
+		{"launch-empty-account", []string{"launch", "--account", "", "--"}, ""},
+		{"launch-unknown-flag", []string{"launch", "--resume", "abc"}, ""},
+		{"launch-auto-last", []string{"launch", "--auto", "--last", "--"}, ""},
+		{"check-argument", []string{"check", "extra"}, ""},
+		{"unknown-command", []string{"lauch"}, ""},
+		{"accounts-board-flag-before-remove", []string{"accounts", "--compact", "remove", "--yes", "a@x.com"}, ""},
+		{"json-before-command", []string{"--json", "sessions"}, ""},
+		{"launch-words-without-dashdash", []string{"launch", "fix", "it"}, ""},
+		{"launches-eval-n-default", []string{"launches", "--eval", "-n", "20"}, ""},
+		{"launches-eval-n-zero", []string{"launches", "--eval", "-n", "0"}, ""},
+		{"launches-since-without-eval", []string{"launches", "--since", "7d"}, ""},
+		{"login-within-negative", []string{"login", "--dry-run", "--within", "-1"}, ""},
+		{"headless-place-comma", []string{"headless", "place", "--dry-run", "--exclude", "a@x.com,b@x.com"}, ""},
+		{"headless-place-empty", []string{"headless", "place", "--exclude", ""}, ""},
+		{"accounts-remove-empty", []string{"accounts", "remove", ""}, ""},
+		{"accounts-vendor-before-add", []string{"accounts", "--vendor", "codex", "add", "g@x.com"}, ""},
+		{"accounts-ledger-codex", []string{"accounts", "ledger", "--vendor", "codex"}, ""},
+
+		// The plan as an agent reads it, and a handed-off sign-in end to end,
+		// last: the renewal changes a@x.com's login. (docs/specs/login-handoff.md)
+		{"login-dry-run-json", []string{"login", "--dry-run", "--json"}, ""},
+		{"login-json-without-dry-run", []string{"login", "--json"}, ""},
+		{"login-status-none", []string{"login", "status", "a@x.com"}, ""},
+		{"login-finish-none", []string{"login", "finish", "a@x.com"}, "code#state\n"},
+		{"login-finish-empty", []string{"login", "finish", "a@x.com"}, ""},
+		{"login-start", []string{"login", "start", "a@x.com"}, ""},
+		{"login-start-again", []string{"login", "start", "a@x.com"}, ""},
+		{"login-finish-other", []string{"login", "finish", "a@x.com"}, "code#another-state\n"},
+		{"login-finish", []string{"login", "finish", "a@x.com"}, "good#contract-state\n"},
+		{"login-status", []string{"login", "status", "a@x.com"}, ""},
+		{"login-cancel-ended", []string{"login", "cancel", "a@x.com"}, ""},
 	} {
-		got := w.run(t, c.args...)
+		got := w.runIn(t, c.stdin, c.args...)
 		pinFile(t, c.name, got)
 		if c.name == "headless-place" {
 			// The runner reports the session it started under the placement's
@@ -149,7 +164,13 @@ type world struct {
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	base, err := filepath.EvalSymlinks(t.TempDir())
+	// Short enough for a handed-off sign-in's socket, which t.TempDir is not.
+	short, err := os.MkdirTemp("/tmp", "hrc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(short) })
+	base, err := filepath.EvalSymlinks(short)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +241,17 @@ func newWorld(t *testing.T) *world {
 		"claude": `#!/bin/sh
 case "$1 $2" in
 "auth status") echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'; exit 0 ;;
+"auth login")
+  { echo "claude $*"; echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-<unset>}"; echo ---; } >> "$RECORD"
+  echo "Opening browser to sign in…"
+  echo "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=contract-state"
+  "$BROWSER" "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A4000%2Fcallback&state=contract-state"
+  printf 'Paste code here if prompted > '
+  read -r code || exec sleep 600
+  echo "code=$code" >> "$RECORD"
+  [ "$code" = "good#contract-state" ] || { echo "Login failed: That code wasn't accepted."; exit 1; }
+  printf '{"claudeAiOauth":{"accessToken":"new","expiresAt":1,"refreshTokenExpiresAt":%s000,"subscriptionType":"max"}}' "$(( $(date +%s) + 30*86400 ))" > "$CLAUDE_CONFIG_DIR/.credentials.json"
+  echo "Login successful."; exit 0 ;;
 esac
 { echo "claude $*"; echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-<unset>}"; echo ---; } >> "$RECORD"
 `,
@@ -280,8 +312,15 @@ func keysOf(t *testing.T, scope config.Scope) map[string]state.Key {
 // replaced by names.
 func (w *world) run(t *testing.T, args ...string) string {
 	t.Helper()
+	return w.runIn(t, "", args...)
+}
+
+// runIn is run with stdin on the caller's text.
+func (w *world) runIn(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
 	os.Remove(w.record)
 	cmd := exec.Command(w.bin, args...)
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Dir = w.home
 	cmd.Env = []string{
 		"HOME=" + w.home, "USER=" + os.Getenv("USER"),

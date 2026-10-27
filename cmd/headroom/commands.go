@@ -223,27 +223,97 @@ func (c *LaunchesCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) er
 }
 
 type LoginCmd struct {
+	Renew  LoginRenewCmd  `cmd:"" default:"withargs" help:"Renew the logins that end soon, or the named ones, one after another at this terminal."`
+	Start  LoginStartCmd  `cmd:"" help:"Start one account's sign-in for an approver elsewhere, and print its URL as JSON."`
+	Finish LoginFinishCmd `cmd:"" help:"Send a started sign-in the code its page showed, from stdin, and print the verdict as JSON."`
+	Status LoginStatusCmd `cmd:"" help:"Print one account's started sign-in as JSON."`
+	Cancel LoginCancelCmd `cmd:"" help:"End one account's started sign-in while it waits for its code."`
+	Hold   LoginHoldCmd   `cmd:"" hidden:"" help:"The holder login start runs, detached; not for use by hand."`
+}
+
+func (LoginCmd) Help() string { return loginHelp + "\n\n" + handoffHelp }
+
+type LoginRenewCmd struct {
 	Accounts []accountName `arg:"" name:"account" optional:"" sep:"none" help:"The accounts to renew, by email or dir name; bare, the ones that end soon."`
 	All      bool          `help:"Renew every account's login, so they end together."`
 	Within   int           `default:"7" placeholder:"DAYS" help:"Renew the logins that end within this many days."`
 	DryRun   bool          `help:"Print the plan and renew nothing."`
+	JSON     bool          `name:"json" help:"With --dry-run, print the plan as JSON."`
 }
 
-func (LoginCmd) Help() string { return loginHelp }
+func (LoginRenewCmd) Help() string { return loginHelp }
 
 // maxDays is the most days a duration can count.
 const maxDays = math.MaxInt64 / int64(24*time.Hour)
 
-func (c *LoginCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+func (c *LoginRenewCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
 	switch {
 	case c.All && len(c.Accounts) > 0:
 		return clikit.Usage(fmt.Errorf("--all and account names exclude each other"))
 	case c.Within < 0 || int64(c.Within) > maxDays:
 		return clikit.Usage(fmt.Errorf("--within %d is not a number of days", c.Within))
+	case c.JSON && !c.DryRun:
+		return clikit.Usage(fmt.Errorf("--json prints the plan, with --dry-run; to renew without a terminal, headroom login start and headroom login finish"))
 	}
 	return outcome(app.Login(streams(ctx, in), cfg.Claude, app.LoginOptions{
-		Names: names(c.Accounts), All: c.All, Within: time.Duration(c.Within) * 24 * time.Hour, DryRun: c.DryRun,
+		Names: names(c.Accounts), All: c.All, Within: time.Duration(c.Within) * 24 * time.Hour, DryRun: c.DryRun, JSON: c.JSON,
 	}))
+}
+
+type LoginStartCmd struct {
+	Account accountName `arg:"" help:"The account whose login to renew, by email or dir name."`
+}
+
+func (LoginStartCmd) Help() string { return loginStartHelp }
+
+func (c *LoginStartCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+	return outcome(app.LoginStart(streams(ctx, in), cfg.Claude, string(c.Account)))
+}
+
+type LoginFinishCmd struct {
+	Account accountName `arg:"" help:"The account whose sign-in the code is for."`
+}
+
+func (LoginFinishCmd) Help() string { return loginFinishHelp }
+
+func (c *LoginFinishCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+	return outcome(app.LoginFinish(streams(ctx, in), cfg.Claude, string(c.Account)))
+}
+
+type LoginStatusCmd struct {
+	Account accountName `arg:"" help:"The account whose sign-in to print."`
+}
+
+func (LoginStatusCmd) Help() string {
+	return `Prints the account's sign-in as start and finish print it: awaiting_code or exchanging while
+it is live, and how it ended after — kept until the next start of the account; none when no
+sign-in was ever started. It exits 0.`
+}
+
+func (c *LoginStatusCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+	return outcome(app.LoginStatus(streams(ctx, in), cfg.Claude, string(c.Account)))
+}
+
+type LoginCancelCmd struct {
+	Account accountName `arg:"" help:"The account whose sign-in to end."`
+}
+
+func (LoginCancelCmd) Help() string {
+	return `Ends the account's sign-in while it waits for its code, and prints it: state failed, reason
+cancelled. It exits 0, also when there was nothing to end, and 3 while a code is being
+exchanged, which cannot be called back. Then headroom login start begins afresh.`
+}
+
+func (c *LoginCancelCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+	return outcome(app.LoginCancel(streams(ctx, in), cfg.Claude, string(c.Account)))
+}
+
+type LoginHoldCmd struct {
+	Account accountName `arg:"" help:"The account whose sign-in to hold."`
+}
+
+func (c *LoginHoldCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+	return outcome(app.LoginHold(streams(ctx, in), cfg.Claude, string(c.Account)))
 }
 
 type HeadlessCmd struct {

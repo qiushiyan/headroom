@@ -1,0 +1,17 @@
+$ headroom login finish a@x.com
+exit 3
+--- stdout
+{
+  "schema": 1,
+  "account": "a@x.com",
+  "email": "a@x.com",
+  "state": "awaiting_code",
+  "reason": "code_other_signin",
+  "problem": "that code is from another sign-in (its state begins another-…, this one's contract…): send the code from the page of the URL headroom login start printed; nothing was sent",
+  "url": "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=contract-state",
+  "started_at": "<time>",
+  "expires_at": "<time>",
+  "finished_at": null,
+  "login_ends_at": null
+}
+--- stderr

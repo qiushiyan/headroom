@@ -216,8 +216,11 @@ like a subcommand.
   beside it, so two `start`s give one holder and one URL.
 - **The holder** is the hidden `headroom login hold <account>`, started by
   `start` in a session of its own with stdin on `/dev/null`, stderr to
-  `<key>.log`, and the login lock handed over as an inherited descriptor; its
-  stdout carries one document back to `start` and is closed. It is the
+  `<key>.log`, and the login lock handed over as an inherited descriptor,
+  which it keeps from the vendor (a vendor that inherited it held the lock
+  past a holder killed outright, and with it every later `start` off the
+  orphan — found by test plan 13 through the binary); its stdout carries one
+  document back to `start` and is closed. It is the
   vendor's parent and runs `claude auth login --email <e>` under
   `launch.Prepare`'s environment with headroom as a `$BROWSER` that records
   the sign-in's state and opens nothing.
@@ -241,7 +244,8 @@ like a subcommand.
   end after the bound is judged by its read-back alone. Every Keychain read
   is bounded to 10 seconds.
 - **A holder that dies leaves its vendor running** (measured). The next
-  `start` or `cancel` holds the lock, finds the record still live, and ends
+  `start`, `cancel` or batch login of the account holds the lock, finds the
+  record still live, and ends
   the vendor it names when that pid still runs with its recorded start; mid
   exchange, it waits the exchange bound first. `status` and `finish` report
   such a sign-in from its record: `holder_gone` before a code was sent,

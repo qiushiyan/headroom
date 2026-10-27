@@ -29,6 +29,8 @@ import (
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/round"
+	"github.com/qiushiyan/headroom/internal/sessions"
+	"github.com/qiushiyan/headroom/internal/signin"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
@@ -60,6 +62,13 @@ type loginDeps struct {
 	// tokens are the stored headless tokens, whose ends the plan reports the
 	// way it reports logins'.
 	tokens func() (map[string]headless.Token, error)
+
+	// signin is the state of the account's handed-off sign-in (`login
+	// start`), and acquire takes the account's login lock for the length of
+	// one login: "" when taken, else why not. Whoever runs the vendor's login
+	// for a dir holds that lock, so two logins never race on its credential.
+	signin  func(accounts.Account) string
+	acquire func(accounts.Account) (release func(), busy string)
 }
 
 // loginRow is one account as `login` sees it before acting.
@@ -70,6 +79,7 @@ type loginRow struct {
 	blob   creds.Blob
 	blobOK bool
 	source creds.Source // where the login was read from
+	signin string       // its handed-off sign-in's state (signin.None, …)
 	// held is why this account cannot be renewed from here, even by name,
 	// and heldReason the same as a token (heldKeychain, …): its login lives
 	// in a Keychain item this session did not get back (sealed or locked —
@@ -104,6 +114,8 @@ type LoginOptions struct {
 	All    bool
 	Within time.Duration
 	DryRun bool
+	// JSON prints the plan as a document (with DryRun only).
+	JSON bool
 }
 
 // DefaultLoginWithin is how close a login's end must be for a bare
@@ -124,7 +136,38 @@ func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 		now:          time.Now,
 		login:        newVendorLogin(std),
 		tokens:       func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
+		signin:       liveSignin(scope),
+		acquire:      liveAcquire(scope),
 	})
+}
+
+// liveSignin is the state of an account's handed-off sign-in, as its holder
+// or its record says.
+func liveSignin(scope config.Scope) func(accounts.Account) string {
+	return func(a accounts.Account) string {
+		rec, _ := liveRecord(a, signin.For(scope.AccountsRoot, a.Dir()))
+		return rec.State
+	}
+}
+
+// liveAcquire takes an account's login lock for the batch's login of it,
+// and ends a handed-off sign-in a dead holder left behind, as start does.
+func liveAcquire(scope config.Scope) func(accounts.Account) (func(), string) {
+	return func(a accounts.Account) (func(), string) {
+		paths := signin.For(scope.AccountsRoot, a.Dir())
+		if err := paths.Ensure(); err != nil {
+			return nil, err.Error()
+		}
+		lock, ok, err := signin.Acquire(paths.Lock())
+		switch {
+		case err != nil:
+			return nil, err.Error()
+		case !ok:
+			return nil, "another headroom login is renewing it right now — headroom login status " + a.Name
+		}
+		settleStale(paths, sessions.PS, defaultHandoff, time.Now())
+		return func() { lock.Close() }, ""
+	}
 }
 
 // The live reads of an account's login, shared by the batch and the handoff.
@@ -160,6 +203,9 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 	now := deps.now()
 	rows := assessLogins(set.Accounts, deps, now)
 	chooseLogins(rows, named, all, within, now)
+	if opts.JSON {
+		return writeLoginPlan(out, rows, deps, within)
+	}
 
 	var chosen []*loginRow
 	sealed, refused := 0, 0
@@ -203,6 +249,12 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 		} else {
 			fmt.Fprintf(out, "\n[%d/%d] %s — click Authorize in the page that opens\n", i+1, len(chosen), r.acct.Name)
 		}
+		release, busy := deps.acquire(r.acct)
+		if busy != "" {
+			failed++
+			fmt.Fprintf(out, "✗ %s: %s\n", r.acct.Name, busy)
+			continue
+		}
 		// The baseline is taken now, not when the batch was planned: a live
 		// session may have refreshed this account while earlier approvals
 		// were pending.
@@ -210,6 +262,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 		before, beforeOK := creds.Parse(raw)
 		err := deps.login(r.acct, set, r.page)
 		blob, msg := readBack(r, before, beforeOK, err, deps)
+		release()
 		if msg != "" {
 			failed++
 			retry = append(retry, r.acct.Name)
@@ -235,6 +288,56 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 		return Status(1)
 	}
 	return nil
+}
+
+// loginPlanDocument is `headroom login --dry-run --json`: every account as
+// the plan sees it, every field present and null when unknown.
+type loginPlanDocument struct {
+	Schema              int                `json:"schema"`
+	WithinDays          int64              `json:"within_days"`
+	Accounts            []loginPlanAccount `json:"accounts"`
+	HeadlessTokensError *string            `json:"headless_tokens_error"`
+}
+
+type loginPlanAccount struct {
+	Account             string  `json:"account"`
+	Email               *string `json:"email"`
+	Renew               bool    `json:"renew"`
+	Why                 string  `json:"why"`
+	Held                *string `json:"held"`
+	HeldReason          *string `json:"held_reason"`
+	LoginEndsAt         *string `json:"login_ends_at"`
+	HeadlessTokenEndsAt *string `json:"headless_token_ends_at"`
+	Signin              string  `json:"signin"`
+}
+
+func writeLoginPlan(out io.Writer, rows []*loginRow, deps loginDeps, within time.Duration) error {
+	orNull := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+	when := func(ms int64) *string { return orNull(time.UnixMilli(ms).UTC().Format(time.RFC3339)) }
+	doc := loginPlanDocument{Schema: 1, WithinDays: int64(within / (24 * time.Hour)), Accounts: []loginPlanAccount{}}
+	tokens, err := deps.tokens()
+	if err != nil {
+		doc.HeadlessTokensError = orNull(err.Error())
+	}
+	for _, r := range rows {
+		a := loginPlanAccount{
+			Account: r.acct.Name, Email: orNull(r.email), Renew: r.chosen, Why: r.why,
+			Held: orNull(r.held), HeldReason: orNull(r.heldReason), Signin: r.signin,
+		}
+		if r.health != accountstate.HealthNoLogin && r.blobOK && r.blob.RefreshState == tag.OK {
+			a.LoginEndsAt = when(r.blob.RefreshExpiresMS)
+		}
+		if tok, ok := tokens[r.acct.Name]; ok && tok.EndsMS != 0 {
+			a.HeadlessTokenEndsAt = when(tok.EndsMS)
+		}
+		doc.Accounts = append(doc.Accounts, a)
+	}
+	return writeDocument(out, doc)
 }
 
 // writeTokenEnds names the headless tokens that end inside the window or have
@@ -280,6 +383,10 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 			blob:   blob,
 			blobOK: ok,
 			source: source,
+			signin: signin.None,
+		}
+		if deps.signin != nil {
+			r.signin = deps.signin(a)
 		}
 		r.page = deps.approver.page(r.email)
 		r.held, r.heldReason = holdOf(r, deps)
@@ -297,6 +404,8 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 func holdOf(r *loginRow, deps loginDeps) (string, string) {
 	item, said := deps.keychainItem(r.acct)
 	switch {
+	case signin.Live(r.signin):
+		return "a sign-in from headroom login start is in progress — headroom login status " + r.acct.Name, reasonBusy
 	case item == creds.ItemPresent && r.source != creds.SourceKeychain:
 		return "login kept in the Keychain, which this session cannot read", heldKeychain
 	case item == creds.ItemUnknown:

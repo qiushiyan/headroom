@@ -1,0 +1,29 @@
+Usage: headroom login finish <account> [flags]
+
+Send a started sign-in the code its page showed, from stdin, and print the verdict as JSON.
+
+Reads one line from stdin, the code#state the sign-in page showed, sends it to the
+account's waiting sign-in, and prints the sign-in as start does, with the verdict. The code
+is sent only when it carries the state of the URL start printed and the account's login can
+still be read where it was; a code is never sent twice.
+
+It exits 0 with state renewed, login_ends_at the new end. It exits 3 when the code was
+refused and nothing was sent (code_malformed, code_other_signin, keychain_closed): the
+sign-in still waits — fix what reason names and finish again. It exits 1 when the sign-in
+ended without a renewal (vendor_rejected, wrong_account, stored_elsewhere, expired, …) —
+start again — and on no_reply, when the answer was lost and the code may have been sent:
+ask headroom login status, never start.
+
+Arguments:
+  <account>        The account whose sign-in the code is for.
+
+Inherited flags:
+  -h, --help       Show context-sensitive help.
+      --version    Print the build this binary is — its commit and the commit's time — and exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded; login start,
+       finish or cancel refused, nothing spent or sent: the document's reason says why

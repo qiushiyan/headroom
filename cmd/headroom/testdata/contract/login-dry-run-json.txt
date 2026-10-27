@@ -1,0 +1,55 @@
+$ headroom login --dry-run --json
+exit 0
+--- stdout
+{
+  "schema": 1,
+  "within_days": 7,
+  "accounts": [
+    {
+      "account": "p",
+      "email": "p@x.com",
+      "renew": false,
+      "why": "login ends <date> (in 24d)",
+      "held": null,
+      "held_reason": null,
+      "login_ends_at": "<time>",
+      "headless_token_ends_at": null,
+      "signin": "none"
+    },
+    {
+      "account": "a@x.com",
+      "email": "a@x.com",
+      "renew": false,
+      "why": "login ends <date> (in 24d)",
+      "held": null,
+      "held_reason": null,
+      "login_ends_at": "<time>",
+      "headless_token_ends_at": "<time>",
+      "signin": "none"
+    },
+    {
+      "account": "b@x.com",
+      "email": "b@x.com",
+      "renew": false,
+      "why": "login ends <date> (in 24d)",
+      "held": null,
+      "held_reason": null,
+      "login_ends_at": "<time>",
+      "headless_token_ends_at": null,
+      "signin": "none"
+    },
+    {
+      "account": "d@x.com",
+      "email": "d@x.com",
+      "renew": false,
+      "why": "logged in, end date not recorded",
+      "held": null,
+      "held_reason": null,
+      "login_ends_at": null,
+      "headless_token_ends_at": null,
+      "signin": "none"
+    }
+  ],
+  "headless_tokens_error": null
+}
+--- stderr

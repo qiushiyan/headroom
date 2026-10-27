@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,12 +17,16 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/headless"
+	"github.com/qiushiyan/headroom/internal/signin"
 )
 
 // loginWorld is the vendor side of `headroom login`: one stored credential
 // and one logged-in email per account, and a login that rewrites them the
 // way the approval in a given profile would.
 type loginWorld struct {
+	// mu guards the world for a holder run in another goroutine
+	// (login_handoff_test.go); the batch tests run in one.
+	mu     sync.Mutex
 	now    time.Time
 	raw    map[string]string // account name → credential blob
 	email  map[string]string // account name → .claude.json's logged-in email
@@ -38,7 +43,11 @@ type loginWorld struct {
 	unknown  map[string]bool // accounts whose item `security` cannot answer for
 	sealed   bool
 	locked   bool // the Keychain hands back no item, though it is not sealed
-	remote   bool
+	// busy: accounts whose login lock another headroom login holds;
+	// signins: accounts' handed-off sign-in states.
+	busy    map[string]bool
+	signins map[string]string
+	remote  bool
 	// renewEnd is when an account's new login ends; absent = 30 days out.
 	renewEnd map[string]time.Time
 }
@@ -53,10 +62,16 @@ func (w *loginWorld) deps() loginDeps {
 		health: func([]accounts.Account) auth.QueryFunc {
 			return func(string) auth.Status { return auth.Status{} } // no oracle: credential evidence decides
 		},
-		readCred:  w.readCred,
-		metaEmail: func(a accounts.Account) string { return w.email[a.Name] },
-		sealed:    w.sealed,
+		readCred: w.readCred,
+		metaEmail: func(a accounts.Account) string {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			return w.email[a.Name]
+		},
+		sealed: w.sealed,
 		keychainItem: func(a accounts.Account) (creds.Item, string) {
+			w.mu.Lock()
+			defer w.mu.Unlock()
 			switch {
 			case w.unknown[a.Name]:
 				return creds.ItemUnknown, "security: SecKeychainSearchCopyNext: -25308"
@@ -68,6 +83,18 @@ func (w *loginWorld) deps() loginDeps {
 		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
 		now:      func() time.Time { return w.now },
 		tokens:   func() (map[string]headless.Token, error) { return map[string]headless.Token{}, nil },
+		signin: func(a accounts.Account) string {
+			if st, ok := w.signins[a.Name]; ok {
+				return st
+			}
+			return signin.None
+		},
+		acquire: func(a accounts.Account) (func(), string) {
+			if w.busy[a.Name] {
+				return nil, "another headroom login is renewing it right now — headroom login status " + a.Name
+			}
+			return func() {}, ""
+		},
 		login: func(a accounts.Account, _ accounts.Set, page approvalPage) error {
 			where := page.profile.Dir
 			if page.remote {
@@ -92,6 +119,8 @@ func (w *loginWorld) deps() loginDeps {
 // readCred is what creds.ReadRaw finds: the Keychain item while the Keychain
 // answers, else the dir's file.
 func (w *loginWorld) readCred(a accounts.Account) (string, creds.Source) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.keychain[a.Name] {
 		if !w.sealed && !w.locked {
 			if raw, ok := w.raw[a.Name]; ok {
@@ -109,9 +138,21 @@ func (w *loginWorld) readCred(a accounts.Account) (string, creds.Source) {
 	return "", creds.SourceNone
 }
 
+// set changes the world under its lock.
+func (w *loginWorld) set(change func()) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	change()
+}
+
 func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
 	t.Helper()
-	cfg := lifecycleConfig(t)
+	return renewFixtureIn(t, lifecycleConfig(t))
+}
+
+// renewFixtureIn is renewFixture's accounts in cfg's home.
+func renewFixtureIn(t *testing.T, cfg config.Scope) (config.Scope, *loginWorld) {
+	t.Helper()
 	for _, n := range []string{"a@x.com", "b@x.com", "c@x.com"} {
 		if got := call(func(std Streams) error { return AccountsAdd(std, cfg, AddOptions{Email: n}) }); got.code != 0 {
 			t.Fatalf("seed %s", n)
@@ -131,6 +172,8 @@ func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
 		keychain:  map[string]bool{},
 		stray:     map[string]string{},
 		unknown:   map[string]bool{},
+		busy:      map[string]bool{},
+		signins:   map[string]string{},
 		renewEnd:  map[string]time.Time{},
 	}
 	return cfg, w

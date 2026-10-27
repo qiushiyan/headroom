@@ -35,7 +35,7 @@ var cli = clikit.App{
 	},
 	ExitCodes: map[int]string{
 		2: "invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)",
-		3: "headless place refused: every account it could take is near a limit or excluded",
+		3: "headless place refused: every account it could take is near a limit or excluded; login start, finish or cancel refused, nothing spent or sent: the document's reason says why",
 	},
 }
 

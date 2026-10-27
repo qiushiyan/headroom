@@ -1,0 +1,16 @@
+$ headroom login status a@x.com
+exit 0
+--- stdout
+{
+  "schema": 1,
+  "account": "a@x.com",
+  "email": "a@x.com",
+  "state": "renewed",
+  "reason": null,
+  "problem": null,
+  "started_at": "<time>",
+  "expires_at": "<time>",
+  "finished_at": "<time>",
+  "login_ends_at": "<time>"
+}
+--- stderr

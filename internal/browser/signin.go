@@ -45,3 +45,33 @@ func ParseCode(line string) (Code, bool) {
 	}
 	return Code{Code: code, State: state}, true
 }
+
+// SigninURL finds, in one line of the vendor's login screen, the sign-in URL
+// a browser on another machine can complete: an https URL carrying a state
+// and an https redirect_uri off this machine — the page that shows the code
+// to paste. The URL Claude Code hands its $BROWSER redirects to a localhost
+// listener instead, and is never it (2.1.311: `If the browser didn't open,
+// visit: <URL>`, redirecting to platform.claude.com/oauth/code/callback).
+// headroom hands out only a URL the vendor printed, never one it built.
+func SigninURL(line string) (signinURL, state string, ok bool) {
+	for field := range strings.FieldsSeq(line) {
+		if !strings.HasPrefix(field, "https://") {
+			continue
+		}
+		u, err := url.Parse(field)
+		if err != nil {
+			continue
+		}
+		q := u.Query()
+		redirect, err := url.Parse(q.Get("redirect_uri"))
+		if q.Get("state") == "" || err != nil || redirect.Scheme != "https" || localHost(redirect.Hostname()) {
+			continue
+		}
+		return field, q.Get("state"), true
+	}
+	return "", "", false
+}
+
+func localHost(host string) bool {
+	return host == "" || host == "localhost" || strings.HasPrefix(host, "127.") || host == "::1"
+}
