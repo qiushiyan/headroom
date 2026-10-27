@@ -485,8 +485,15 @@ func TestHandoffWaitsOutAnExchangeLeftBehind(t *testing.T) {
 	paths.Ensure()
 	signin.Write(paths.Record(), signin.Record{Account: "a@x.com", Email: "a@x.com", State: signin.Exchanging, SigninState: "old", StartedMS: time.Now().UnixMilli()})
 	signin.WriteVendor(paths.Vendor(), signin.Proc{PID: vendor.Process.Pid, Start: started})
+	// Reaped the moment it exits, as an orphan's new parent would reap it.
+	exited := make(chan error, 1)
+	go func() { exited <- vendor.Wait() }()
+	began := time.Now()
 	h.run(loginStart, "a@x.com", "")
-	if err := vendor.Wait(); err != nil {
+	if took := time.Since(began); took > 1800*time.Millisecond {
+		t.Errorf("start took %s: it waited out the bound, not the vendor", took)
+	}
+	if err := <-exited; err != nil {
 		t.Errorf("the vendor mid-exchange was ended (%v); it should have been waited for", err)
 	}
 	if doc, _ := h.run(loginStatus, "a@x.com", ""); doc.State != signin.Awaiting {
@@ -698,5 +705,42 @@ func TestHandoffDuringAnExchange(t *testing.T) {
 	}
 	if got := <-done; got.State != signin.Renewed || len(h.sent()) != 1 {
 		t.Errorf("the exchange: %+v, codes %q", got, h.sent())
+	}
+}
+
+// A vendor that ends before any code reached it is vendor_ended, never a
+// refused code; a page approved as someone else says so and names the
+// handoff's own retry, never the batch; and a Keychain security stops
+// answering for keeps the code: keychain_unknown, nothing sent. (review r2,
+// opus R4)
+func TestHandoffEndsInItsOwnWords(t *testing.T) {
+	h := newHandoffWorld(t)
+	h.screen = func(state string) []string { return []string{"visit: " + signinURL(state)} }
+	h.run(loginStart, "a@x.com", "")
+	h.mu.Lock()
+	h.vendors[0].end(errors.New("exit status 1"))
+	h.mu.Unlock()
+	h.holders.Wait()
+	if doc, _ := h.run(loginStatus, "a@x.com", ""); doc.reason() != reasonVendorEnded || !strings.Contains(*doc.Problem, "before any code was sent") {
+		t.Errorf("vendor ended early: %+v", doc)
+	}
+
+	h.onCode = func(w *loginWorld, a, _ string) (error, bool) {
+		w.set(func() { w.raw[a], w.email[a] = blobEnding("new-"+a, w.now.Add(30*24*time.Hour)), "b@x.com" })
+		return nil, false
+	}
+	h.run(loginStart, "a@x.com", "")
+	doc, code := h.run(loginFinish, "a@x.com", "the-code#state-2\n")
+	if code != 1 || doc.reason() != wrongAccount || !strings.Contains(*doc.Problem, "headroom login start a@x.com") || strings.Contains(*doc.Problem, "headroom login a@x.com") {
+		t.Errorf("wrong account: exit %d, %+v", code, doc)
+	}
+
+	h.run(loginStart, "b@x.com", "")
+	h.w.set(func() { h.w.unknown["b@x.com"] = true })
+	if doc, code := h.run(loginFinish, "b@x.com", "the-code#state-3\n"); code != 3 || doc.reason() != heldKeychainUnknown || doc.State != signin.Awaiting {
+		t.Errorf("security stopped answering: exit %d, %+v", code, doc)
+	}
+	if got := h.sent(); len(got) != 1 {
+		t.Errorf("codes %q, want only the wrong account's", got)
 	}
 }

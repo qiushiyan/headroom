@@ -967,7 +967,13 @@ func startVendor(acct accounts.Account, set accounts.Set, email, opener string, 
 		return nil, err
 	}
 	w.Close()
-	forget := registerVendor(set.Scope, acct, cmd.Process.Pid)
+	forget, err := registerVendor(set.Scope, acct, cmd.Process.Pid)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		r.Close()
+		return nil, err
+	}
 	v := &liveVendor{cmd: cmd, in: in, lines: make(chan string, 64), exited: make(chan error, 1), gone: make(chan struct{}), grace: grace}
 	read := make(chan struct{})
 	go func() {

@@ -337,3 +337,21 @@ func TestHandoffBinaryEndsAnyVendorLeftBehind(t *testing.T) {
 		t.Error("a killed batch's vendor was left running")
 	}
 }
+
+// A vendor runs only while it is registered: one whose registration cannot
+// be written is ended at once and the sign-in refused, since nothing could
+// find it should its holder die. (review r2, astra R1)
+func TestHandoffBinaryRefusesAVendorItCannotRegister(t *testing.T) {
+	h := newHandoffBin(t)
+	if err := os.MkdirAll(h.paths().Vendor(), 0o700); err != nil { // nothing can be renamed over it
+		t.Fatal(err)
+	}
+	doc, code, _ := h.run(t, "", "login", "start", "a@x.com")
+	if code != 1 || doc.reason() != reasonHolderFailed {
+		t.Errorf("start: exit %d, %+v", code, doc)
+	}
+	pids := h.vendorPIDs(t)
+	if len(pids) != 1 || !awaitGone(pids[0]) {
+		t.Errorf("vendors %v: the unregistered vendor was left running", pids)
+	}
+}

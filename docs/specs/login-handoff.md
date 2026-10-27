@@ -168,7 +168,9 @@ An empty stdin is a usage error (exit 2).
 
 ### `headroom login status <account>`
 
-Prints the document. Exit 0 whenever it names the account, `none` included.
+Prints the document. Exit 0 whenever it names the account, `none` included;
+exit 1 when the record cannot be read. A holder that does not answer in
+time leaves the record as written, `no_reply`.
 
 ### `headroom login cancel <account>`
 
@@ -203,7 +205,8 @@ naming `start` and `finish`. Exit 0.
 ```
 
 `renew` is what a bare `headroom login` would renew with the same `--within`,
-names and `--all`. `held_reason` takes the start refusals' tokens. An end
+names and `--all`. `signin` is `null` when the sign-in's record cannot be
+read. `held_reason` takes the start refusals' tokens. An end
 that is absent or unreadable is `null`, never guessed. `signin` is the
 account's sign-in state, as `status` would print it.
 
@@ -243,7 +246,9 @@ like a subcommand.
   unreadable record is an error, never a sign-in that was not started.
 - **The vendor is registered from its launch** in `<key>.vendor` (pid and
   `ps` start), by whoever runs it — a holder, before any URL, or the batch —
-  and forgotten once reaped. The holder keeps the inherited lock referenced
+  and forgotten once reaped. A vendor runs only while registered: one whose
+  registration cannot be written is ended at once and the login refused
+  (`holder_failed` for `start`). The holder keeps the inherited lock referenced
   for its whole life: an `*os.File` nothing refers to is closed by the
   collector, and the lock with it (review r1).
 - **The socket** `<key>.sock` carries one JSON request and one reply per
@@ -350,6 +355,11 @@ Each case runs hermetically: a temp home, stub `claude` and `security`.
     account then is refused `busy` (review r1).
 26. `security`'s answers: found, not found (exit 44), another failure, no
     answer in time, no `security` at all (review r1).
+27. A vendor whose registration cannot be written is ended and `start`
+    fails `holder_failed` (review r2).
+28. `vendor_ended` for a vendor that ends before any code; a `wrong_account`
+    verdict names `headroom login start`, never the batch; `keychain_unknown`
+    at `finish` sends nothing (review r2).
 
 ## Verification
 
@@ -385,6 +395,9 @@ scratch home, every code bogus:
 - Chrome, reproduced: in a sandboxed agent shell `Local State` reads
   `operation not permitted`; the installed build printed `no Chrome profile
   matches <email>` for every account, this build names the refusal.
+
+Review r2 found that a vendor whose registration failed still ran, and the
+skill's recovery rules missing `exchanging` and `outcome_unknown`.
 
 Review r1 (codex astra, warm from the consult, and claude opus, cold) found,
 each pinned red before its fix: the holder's lock closed by the collector; a

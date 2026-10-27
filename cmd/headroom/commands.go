@@ -287,7 +287,8 @@ type LoginStatusCmd struct {
 func (LoginStatusCmd) Help() string {
 	return `Prints the account's sign-in as start and finish print it: awaiting_code or exchanging while
 it is live, and how it ended after — kept until the next start of the account; none when no
-sign-in was ever started. It exits 0.`
+sign-in was ever started. A holder too busy to answer leaves the sign-in as last recorded,
+reason no_reply: ask again. It exits 0, and 1 when the sign-in's record cannot be read.`
 }
 
 func (c *LoginStatusCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
@@ -300,8 +301,11 @@ type LoginCancelCmd struct {
 
 func (LoginCancelCmd) Help() string {
 	return `Ends the account's sign-in while it waits for its code, and prints it: state failed, reason
-cancelled. It exits 0, also when there was nothing to end, and 3 while a code is being
-exchanged, which cannot be called back. Then headroom login start begins afresh.`
+cancelled. It exits 0, also when there was nothing to end. It exits 3 when nothing was ended:
+exchanging (a code cannot be called back; ask headroom login status), busy (another headroom
+login is renewing the account), no_reply (its holder did not answer; cancel again), protocol
+(a holder of another headroom build waits). It exits 1 when the record cannot be read. Then
+headroom login start begins afresh.`
 }
 
 func (c *LoginCancelCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {

@@ -148,7 +148,7 @@ func liveSignin(scope config.Scope) func(accounts.Account) string {
 	return func(a accounts.Account) string {
 		rec, _, err := liveRecord(a, signin.For(scope.AccountsRoot, a.Dir()), defaultHandoff.status)
 		if err != nil {
-			return signin.Unknown
+			return "" // unreadable: the plan prints null, never a guess
 		}
 		return rec.State
 	}
@@ -318,7 +318,7 @@ type loginPlanAccount struct {
 	HeldReason          *string `json:"held_reason"`
 	LoginEndsAt         *string `json:"login_ends_at"`
 	HeadlessTokenEndsAt *string `json:"headless_token_ends_at"`
-	Signin              string  `json:"signin"`
+	Signin              *string `json:"signin"`
 }
 
 func writeLoginPlan(out io.Writer, rows []*loginRow, deps loginDeps, within time.Duration) error {
@@ -337,7 +337,7 @@ func writeLoginPlan(out io.Writer, rows []*loginRow, deps loginDeps, within time
 	for _, r := range rows {
 		a := loginPlanAccount{
 			Account: r.acct.Name, Email: orNull(r.email), Renew: r.chosen, Why: r.why,
-			Held: orNull(r.held), HeldReason: orNull(r.heldReason), Signin: r.signin,
+			Held: orNull(r.held), HeldReason: orNull(r.heldReason), Signin: orNull(r.signin),
 		}
 		if r.health != accountstate.HealthNoLogin && r.blobOK && r.blob.RefreshState == tag.OK {
 			a.LoginEndsAt = when(r.blob.RefreshExpiresMS)
@@ -551,9 +551,13 @@ func judgeLogin(r *loginRow, before creds.Blob, beforeOK bool, runErr error, dep
 	// A login that lives in a Keychain item is the item's: one readable only
 	// from the file — the Keychain stopped answering this session since the
 	// plan — is a login no session that reads the Keychain uses.
-	if item, _ := deps.keychainItem(r.acct); keychainWithheld(item, source) || item == creds.ItemUnknown && source != creds.SourceKeychain {
+	switch item, said := deps.keychainItem(r.acct); {
+	case keychainWithheld(item, source):
 		return blob, "the new login was saved to the dir's file, while the Keychain item every session reads first keeps the old one — " +
 			"this session can no longer read the Keychain; run `security unlock-keychain` here, or renew at the machine", storedElsewhere
+	case item == creds.ItemUnknown && source != creds.SourceKeychain:
+		return blob, "the new login was read from the dir's file, and security could not say whether a Keychain item, which sessions read first, " +
+			"holds another (" + said + ") — renew again once security answers", storedElsewhere
 	}
 	got := deps.metaEmail(r.acct)
 	if r.email != "" && !strings.EqualFold(got, r.email) {
@@ -614,7 +618,12 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	forget := registerVendor(set.Scope, acct, cmd.Process.Pid)
+	forget, err := registerVendor(set.Scope, acct, cmd.Process.Pid)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return err
+	}
 	done, relayed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(relayed)
@@ -669,15 +678,18 @@ func loginCommand(acct accounts.Account, set accounts.Set, page approvalPage, op
 // just started for its dir, so that whoever next holds the lock can end it
 // should its owner die first — the vendor outlives the input it was given
 // (measured, 2.1.311). forget removes the record once the vendor is reaped.
-// Best effort: an unregistered vendor is the same orphan the record exists
-// to prevent, never a reason to refuse the login.
-func registerVendor(scope config.Scope, acct accounts.Account, pid int) (forget func()) {
+// A vendor runs only while registered: on an error the caller ends it, since
+// an unregistered vendor is the orphan nothing could find.
+func registerVendor(scope config.Scope, acct accounts.Account, pid int) (forget func(), err error) {
 	path := signin.For(scope.AccountsRoot, acct.Dir()).Vendor()
-	start, _ := sessions.PS(pid)
-	if signin.WriteVendor(path, signin.Proc{PID: pid, Start: start}) != nil {
-		return func() {}
+	start, err := sessions.PS(pid)
+	if err == nil {
+		err = signin.WriteVendor(path, signin.Proc{PID: pid, Start: start})
 	}
-	return func() { os.Remove(path) }
+	if err != nil {
+		return nil, fmt.Errorf("claude auth login could not be registered, so it was ended: %w", err)
+	}
+	return func() { os.Remove(path) }, nil
 }
 
 // readLines is r, line by line, until it ends.

@@ -4,7 +4,8 @@ Print one account's started sign-in as JSON.
 
 Prints the account's sign-in as start and finish print it: awaiting_code or exchanging while
 it is live, and how it ended after — kept until the next start of the account; none when no
-sign-in was ever started. It exits 0.
+sign-in was ever started. A holder too busy to answer leaves the sign-in as last recorded,
+reason no_reply: ask again. It exits 0, and 1 when the sign-in's record cannot be read.
 
 Arguments:
   <account>        The account whose sign-in to print.

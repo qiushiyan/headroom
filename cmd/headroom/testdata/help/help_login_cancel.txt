@@ -3,8 +3,11 @@ Usage: headroom login cancel <account> [flags]
 End one account's started sign-in while it waits for its code.
 
 Ends the account's sign-in while it waits for its code, and prints it: state failed, reason
-cancelled. It exits 0, also when there was nothing to end, and 3 while a code is being
-exchanged, which cannot be called back. Then headroom login start begins afresh.
+cancelled. It exits 0, also when there was nothing to end. It exits 3 when nothing was ended:
+exchanging (a code cannot be called back; ask headroom login status), busy (another headroom
+login is renewing the account), no_reply (its holder did not answer; cancel again), protocol
+(a holder of another headroom build waits). It exits 1 when the record cannot be read. Then
+headroom login start begins afresh.
 
 Arguments:
   <account>        The account whose sign-in to end.

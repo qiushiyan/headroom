@@ -109,12 +109,14 @@ shell's `x-<name>`) — quote that spelling.
     copies the `code#state` the page shows; then `printf '%s\n'
     '<code#state>' | headroom login finish <name>` — the code goes on
     stdin. Done on exit 0, `state: renewed`, `login_ends_at` the new end.
-    Exit 3: nothing was spent — fix what `reason` and `problem` name (a
-    code from another sign-in, a Keychain this session stopped reading)
-    and run the same command again. Exit 1: the sign-in is over — `reason`
-    says why; `start` again. On `no_reply` run `headroom login status
-    <name>`, never `start`: the code may have gone, and finishing again
-    sends nothing. One sign-in per account: a second `start` returns the
+    Exit 3: this call spent nothing — fix what `reason` and `problem` name
+    (a code from another sign-in, a Keychain this session stopped reading)
+    and run the same command again; but on `exchanging` a code already went:
+    run `headroom login status <name>` until it ends. Exit 1: the sign-in is
+    over — `reason` says why; `start` again, except on `outcome_unknown`:
+    read `headroom login --dry-run --json` first, since the login may have
+    taken. On `no_reply` run `headroom login status <name>`, never `start`:
+    the code may have gone, and finishing again sends nothing. One sign-in per account: a second `start` returns the
     same URL; `headroom login cancel <name>` ends it.
   - **Held accounts**: *login kept in the Keychain* — this session cannot
     read the login Keychain (an ssh session, or a locked Keychain); run
