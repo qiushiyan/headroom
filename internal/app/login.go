@@ -52,9 +52,10 @@ type loginDeps struct {
 	// keychainItem reports an account's item by its attributes, which a
 	// sealed Keychain still shows, with what `security` said when it could
 	// not tell. sealed: the login Keychain refuses this session, as macOS
-	// refuses an ssh session — what the plan says about a held account.
+	// refuses an ssh session — asked only to word the plan's explanation
+	// under an account held for the Keychain.
 	keychainItem func(accounts.Account) (creds.Item, string)
-	sealed       bool
+	sealed       func() bool
 	approver     approver
 	now          func() time.Time
 	login        func(acct accounts.Account, set accounts.Set, page approvalPage) error
@@ -131,7 +132,7 @@ func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 		readCred:     liveReadCred,
 		metaEmail:    liveMetaEmail,
 		keychainItem: liveKeychainItem,
-		sealed:       creds.KeychainSealed(),
+		sealed:       liveSealed,
 		approver:     newApprover(scope),
 		now:          time.Now,
 		login:        newVendorLogin(std),
@@ -145,7 +146,10 @@ func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 // or its record says.
 func liveSignin(scope config.Scope) func(accounts.Account) string {
 	return func(a accounts.Account) string {
-		rec, _ := liveRecord(a, signin.For(scope.AccountsRoot, a.Dir()))
+		rec, _, err := liveRecord(a, signin.For(scope.AccountsRoot, a.Dir()), defaultHandoff.status)
+		if err != nil {
+			return signin.Unknown
+		}
 		return rec.State
 	}
 }
@@ -181,6 +185,12 @@ func liveKeychainItem(a accounts.Account) (creds.Item, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), keychainWait)
 	defer cancel()
 	return creds.KeychainItem(ctx, a.ConfigDir)
+}
+
+func liveSealed() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainWait)
+	defer cancel()
+	return creds.KeychainSealed(ctx)
 }
 
 func liveMetaEmail(a accounts.Account) string {
@@ -225,7 +235,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 	}
 	writeTokenEnds(out, rows, deps, within, now)
 	if sealed > 0 {
-		fmt.Fprintf(out, "\n%s\n", keychainClosed(sealed, deps.sealed))
+		fmt.Fprintf(out, "\n%s\n", keychainClosed(sealed, deps.sealed()))
 	}
 	if len(chosen) == 0 {
 		if refused > 0 {
@@ -261,7 +271,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 		raw, _ := deps.readCred(r.acct)
 		before, beforeOK := creds.Parse(raw)
 		err := deps.login(r.acct, set, r.page)
-		blob, msg := readBack(r, before, beforeOK, err, deps)
+		blob, msg, _ := judgeLogin(r, before, beforeOK, err, deps)
 		release()
 		if msg != "" {
 			failed++
@@ -406,7 +416,7 @@ func holdOf(r *loginRow, deps loginDeps) (string, string) {
 	switch {
 	case signin.Live(r.signin):
 		return "a sign-in from headroom login start is in progress — headroom login status " + r.acct.Name, reasonBusy
-	case item == creds.ItemPresent && r.source != creds.SourceKeychain:
+	case keychainWithheld(item, r.source):
 		return "login kept in the Keychain, which this session cannot read", heldKeychain
 	case item == creds.ItemUnknown:
 		return "could not tell whether its login is in the Keychain (" + said + ")", heldKeychainUnknown
@@ -414,6 +424,14 @@ func holdOf(r *loginRow, deps loginDeps) (string, string) {
 		return "logged in, but its identity unreadable — a new login could not be checked", heldIdentity
 	}
 	return "", ""
+}
+
+// keychainWithheld is the one Keychain rule the plan, the handoff's code
+// check and the read-back share: the account's login is a Keychain item,
+// and the read of it did not come from the Keychain — so the login this
+// session sees is not the one every session that can read the Keychain uses.
+func keychainWithheld(item creds.Item, source creds.Source) bool {
+	return item == creds.ItemPresent && source != creds.SourceKeychain
 }
 
 // keychainClosed is what the plan says under n accounts held for a Keychain
@@ -491,17 +509,6 @@ func loginState(r *loginRow, now time.Time) string {
 	return "login ends " + render.When(r.blob.RefreshExpiresMS, now)
 }
 
-// readBack decides whether a login took, against the credential as it stood
-// just before: the vendor command succeeded, the stored login is a new one,
-// and the dir is now logged in as the account it is for. A new login is a new
-// refresh expiry — an access token changes whenever any session refreshes
-// it, so a token change counts only when the credential records no expiry.
-// It returns the verified credential, and "" when the login took.
-func readBack(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps loginDeps) (creds.Blob, string) {
-	blob, msg, _ := judgeLogin(r, before, beforeOK, runErr, deps)
-	return blob, msg
-}
-
 // The reasons a login that ran did not take, as the handoff names them.
 const (
 	notRenewed      = "not_renewed"
@@ -510,10 +517,18 @@ const (
 	storedElsewhere = "stored_elsewhere"
 )
 
-// judgeLogin is readBack with the reason as a token. A vendor command that
-// failed is a failure whatever changed meanwhile: the change may be another
-// login's. A caller that ended the vendor itself, after it went quiet with
-// the code in hand, passes no error, and the credential alone decides.
+// judgeLogin decides whether a login took, against the credential as it
+// stood just before: the vendor command succeeded, the stored login is a new
+// one, read where sessions read it, and the dir is now logged in as the
+// account it is for. A new login is a new refresh expiry — an access token
+// changes whenever any session refreshes it, so a token change counts only
+// when the credential records no expiry. A vendor command that failed is a
+// failure whatever changed meanwhile: the change may be another login's. A
+// caller that ended the vendor itself, after it went quiet with the code in
+// hand, passes no error, and the credential alone decides. It returns the
+// verified credential, and, when the login did not take, why — in words
+// that name no command, since each surface says its own way to retry — and
+// as a token.
 func judgeLogin(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps loginDeps) (creds.Blob, string, string) {
 	if runErr != nil {
 		return creds.Blob{}, "claude auth login: " + runErr.Error(), vendorRejected
@@ -536,15 +551,13 @@ func judgeLogin(r *loginRow, before creds.Blob, beforeOK bool, runErr error, dep
 	// A login that lives in a Keychain item is the item's: one readable only
 	// from the file — the Keychain stopped answering this session since the
 	// plan — is a login no session that reads the Keychain uses.
-	if source != creds.SourceKeychain {
-		if item, _ := deps.keychainItem(r.acct); item != creds.ItemAbsent {
-			return blob, "the new login was saved to the dir's file, while the Keychain item every session reads first keeps the old one — " +
-				"this session can no longer read the Keychain; run `security unlock-keychain` here, or renew at the machine", storedElsewhere
-		}
+	if item, _ := deps.keychainItem(r.acct); keychainWithheld(item, source) || item == creds.ItemUnknown && source != creds.SourceKeychain {
+		return blob, "the new login was saved to the dir's file, while the Keychain item every session reads first keeps the old one — " +
+			"this session can no longer read the Keychain; run `security unlock-keychain` here, or renew at the machine", storedElsewhere
 	}
 	got := deps.metaEmail(r.acct)
 	if r.email != "" && !strings.EqualFold(got, r.email) {
-		return blob, fmt.Sprintf("logged in as %s, not %s — run `headroom login %s` again and approve as %s", orNobody(got), r.email, r.acct.Name, r.email), wrongAccount
+		return blob, fmt.Sprintf("logged in as %s, not %s — the page was approved as another account; approve it as %s", orNobody(got), r.email, r.email), wrongAccount
 	}
 	return blob, "", ""
 }
@@ -581,30 +594,16 @@ func newVendorLogin(std Streams) func(acct accounts.Account, set accounts.Set, p
 }
 
 func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account, set accounts.Set, page approvalPage) error {
-	p, err := launch.Prepare(acct, set, os.Environ())
-	if err != nil {
-		return err
-	}
-	for _, n := range p.Notices {
-		fmt.Fprintln(std.Err, "headroom: "+n)
-	}
 	dir, err := os.MkdirTemp("", "headroom-login")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
 	signin := filepath.Join(dir, "state")
-	env, err := page.env(p.Env, signin)
+	cmd, err := loginCommand(acct, set, page, signin, std.Err)
 	if err != nil {
 		return err
 	}
-	args := []string{"auth", "login"}
-	if page.email != "" {
-		args = append(args, "--email", page.email)
-	}
-	cmd := exec.Command(p.Path, args...)
-	cmd.Args[0] = p.Binary
-	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = std.Out, std.Err
 	vendorIn, err := cmd.StdinPipe()
 	if err != nil {
@@ -615,6 +614,7 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	forget := registerVendor(set.Scope, acct, cmd.Process.Pid)
 	done, relayed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(relayed)
@@ -632,9 +632,52 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 		}, done)
 	}()
 	err = cmd.Wait()
+	forget()
 	close(done)
 	<-relayed
 	return err
+}
+
+// loginCommand is the vendor's `claude auth login` for acct, unstarted: under
+// the environment launch builds for the account, with page's opener as its
+// $BROWSER recording the sign-in's state at opener, `--email` pre-filling
+// the page. The batch attaches the terminal; a holder, its pipes. Launch's
+// notices go to notices.
+func loginCommand(acct accounts.Account, set accounts.Set, page approvalPage, opener string, notices io.Writer) (*exec.Cmd, error) {
+	p, err := launch.Prepare(acct, set, os.Environ())
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range p.Notices {
+		fmt.Fprintln(notices, "headroom: "+n)
+	}
+	env, err := page.env(p.Env, opener)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"auth", "login"}
+	if page.email != "" {
+		args = append(args, "--email", page.email)
+	}
+	cmd := exec.Command(p.Path, args...)
+	cmd.Args[0] = p.Binary
+	cmd.Env = env
+	return cmd, nil
+}
+
+// registerVendor records beside the account's login lock the vendor login
+// just started for its dir, so that whoever next holds the lock can end it
+// should its owner die first — the vendor outlives the input it was given
+// (measured, 2.1.311). forget removes the record once the vendor is reaped.
+// Best effort: an unregistered vendor is the same orphan the record exists
+// to prevent, never a reason to refuse the login.
+func registerVendor(scope config.Scope, acct accounts.Account, pid int) (forget func()) {
+	path := signin.For(scope.AccountsRoot, acct.Dir()).Vendor()
+	start, _ := sessions.PS(pid)
+	if signin.WriteVendor(path, signin.Proc{PID: pid, Start: start}) != nil {
+		return func() {}
+	}
+	return func() { os.Remove(path) }
 }
 
 // readLines is r, line by line, until it ends.

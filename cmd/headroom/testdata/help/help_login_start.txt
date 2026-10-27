@@ -5,15 +5,16 @@ Start one account's sign-in for an approver elsewhere, and print its URL as JSON
 Starts the account's sign-in for an approver elsewhere and prints it as JSON on stdout:
   {"schema": 1, "account", "email", "state", "reason", "problem", "url", "started_at",
    "expires_at", "finished_at", "login_ends_at", "reused"}
-Nothing opens on this machine: open url in a browser signed in to claude.ai as the account,
-click Authorize, and send the code#state the page shows to headroom login finish. A holder
-waits for it until expires_at, ten minutes; a second start returns the same sign-in, reused
-true.
+Nothing opens on this machine: open url in a browser signed in to claude.ai as email, click
+Authorize, and send the code#state the page shows to headroom login finish. A holder waits
+for it until expires_at, ten minutes; a second start returns the same sign-in, reused true.
 
-It exits 0 with state awaiting_code; 3 when the account cannot be renewed from this session,
-before any approval is spent — reason says why (keychain_unreadable, keychain_unknown,
-identity_unreadable, busy, exchanging) and problem what opens it; 1 when the sign-in could
-not be started (no_url, screen_changed, holder_failed).
+It exits 0 with state awaiting_code. It exits 3 when nothing was started and no approval is
+owed — reason says why and problem what to do: keychain_unreadable, keychain_unknown or
+identity_unreadable (this session cannot renew the account), busy (another headroom login is
+renewing it; start again in a moment), exchanging (a code is being exchanged; ask headroom
+login status), protocol (a sign-in held by another headroom build waits). It exits 1 when
+the sign-in could not be started (no_url, screen_changed, holder_failed).
 
 Arguments:
   <account>        The account whose login to renew, by email or dir name.

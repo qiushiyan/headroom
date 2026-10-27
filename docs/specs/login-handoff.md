@@ -101,7 +101,8 @@ headroom itself unable to run).
   account's login as it now stands.
 
 `reason` is a stable token, `problem` the same in words for a person, naming
-what fixes it. `url` is present only while `awaiting_code`. `reused` appears
+what fixes it. `keychain_unknown` is also `finish`'s, state `awaiting_code`,
+nothing sent, when `security` stops answering since `start`. `url` is present only while `awaiting_code`. `reused` appears
 on `start` only. A finished sign-in's document stays readable through
 `status` until the next `start` of that account.
 
@@ -120,7 +121,9 @@ Reasons:
 | `code_malformed` | `awaiting_code` | the line is not shaped `code#state`; nothing was sent |
 | `code_other_signin` | `awaiting_code` | the code's state is another sign-in's; nothing was sent |
 | `keychain_closed` | `awaiting_code` | the Keychain stopped serving this account's login since `start`; nothing was sent |
+| `record_failed` | `awaiting_code` | the sign-in's record could not be written, and a code goes only once the record shows it; nothing was sent |
 | `vendor_rejected` | `failed` | the vendor refused the code; the login is unchanged |
+| `vendor_ended` | `failed` | the vendor ended before any code was sent |
 | `not_renewed` | `failed` | the vendor finished, and the stored login did not change |
 | `wrong_account` | `failed` | the dir is now logged in as another email: the page was approved as someone else |
 | `stored_elsewhere` | `failed` | the new login went to the file while the Keychain holds the one sessions use |
@@ -128,7 +131,7 @@ Reasons:
 | `cancelled` | `failed` | `cancel` ended it, or the holder was stopped |
 | `holder_gone` | `failed` | the holder ended before any code was sent |
 | `outcome_unknown` | `unknown` | the holder ended while exchanging |
-| `no_reply` | as it stood | `finish` lost the holder's answer after sending: ask `status` |
+| `no_reply` | as it stood | `finish` lost the holder's answer after sending: ask `status`; from `status` or `cancel`, the holder took the call and did not answer in time — it is busy, not gone |
 | `protocol` | as it stood | the holder waiting is from another headroom build; nothing was sent |
 | `no_attempt` | `none` | there is no sign-in to finish or cancel |
 
@@ -153,10 +156,13 @@ login can still be read where it was read at `start`; otherwise exit 3, state
 `awaiting_code`, nothing sent — fix what `reason` names and finish again. A
 sent code is never sent again: the holder marks the sign-in `exchanging`
 before writing it, waits up to 60 seconds for the vendor, and reads the
-login back as `headroom login` does. Exit 0 `renewed`; exit 1 for every other
-end. `finish` on a sign-in already over prints its document (exit 0 if it
-renewed, 1 otherwise) and sends nothing. A lost answer prints `no_reply`:
-the code may have been sent — ask `status`, never `start`.
+login back as `headroom login` does. Exit 0 `renewed`. Exit 3 whenever this
+call sent nothing and the sign-in is not over: a refused code, and a finish
+that finds a code already `exchanging` — ask `status`. Exit 1 for every other
+end; `outcome_unknown` calls for the plan before a new `start`. `finish` on a
+sign-in already over prints its document (exit 0 if it renewed, 1 otherwise)
+and sends nothing. A lost answer prints `no_reply`: the code may have been
+sent — ask `status`, never `start`.
 
 An empty stdin is a usage error (exit 2).
 
@@ -230,9 +236,16 @@ like a subcommand.
   `screen_changed`; no URL in 30 seconds fails `no_url`. headroom never
   builds a URL of its own.
 - **The record** `<key>.json` is the document plus what only the holder
-  needs: the holder's and the vendor's pid and start instant, the sign-in's
-  state, and where the account's login was read at `start`. The holder writes
-  it whole on each transition, `exchanging` before the code goes out.
+  needs: the holder's pid and start instant and the sign-in's state. The
+  holder writes it whole on each transition, and a transition is taken only
+  once it is on disk: a code goes out only after `exchanging` is written,
+  so a dead holder's record never says no code was sent when one was. An
+  unreadable record is an error, never a sign-in that was not started.
+- **The vendor is registered from its launch** in `<key>.vendor` (pid and
+  `ps` start), by whoever runs it — a holder, before any URL, or the batch —
+  and forgotten once reaped. The holder keeps the inherited lock referenced
+  for its whole life: an `*os.File` nothing refers to is closed by the
+  collector, and the lock with it (review r1).
 - **The socket** `<key>.sock` carries one JSON request and one reply per
   connection, each with `"v": 1`; a version the holder does not speak is
   refused before anything is sent. A path over 103 bytes fails `start`
@@ -243,13 +256,16 @@ like a subcommand.
   meanwhile, since the change may be another login's; one headroom had to
   end after the bound is judged by its read-back alone. Every Keychain read
   is bounded to 10 seconds.
-- **A holder that dies leaves its vendor running** (measured). The next
+- **An owner that dies leaves its vendor running** (measured). The next
   `start`, `cancel` or batch login of the account holds the lock, finds the
-  record still live, and ends
-  the vendor it names when that pid still runs with its recorded start; mid
-  exchange, it waits the exchange bound first. `status` and `finish` report
-  such a sign-in from its record: `holder_gone` before a code was sent,
-  `outcome_unknown` after.
+  vendor registered, and ends it when that pid still runs with its recorded
+  start — after the exchange bound when the record says a code may be in
+  flight — then settles a record left live. A `start` whose holder dies
+  before it is ready does so itself, still holding the lock. `status` and
+  `finish` report such a sign-in from its record: `holder_gone` before a
+  code was sent, `outcome_unknown` after. A holder that takes a call and
+  does not answer in time is slow, not gone: `status` prints the record as
+  written, `no_reply`.
 
 ## Shared changes
 
@@ -260,7 +276,17 @@ like a subcommand.
   sealed-Keychain explanation stays for the ssh case.
 - **Read-back by source.** After a login, an account whose Keychain item
   exists must read its new login from the Keychain; a renewal readable only
-  from the file is `stored_elsewhere`.
+  from the file is `stored_elsewhere`. The plan, the code check and the
+  read-back share the one rule. The read-back's words name no command;
+  each surface adds its own retry.
+- **Removal asks the same way.** `accounts remove` deletes the Keychain item
+  only after `security` says it exists, and an item it cannot answer for
+  stops the removal with the dir left in place; it used to read any failure
+  as no item.
+- **One vendor command.** The batch and the holder build `claude auth login`
+  through one constructor; only what they attach to it differs.
+- **The sealed probe** is asked only to word the plan's explanation, and is
+  bounded like every Keychain question.
 - **Chrome.** The plan says `no Chrome profile list at <path>` when there is
   none, `Chrome's profile list at <path> could not be read: …` when it cannot
   be read or parsed, and `no Chrome profile matches <email>` only when it was
@@ -305,6 +331,25 @@ Each case runs hermetically: a temp home, stub `claude` and `security`.
 16. Grammar: `login a@x.com` and `login renew start` are the batch; `login
     start a@x.com` starts.
 17. A `.login` line in `.order` makes no account.
+18. Through the binary, a holder whose collector runs keeps its lock: a
+    second `start` reuses the sign-in (review r1).
+19. A record that cannot be written keeps the code from the vendor: exit 3,
+    `record_failed`, nothing sent (review r1).
+20. A vendor started before its URL, whose holder is killed, is ended by the
+    start that waited on it; a batch killed mid-login leaves a vendor the
+    next `start` ends (review r1).
+21. A holder busy past `status`'s wait is reported as recorded, `no_reply`,
+    never `holder_gone` (review r1).
+22. The document's `email` is whom the sign-in is for, while the dir is
+    logged in as someone else (review r1).
+23. While a code is being exchanged, `finish` exits 3 `exchanging` and sends
+    nothing, `cancel` and `start` refuse it, and the exchange keeps its
+    verdict (review r1).
+24. A dead holder's vendor mid-exchange is waited for, not ended (review r1).
+25. The batch holds the login lock while its vendor runs: a `start` of the
+    account then is refused `busy` (review r1).
+26. `security`'s answers: found, not found (exit 44), another failure, no
+    answer in time, no `security` at all (review r1).
 
 ## Verification
 
@@ -340,6 +385,14 @@ scratch home, every code bogus:
 - Chrome, reproduced: in a sandboxed agent shell `Local State` reads
   `operation not permitted`; the installed build printed `no Chrome profile
   matches <email>` for every account, this build names the refusal.
+
+Review r1 (codex astra, warm from the consult, and claude opus, cold) found,
+each pinned red before its fix: the holder's lock closed by the collector; a
+code sent when its `exchanging` could not be recorded; vendors untracked
+before their URL and in the batch; a busy holder reported gone; the
+document's email taken from the dir; `finish` exiting 1 while a code was in
+flight; the `wrong_account` words sending a handoff caller to the batch; and
+four behaviours no test pinned.
 
 Found through the binary, not the in-process tests: the vendor inherited the
 holder's lock descriptor, so a killed holder's orphan kept the account

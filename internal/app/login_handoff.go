@@ -29,10 +29,10 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
-	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/signin"
@@ -48,12 +48,13 @@ type handoffBounds struct {
 	exchange time.Duration // for the vendor, once it has the code
 	stop     time.Duration // between SIGTERM and a kill
 	reply    time.Duration // for a finish's answer: the exchange and the read-back
+	status   time.Duration // for a holder's answer to status
 	start    time.Duration // for another start or cancel of the account to finish
 }
 
 var defaultHandoff = handoffBounds{
 	url: 30 * time.Second, opener: 3 * time.Second, awaiting: 10 * time.Minute,
-	exchange: 60 * time.Second, stop: 3 * time.Second, reply: 90 * time.Second, start: 45 * time.Second,
+	exchange: 60 * time.Second, stop: 3 * time.Second, reply: 90 * time.Second, status: 5 * time.Second, start: 45 * time.Second,
 }
 
 // The reasons a handed-off sign-in names, beyond the held ones and the
@@ -74,6 +75,8 @@ const (
 	reasonNoReply       = "no_reply"
 	reasonProtocol      = "protocol"
 	reasonNoAttempt     = "no_attempt"
+	reasonVendorEnded   = "vendor_ended"
+	reasonRecordFailed  = "record_failed"
 )
 
 // vendorRun is the vendor's login as a holder runs it.
@@ -85,9 +88,8 @@ type vendorRun interface {
 	Send(code string) error
 	// Exited delivers its exit once.
 	Exited() <-chan error
-	// Stop ends it: SIGTERM, then a kill.
+	// Stop ends it — SIGTERM, then a kill — and returns once it has gone.
 	Stop()
-	Proc() signin.Proc
 }
 
 // handoffDeps are the edges a handed-off sign-in crosses: the batch's reads
@@ -112,7 +114,7 @@ func liveHandoff(scope config.Scope, logw io.Writer) handoffDeps {
 			readCred:     liveReadCred,
 			metaEmail:    liveMetaEmail,
 			keychainItem: liveKeychainItem,
-			sealed:       creds.KeychainSealed(),
+			sealed:       liveSealed,
 			signin:       func(accounts.Account) string { return signin.None },
 		},
 		ps:     sessions.PS,
@@ -159,6 +161,9 @@ func LoginHold(std Streams, scope config.Scope, name string) error {
 	if lock == nil || syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		return errors.New("login hold is run by headroom login start, with the account's login lock")
 	}
+	// Held, and kept reachable, for the holder's whole life: an *os.File
+	// nothing refers to is closed by the collector, and the lock with it.
+	defer lock.Close()
 	// The holder's alone: a vendor that inherited it would keep the lock
 	// past a holder that died, and with it the next start from ending that
 	// vendor.
@@ -202,7 +207,10 @@ func loginStart(std Streams, scope config.Scope, name string, deps handoffDeps) 
 	if !ok {
 		// Someone runs this account's login: a holder, whose sign-in is
 		// returned as it is while it waits for its code, or the batch.
-		rec, answered := liveRecord(acct, paths)
+		rec, answered, err := liveRecord(acct, paths, deps.bounds.status)
+		if err != nil {
+			return err
+		}
 		switch {
 		case answered == holderAnswered && rec.State == signin.Awaiting:
 			reused := true
@@ -211,6 +219,8 @@ func loginStart(std Streams, scope config.Scope, name string, deps handoffDeps) 
 			rec.Reason, rec.Problem = reasonExchanging, "a code for "+acct.Name+" is being exchanged — headroom login status "+acct.Name+" says how it ends"
 		case answered == holderAnswered:
 			rec.Reason, rec.Problem = reasonBusy, "its sign-in is ending — start again in a moment"
+		case answered == holderSilent:
+			rec.Reason, rec.Problem = reasonBusy, fmt.Sprintf("its holder did not answer within %s — start again in a moment", deps.bounds.status)
 		case answered == holderOtherBuild:
 			rec.Reason, rec.Problem = reasonProtocol, "a sign-in held by another headroom build waits for its code — finish it with that build, or cancel it"
 		default:
@@ -222,6 +232,9 @@ func loginStart(std Streams, scope config.Scope, name string, deps handoffDeps) 
 	settleStale(paths, deps.ps, deps.bounds, deps.now())
 	rec, err := deps.spawn(acct.Name, lock, paths)
 	if err != nil {
+		// A holder that never got ready may have started a vendor; under the
+		// lock still, it is ended now.
+		settleStale(paths, deps.ps, deps.bounds, deps.now())
 		rec = endedRecord(acct, signin.Failed, reasonHolderFailed, err.Error(), deps.now())
 		signin.Write(paths.Record(), rec)
 	}
@@ -253,24 +266,33 @@ func loginFinish(std Streams, scope config.Scope, name string, deps handoffDeps)
 	rec := rep.Record
 	switch {
 	case errors.Is(err, signin.ErrNoHolder):
-		rec = settled(acct, paths)
+		if rec, err = settled(acct, paths); err != nil {
+			return err
+		}
 		if rec.State == signin.None {
 			rec.Reason, rec.Problem = reasonNoAttempt, "no sign-in was started for "+acct.Name+" — headroom login start "+acct.Name
 		}
 	case errors.Is(err, signin.ErrProtocol):
-		rec = onDisk(acct, paths)
+		if rec, err = onDisk(acct, paths); err != nil {
+			return err
+		}
 		rec.Reason, rec.Problem = reasonProtocol, "the sign-in waiting is held by another headroom build; nothing was sent — finish it with that build, or cancel it"
 	case err != nil:
-		rec = onDisk(acct, paths)
-		rec.Reason, rec.Problem = reasonNoReply, "the holder's answer was lost ("+err.Error()+"); the code may have been sent — headroom login status "+acct.Name+" says how it ended, and finishing again sends nothing"
+		lost := err
+		if rec, err = onDisk(acct, paths); err != nil {
+			return err
+		}
+		rec.Reason, rec.Problem = reasonNoReply, "the holder's answer was lost ("+lost.Error()+"); the code may have been sent — headroom login status "+acct.Name+" says how it ended, and finishing again sends nothing"
 		return printSignin(std, rec, 1, nil)
 	}
 	exit := 1
-	switch rec.State {
-	case signin.Renewed:
+	switch {
+	case rec.State == signin.Renewed:
 		exit = 0
-	case signin.Awaiting:
-		exit = 3 // refused, nothing sent: fix what the reason names and finish again
+	case rec.State == signin.Awaiting, rec.Reason == reasonExchanging:
+		// Refused, nothing sent by this call: fix what the reason names and
+		// finish again — or, while a code is being exchanged, ask status.
+		exit = 3
 	}
 	return printSignin(std, rec, exit, nil)
 }
@@ -280,9 +302,15 @@ func loginStatus(std Streams, scope config.Scope, name string, deps handoffDeps)
 	if err != nil {
 		return err
 	}
-	rec, answered := liveRecord(acct, paths)
-	if answered == holderOtherBuild {
+	rec, answered, err := liveRecord(acct, paths, deps.bounds.status)
+	if err != nil {
+		return err
+	}
+	switch answered {
+	case holderOtherBuild:
 		rec.Reason, rec.Problem = reasonProtocol, "the sign-in waiting is held by another headroom build"
+	case holderSilent:
+		rec.Reason, rec.Problem = reasonNoReply, fmt.Sprintf("its holder did not answer within %s; this is the sign-in as it last recorded it — ask again", deps.bounds.status)
 	}
 	return printSignin(std, rec, 0, nil)
 }
@@ -303,61 +331,84 @@ func loginCancel(std Streams, scope config.Scope, name string, deps handoffDeps)
 		return printSignin(std, rep.Record, 3, nil)
 	case err == nil:
 		return printSignin(std, rep.Record, 0, nil)
-	case errors.Is(err, signin.ErrProtocol):
-		rec := onDisk(acct, paths)
-		rec.Reason, rec.Problem = reasonProtocol, "the sign-in waiting is held by another headroom build — cancel it with that build"
-		return printSignin(std, rec, 3, nil)
 	case !errors.Is(err, signin.ErrNoHolder):
-		return err
+		rec, rerr := onDisk(acct, paths)
+		if rerr != nil {
+			return rerr
+		}
+		rec.Reason, rec.Problem = reasonNoReply, "its holder did not answer ("+err.Error()+") — cancel again"
+		if errors.Is(err, signin.ErrProtocol) {
+			rec.Reason, rec.Problem = reasonProtocol, "the sign-in waiting is held by another headroom build — cancel it with that build"
+		}
+		return printSignin(std, rec, 3, nil)
 	}
 	lock, ok, err := signin.Acquire(paths.Lock())
 	if err != nil {
 		return err
 	}
 	if !ok {
-		rec := onDisk(acct, paths)
+		rec, err := onDisk(acct, paths)
+		if err != nil {
+			return err
+		}
 		rec.Reason, rec.Problem = reasonBusy, "another headroom login is renewing "+acct.Name+" right now; there is no sign-in to cancel"
 		return printSignin(std, rec, 3, nil)
 	}
 	defer lock.Close()
 	settleStale(paths, deps.ps, deps.bounds, deps.now())
-	return printSignin(std, onDisk(acct, paths), 0, nil)
+	rec, err := onDisk(acct, paths)
+	if err != nil {
+		return err
+	}
+	return printSignin(std, rec, 0, nil)
 }
 
 // Who answered for a sign-in.
 const (
 	holderAnswered   = iota // its holder, live
 	holderOtherBuild        // a holder that speaks another protocol
-	noHolder                // nothing: the record, settled, answers
+	holderSilent            // a holder took the call and did not answer in time: slow, not gone
+	noHolder                // nothing listens: the record, settled, answers
 )
 
-// liveRecord is the account's sign-in as its holder answers for it, or, with
-// no holder answering, as its record settles — how a sign-in whose holder is
-// gone ended.
-func liveRecord(acct accounts.Account, paths signin.Paths) (signin.Record, int) {
-	rep, err := signin.Call(paths.Socket(), signin.Request{Op: signin.OpStatus}, 5*time.Second)
+// liveRecord is the account's sign-in as its holder answers for it, or as
+// its record says: as written when a holder took the call but did not answer
+// in time — it is busy, not gone — and settled when nothing listens, which
+// is how a sign-in whose holder is gone ended. An unreadable record is an
+// error, never a sign-in that was not started.
+func liveRecord(acct accounts.Account, paths signin.Paths, wait time.Duration) (signin.Record, int, error) {
+	rep, err := signin.Call(paths.Socket(), signin.Request{Op: signin.OpStatus}, wait)
 	switch {
 	case err == nil:
-		return rep.Record, holderAnswered
+		return rep.Record, holderAnswered, nil
 	case errors.Is(err, signin.ErrProtocol):
-		return onDisk(acct, paths), holderOtherBuild
+		rec, err := onDisk(acct, paths)
+		return rec, holderOtherBuild, err
+	case errors.Is(err, signin.ErrNoHolder):
+		rec, err := settled(acct, paths)
+		return rec, noHolder, err
 	}
-	return settled(acct, paths), noHolder
+	rec, err := onDisk(acct, paths)
+	return rec, holderSilent, err
 }
 
 // onDisk is the account's record as written, or a sign-in never started.
-func onDisk(acct accounts.Account, paths signin.Paths) signin.Record {
+func onDisk(acct accounts.Account, paths signin.Paths) (signin.Record, error) {
 	rec, found, err := signin.Read(paths.Record())
-	if !found || err != nil {
-		return signin.Record{Account: acct.Name, Email: accountEmail(acct), State: signin.None}
+	switch {
+	case err != nil:
+		return signin.Record{}, fmt.Errorf("the sign-in record of %s could not be read: %w", acct.Name, err)
+	case !found:
+		return signin.Record{Account: acct.Name, Email: loginEmail(acct, auth.Status{}), State: signin.None}, nil
 	}
-	return rec
+	return rec, nil
 }
 
 // settled is the account's record with no holder behind it. Read only; the
 // next start or cancel writes it so.
-func settled(acct accounts.Account, paths signin.Paths) signin.Record {
-	return settle(onDisk(acct, paths))
+func settled(acct accounts.Account, paths signin.Paths) (signin.Record, error) {
+	rec, err := onDisk(acct, paths)
+	return settle(rec), err
 }
 
 // settle is a record whose holder is gone: a sign-in it calls live ended
@@ -373,37 +424,42 @@ func settle(rec signin.Record) signin.Record {
 	return rec
 }
 
-// settleStale finishes the record a dead holder left live; the caller holds
-// the login lock, so no holder is behind it. Its vendor outlives it
-// (measured: input at end of file does not end `claude auth login`), so the
-// vendor it names is ended when that pid still runs with its recorded start
-// — after the exchange bound, when a code may be in flight.
+// settleStale ends what a dead owner left behind; the caller holds the
+// login lock, so no owner is alive. A vendor login is registered from its
+// launch by whoever ran it — a holder, before any URL, or the batch — and
+// outlives that owner (measured: input at end of file does not end `claude
+// auth login`), so a registered vendor still running with its recorded
+// start is ended: after the exchange bound when its sign-in says a code may
+// be in flight. A record a holder left live is then settled.
 func settleStale(paths signin.Paths, ps func(int) (int64, error), bounds handoffBounds, now time.Time) {
 	rec, found, err := signin.Read(paths.Record())
-	if !found || err != nil || !signin.Live(rec.State) {
-		return
-	}
-	alive := func() bool {
-		start, err := ps(rec.Vendor.PID)
-		return rec.Vendor.PID > 0 && err == nil && start == rec.Vendor.Start
-	}
-	if rec.State == signin.Exchanging {
-		for deadline := time.Now().Add(bounds.exchange); alive() && time.Now().Before(deadline); {
-			time.Sleep(200 * time.Millisecond)
+	exchanging := found && err == nil && rec.State == signin.Exchanging
+	if vendor, ok := signin.ReadVendor(paths.Vendor()); ok {
+		alive := func() bool {
+			start, err := ps(vendor.PID)
+			return err == nil && start == vendor.Start
 		}
-	}
-	if alive() {
-		syscall.Kill(rec.Vendor.PID, syscall.SIGTERM)
-		for deadline := time.Now().Add(bounds.stop); alive() && time.Now().Before(deadline); {
-			time.Sleep(100 * time.Millisecond)
+		if exchanging {
+			for deadline := time.Now().Add(bounds.exchange); alive() && time.Now().Before(deadline); {
+				time.Sleep(200 * time.Millisecond)
+			}
 		}
 		if alive() {
-			syscall.Kill(rec.Vendor.PID, syscall.SIGKILL)
+			syscall.Kill(vendor.PID, syscall.SIGTERM)
+			for deadline := time.Now().Add(bounds.stop); alive() && time.Now().Before(deadline); {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if alive() {
+				syscall.Kill(vendor.PID, syscall.SIGKILL)
+			}
 		}
+		os.Remove(paths.Vendor())
 	}
-	gone := settle(rec)
-	gone.FinishedMS = now.UnixMilli()
-	signin.Write(paths.Record(), gone)
+	if found && err == nil && signin.Live(rec.State) {
+		gone := settle(rec)
+		gone.FinishedMS = now.UnixMilli()
+		signin.Write(paths.Record(), gone)
+	}
 }
 
 // holdSignin is a holder's whole life: it starts the vendor's login for the
@@ -427,7 +483,10 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 	row := assessLogins([]accounts.Account{acct}, deps.login, deps.now())[0]
 	if row.held != "" {
 		// Refused before any approval: the record stays as it stood.
-		rec := onDisk(acct, paths)
+		rec, err := onDisk(acct, paths)
+		if err != nil {
+			rec = endedRecord(acct, signin.Failed, reasonHolderFailed, err.Error(), deps.now())
+		}
 		rec.Reason, rec.Problem = row.heldReason, heldProblem(row)
 		publish(rec)
 		return nil
@@ -465,9 +524,9 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 	self := signin.Proc{PID: os.Getpid()}
 	self.Start, _ = deps.ps(self.PID)
 	rec := signin.Record{
-		Account: acct.Name, Email: accountEmail(acct), State: signin.Awaiting, URL: url,
+		Account: acct.Name, Email: row.email, State: signin.Awaiting, URL: url,
 		StartedMS: now.UnixMilli(), ExpiresMS: now.Add(deps.bounds.awaiting).UnixMilli(),
-		SigninState: state, Store: storeName(row.source), Holder: self, Vendor: v.Proc(),
+		SigninState: state, Holder: self,
 	}
 	if err := signin.Write(paths.Record(), rec); err != nil {
 		v.Stop()
@@ -580,15 +639,28 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 			return nil
 		}
 	}
-	record := func(r signin.Record) {
-		rec = r
+	// record makes r the sign-in only once it is on disk: a step a dead
+	// holder's record would not show is a step not taken.
+	record := func(r signin.Record) error {
 		if err := signin.Write(paths.Record(), r); err != nil {
 			fmt.Fprintf(logw, "headroom: the sign-in record could not be written: %v\n", err)
+			return err
 		}
+		rec = r
+		return nil
 	}
 	end := func(r signin.Record) error {
 		r.URL, r.FinishedMS = "", deps.now().UnixMilli()
-		record(r)
+		if err := record(r); err != nil {
+			// The outcome is still this one; the record keeps the last step it
+			// could, and status will read that.
+			note := fmt.Sprintf("its record could not be saved (%v), so status will not show this outcome", err)
+			if r.Problem == "" {
+				r.Problem = note
+			} else {
+				r.Problem += "; " + note
+			}
+		}
 		if waiting != nil {
 			signin.Answer(waiting, signin.Reply{Record: r})
 		}
@@ -607,7 +679,7 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 		}
 		blob, msg, reason := judgeLogin(row, before, beforeOK, runErr, deps.login)
 		if msg != "" {
-			return ended(signin.Failed, reason, msg)
+			return ended(signin.Failed, reason, msg+" — headroom login start "+acct.Name+" begins a new sign-in")
 		}
 		r := ended(signin.Renewed, "", "")
 		if blob.RefreshState == tag.OK {
@@ -631,11 +703,11 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 			r := verdict(err)
 			if rec.State == signin.Awaiting && r.State == signin.Failed {
 				// It ended by itself before any code reached it.
-				r.Problem = "claude auth login ended before any code was sent"
+				r.Reason, r.Problem = reasonVendorEnded, "claude auth login ended before any code was sent"
 				if last != "" {
 					r.Problem += ": " + last
 				}
-				r.Reason = reasonVendorRejectedOrQuit(err)
+				r.Problem += " — headroom login start " + acct.Name + " begins a new sign-in"
 			}
 			return end(r)
 
@@ -708,10 +780,15 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 				}
 				// The baseline is taken now: a live session may have
 				// refreshed the account since the start.
-				before, beforeOK = creds.Parse(raw)
 				r := rec
 				r.State = signin.Exchanging
-				record(r)
+				if err := record(r); err != nil {
+					r := rec
+					r.Reason, r.Problem = reasonRecordFailed, "the sign-in's record could not be written ("+err.Error()+"), and a code is sent only once its record shows it; nothing was sent — finish again"
+					signin.Answer(c, signin.Reply{Record: r})
+					continue
+				}
+				before, beforeOK = creds.Parse(raw)
 				if err := v.Send(strings.TrimSpace(req.Code)); err != nil {
 					fmt.Fprintf(logw, "headroom: the code could not be written to claude auth login: %v\n", err)
 				}
@@ -724,16 +801,6 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 			}
 		}
 	}
-}
-
-// reasonVendorRejectedOrQuit names a vendor that ended before any code was
-// sent: one that failed refused the sign-in; one that exited cleanly
-// finished without a renewal.
-func reasonVendorRejectedOrQuit(err error) string {
-	if err != nil {
-		return vendorRejected
-	}
-	return notRenewed
 }
 
 // judgeSubmission decides whether a code may go to the vendor: shaped
@@ -754,28 +821,23 @@ func judgeSubmission(code string, rec signin.Record, acct accounts.Account, deps
 			statePrefix(c.State), statePrefix(rec.SigninState))
 	}
 	raw, source := deps.readCred(acct)
-	item, _ := deps.keychainItem(acct)
-	if (rec.Store == "keychain" || item != creds.ItemAbsent) && source != creds.SourceKeychain {
+	item, said := deps.keychainItem(acct)
+	switch {
+	case keychainWithheld(item, source):
 		return "", reasonKeychainShut, "this session can no longer read " + acct.Name + "'s login in the Keychain, so a new one would be stored where sessions do not read it; nothing was sent — run `security unlock-keychain` here and finish again, or cancel"
+	case item == creds.ItemUnknown:
+		return "", heldKeychainUnknown, "security could not say whether " + acct.Name + "'s login is in the Keychain (" + said + "); nothing was sent — finish again"
 	}
 	return raw, "", ""
-}
-
-func storeName(s creds.Source) string {
-	switch s {
-	case creds.SourceKeychain:
-		return "keychain"
-	case creds.SourceFile:
-		return "file"
-	}
-	return "none"
 }
 
 // heldProblem is a held account's reason in words, with what opens it.
 func heldProblem(r *loginRow) string {
 	switch r.heldReason {
-	case heldKeychain, heldKeychainUnknown:
+	case heldKeychain:
 		return r.held + " — nothing was started; run `security unlock-keychain` in this session (this Mac's password), or renew at the machine"
+	case heldKeychainUnknown:
+		return r.held + " — nothing was started; start again, or renew at the machine if security keeps failing here"
 	case heldIdentity:
 		return r.held + " — nothing was started; headroom login " + r.acct.Name + " at the machine renews it"
 	}
@@ -784,16 +846,7 @@ func heldProblem(r *loginRow) string {
 
 // endedRecord is a sign-in that ended as it began.
 func endedRecord(acct accounts.Account, state, reason, problem string, now time.Time) signin.Record {
-	return signin.Record{Account: acct.Name, Email: accountEmail(acct), State: state, Reason: reason, Problem: problem, FinishedMS: now.UnixMilli()}
-}
-
-// accountEmail is the address an account's login is for, as far as its dir
-// says: an extra's name, or the primary's logged-in email.
-func accountEmail(acct accounts.Account) string {
-	if acct.Email != "" || acct.IsPrimary() {
-		return acct.Email
-	}
-	return acct.Name
+	return signin.Record{Account: acct.Name, Email: loginEmail(acct, auth.Status{}), State: state, Reason: reason, Problem: problem, FinishedMS: now.UnixMilli()}
 }
 
 // signinDocument is what start, finish, status and cancel print: the record,
@@ -862,53 +915,43 @@ type liveVendor struct {
 	in     io.WriteCloser
 	lines  chan string
 	exited chan error
-	proc   signin.Proc
+	gone   chan struct{} // closed once the process is reaped
 	grace  time.Duration
 	stop   sync.Once
 }
 
 func (v *liveVendor) Lines() <-chan string { return v.lines }
 func (v *liveVendor) Exited() <-chan error { return v.exited }
-func (v *liveVendor) Proc() signin.Proc    { return v.proc }
 
 func (v *liveVendor) Send(code string) error {
 	_, err := io.WriteString(v.in, code+"\n")
 	return err
 }
 
-// Stop sends SIGTERM, which the vendor exits on, and kills it after grace.
+// Stop ends the vendor and returns once it has gone: SIGTERM, which it exits
+// on, then a kill after grace. A holder about to return does not leave the
+// kill to a goroutine that would die with it.
 func (v *liveVendor) Stop() {
 	v.stop.Do(func() {
 		v.cmd.Process.Signal(syscall.SIGTERM)
-		go func() {
-			time.Sleep(v.grace)
-			v.cmd.Process.Kill() // a no-op once it has gone
-		}()
+		select {
+		case <-v.gone:
+		case <-time.After(v.grace):
+			v.cmd.Process.Kill()
+			<-v.gone
+		}
 	})
 }
 
-// startVendor runs `claude auth login` for acct under launch.Prepare's
-// environment, with headroom as a $BROWSER that records the sign-in's state
-// at opener and opens nothing: the approver is elsewhere.
+// startVendor runs `claude auth login` for acct, built as the batch builds
+// it, with headroom as a $BROWSER that records the sign-in's state at opener
+// and opens nothing: the approver is elsewhere. It is registered beside the
+// account's login lock from its launch, before any URL, until it is reaped.
 func startVendor(acct accounts.Account, set accounts.Set, email, opener string, logw io.Writer, grace time.Duration) (vendorRun, error) {
-	p, err := launch.Prepare(acct, set, os.Environ())
+	cmd, err := loginCommand(acct, set, approvalPage{email: email, remote: true}, opener, logw)
 	if err != nil {
 		return nil, err
 	}
-	for _, n := range p.Notices {
-		fmt.Fprintln(logw, "headroom: "+n)
-	}
-	env, err := approvalPage{email: email, remote: true}.env(p.Env, opener)
-	if err != nil {
-		return nil, err
-	}
-	args := []string{"auth", "login"}
-	if email != "" {
-		args = append(args, "--email", email)
-	}
-	cmd := exec.Command(p.Path, args...)
-	cmd.Args[0] = p.Binary
-	cmd.Env = env
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -924,9 +967,8 @@ func startVendor(acct accounts.Account, set accounts.Set, email, opener string, 
 		return nil, err
 	}
 	w.Close()
-	v := &liveVendor{cmd: cmd, in: in, lines: make(chan string, 64), exited: make(chan error, 1), grace: grace}
-	v.proc.PID = cmd.Process.Pid
-	v.proc.Start, _ = sessions.PS(v.proc.PID)
+	forget := registerVendor(set.Scope, acct, cmd.Process.Pid)
+	v := &liveVendor{cmd: cmd, in: in, lines: make(chan string, 64), exited: make(chan error, 1), gone: make(chan struct{}), grace: grace}
 	read := make(chan struct{})
 	go func() {
 		defer close(read)
@@ -942,6 +984,8 @@ func startVendor(acct accounts.Account, set accounts.Set, email, opener string, 
 	}()
 	go func() {
 		err := cmd.Wait()
+		forget()
+		close(v.gone)
 		<-read // its last words reach Lines before its exit does
 		r.Close()
 		v.exited <- err

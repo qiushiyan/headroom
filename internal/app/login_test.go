@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,7 +49,10 @@ type loginWorld struct {
 	// signins: accounts' handed-off sign-in states.
 	busy    map[string]bool
 	signins map[string]string
-	remote  bool
+	// slowItem delays every Keychain item lookup, as a Keychain that
+	// stalls would.
+	slowItem time.Duration
+	remote   bool
 	// renewEnd is when an account's new login ends; absent = 30 days out.
 	renewEnd map[string]time.Time
 }
@@ -68,8 +73,12 @@ func (w *loginWorld) deps() loginDeps {
 			defer w.mu.Unlock()
 			return w.email[a.Name]
 		},
-		sealed: w.sealed,
+		sealed: func() bool { return w.sealed },
 		keychainItem: func(a accounts.Account) (creds.Item, string) {
+			w.mu.Lock()
+			slow := w.slowItem
+			w.mu.Unlock()
+			time.Sleep(slow)
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			switch {
@@ -339,9 +348,6 @@ func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
 	}
 }
 
-// A remote user cannot see this machine's screen: the login is asked for a
-// remote page, and the instructions say to open the printed URL and paste the
-// code. That nothing opens is pinned through the binary.
 // The Keychain is judged on what it gave, not on how macOS words a refusal:
 // an item that exists and did not hand back its login holds the account
 // with no sealed Keychain in sight (locked), and an item `security` cannot
@@ -387,27 +393,45 @@ func TestLoginRenewedIntoTheFileBesideAKeychainItemDidNotTake(t *testing.T) {
 	}
 }
 
-// Where the page opens says why no profile was matched: no profile list,
-// one that could not be read, or one read with no profile for the email.
+// Where the page opens says why no profile was matched, as the plan reads
+// Chrome's profile list: no list, one that could not be read, one that is
+// not a profile list, or one read with no profile for the email.
 func TestThePlanSaysWhyNoProfileMatched(t *testing.T) {
-	missing := approver{unread: profileListError{path: "/h/Local State", err: fs.ErrNotExist}}
-	unreadable := approver{unread: profileListError{path: "/h/Local State", err: &fs.PathError{Op: "open", Path: "/h/Local State", Err: fs.ErrPermission}}}
-	read := approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "b"}}}
+	t.Setenv("SSH_CONNECTION", "")
 	for _, c := range []struct {
-		ap   approver
-		want string
+		name, localState string
+		mode             os.FileMode
+		want             string
 	}{
-		{missing, "default browser (no Chrome profile list at /h/Local State)"},
-		{unreadable, "default browser (Chrome's profile list at /h/Local State could not be read: permission denied)"},
-		{read, "default browser (no Chrome profile matches a@x.com)"},
-		{approver{remote: true, unread: missing.unread}, "over ssh: you open the printed URL where you are"},
+		{"missing", "", 0, "default browser (no Chrome profile list at "},
+		{"unreadable", `{"profile":{"info_cache":{}}}`, 0o000, "could not be read: permission denied)"},
+		{"unparseable", `{not json`, 0o600, "could not be read: not Chrome's profile list: "},
+		{"no match", `{"profile":{"info_cache":{"Profile 2":{"name":"b","user_name":""}}}}`, 0o600, "default browser (no Chrome profile matches a@x.com)"},
 	} {
-		if got := c.ap.page("a@x.com").phrase(); got != c.want {
-			t.Errorf("phrase = %q, want %q", got, c.want)
+		home := t.TempDir()
+		if c.mode != 0 || c.localState != "" {
+			path := browser.LocalStatePath(home)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(c.localState), c.mode); err != nil {
+				t.Fatal(err)
+			}
 		}
+		got := newApprover(config.Scope{Home: home}).page("a@x.com").phrase()
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want it to contain %q", c.name, got, c.want)
+		}
+	}
+	remote := approver{remote: true, unread: profileListError{path: "/h/Local State", err: fs.ErrNotExist}}
+	if got := remote.page("a@x.com").phrase(); got != "over ssh: you open the printed URL where you are" {
+		t.Errorf("remote: %q", got)
 	}
 }
 
+// A remote user cannot see this machine's screen: the login is asked for a
+// remote page, and the instructions say to open the printed URL and paste the
+// code. That nothing opens is pinned through the binary.
 func TestLoginRemoteAsksForThePastedCode(t *testing.T) {
 	cfg, w := renewFixture(t)
 	w.remote = true

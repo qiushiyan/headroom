@@ -124,14 +124,6 @@ func readKeychain(ctx context.Context, configDir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// HasKeychainItem reports whether the item exists at all, without reading
-// the secret — the existence assertion `headroom check` makes.
-func HasKeychainItem(configDir string) bool {
-	err := exec.Command("security", "find-generic-password",
-		"-s", ServiceName(configDir), "-a", username()).Run()
-	return err == nil
-}
-
 // Item is what the Keychain says of an account's item without handing over
 // its secret.
 type Item int
@@ -176,12 +168,14 @@ func KeychainItem(ctx context.Context, configDir string) (Item, string) {
 
 // KeychainSealed reports whether the login Keychain refuses this session —
 // macOS's answer to an ssh session ("User interaction is not allowed") until
-// `security unlock-keychain` runs in it. A sealed Keychain still shows an
-// item's attributes (HasKeychainItem) but none of its secrets, and Claude Code
-// then reads and writes the file store instead. A machine without `security`
-// has no Keychain to be sealed.
-func KeychainSealed() bool {
-	out, err := exec.Command("security", "show-keychain-info").CombinedOutput()
+// `security unlock-keychain` runs in it — bounded by ctx. A sealed Keychain
+// still shows an item's attributes (KeychainItem) but none of its secrets,
+// and Claude Code then reads and writes the file store instead. A machine
+// without `security` has no Keychain to be sealed.
+func KeychainSealed(ctx context.Context) bool {
+	cmd := exec.CommandContext(ctx, "security", "show-keychain-info")
+	cmd.WaitDelay = 250 * time.Millisecond
+	out, err := cmd.CombinedOutput()
 	return err != nil && strings.Contains(string(out), "User interaction is not allowed")
 }
 
@@ -191,10 +185,17 @@ func KeychainSealed() bool {
 // the user named — because leaving a usable token behind for a config dir
 // that no longer exists is worse than the write. deleted=false with err=nil
 // means there was no item: a never-bound seed or lock debris has none, and
-// that is not an error. Never called from any observation path.
+// that is not an error. An item `security` cannot answer for is an error,
+// never read as none: a token left behind is the outcome removal exists to
+// prevent. Never called from any observation path.
 func DeleteKeychainItem(configDir string) (deleted bool, err error) {
-	if !HasKeychainItem(configDir) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	switch item, said := KeychainItem(ctx, configDir); item {
+	case ItemAbsent:
 		return false, nil
+	case ItemUnknown:
+		return false, fmt.Errorf("could not tell whether the Keychain holds its item (%s)", said)
 	}
 	out, err := exec.Command("security", "delete-generic-password",
 		"-s", ServiceName(configDir), "-a", username()).CombinedOutput()

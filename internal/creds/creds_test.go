@@ -219,3 +219,62 @@ func TestParseExpiryTags(t *testing.T) {
 		t.Errorf("malformed expiry must be bad and must not force relogin: %+v", b)
 	}
 }
+
+// What `security` answers decides how the item is read: found is present,
+// exit 44 — the real command's "could not be found" — is absent, and any
+// other failure or no answer in time is unknown with what it said, never
+// absence: `headroom login` holds an account it cannot place, and a renewal
+// beside an item read as absent would land where sessions do not look.
+func TestKeychainItem(t *testing.T) {
+	for _, c := range []struct {
+		name, script string
+		wait         time.Duration
+		want         Item
+		said         string
+	}{
+		{"found", "exit 0", time.Second, ItemPresent, ""},
+		{"not found", "exit 44", time.Second, ItemAbsent, ""},
+		{"refused", "echo 'SecKeychainSearchCopyNext: User interaction is not allowed.' >&2; exit 36", time.Second, ItemUnknown, "security: SecKeychainSearchCopyNext: User interaction is not allowed."},
+		{"stalled", "exec /bin/sleep 5", 200 * time.Millisecond, ItemUnknown, "security did not answer in time"},
+	} {
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\n"+c.script+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		ctx, cancel := context.WithTimeout(context.Background(), c.wait)
+		got, said := KeychainItem(ctx, "/accounts/a@x.com")
+		cancel()
+		if got != c.want || said != c.said {
+			t.Errorf("%s: %v %q, want %v %q", c.name, got, said, c.want, c.said)
+		}
+	}
+	t.Setenv("PATH", t.TempDir()) // no security at all: no Keychain
+	if got, _ := KeychainItem(context.Background(), "/accounts/a@x.com"); got != ItemAbsent {
+		t.Errorf("no security: %v", got)
+	}
+}
+
+// Removal deletes an item that exists, does nothing for one that does not,
+// and refuses one `security` cannot answer for: a token left behind for a
+// removed dir is what removal exists to prevent.
+func TestDeleteKeychainItem(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	for _, c := range []struct {
+		name, script string
+		deleted, err bool
+	}{
+		{"present", `[ "$1" = delete-generic-password ] && exit 0; exit 0`, true, false},
+		{"absent", "exit 44", false, false},
+		{"unknown", "exit 36", false, true},
+	} {
+		if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\n"+c.script+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		deleted, err := DeleteKeychainItem("/accounts/a@x.com")
+		if deleted != c.deleted || (err != nil) != c.err {
+			t.Errorf("%s: deleted %v, err %v", c.name, deleted, err)
+		}
+	}
+}

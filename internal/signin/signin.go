@@ -59,6 +59,12 @@ func (p Paths) Log() string { return p.file(".log") }
 // the sign-in the vendor opened.
 func (p Paths) Opener() string { return p.file(".opener") }
 
+// Vendor names the vendor login process running for the dir, written by
+// whoever started it — a holder or the batch — from its launch until it is
+// reaped. Whoever next holds the login lock and finds one still running
+// ends it: its owner died, and it would otherwise wait for a code forever.
+func (p Paths) Vendor() string { return p.file(".vendor") }
+
 // Ensure makes the directory, readable by this user alone: the record names
 // a sign-in in progress, and the socket accepts the code that completes it.
 func (p Paths) Ensure() error {
@@ -147,12 +153,7 @@ type Record struct {
 	// SigninState is the OAuth state of the URL handed out, which a code
 	// must carry.
 	SigninState string `json:"signin_state,omitempty"`
-	// Store is where the account's login was read when the sign-in started:
-	// "keychain", "file" or "none". A code is sent only while it can still be
-	// read there.
-	Store  string `json:"store,omitempty"`
-	Holder Proc   `json:"holder"`
-	Vendor Proc   `json:"vendor"`
+	Holder      Proc   `json:"holder"`
 }
 
 // Read loads the record at path; found is false when there is none.
@@ -177,6 +178,25 @@ func Write(path string, rec Record) error {
 		return err
 	}
 	return atomicfile.Write(path, ".record-*", append(data, '\n'))
+}
+
+// WriteVendor registers the vendor process just started for the dir.
+func WriteVendor(path string, p Proc) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(path, ".vendor-*", append(data, '\n'))
+}
+
+// ReadVendor is the vendor process registered for the dir; ok is false when
+// none is.
+func ReadVendor(path string) (p Proc, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(data, &p) != nil || p.PID <= 0 {
+		return Proc{}, false
+	}
+	return p, true
 }
 
 // Version is the holder protocol this build speaks. A request or reply of
