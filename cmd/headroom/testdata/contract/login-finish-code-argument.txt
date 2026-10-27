@@ -1,0 +1,7 @@
+$ headroom login finish a@x.com secret-code#state
+exit 2
+--- stdout
+--- stderr
+headroom: error: finish reads the code from stdin, which keeps it out of ps and shell history; nothing was sent: printf '%s\n' '<code#state>' | headroom login finish a@x.com
+Usage: headroom login finish <account> [flags]
+Run "headroom login finish --help" for details.

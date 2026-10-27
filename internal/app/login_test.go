@@ -48,7 +48,7 @@ type loginWorld struct {
 	// busy: accounts whose login lock another headroom login holds;
 	// signins: accounts' handed-off sign-in states.
 	busy    map[string]bool
-	signins map[string]string
+	signins map[string]signin.Record
 	// slowItem delays every Keychain item lookup, as a Keychain that
 	// stalls would.
 	slowItem time.Duration
@@ -92,11 +92,11 @@ func (w *loginWorld) deps() loginDeps {
 		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
 		now:      func() time.Time { return w.now },
 		tokens:   func() (map[string]headless.Token, error) { return map[string]headless.Token{}, nil },
-		signin: func(a accounts.Account) string {
-			if st, ok := w.signins[a.Name]; ok {
-				return st
+		signin: func(a accounts.Account) signin.Record {
+			if rec, ok := w.signins[a.Name]; ok {
+				return rec
 			}
-			return signin.None
+			return signin.Record{State: signin.None}
 		},
 		acquire: func(a accounts.Account) (func(), string) {
 			if w.busy[a.Name] {
@@ -182,7 +182,7 @@ func renewFixtureIn(t *testing.T, cfg config.Scope) (config.Scope, *loginWorld) 
 		stray:     map[string]string{},
 		unknown:   map[string]bool{},
 		busy:      map[string]bool{},
-		signins:   map[string]string{},
+		signins:   map[string]signin.Record{},
 		renewEnd:  map[string]time.Time{},
 	}
 	return cfg, w

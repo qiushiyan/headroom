@@ -115,8 +115,10 @@ shell's `x-<name>`) — quote that spelling.
     run `headroom login status <name>` until it ends. Exit 1: the sign-in is
     over — `reason` says why; `start` again, except on `outcome_unknown`:
     read `headroom login --dry-run --json` first, since the login may have
-    taken. On `no_reply` run `headroom login status <name>`, never `start`:
-    the code may have gone, and finishing again sends nothing. One sign-in per account: a second `start` returns the
+    taken. A failed ending names the holder's log: hand that path to the
+    user with the `problem`. On `no_reply` run `headroom login status
+    <name>`, never `start`: the code may have gone, and finishing again
+    sends nothing. One sign-in per account: a second `start` returns the
     same URL; `headroom login cancel <name>` ends it.
   - **Held accounts**: *login kept in the Keychain* — this session cannot
     read the login Keychain (an ssh session, or a locked Keychain); run

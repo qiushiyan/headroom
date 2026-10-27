@@ -115,7 +115,7 @@ func liveHandoff(scope config.Scope, logw io.Writer) handoffDeps {
 			metaEmail:    liveMetaEmail,
 			keychainItem: liveKeychainItem,
 			sealed:       liveSealed,
-			signin:       func(accounts.Account) string { return signin.None },
+			signin:       func(accounts.Account) signin.Record { return signin.Record{State: signin.None} },
 		},
 		ps:     sessions.PS,
 		now:    time.Now,
@@ -236,6 +236,7 @@ func loginStart(std Streams, scope config.Scope, name string, deps handoffDeps) 
 		// lock still, it is ended now.
 		settleStale(paths, deps.ps, deps.bounds, deps.now())
 		rec = endedRecord(acct, signin.Failed, reasonHolderFailed, err.Error(), deps.now())
+		rec.Log = paths.Log()
 		signin.Write(paths.Record(), rec)
 	}
 	code := 1
@@ -493,6 +494,7 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 	}
 	fail := func(reason, problem string) error {
 		rec := endedRecord(acct, signin.Failed, reason, problem, deps.now())
+		rec.Log = paths.Log()
 		signin.Write(paths.Record(), rec)
 		publish(rec)
 		return nil
@@ -526,7 +528,7 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 	rec := signin.Record{
 		Account: acct.Name, Email: row.email, State: signin.Awaiting, URL: url,
 		StartedMS: now.UnixMilli(), ExpiresMS: now.Add(deps.bounds.awaiting).UnixMilli(),
-		SigninState: state, Holder: self,
+		SigninState: state, Holder: self, Log: paths.Log(),
 	}
 	if err := signin.Write(paths.Record(), rec); err != nil {
 		v.Stop()
@@ -879,9 +881,15 @@ func printSignin(std Streams, rec signin.Record, code int, reused *bool) error {
 		}
 		return orNull(time.UnixMilli(ms).UTC().Format(time.RFC3339))
 	}
+	problem := rec.Problem
+	if (rec.State == signin.Failed || rec.State == signin.Unknown) && rec.Log != "" {
+		// What the vendor printed is where an ending is explained; the log
+		// holds it until the account's next start.
+		problem += " (the holder's log: " + rec.Log + ")"
+	}
 	doc := signinDocument{
 		Schema: 1, Account: rec.Account, Email: orNull(rec.Email), State: rec.State,
-		Reason: orNull(rec.Reason), Problem: orNull(rec.Problem),
+		Reason: orNull(rec.Reason), Problem: orNull(strings.TrimSpace(problem)),
 		StartedAt: when(rec.StartedMS), ExpiresAt: when(rec.ExpiresMS), FinishedAt: when(rec.FinishedMS),
 		LoginEndsAt: when(rec.LoginEndsMS), Reused: reused,
 	}
@@ -1035,12 +1043,12 @@ func spawnHolder(name string, lock *os.File, paths signin.Paths, wait time.Durat
 		cmd.Process.Release()
 		var rec signin.Record
 		if len(line) == 0 || json.Unmarshal(line, &rec) != nil {
-			return signin.Record{}, fmt.Errorf("the sign-in's holder ended before it was ready — its log is %s", paths.Log())
+			return signin.Record{}, errors.New("the sign-in's holder ended before it was ready")
 		}
 		return rec, nil
 	case <-time.After(wait):
 		cmd.Process.Kill()
 		cmd.Process.Release()
-		return signin.Record{}, fmt.Errorf("the sign-in's holder was not ready within %s — its log is %s", wait, paths.Log())
+		return signin.Record{}, fmt.Errorf("the sign-in's holder was not ready within %s", wait)
 	}
 }

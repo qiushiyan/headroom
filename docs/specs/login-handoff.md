@@ -102,9 +102,12 @@ headroom itself unable to run).
 
 `reason` is a stable token, `problem` the same in words for a person, naming
 what fixes it. `keychain_unknown` is also `finish`'s, state `awaiting_code`,
-nothing sent, when `security` stops answering since `start`. `url` is present only while `awaiting_code`. `reused` appears
-on `start` only. A finished sign-in's document stays readable through
-`status` until the next `start` of that account.
+nothing sent, when `security` stops answering since `start`. A sign-in that
+ended `failed` or `unknown` ends its `problem` with `(the holder's log:
+<path>)`: the vendor's screen and the holder's notes, kept until the
+account's next `start`. `url` is present only while `awaiting_code`.
+`reused` appears on `start` only. A finished sign-in's document stays
+readable through `status` until the next `start` of that account.
 
 Reasons:
 
@@ -164,7 +167,8 @@ sign-in already over prints its document (exit 0 if it renewed, 1 otherwise)
 and sends nothing. A lost answer prints `no_reply`: the code may have been
 sent — ask `status`, never `start`.
 
-An empty stdin is a usage error (exit 2).
+An empty stdin is a usage error (exit 2), and so is a code passed as an
+argument, refused without repeating it.
 
 ### `headroom login status <account>`
 
@@ -197,7 +201,9 @@ naming `start` and `finish`. Exit 0.
       "held_reason": null,
       "login_ends_at": "2026-10-30T09:12:44Z",
       "headless_token_ends_at": null,
-      "signin": "none"
+      "signin": "failed",
+      "signin_reason": "wrong_account",
+      "signin_finished_at": "2026-10-27T15:02:11Z"
     }
   ],
   "headless_tokens_error": null
@@ -205,10 +211,13 @@ naming `start` and `finish`. Exit 0.
 ```
 
 `renew` is what a bare `headroom login` would renew with the same `--within`,
-names and `--all`. `signin` is `null` when the sign-in's record cannot be
-read. `held_reason` takes the start refusals' tokens. An end
+names and `--all`. `held_reason` takes the start refusals' tokens. An end
 that is absent or unreadable is `null`, never guessed. `signin` is the
-account's sign-in state, as `status` would print it.
+account's last handed-off sign-in as `status` would print its state, with
+its `reason` and when it ended in `signin_reason` and `signin_finished_at`;
+`signin` is `null` when the record cannot be read. The text plan names one
+that ended without a renewal on its account's line: `· last sign-in Oct 27
+(2h ago): wrong_account`. An agent's unattended pass is read back there.
 
 ### The batch
 
@@ -360,6 +369,12 @@ Each case runs hermetically: a temp home, stub `claude` and `security`.
 28. `vendor_ended` for a vendor that ends before any code; a `wrong_account`
     verdict names `headroom login start`, never the batch; `keychain_unknown`
     at `finish` sends nothing (review r2).
+29. An ending names the holder's log on `finish` and `status`; a refusal
+    that leaves the sign-in waiting does not.
+30. `login finish <account> <code>` exits 2 pointing at stdin, the code
+    nowhere in what it prints.
+31. The plan line and document name a last sign-in that ended without a
+    renewal, and only that.
 
 ## Verification
 

@@ -154,6 +154,9 @@ type Record struct {
 	// must carry.
 	SigninState string `json:"signin_state,omitempty"`
 	Holder      Proc   `json:"holder"`
+	// Log is the holder's log — the vendor's screen and the holder's own
+	// notes — kept until the next sign-in of the dir.
+	Log string `json:"log,omitempty"`
 }
 
 // Read loads the record at path; found is false when there is none.

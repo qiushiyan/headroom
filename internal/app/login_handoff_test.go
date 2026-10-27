@@ -70,7 +70,7 @@ func newHandoffWorld(t *testing.T) *handoffWorld {
 		return nil, false
 	}
 	login := w.deps()
-	login.signin = func(accounts.Account) string { return signin.None }
+	login.signin = func(accounts.Account) signin.Record { return signin.Record{State: signin.None} }
 	h.deps = handoffDeps{
 		login: login,
 		vendor: func(acct accounts.Account, _ accounts.Set, _, opener string) (vendorRun, error) {
@@ -322,14 +322,26 @@ func TestHandoffSendsOneRightCode(t *testing.T) {
 	}
 }
 
-// The vendor refusing the code ends the sign-in: exit 1, its words kept.
+// The vendor refusing the code ends the sign-in: exit 1, its words kept,
+// and the holder's log named for whoever looks into it later; a refusal that
+// leaves the sign-in waiting has nothing to look into.
 func TestHandoffVendorRejection(t *testing.T) {
 	h := newHandoffWorld(t)
 	h.onCode = func(*loginWorld, string, string) (error, bool) { return errors.New("exit status 1"), false }
 	h.run(loginStart, "a@x.com", "")
+	if doc, _ := h.run(loginFinish, "a@x.com", "not a code\n"); strings.Contains(*doc.Problem, "the holder's log") {
+		t.Errorf("a refused code names the log: %q", *doc.Problem)
+	}
 	doc, code := h.run(loginFinish, "a@x.com", "the-code#state-1\n")
 	if code != 1 || doc.State != signin.Failed || doc.reason() != vendorRejected || !strings.Contains(*doc.Problem, "That code wasn't accepted") {
 		t.Errorf("exit %d, %+v", code, doc)
+	}
+	acct, _ := accounts.Discover(h.cfg).Select("a@x.com")
+	log := signin.For(h.cfg.AccountsRoot, acct.Dir()).Log()
+	for _, surface := range []func(Streams, config.Scope, string, handoffDeps) error{loginFinish, loginStatus} {
+		if doc, _ := h.run(surface, "a@x.com", "the-code#state-1\n"); !strings.HasSuffix(*doc.Problem, "(the holder's log: "+log+")") {
+			t.Errorf("the ending does not name the log: %q", *doc.Problem)
+		}
 	}
 }
 
@@ -742,5 +754,50 @@ func TestHandoffEndsInItsOwnWords(t *testing.T) {
 	}
 	if got := h.sent(); len(got) != 1 {
 		t.Errorf("codes %q, want only the wrong account's", got)
+	}
+}
+
+// The plan is where the owner reads back an agent's unattended pass: an
+// account whose last handed-off sign-in ended without a renewal says how and
+// when, on its line and in the document; one that renewed adds nothing to the
+// line.
+func TestThePlanNamesTheLastSigninThatDidNotRenew(t *testing.T) {
+	cfg, w := renewFixture(t)
+	ended := w.now.Add(-2 * time.Hour).UnixMilli()
+	w.signins["a@x.com"] = signin.Record{State: signin.Failed, Reason: wrongAccount, FinishedMS: ended}
+	w.signins["b@x.com"] = signin.Record{State: signin.Renewed, FinishedMS: ended}
+	var out bytes.Buffer
+	if code := loginTo(&out, io.Discard, cfg, []string{"--dry-run"}, w.deps()); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out.String())
+	}
+	if line := planLine(out.String(), "a@x.com"); !strings.Contains(line, "· last sign-in ") || !strings.HasSuffix(strings.SplitN(line, " — ", 2)[0], ": wrong_account") {
+		t.Errorf("a: %q", line)
+	}
+	if line := planLine(out.String(), "b@x.com"); strings.Contains(line, "last sign-in") {
+		t.Errorf("b renewed: %q", line)
+	}
+	out.Reset()
+	r := call(func(std Streams) error {
+		std.Out = &out
+		return renewLogins(std, cfg, LoginOptions{Within: DefaultLoginWithin, DryRun: true, JSON: true}, w.deps())
+	})
+	var doc struct {
+		Accounts []struct {
+			Account          string  `json:"account"`
+			Signin           *string `json:"signin"`
+			SigninReason     *string `json:"signin_reason"`
+			SigninFinishedAt *string `json:"signin_finished_at"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || r.code != 0 {
+		t.Fatalf("exit %d, %v", r.code, err)
+	}
+	a, c := doc.Accounts[1], doc.Accounts[3]
+	if a.Signin == nil || *a.Signin != signin.Failed || a.SigninReason == nil || *a.SigninReason != wrongAccount ||
+		a.SigninFinishedAt == nil || *a.SigninFinishedAt != time.UnixMilli(ended).UTC().Format(time.RFC3339) {
+		t.Errorf("a: %+v", a)
+	}
+	if c.Signin == nil || *c.Signin != signin.None || c.SigninReason != nil || c.SigninFinishedAt != nil {
+		t.Errorf("c, never started: %+v", c)
 	}
 }

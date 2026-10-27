@@ -139,8 +139,10 @@ code already went: ask `status`. Exit 1 means the sign-in is over, except on
 sign-in per account: a second `start` returns the same URL, and the batch
 and a sign-in never renew one account at once. An account whose login lives
 in a Keychain the session cannot read — an ssh session's, or a locked one —
-is refused at `start`, before any approval. `headroom login start --help`
-and `finish --help` list every reason;
+is refused at `start`, before any approval. A sign-in that ends without a
+renewal names the holder's log, and the plan names it on the account's line
+(`· last sign-in Oct 27 (2h ago): wrong_account`) until the next `start`.
+`headroom login start --help` and `finish --help` list every reason;
 [docs/specs/login-handoff.md](specs/login-handoff.md) is the contract.
 
 ### A second home on the same machine
