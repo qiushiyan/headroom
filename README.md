@@ -117,6 +117,13 @@ is now logged in as that account:
 the logins renewed here end from Nov 21 (in 29d)
 ```
 
+Away from this machine's screen — an agent with shell access, or you on
+another machine — `headroom login start <account>` prints the sign-in URL as
+JSON and opens nothing; approve it in a browser signed in as the account and
+pipe the code the page shows into `headroom login finish <account>`, which
+says whether the login took. See
+[docs/REFERENCE.md](docs/REFERENCE.md#renewing-a-login-from-elsewhere).
+
 ### 6. A second home on the same machine
 
 An automated pipeline running headless `claude` sessions under its own

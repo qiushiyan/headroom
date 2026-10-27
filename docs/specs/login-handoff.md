@@ -1,11 +1,11 @@
 # Login handoff — an agent renews a login in commands that each return
 
-Status: designed 2026-10-27 on the `login-handoff` branch, after one consult
-round (`consult-r1`, codex gpt-6-astra) and the spikes recorded below; the
+Status: built on the `login-handoff` branch, 2026-10-27, after one consult
+round (`consult-r1`, codex gpt-6-astra), the spikes and two review rounds
+recorded below; kept as the dated record of the decision and as the
 contract an agent that renews this machine's logins builds against — the
 commands, the document, its states and reasons, and the exit statuses. The
-design as it stands will live in `DESIGN.md` § Renewing logins once the docs
-pass has run. Written against `main` at 741038f and Claude Code 2.1.311,
+design as it stands lives in `DESIGN.md` § Renewing logins. Written against `main` at 741038f and Claude Code 2.1.311,
 macOS; measurements were taken on the owner's laptop on that date.
 
 ## Summary

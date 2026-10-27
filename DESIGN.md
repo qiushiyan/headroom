@@ -9,8 +9,9 @@ one frame off it, one row per account under `--compact`, a versioned document
 under `--json`), answers "which session do I get back into, and on which
 account?" (`sessions`, Claude Code only — see The session surface below),
 turns the chosen account into a running session (`launch`/`resolve` — see
-The launch surface), renews the logins that end soon in one pass (`login` —
-see Renewing logins), keeps one picture of each subscription's load when a
+The launch surface), renews the logins that end soon in one pass, or one
+account's across commands that each return for an approver elsewhere
+(`login` — see Renewing logins), keeps one picture of each subscription's load when a
 second home on the machine holds logins of the same subscriptions (see A
 second home), and proves its own assumptions still hold (`check`).
 This file records the mental model and the vendor contracts — the things the
@@ -93,7 +94,9 @@ responses it fetched itself, session re-homes, the record of recent
 launches and the headless runs, `launches.jsonl` and `usage.jsonl`, the
 launch log and the usage log nothing routes by (see Judging placement),
 `headless.json`, the one file that holds secrets — the headless tokens, mode
-0600 (see Headless tokens) — and, only when `accounts ledger` is asked to,
+0600 (see Headless tokens) — the `.login` directory, readable by the user
+alone, where each account dir's login lock, handed-off sign-in and running
+vendor login are kept (see Renewing logins), and, only when `accounts ledger` is asked to,
 `.ledger`. Three documented
 exceptions, every one an explicit user command naming its object and refused
 while a session is live or liveness is unverifiable: the session picker's `r`
@@ -164,7 +167,10 @@ verifier's error messages name something that exists on every install:
   without either; a picker choice arrives
   already confirmed and takes `--yes`'s path — and the gate once more
   after the reply, since the prompt may have stayed open while a session
-  started. Then the Keychain item, then the dir (including any file-backed
+  started. Then the Keychain item — deleted once `security` says it exists,
+  and an item it cannot answer for stops the removal with the dir in place,
+  since a token left behind is what removal exists to prevent — then the
+  dir (including any file-backed
   `.credentials.json`; `os.RemoveAll` does not
   follow symlinks, so the `projects/` link goes and the store behind it
   stays — pinned by test), then every `.order` line discovery reads as that
@@ -232,21 +238,30 @@ click per account.
   must match, or the page opens in the default browser and the plan says so.
   The sign-in exclusion is load-bearing on the author's machines: `Default`
   is named after the owner and signed in to the primary's Gmail, while an
-  extra whose local part is the same name has its own profile.
+  extra whose local part is the same name has its own profile. A profile
+  list that cannot be read is named as such, never as a failed match: a
+  sandboxed agent's shell is refused `Local State` outright ("operation not
+  permitted").
 - **Which accounts.** Names choose outright, `--all` chooses every account;
   otherwise only positive evidence does, read as the board reads health: no
   login, an end already passed, or an end within `--within` days (default
   7). An absent or unreadable expiry is never read as near.
-- **A Keychain closed to the session holds its accounts back.** macOS
+- **A Keychain that withholds a login holds its account back.** macOS
   refuses an ssh session the login Keychain ("User interaction is not
-  allowed") until `security unlock-keychain` runs in it; Claude Code then
-  reads and writes the file store, and `claude auth status` reports an
-  account whose login lives in the Keychain as logged out. The item's
-  attributes stay visible, so an account with an item is marked as
-  unreadable here and never renewed from here, even by name: its state is
-  unknown, and a login made here would land in a file that any session able
-  to read the Keychain ignores, since a readable item wins. Accounts with no
-  item are file-backed everywhere and renew normally.
+  allowed") until `security unlock-keychain` runs in it, and a locked
+  Keychain refuses any session; Claude Code then reads and writes the file
+  store, and `claude auth status` reports an account whose login lives in
+  the Keychain as logged out. The item's attributes stay visible, so the
+  account is judged on what the Keychain gave: an item that exists while
+  the login did not come back from it marks the account unreadable here,
+  never renewed from here, even by name — its state is unknown, and a login
+  made here would land in a file that any session able to read the
+  Keychain ignores, since a readable item wins. An item `security` cannot
+  answer for — any exit but found or not found (44), or no answer in ten
+  seconds — holds the account too: unknown is never read as absent. The
+  sealed probe only words the explanation. Accounts with no item are file-backed
+  everywhere and renew normally. `keychainWithheld` is the one rule the
+  plan, the handoff's code check and the read-back share.
 - **A remote user gets the URL, not a window.** When `SSH_CONNECTION` names
   another machine as the client, the page would open on a screen nobody is
   at, so headroom as `$BROWSER` records the sign-in and opens nothing: the
@@ -257,9 +272,13 @@ click per account.
   handling.
 - **The result is read back**, against the credential as it stood just
   before that account's login. A login took only when the vendor command
-  succeeded, the refresh expiry is a new one, and the dir's `.claude.json`
-  now names the account's email — an extra's dir name, the primary's
-  previous login or, failing that, the vendor's status. A changed access
+  succeeded, the refresh expiry is a new one, read where sessions read it,
+  and the dir's `.claude.json` now names the account's email — an extra's
+  dir name, the primary's previous login or, failing that, the vendor's
+  status. A renewal readable only from the file while the account's
+  Keychain item exists did not take: no session that reads the Keychain
+  uses it. A vendor command that failed is a failure whatever changed
+  meanwhile, since the change may be another login's. A changed access
   token is not evidence: any live session on the account refreshes it while
   a batch waits on other approvals. Approving in the wrong profile is the
   failure this catches at once, instead of later as the board's `(dir says
@@ -271,6 +290,60 @@ The vendor can end a login before its recorded expiry — on the author's mini,
 logins made on different days were refused within the same half hour — and
 nothing in the stored credential shows it. Health then reads fine until a
 request fails; naming the account renews it.
+
+### Renewing from elsewhere
+
+An approver that is not at this machine's terminal — an agent with shell
+access, which signs in to claude.ai as the account in a browser of its own,
+or the owner on another machine — cannot hold the batch's one conversation
+open: it works in calls that each return. `headroom login start <account>`
+and `headroom login finish <account>` split one account's renewal into two
+such calls, `status` and `cancel` inspect and end it, and `headroom login
+--dry-run --json` is the plan as a document. Each prints one JSON document,
+a state and a stable reason; exit 3 means refused with nothing spent or
+sent. The commands and the document an agent reads are in
+`docs/specs/login-handoff.md`, the dated record of the decision and the
+contract. What the shape rests on, measured on 2.1.311:
+
+- **The vendor must outlive the call that starts it.** It holds the PKCE
+  verifier, and headroom must not exchange the code itself. So `start` hands
+  the account's `claude auth login` to a holder (`login hold`, hidden) in a
+  session of its own, with no stream of the caller's — `ssh host headroom
+  login start x` returns — and the holder is the vendor's parent until the
+  sign-in ends. The vendor's input reaching end of file does not end it: a
+  killed holder leaves it waiting forever.
+- **The URL handed out is the one the vendor printed.** On a pipe it prints
+  plain lines, and its printed URL redirects to the page that shows the
+  code; the one it hands `$BROWSER` redirects to a localhost listener a
+  remote browser cannot reach. Both carry one state. `browser.SigninURL` is
+  the one reader of that screen; headroom, as a `$BROWSER` that records and
+  opens nothing, cross-checks the state, and never builds a URL itself.
+- **A code is sent once, and only one this sign-in's state carries.** A
+  well-formed code the server rejects ends the sign-in; a malformed one
+  leaves it waiting. So the holder refuses a code that is not `code#state`
+  or carries another state, with no repeat-to-bypass — the URL was
+  headroom's own, so another state is another sign-in — and checks the
+  Keychain still gives the login before sending. It records `exchanging`
+  before the code goes out, and a step it cannot record is a step not
+  taken: a dead holder's record never says no code was sent when one was.
+  The ten-minute wait for a code stops once one is sent; the exchange has
+  its own bound, after which a vendor headroom had to end is judged by its
+  read-back alone.
+- **One login per account dir, whoever runs it.** Under the accounts root's
+  `.login`, keyed by the dir, sits a lock held by whatever runs the
+  vendor's login — the holder for its whole life (kept from the vendor, and
+  referenced so the collector never closes it), the batch while its login
+  runs — so two logins never race on one credential, and a second `start`
+  returns the live sign-in. The vendor is registered beside the lock from
+  its launch, by the holder before any URL and by the batch alike, and runs
+  only while registered. Whoever next holds the lock ends a registered
+  vendor its dead owner left — by pid and `ps` start, after the exchange
+  bound if a code may be in flight — and settles the record. A holder that
+  takes a call and does not answer in time is slow, not gone.
+- **A unix socket is the rendezvous**: dialing it says whether a holder is
+  alive, and a request carries a protocol version a holder from another
+  build refuses before acting. A socket binds at 103 bytes on macOS, so a
+  longer accounts root refuses `start` plainly.
 
 ### Headless tokens
 
@@ -1503,11 +1576,17 @@ ledger in its `.ledger` (see A second home).
   its own eligibility and no exec. `accounts.Set.Bare` is the one reader of
   `.current`.
 - **Login.** `app/login.go` chooses accounts on the board's health evidence,
-  runs `claude auth login` under `launch.Prepare`'s environment with the
-  binary itself as `$BROWSER` (`app/approval.go` owns that opener for `login`
-  and `headless mint`), relays only a pasted code carrying the sign-in's
-  state, and reads the credential back; `internal/browser` matches an email
-  to a Chrome profile. See Renewing logins.
+  builds `claude auth login` under `launch.Prepare`'s environment with the
+  binary itself as `$BROWSER` (`loginCommand`, for the batch and the holder
+  alike; `app/approval.go` owns that opener for `login` and `headless
+  mint`), relays only a pasted code carrying the sign-in's state, and
+  decides whether a login took (`judgeLogin`, shared with the handoff);
+  `internal/browser` matches an email to a Chrome profile and reads the
+  vendor's sign-in URL. `app/login_handoff.go` is `start`, `finish`,
+  `status`, `cancel` and the holder's life; `internal/signin` owns a dir's
+  sign-in files — the login lock, the start lock, the record, the vendor
+  registration — and the socket protocol, knowing nothing of accounts or
+  the vendor. See Renewing logins.
 - **Launch preparation.** `launch.Prepare` validates routing, topology and
   the executable and builds the environment before any surface persists a
   choice. `internal/tui` owns raw-mode lifetime, restoration on
@@ -1576,7 +1655,19 @@ remote user, the opener answering under a configuration headroom refuses,
 and a pasted code reaching the vendor only when it carries the state the
 opener recorded. The relay is driven directly with scripted lines: what it
 refuses, what it says, the same line twice, and the vendor's input ending
-with the terminal's. The profile match and the code's shape are tables, the
+with the terminal's. The handoff is held both in process and through the
+built binary, because the process boundary is where a suite run in one
+process stayed green over real defects — a vendor that inherited the
+holder's lock, a lock closed by the collector. In process, the holder runs in a goroutine over a real socket and
+lock with a fake vendor that prints 2.1.311's screen: reuse, refused codes,
+one code in all, the deadline against a code in flight, a busy holder, an
+unwritable record, the batch excluding a start, a dead holder's exchange
+waited out. Through the built binary and a stub vendor that outlives its
+input as the real one does: `start` returning through streams read to their
+end while its holder lives in a session of its own, a holder whose
+collector runs keeping its lock, vendors left by a killed holder or a
+killed batch ended by the next `start`, and a vendor that cannot be
+registered refused. `security`'s answers are a table over a stub. The profile match and the code's shape are tables, the
 first over the author's own `Local State`. `headless` is tested through its
 commands over the real store — a placement among token holders, the
 refusal near a limit and its retry instant, a run counted once, past

@@ -36,6 +36,11 @@ command's own reference.
   - `headless place`, `token`, `started` → skill-evals (its contract is
     `docs/specs/headless.md`): JSON on stdout at exit 0 and 3, `--exclude`
     repeated.
+  - `login start`, `finish`, `status`, `cancel` and `login --dry-run --json`
+    → the owner's renewal agent and `skills/headroom` (its contract is
+    `docs/specs/login-handoff.md`): one JSON document per outcome naming
+    the account, `reason` a stable token, exit 3 for refused with nothing
+    spent or sent, the code on `finish`'s stdin.
   - `accounts add … --share-config[=<dir>]` → `claude.zsh`, `codex.zsh`,
     `steward-login.sh`; `accounts ledger <root>` → steward's `install.sh`,
     under `set -e`.
@@ -85,6 +90,14 @@ command's own reference.
   never writes `.current`, and a session named by explicit id follows its
   owner, with any move recorded. Held by `TestResolveOwner` and
   `TestANamedSessionFollowsItsOwner`; DESIGN.md § The session surface.
+- **One vendor login per account dir, and a code sent once.** Whatever runs
+  `claude auth login` — the batch or a handed-off sign-in's holder — holds
+  the dir's login lock and registers the vendor from its launch, and a
+  vendor runs only while registered; a holder sends a code only after
+  `exchanging` is on disk. Held by `TestHandoffAndTheBatchExcludeEachOther`,
+  `TestHandoffBinaryEndsAnyVendorLeftBehind` and
+  `TestHandoffSendsNoCodeItCannotRecord`; DESIGN.md § Renewing from
+  elsewhere.
 - **Read-only against the vendors** except three explicit commands — the
   picker's `r` and `dd`, and `accounts remove`'s Keychain item — each refused
   while liveness is unverifiable. No Codex file is ever written, and the usage

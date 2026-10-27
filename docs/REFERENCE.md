@@ -30,8 +30,10 @@ holds across commands:
 - **Errors and exit codes.** A failure prints `headroom: error: <what failed>`
   on stderr and exits 1. Arguments headroom cannot accept also print the
   command's usage line and exit 2, having run nothing. `check` exits 2 for
-  INCONCLUSIVE, and `headless place` exits 3 when every account it could take
-  is refused. A configuration headroom refuses — a relative `HEADROOM_*`
+  INCONCLUSIVE, `headless place` exits 3 when every account it could take
+  is refused, and `login start`, `finish` and `cancel` exit 3 when they
+  refused with nothing spent or sent — each printing its JSON document for
+  every outcome that names an account. A configuration headroom refuses — a relative `HEADROOM_*`
   override, an unusable `.ledger` — makes every command except help,
   `version`, `check` and the retired `resume` exit 1 until it is fixed;
   `check` reports it as a `config:` FAIL.
@@ -116,6 +118,31 @@ fetches appends one to `usage.jsonl` beside the ledger's `state.json`.
 `headroom launches --eval` joins the two. Nothing that routes reads either
 file: deleting them changes no launch.
 
+### Renewing a login from elsewhere
+
+`headroom login` renews at this machine's terminal. An approver elsewhere —
+an agent with shell access, or you on another machine — renews one account
+in commands that each return, and nothing opens here:
+
+```sh
+headroom login --dry-run --json                  # the plan: each login's end, what is due, what is held
+headroom login start alice@example.com           # JSON with the URL; a holder waits ten minutes for the code
+printf '%s\n' 'code#state' | headroom login finish alice@example.com   # sends it once; renewed, or why not
+headroom login status alice@example.com          # the sign-in as it stands, and how it ended
+```
+
+Exit 3 means this call spent or sent nothing — the document's `reason` says
+what to fix, and the same command runs again, except on `exchanging`, when a
+code already went: ask `status`. Exit 1 means the sign-in is over, except on
+`no_reply`, when the answer was lost and the code may have gone: ask
+`status`, never `start`. One
+sign-in per account: a second `start` returns the same URL, and the batch
+and a sign-in never renew one account at once. An account whose login lives
+in a Keychain the session cannot read — an ssh session's, or a locked one —
+is refused at `start`, before any approval. `headroom login start --help`
+and `finish --help` list every reason;
+[docs/specs/login-handoff.md](specs/login-handoff.md) is the contract.
+
 ### A second home on the same machine
 
 A second consumer of Claude Code under the same OS user — an automated
@@ -173,7 +200,8 @@ it — changing the default steers new sessions; an old one moves to another acc
 headroom is **read-only** toward that system: it never refreshes a token and
 no observation path writes anything of Claude Code's — Claude Code owns login
 state. It keeps files of its own — `state.json`, `.current`, the launch log
-`launches.jsonl` and the usage log `usage.jsonl` — and `.ledger` when
+`launches.jsonl`, the usage log `usage.jsonl`, and `.login/` for each
+account's login lock and handed-off sign-in — and `.ledger` when
 `accounts ledger` writes it; the only
 vendor-state mutations are explicit user commands naming their object — the
 session picker's `rename`/`delete`, and `accounts remove` deleting the
