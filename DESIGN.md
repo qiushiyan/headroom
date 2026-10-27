@@ -340,6 +340,11 @@ contract. What the shape rests on, measured on 2.1.311:
   vendor its dead owner left — by pid and `ps` start, after the exchange
   bound if a code may be in flight — and settles the record. A holder that
   takes a call and does not answer in time is slow, not gone.
+- **An unattended pass is read back from the plan.** An ending names the
+  holder's log, where the vendor's own words are kept until the account's
+  next `start`, and the plan's line and document name each account's last
+  sign-in that did not renew — the one command that shows every account
+  is where the owner learns what an agent did.
 - **A unix socket is the rendezvous**: dialing it says whether a holder is
   alive, and a request carries a protocol version a holder from another
   build refuses before acting. A socket binds at 103 bytes on macOS, so a
