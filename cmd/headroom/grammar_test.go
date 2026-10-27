@@ -256,8 +256,36 @@ func TestGrammarDecodes(t *testing.T) {
 	if g, _ := parse(t, "headless", "place", "--exclude", "a@x.com,b@x.com", "--exclude", "c@x.com"); !slices.Equal(names(g.Headless.Place.Exclude), []string{"a@x.com,b@x.com", "c@x.com"}) {
 		t.Errorf("--exclude %q", g.Headless.Place.Exclude)
 	}
-	if g, _ := parse(t, "login", "a@x.com,b@x.com"); !slices.Equal(names(g.Login.Accounts), []string{"a@x.com,b@x.com"}) {
-		t.Errorf("login names %q", g.Login.Accounts)
+	if g, _ := parse(t, "login", "a@x.com,b@x.com"); !slices.Equal(names(g.Login.Renew.Accounts), []string{"a@x.com,b@x.com"}) {
+		t.Errorf("login names %q", g.Login.Renew.Accounts)
+	}
+	// The batch is login's default: bare names renew, and its explicit name
+	// takes an account named like a subcommand. (login-handoff spec, test
+	// plan 16)
+	for _, c := range []struct {
+		args    []string
+		command string
+		account string
+	}{
+		{[]string{"login", "a@x.com"}, "login renew <account>", "a@x.com"},
+		{[]string{"login", "renew", "start"}, "login renew <account>", "start"},
+		{[]string{"login", "start", "a@x.com"}, "login start <account>", "a@x.com"},
+		{[]string{"login", "finish", "a@x.com"}, "login finish <account>", "a@x.com"},
+		{[]string{"login", "--dry-run", "--json"}, "login renew", ""},
+	} {
+		g, ctx := parse(t, c.args...)
+		got := ""
+		switch {
+		case len(g.Login.Renew.Accounts) > 0:
+			got = string(g.Login.Renew.Accounts[0])
+		case g.Login.Start.Account != "":
+			got = string(g.Login.Start.Account)
+		case g.Login.Finish.Account != "":
+			got = string(g.Login.Finish.Account)
+		}
+		if ctx.Command() != c.command || got != c.account {
+			t.Errorf("%q: command %q account %q, want %q %q", c.args, ctx.Command(), got, c.command, c.account)
+		}
 	}
 
 	for _, args := range [][]string{

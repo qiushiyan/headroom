@@ -90,16 +90,39 @@ shell's `x-<name>`) — quote that spelling.
 - **Resume, same account**: `headroom sessions`, enter — every session on
   the machine, each continued in its own project dir on the account that
   last drove it.
-- **Renew logins before they end**: `headroom login` — each login that ends
-  within a week; `--all` for every account, so they end together;
-  `--dry-run` for the plan. Hand it to the user: each account's approval
-  page opens in its Chrome profile and needs their Authorize click. Done
-  when every line reads `✓`; a `✗ … logged in as X` line means the wrong
-  profile approved — hand the user the closing `retry them: headroom login
-  …` line. Over ssh, accounts
-  marked *login kept in the Keychain* need `security unlock-keychain` in
-  that session first (the Mac's password), and the user opens each printed
-  URL on the machine they are at and pastes back the code.
+- **Renew logins before they end**: `headroom login --dry-run --json` is the
+  plan — each account's `login_ends_at`, `renew` (what a bare `headroom
+  login` renews: ends within a week, ended, or never made; `--within
+  <days>`), and `held_reason` when this session cannot renew it. Two ways
+  to renew:
+  - **The user at this machine's screen**: hand them `headroom login`
+    (`--all` renews every account, so they end together). Each approval
+    page opens in the account's Chrome profile and needs their Authorize
+    click. Done when every line reads `✓`; a `✗ … logged in as X` line
+    means the wrong profile approved — hand them the closing `retry them:
+    headroom login …` line. Over ssh the user opens each printed URL where
+    they are and pastes back the code.
+  - **No terminal, or an approver elsewhere** — the user on another
+    machine, or you in a browser signed in to claude.ai as the account: run
+    `headroom login start <name>` yourself. It prints JSON with `url` and
+    opens nothing here. The approver opens `url`, clicks Authorize and
+    copies the `code#state` the page shows; then `printf '%s\n'
+    '<code#state>' | headroom login finish <name>` — the code goes on
+    stdin. Done on exit 0, `state: renewed`, `login_ends_at` the new end.
+    Exit 3: this call spent nothing — fix what `reason` and `problem` name
+    (a code from another sign-in, a Keychain this session stopped reading)
+    and run the same command again; but on `exchanging` a code already went:
+    run `headroom login status <name>` until it ends. Exit 1: the sign-in is
+    over — `reason` says why; `start` again, except on `outcome_unknown`:
+    read `headroom login --dry-run --json` first, since the login may have
+    taken. On `no_reply` run `headroom login status <name>`, never `start`:
+    the code may have gone, and finishing again sends nothing. One sign-in per account: a second `start` returns the
+    same URL; `headroom login cancel <name>` ends it.
+  - **Held accounts**: *login kept in the Keychain* — this session cannot
+    read the login Keychain (an ssh session, or a locked Keychain); run
+    `security unlock-keychain` in it first (the Mac's password), or renew
+    at the machine. *could not tell whether its login is in the Keychain*
+    — `security` gave no answer; try again.
 - **After a Claude Code update, or a board that looks wrong**: `headroom
   check` — PASS / FAIL / INCONCLUSIVE. FAIL names the assumption that
   broke; INCONCLUSIVE (rate limited, stale token) is not drift.

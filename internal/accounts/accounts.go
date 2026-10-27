@@ -106,7 +106,7 @@ func Discover(cfg config.Scope) Set {
 	if data, err := os.ReadFile(cfg.OrderFile()); err == nil {
 		for line := range strings.SplitSeq(string(data), "\n") {
 			name := orderEntry(line)
-			if name == "" || LockArtifact(name) {
+			if name == "" || strings.HasPrefix(name, ".") || LockArtifact(name) {
 				continue
 			}
 			d := filepath.Join(cfg.AccountsRoot, name)

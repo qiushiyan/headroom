@@ -1,6 +1,10 @@
 package browser
 
 import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -14,7 +18,10 @@ const localState = `{"profile":{"info_cache":{
 }},"other":1}`
 
 func TestMatch(t *testing.T) {
-	profiles := ParseLocalState([]byte(localState))
+	profiles, err := ParseLocalState([]byte(localState))
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		email, want string
 		ok          bool
@@ -50,14 +57,29 @@ func TestMatchPrefersSignInAndRefusesAmbiguity(t *testing.T) {
 	}
 }
 
+// A registry with no profiles is no profiles; one that is not JSON, or no
+// file at all, is no profiles and says why, so a plan can tell "nothing
+// matched" from "nothing was read".
 func TestParseLocalStateTolerates(t *testing.T) {
-	for _, raw := range []string{``, `not json`, `{}`, `{"profile":{}}`} {
-		if got := ParseLocalState([]byte(raw)); len(got) != 0 {
-			t.Errorf("%q: got %v", raw, got)
+	for _, raw := range []string{`{}`, `{"profile":{}}`} {
+		if got, err := ParseLocalState([]byte(raw)); len(got) != 0 || err != nil {
+			t.Errorf("%q: got %v, %v", raw, got, err)
 		}
 	}
-	if got := ReadProfiles("/nonexistent/Local State"); got != nil {
-		t.Errorf("missing file: got %v", got)
+	for _, raw := range []string{``, `not json`} {
+		if got, err := ParseLocalState([]byte(raw)); len(got) != 0 || err == nil {
+			t.Errorf("%q: got %v, %v; want an error", raw, got, err)
+		}
+	}
+	if got, err := ReadProfiles("/nonexistent/Local State"); got != nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing file: got %v, %v", got, err)
+	}
+	unreadable := filepath.Join(t.TempDir(), "Local State")
+	if err := os.WriteFile(unreadable, []byte(localState), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadProfiles(unreadable); got != nil || err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("unreadable file: got %v, %v", got, err)
 	}
 }
 

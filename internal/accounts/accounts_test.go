@@ -69,14 +69,16 @@ func TestDiscoverOrderAndGlob(t *testing.T) {
 // A crash strands Claude Code's `<dir>.lock` lock directories in the
 // accounts root; adopting one as an account rendered it as a hollow login
 // (and the health probe then seeded a skeleton .claude.json inside it).
-// Discovery skips them wherever they appear — the glob and an .order line.
+// Discovery skips them wherever they appear — the glob and an .order line —
+// and headroom's own dot dirs (`.login`, the sign-ins `login start` holds)
+// alike.
 func TestDiscoverSkipsLockArtifacts(t *testing.T) {
 	cfg := testConfig(t)
-	for _, e := range []string{"a@x.com", "a@x.com.lock", "stray.lock"} {
+	for _, e := range []string{"a@x.com", "a@x.com.lock", "stray.lock", ".login"} {
 		mkAccount(t, cfg, e)
 	}
 	// Even named outright in .order, debris is not an account.
-	if err := os.WriteFile(cfg.OrderFile(), []byte("stray.lock\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg.OrderFile(), []byte("stray.lock\n.login\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	set := Discover(cfg)

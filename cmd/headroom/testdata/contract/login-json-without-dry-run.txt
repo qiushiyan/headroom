@@ -1,0 +1,7 @@
+$ headroom login --json
+exit 2
+--- stdout
+--- stderr
+headroom: error: --json prints the plan, with --dry-run; to renew without a terminal, headroom login start and headroom login finish
+Usage: headroom login renew [<account> ...] [flags]
+Run "headroom login renew --help" for details.
