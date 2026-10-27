@@ -272,11 +272,17 @@ func (c *LoginStartCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) 
 
 type LoginFinishCmd struct {
 	Account accountName `arg:"" help:"The account whose sign-in the code is for."`
+	// Code catches a code typed where most commands take one, so the
+	// refusal can point at stdin without repeating it.
+	Code []string `arg:"" optional:"" hidden:"" help:"Refused: the code goes on stdin."`
 }
 
 func (LoginFinishCmd) Help() string { return loginFinishHelp }
 
 func (c *LoginFinishCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
+	if len(c.Code) > 0 {
+		return clikit.Usage(fmt.Errorf("finish reads the code from stdin, which keeps it out of ps and shell history; nothing was sent: printf '%%s\\n' '<code#state>' | headroom login finish %s", c.Account))
+	}
 	return outcome(app.LoginFinish(streams(ctx, in), cfg.Claude, string(c.Account)))
 }
 

@@ -64,11 +64,12 @@ type loginDeps struct {
 	// way it reports logins'.
 	tokens func() (map[string]headless.Token, error)
 
-	// signin is the state of the account's handed-off sign-in (`login
-	// start`), and acquire takes the account's login lock for the length of
-	// one login: "" when taken, else why not. Whoever runs the vendor's login
-	// for a dir holds that lock, so two logins never race on its credential.
-	signin  func(accounts.Account) string
+	// signin is the account's handed-off sign-in (`login start`) as it
+	// stands — State "" when its record cannot be read — and acquire takes
+	// the account's login lock for the length of one login: "" when taken,
+	// else why not. Whoever runs the vendor's login for a dir holds that
+	// lock, so two logins never race on its credential.
+	signin  func(accounts.Account) signin.Record
 	acquire func(accounts.Account) (release func(), busy string)
 }
 
@@ -80,7 +81,11 @@ type loginRow struct {
 	blob   creds.Blob
 	blobOK bool
 	source creds.Source // where the login was read from
-	signin string       // its handed-off sign-in's state (signin.None, …)
+	// signin is its handed-off sign-in's state (signin.None, …; "" when
+	// unreadable), and lastSignin that sign-in's record: how the last one
+	// ended, for the owner reading what an agent did.
+	signin     string
+	lastSignin signin.Record
 	// held is why this account cannot be renewed from here, even by name,
 	// and heldReason the same as a token (heldKeychain, …): its login lives
 	// in a Keychain item this session did not get back (sealed or locked —
@@ -144,13 +149,13 @@ func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 
 // liveSignin is the state of an account's handed-off sign-in, as its holder
 // or its record says.
-func liveSignin(scope config.Scope) func(accounts.Account) string {
-	return func(a accounts.Account) string {
+func liveSignin(scope config.Scope) func(accounts.Account) signin.Record {
+	return func(a accounts.Account) signin.Record {
 		rec, _, err := liveRecord(a, signin.For(scope.AccountsRoot, a.Dir()), defaultHandoff.status)
 		if err != nil {
-			return "" // unreadable: the plan prints null, never a guess
+			return signin.Record{} // unreadable: the plan prints null, never a guess
 		}
-		return rec.State
+		return rec
 	}
 }
 
@@ -220,7 +225,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 	var chosen []*loginRow
 	sealed, refused := 0, 0
 	for _, r := range rows {
-		line := fmt.Sprintf("  %-28s %s", r.acct.Name, r.why)
+		line := fmt.Sprintf("  %-28s %s%s", r.acct.Name, r.why, lastSigninPhrase(r.lastSignin, now))
 		if r.chosen {
 			chosen = append(chosen, r)
 			line = "→" + line[1:] + " — " + r.page.phrase()
@@ -300,6 +305,16 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 	return nil
 }
 
+// lastSigninPhrase names a handed-off sign-in that ended without a renewal,
+// for the plan line of its account: an agent's unattended pass is read back
+// here, in the one command that shows every account. "" otherwise.
+func lastSigninPhrase(rec signin.Record, now time.Time) string {
+	if rec.State != signin.Failed && rec.State != signin.Unknown || rec.FinishedMS == 0 {
+		return ""
+	}
+	return " · last sign-in " + render.When(rec.FinishedMS, now) + ": " + rec.Reason
+}
+
 // loginPlanDocument is `headroom login --dry-run --json`: every account as
 // the plan sees it, every field present and null when unknown.
 type loginPlanDocument struct {
@@ -319,6 +334,8 @@ type loginPlanAccount struct {
 	LoginEndsAt         *string `json:"login_ends_at"`
 	HeadlessTokenEndsAt *string `json:"headless_token_ends_at"`
 	Signin              *string `json:"signin"`
+	SigninReason        *string `json:"signin_reason"`
+	SigninFinishedAt    *string `json:"signin_finished_at"`
 }
 
 func writeLoginPlan(out io.Writer, rows []*loginRow, deps loginDeps, within time.Duration) error {
@@ -338,6 +355,10 @@ func writeLoginPlan(out io.Writer, rows []*loginRow, deps loginDeps, within time
 		a := loginPlanAccount{
 			Account: r.acct.Name, Email: orNull(r.email), Renew: r.chosen, Why: r.why,
 			Held: orNull(r.held), HeldReason: orNull(r.heldReason), Signin: orNull(r.signin),
+			SigninReason: orNull(r.lastSignin.Reason),
+		}
+		if r.lastSignin.FinishedMS != 0 {
+			a.SigninFinishedAt = when(r.lastSignin.FinishedMS)
 		}
 		if r.health != accountstate.HealthNoLogin && r.blobOK && r.blob.RefreshState == tag.OK {
 			a.LoginEndsAt = when(r.blob.RefreshExpiresMS)
@@ -396,7 +417,8 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 			signin: signin.None,
 		}
 		if deps.signin != nil {
-			r.signin = deps.signin(a)
+			r.lastSignin = deps.signin(a)
+			r.signin = r.lastSignin.State
 		}
 		r.page = deps.approver.page(r.email)
 		r.held, r.heldReason = holdOf(r, deps)

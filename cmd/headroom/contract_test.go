@@ -128,6 +128,7 @@ func TestContracts(t *testing.T) {
 		{"login-status-none", []string{"login", "status", "a@x.com"}, ""},
 		{"login-finish-none", []string{"login", "finish", "a@x.com"}, "code#state\n"},
 		{"login-finish-empty", []string{"login", "finish", "a@x.com"}, ""},
+		{"login-finish-code-argument", []string{"login", "finish", "a@x.com", "secret-code#state"}, ""},
 		{"login-start", []string{"login", "start", "a@x.com"}, ""},
 		{"login-start-again", []string{"login", "start", "a@x.com"}, ""},
 		{"login-finish-other", []string{"login", "finish", "a@x.com"}, "code#another-state\n"},

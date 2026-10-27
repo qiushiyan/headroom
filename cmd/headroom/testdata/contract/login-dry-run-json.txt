@@ -14,7 +14,9 @@ exit 0
       "held_reason": null,
       "login_ends_at": "<time>",
       "headless_token_ends_at": null,
-      "signin": "none"
+      "signin": "none",
+      "signin_reason": null,
+      "signin_finished_at": null
     },
     {
       "account": "a@x.com",
@@ -25,7 +27,9 @@ exit 0
       "held_reason": null,
       "login_ends_at": "<time>",
       "headless_token_ends_at": "<time>",
-      "signin": "none"
+      "signin": "none",
+      "signin_reason": null,
+      "signin_finished_at": null
     },
     {
       "account": "b@x.com",
@@ -36,7 +40,9 @@ exit 0
       "held_reason": null,
       "login_ends_at": "<time>",
       "headless_token_ends_at": null,
-      "signin": "none"
+      "signin": "none",
+      "signin_reason": null,
+      "signin_finished_at": null
     },
     {
       "account": "d@x.com",
@@ -47,7 +53,9 @@ exit 0
       "held_reason": null,
       "login_ends_at": null,
       "headless_token_ends_at": null,
-      "signin": "none"
+      "signin": "none",
+      "signin_reason": null,
+      "signin_finished_at": null
     }
   ],
   "headless_tokens_error": null

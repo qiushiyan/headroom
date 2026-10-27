@@ -256,6 +256,21 @@ func (h handoffBin) vendorPIDs(t *testing.T) []int {
 
 func running(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
 
+// awaitRegistered waits for the vendor's registration, written just after
+// its launch: an owner killed before that moment leaves a vendor nothing
+// could find, which is not the case these tests are about.
+func (h handoffBin) awaitRegistered(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := signin.ReadVendor(h.paths().Vendor()); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the vendor was never registered")
+		}
+	}
+}
+
 func awaitGone(pid int) bool {
 	for deadline := time.Now().Add(5 * time.Second); running(pid) && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 	}
@@ -291,8 +306,7 @@ func TestHandoffBinaryEndsAnyVendorLeftBehind(t *testing.T) {
 	if err := starting.Start(); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); len(h.vendorPIDs(t)) == 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-	}
+	h.awaitRegistered(t)
 	holder, _ := exec.Command("pgrep", "-f", h.bin+" login hold a@x.com").Output()
 	var hp int
 	fmt.Sscan(string(holder), &hp)
@@ -322,8 +336,7 @@ func TestHandoffBinaryEndsAnyVendorLeftBehind(t *testing.T) {
 	if err := batch.Start(); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); len(h.vendorPIDs(t)) == 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-	}
+	h.awaitRegistered(t)
 	batch.Process.Kill()
 	batch.Wait()
 	orphan := h.vendorPIDs(t)[0]
