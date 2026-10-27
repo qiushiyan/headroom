@@ -236,9 +236,10 @@ like a subcommand.
   (`holder_failed`).
 - **Bounds.** `awaiting_code` lasts 10 minutes from `start`; once a code is
   sent, the exchange has 60 seconds, then SIGTERM, then a kill 3 seconds
-  later, and the read-back runs whatever the vendor's exit: a login the
-  credential shows renewed took. Every Keychain read is bounded to 10
-  seconds.
+  later. A vendor that exits with an error failed, whatever changed
+  meanwhile, since the change may be another login's; one headroom had to
+  end after the bound is judged by its read-back alone. Every Keychain read
+  is bounded to 10 seconds.
 - **A holder that dies leaves its vendor running** (measured). The next
   `start` or `cancel` holds the lock, finds the record still live, and ends
   the vendor it names when that pid still runs with its recorded start; mid
@@ -255,8 +256,7 @@ like a subcommand.
   sealed-Keychain explanation stays for the ssh case.
 - **Read-back by source.** After a login, an account whose Keychain item
   exists must read its new login from the Keychain; a renewal readable only
-  from the file is `stored_elsewhere`. The verdict is the read-back; the
-  vendor's exit explains a failure.
+  from the file is `stored_elsewhere`.
 - **Chrome.** The plan says `no Chrome profile list at <path>` when there is
   none, `Chrome's profile list at <path> could not be read: …` when it cannot
   be read or parsed, and `no Chrome profile matches <email>` only when it was

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -129,6 +130,48 @@ func HasKeychainItem(configDir string) bool {
 	err := exec.Command("security", "find-generic-password",
 		"-s", ServiceName(configDir), "-a", username()).Run()
 	return err == nil
+}
+
+// Item is what the Keychain says of an account's item without handing over
+// its secret.
+type Item int
+
+const (
+	// ItemUnknown: `security` gave no answer that says either way.
+	ItemUnknown Item = iota
+	// ItemAbsent: no item, or no Keychain on this machine at all.
+	ItemAbsent
+	// ItemPresent: the item exists. Whether this session can read its secret
+	// is a separate question, answered by ReadRaw's source.
+	ItemPresent
+)
+
+// KeychainItem looks up the account's item by its attributes, which a sealed
+// Keychain still shows, bounded by ctx. `security` exits 44 for an item that
+// does not exist; any other failure, a timeout included, is ItemUnknown with
+// what `security` said, never read as absence — `headroom login` holds an
+// account it cannot place. A machine without `security` has no Keychain.
+func KeychainItem(ctx context.Context, configDir string) (Item, string) {
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
+		"-s", ServiceName(configDir), "-a", username())
+	cmd.WaitDelay = 250 * time.Millisecond
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return ItemPresent, ""
+	}
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok && exit.ExitCode() == 44 && ctx.Err() == nil {
+		return ItemAbsent, ""
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return ItemAbsent, ""
+	}
+	if ctx.Err() != nil {
+		return ItemUnknown, "security did not answer in time"
+	}
+	if said := strings.TrimSpace(string(out)); said != "" {
+		return ItemUnknown, "security: " + said
+	}
+	return ItemUnknown, "security: " + err.Error()
 }
 
 // KeychainSealed reports whether the login Keychain refuses this session —

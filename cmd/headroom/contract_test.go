@@ -310,8 +310,9 @@ func (w *world) run(t *testing.T, args ...string) string {
 // What differs between two runs of the same case, each replaced by a name:
 // the temporary directory, the build's commit, instants (RFC 3339, epoch
 // seconds and milliseconds, the clock and day a board or log line shows them
-// at), spans counted in seconds from now, process ids, the Keychain item a
-// dir's path names and the random id a placement is given. Spans a person
+// at, the date a login or token end is named by), spans counted in seconds
+// from now, process ids, the Keychain item a dir's path names and the random
+// id a placement is given. Spans a person
 // reads ("in 3.3h", "10m ago") are kept: the fixture fixes them relative to
 // now, and their rounding absorbs the seconds a run takes.
 var (
@@ -321,6 +322,7 @@ var (
 	weekdayTime = regexp.MustCompile(`\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d\d:\d\d\b`)
 	resetTime   = regexp.MustCompile(`resets \d\d:\d\d\b`)
 	logWhen     = regexp.MustCompile(`(?m)^\d\d-\d\d \d\d:\d\d\b`)
+	monthDay    = regexp.MustCompile(`\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \(`)
 	pid         = regexp.MustCompile(`"pid":\s*\d+`)
 	seconds     = regexp.MustCompile(`"([a-z0-9_]+_s)":\s*\d+`)
 	keychain    = regexp.MustCompile(`credentials-[0-9a-f]{8}\b`)
@@ -336,6 +338,7 @@ func (w *world) normalize(s string) string {
 	s = weekdayTime.ReplaceAllString(s, "<day> <clock>")
 	s = resetTime.ReplaceAllString(s, "resets <clock>")
 	s = logWhen.ReplaceAllString(s, "<mm-dd> <clock>")
+	s = monthDay.ReplaceAllString(s, "<date> (")
 	s = pid.ReplaceAllString(s, `"pid": <pid>`)
 	s = seconds.ReplaceAllString(s, `"$1": <s>`)
 	s = keychain.ReplaceAllString(s, "credentials-<dir-hash>")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/browser"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/headless"
 )
 
@@ -27,9 +29,16 @@ type loginWorld struct {
 	// approveAs is who the browser profile is signed in to; "" = the email
 	// asked for.
 	approveAs map[string]string
-	keychain  map[string]bool // accounts with a Keychain item
-	sealed    bool
-	remote    bool
+	// keychain: accounts whose login is a Keychain item, which raw then
+	// holds; the others' raw is the dir's file. A sealed Keychain hands back
+	// none of its items, and a read falls back to the file: stray, a login the
+	// vendor wrote there while the item kept its own.
+	keychain map[string]bool
+	stray    map[string]string
+	unknown  map[string]bool // accounts whose item `security` cannot answer for
+	sealed   bool
+	locked   bool // the Keychain hands back no item, though it is not sealed
+	remote   bool
 	// renewEnd is when an account's new login ends; absent = 30 days out.
 	renewEnd map[string]time.Time
 }
@@ -44,13 +53,21 @@ func (w *loginWorld) deps() loginDeps {
 		health: func([]accounts.Account) auth.QueryFunc {
 			return func(string) auth.Status { return auth.Status{} } // no oracle: credential evidence decides
 		},
-		readRaw:    func(a accounts.Account) string { return w.raw[a.Name] },
-		metaEmail:  func(a accounts.Account) string { return w.email[a.Name] },
-		sealed:     w.sealed,
-		inKeychain: func(a accounts.Account) bool { return w.keychain[a.Name] },
-		approver:   approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
-		now:        func() time.Time { return w.now },
-		tokens:     func() (map[string]headless.Token, error) { return map[string]headless.Token{}, nil },
+		readCred:  w.readCred,
+		metaEmail: func(a accounts.Account) string { return w.email[a.Name] },
+		sealed:    w.sealed,
+		keychainItem: func(a accounts.Account) (creds.Item, string) {
+			switch {
+			case w.unknown[a.Name]:
+				return creds.ItemUnknown, "security: SecKeychainSearchCopyNext: -25308"
+			case w.keychain[a.Name]:
+				return creds.ItemPresent, ""
+			}
+			return creds.ItemAbsent, ""
+		},
+		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
+		now:      func() time.Time { return w.now },
+		tokens:   func() (map[string]headless.Token, error) { return map[string]headless.Token{}, nil },
 		login: func(a accounts.Account, _ accounts.Set, page approvalPage) error {
 			where := page.profile.Dir
 			if page.remote {
@@ -70,6 +87,26 @@ func (w *loginWorld) deps() loginDeps {
 			return nil
 		},
 	}
+}
+
+// readCred is what creds.ReadRaw finds: the Keychain item while the Keychain
+// answers, else the dir's file.
+func (w *loginWorld) readCred(a accounts.Account) (string, creds.Source) {
+	if w.keychain[a.Name] {
+		if !w.sealed && !w.locked {
+			if raw, ok := w.raw[a.Name]; ok {
+				return raw, creds.SourceKeychain
+			}
+		}
+		if raw, ok := w.stray[a.Name]; ok {
+			return raw, creds.SourceFile
+		}
+		return "", creds.SourceNone
+	}
+	if raw, ok := w.raw[a.Name]; ok {
+		return raw, creds.SourceFile
+	}
+	return "", creds.SourceNone
 }
 
 func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
@@ -92,6 +129,8 @@ func renewFixture(t *testing.T) (config.Scope, *loginWorld) {
 		email:     map[string]string{"a@x.com": "a@x.com", "b@x.com": "b@x.com", "c@x.com": "c@x.com"},
 		approveAs: map[string]string{},
 		keychain:  map[string]bool{},
+		stray:     map[string]string{},
+		unknown:   map[string]bool{},
 		renewEnd:  map[string]time.Time{},
 	}
 	return cfg, w
@@ -260,6 +299,72 @@ func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
 // A remote user cannot see this machine's screen: the login is asked for a
 // remote page, and the instructions say to open the printed URL and paste the
 // code. That nothing opens is pinned through the binary.
+// The Keychain is judged on what it gave, not on how macOS words a refusal:
+// an item that exists and did not hand back its login holds the account
+// with no sealed Keychain in sight (locked), and an item `security` cannot
+// answer for holds it too, as unknown.
+func TestLoginHoldsWhatTheKeychainDidNotGive(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.locked = true
+	w.keychain["a@x.com"] = true
+	w.unknown["c@x.com"] = true
+	var out bytes.Buffer
+	if code := loginTo(&out, io.Discard, cfg, []string{"a@x.com", "c@x.com"}, w.deps()); code != 1 || len(w.logins) != 0 {
+		t.Fatalf("exit %d, logins %q; want 1 and none\n%s", code, w.logins, out.String())
+	}
+	if line := planLine(out.String(), "a@x.com"); !strings.Contains(line, "login kept in the Keychain, which this session cannot read") {
+		t.Errorf("locked: %q", line)
+	}
+	if line := planLine(out.String(), "c@x.com"); !strings.Contains(line, "could not tell whether its login is in the Keychain (security: ") {
+		t.Errorf("unknown: %q", line)
+	}
+	if !strings.Contains(out.String(), "did not give this session the login of the 1 accounts") || strings.Contains(out.String(), "ssh session") {
+		t.Errorf("an unsealed Keychain is not explained as ssh's:\n%s", out.String())
+	}
+}
+
+// A login renewed into the dir's file while the account's Keychain item
+// keeps the old one is not the login sessions use: the Keychain stopped
+// answering between the plan and the read-back, the vendor fell back to the
+// file, and the file is all a read finds. It did not take. (login-handoff
+// spec, test plan 1; read ✓ before)
+func TestLoginRenewedIntoTheFileBesideAKeychainItemDidNotTake(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.keychain["a@x.com"] = true
+	d := w.deps()
+	d.login = func(a accounts.Account, _ accounts.Set, _ approvalPage) error {
+		w.locked = true
+		w.stray[a.Name] = blobEnding("new-"+a.Name, w.now.Add(30*24*time.Hour))
+		return nil
+	}
+	var out bytes.Buffer
+	code := loginTo(&out, io.Discard, cfg, []string{"a@x.com"}, d)
+	if line := resultLine(out.String(), "a@x.com"); code != 1 || !strings.HasPrefix(line, "✗") || !strings.Contains(line, "Keychain item every session reads first keeps the old one") {
+		t.Errorf("exit %d, result %q\n%s", code, line, out.String())
+	}
+}
+
+// Where the page opens says why no profile was matched: no profile list,
+// one that could not be read, or one read with no profile for the email.
+func TestThePlanSaysWhyNoProfileMatched(t *testing.T) {
+	missing := approver{unread: profileListError{path: "/h/Local State", err: fs.ErrNotExist}}
+	unreadable := approver{unread: profileListError{path: "/h/Local State", err: fs.ErrPermission}}
+	read := approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "b"}}}
+	for _, c := range []struct {
+		ap   approver
+		want string
+	}{
+		{missing, "default browser (no Chrome profile list at /h/Local State)"},
+		{unreadable, "default browser (Chrome's profile list at /h/Local State could not be read: permission denied)"},
+		{read, "default browser (no Chrome profile matches a@x.com)"},
+		{approver{remote: true, unread: missing.unread}, "over ssh: you open the printed URL where you are"},
+	} {
+		if got := c.ap.page("a@x.com").phrase(); got != c.want {
+			t.Errorf("phrase = %q, want %q", got, c.want)
+		}
+	}
+}
+
 func TestLoginRemoteAsksForThePastedCode(t *testing.T) {
 	cfg, w := renewFixture(t)
 	w.remote = true

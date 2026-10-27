@@ -42,17 +42,20 @@ const defaultLoginWithin = 7 * 24 * time.Hour
 // go, and the vendor's login process — injected so selection and read-back
 // are testable without a Keychain, a browser or a network.
 type loginDeps struct {
-	health    func([]accounts.Account) auth.QueryFunc
-	readRaw   func(accounts.Account) string
+	health func([]accounts.Account) auth.QueryFunc
+	// readCred is the account's stored login and where it came from: a
+	// Keychain item this session could read, or the dir's file.
+	readCred  func(accounts.Account) (string, creds.Source)
 	metaEmail func(accounts.Account) string
-	// sealed: the login Keychain refuses this session, as macOS refuses an
-	// ssh session. inKeychain reports an account's item by its attributes,
-	// which a sealed Keychain still shows.
-	sealed     bool
-	inKeychain func(accounts.Account) bool
-	approver   approver
-	now        func() time.Time
-	login      func(acct accounts.Account, set accounts.Set, page approvalPage) error
+	// keychainItem reports an account's item by its attributes, which a
+	// sealed Keychain still shows, with what `security` said when it could
+	// not tell. sealed: the login Keychain refuses this session, as macOS
+	// refuses an ssh session — what the plan says about a held account.
+	keychainItem func(accounts.Account) (creds.Item, string)
+	sealed       bool
+	approver     approver
+	now          func() time.Time
+	login        func(acct accounts.Account, set accounts.Set, page approvalPage) error
 
 	// tokens are the stored headless tokens, whose ends the plan reports the
 	// way it reports logins'.
@@ -66,17 +69,32 @@ type loginRow struct {
 	health accountstate.Health
 	blob   creds.Blob
 	blobOK bool
-	// held is why this account cannot be renewed from here, even by name:
-	// its login lives in a Keychain this session cannot read (sealed — its
-	// state is unknown here, and a login made here would land in a file that
-	// any session able to read the Keychain ignores), or nothing says whom
-	// its login belongs to, so a new one could not be checked.
-	held   string
-	sealed bool
-	chosen bool
-	why    string       // why chosen, or why left alone
-	page   approvalPage // where its approval goes, for the email it is for
+	source creds.Source // where the login was read from
+	// held is why this account cannot be renewed from here, even by name,
+	// and heldReason the same as a token (heldKeychain, …): its login lives
+	// in a Keychain item this session did not get back (sealed or locked —
+	// its state is unknown here, and a login made here would land in a file
+	// that any session able to read the Keychain ignores), `security` could
+	// not say whether it has one, or nothing says whom its login belongs to,
+	// so a new one could not be checked.
+	held       string
+	heldReason string
+	chosen     bool
+	why        string       // why chosen, or why left alone
+	page       approvalPage // where its approval goes, for the email it is for
 }
+
+// The reasons an account is held, as the plan's document and `login start`
+// name them.
+const (
+	heldKeychain        = "keychain_unreadable"
+	heldKeychainUnknown = "keychain_unknown"
+	heldIdentity        = "identity_unreadable"
+)
+
+// keychainWait bounds each Keychain question: `security` can stall where the
+// Keychain does, and an account it cannot answer for is held, not waited on.
+const keychainWait = 10 * time.Second
 
 // LoginOptions say which logins `headroom login` renews: the named ones, or
 // --all, or else each one that ends within Within, has ended or was never
@@ -97,22 +115,34 @@ const DefaultLoginWithin = defaultLoginWithin
 // account's email, and reads each result back.
 func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 	return renewLogins(std, scope, opts, loginDeps{
-		health: round.ProbeHealth,
-		readRaw: func(a accounts.Account) string {
-			raw, _ := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
-			return raw
-		},
-		metaEmail: func(a accounts.Account) string {
-			email, _ := accounts.MetaEmail(a.MetaPath())
-			return email
-		},
-		sealed:     creds.KeychainSealed(),
-		inKeychain: func(a accounts.Account) bool { return creds.HasKeychainItem(a.ConfigDir) },
-		approver:   newApprover(scope),
-		now:        time.Now,
-		login:      newVendorLogin(std),
-		tokens:     func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
+		health:       round.ProbeHealth,
+		readCred:     liveReadCred,
+		metaEmail:    liveMetaEmail,
+		keychainItem: liveKeychainItem,
+		sealed:       creds.KeychainSealed(),
+		approver:     newApprover(scope),
+		now:          time.Now,
+		login:        newVendorLogin(std),
+		tokens:       func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
 	})
+}
+
+// The live reads of an account's login, shared by the batch and the handoff.
+func liveReadCred(a accounts.Account) (string, creds.Source) {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainWait)
+	defer cancel()
+	return creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
+}
+
+func liveKeychainItem(a accounts.Account) (creds.Item, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainWait)
+	defer cancel()
+	return creds.KeychainItem(ctx, a.ConfigDir)
+}
+
+func liveMetaEmail(a accounts.Account) string {
+	email, _ := accounts.MetaEmail(a.MetaPath())
+	return email
 }
 
 func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginDeps) error {
@@ -139,7 +169,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 			chosen = append(chosen, r)
 			line = "→" + line[1:] + " — " + r.page.phrase()
 		}
-		if r.sealed {
+		if r.heldReason == heldKeychain {
 			sealed++
 		}
 		if r.held != "" && (named[r.acct.Name] || all) {
@@ -149,11 +179,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 	}
 	writeTokenEnds(out, rows, deps, within, now)
 	if sealed > 0 {
-		fmt.Fprintf(out, "\nthe login Keychain is closed to this ssh session: the %d accounts marked above keep their\n"+
-			"login there, so it can be neither read nor renewed from here — a login made here would be\n"+
-			"saved to a file that every session able to read the Keychain ignores. Run\n"+
-			"`security unlock-keychain` in this session first (it asks for this Mac's password), or\n"+
-			"run headroom login at the machine.\n", sealed)
+		fmt.Fprintf(out, "\n%s\n", keychainClosed(sealed, deps.sealed))
 	}
 	if len(chosen) == 0 {
 		if refused > 0 {
@@ -180,7 +206,8 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 		// The baseline is taken now, not when the batch was planned: a live
 		// session may have refreshed this account while earlier approvals
 		// were pending.
-		before, beforeOK := creds.Parse(deps.readRaw(r.acct))
+		raw, _ := deps.readCred(r.acct)
+		before, beforeOK := creds.Parse(raw)
 		err := deps.login(r.acct, set, r.page)
 		blob, msg := readBack(r, before, beforeOK, err, deps)
 		if msg != "" {
@@ -243,7 +270,7 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 	health := deps.health(accts)
 	rows := make([]*loginRow, len(accts))
 	for i, a := range accts {
-		raw := deps.readRaw(a)
+		raw, source := deps.readCred(a)
 		blob, ok := creds.Parse(raw)
 		st := health(a.ConfigDir)
 		r := &loginRow{
@@ -252,18 +279,46 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 			health: round.Health(st, raw, blob, ok, now.UnixMilli()),
 			blob:   blob,
 			blobOK: ok,
-			sealed: deps.sealed && deps.inKeychain(a),
+			source: source,
 		}
 		r.page = deps.approver.page(r.email)
-		switch {
-		case r.sealed:
-			r.held = "login kept in the Keychain, which this session cannot read"
-		case r.email == "" && ok:
-			r.held = "logged in, but its identity unreadable — a new login could not be checked"
-		}
+		r.held, r.heldReason = holdOf(r, deps)
 		rows[i] = r
 	}
 	return rows
+}
+
+// holdOf is why an account's login cannot be renewed from this session, ""
+// when it can. The Keychain is judged on what it gave: an item that exists
+// and did not hand back the login is unreadable here, whatever the cause —
+// sealed over ssh, locked — and an item `security` cannot answer for is
+// unknown. Either way the login's state is unknown here, and a new one would
+// be stored where the item, which sessions read first, outranks it.
+func holdOf(r *loginRow, deps loginDeps) (string, string) {
+	item, said := deps.keychainItem(r.acct)
+	switch {
+	case item == creds.ItemPresent && r.source != creds.SourceKeychain:
+		return "login kept in the Keychain, which this session cannot read", heldKeychain
+	case item == creds.ItemUnknown:
+		return "could not tell whether its login is in the Keychain (" + said + ")", heldKeychainUnknown
+	case r.email == "" && r.blobOK:
+		return "logged in, but its identity unreadable — a new login could not be checked", heldIdentity
+	}
+	return "", ""
+}
+
+// keychainClosed is what the plan says under n accounts held for a Keychain
+// that would not hand over their logins: why that holds them, and what opens
+// it. sealed is macOS refusing this session the Keychain, as it refuses ssh.
+func keychainClosed(n int, sealed bool) string {
+	why := fmt.Sprintf("the login Keychain did not give this session the login of the %d accounts marked above", n)
+	if sealed {
+		why = fmt.Sprintf("the login Keychain is closed to this ssh session: the %d accounts marked above keep their\nlogin there", n)
+	}
+	return why + ", so it can be neither read nor renewed from here — a login made here would be\n" +
+		"saved to a file that every session able to read the Keychain ignores. Run\n" +
+		"`security unlock-keychain` in this session first (it asks for this Mac's password), or\n" +
+		"run headroom login at the machine."
 }
 
 // loginEmail is the address an account's login is for. An extra's dir is
@@ -334,10 +389,28 @@ func loginState(r *loginRow, now time.Time) string {
 // it, so a token change counts only when the credential records no expiry.
 // It returns the verified credential, and "" when the login took.
 func readBack(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps loginDeps) (creds.Blob, string) {
+	blob, msg, _ := judgeLogin(r, before, beforeOK, runErr, deps)
+	return blob, msg
+}
+
+// The reasons a login that ran did not take, as the handoff names them.
+const (
+	notRenewed      = "not_renewed"
+	vendorRejected  = "vendor_rejected"
+	wrongAccount    = "wrong_account"
+	storedElsewhere = "stored_elsewhere"
+)
+
+// judgeLogin is readBack with the reason as a token. A vendor command that
+// failed is a failure whatever changed meanwhile: the change may be another
+// login's. A caller that ended the vendor itself, after it went quiet with
+// the code in hand, passes no error, and the credential alone decides.
+func judgeLogin(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps loginDeps) (creds.Blob, string, string) {
 	if runErr != nil {
-		return creds.Blob{}, "claude auth login: " + runErr.Error()
+		return creds.Blob{}, "claude auth login: " + runErr.Error(), vendorRejected
 	}
-	blob, ok := creds.Parse(deps.readRaw(r.acct))
+	raw, source := deps.readCred(r.acct)
+	blob, ok := creds.Parse(raw)
 	var renewed bool
 	switch {
 	case !ok:
@@ -349,13 +422,22 @@ func readBack(r *loginRow, before creds.Blob, beforeOK bool, runErr error, deps 
 		renewed = blob.Token != before.Token
 	}
 	if !renewed {
-		return blob, "the stored login did not change"
+		return blob, "the stored login did not change", notRenewed
+	}
+	// A login that lives in a Keychain item is the item's: one readable only
+	// from the file — the Keychain stopped answering this session since the
+	// plan — is a login no session that reads the Keychain uses.
+	if source != creds.SourceKeychain {
+		if item, _ := deps.keychainItem(r.acct); item != creds.ItemAbsent {
+			return blob, "the new login was saved to the dir's file, while the Keychain item every session reads first keeps the old one — " +
+				"this session can no longer read the Keychain; run `security unlock-keychain` here, or renew at the machine", storedElsewhere
+		}
 	}
 	got := deps.metaEmail(r.acct)
 	if r.email != "" && !strings.EqualFold(got, r.email) {
-		return blob, fmt.Sprintf("logged in as %s, not %s — run `headroom login %s` again and approve as %s", orNobody(got), r.email, r.acct.Name, r.email)
+		return blob, fmt.Sprintf("logged in as %s, not %s — run `headroom login %s` again and approve as %s", orNobody(got), r.email, r.acct.Name, r.email), wrongAccount
 	}
-	return blob, ""
+	return blob, "", ""
 }
 
 func endPhrase(b creds.Blob, now time.Time) string {

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"runtime"
@@ -27,16 +28,35 @@ import (
 // profiles it has, and whether the user is at its screen.
 type approver struct {
 	profiles []browser.Profile
+	// unread is why no profile list was read, with the path it was read
+	// from: a plan then names that rather than a failed match.
+	unread error
 	// remote: the user is not at this machine's screen, so a page opened
 	// here is a page nobody sees.
 	remote bool
 }
 
 func newApprover(scope config.Scope) approver {
-	return approver{
-		profiles: browser.ReadProfiles(browser.LocalStatePath(scope.Home)),
-		remote:   sshRemote(os.Getenv("SSH_CONNECTION")),
+	path := browser.LocalStatePath(scope.Home)
+	profiles, err := browser.ReadProfiles(path)
+	ap := approver{profiles: profiles, remote: sshRemote(os.Getenv("SSH_CONNECTION"))}
+	if err != nil {
+		ap.unread = profileListError{path: path, err: err}
 	}
+	return ap
+}
+
+// profileListError is why Chrome's profile list gave no profiles.
+type profileListError struct {
+	path string
+	err  error
+}
+
+func (e profileListError) Error() string {
+	if errors.Is(e.err, fs.ErrNotExist) {
+		return "no Chrome profile list at " + e.path
+	}
+	return "Chrome's profile list at " + e.path + " could not be read: " + e.err.Error()
 }
 
 // sshRemote reports whether SSH_CONNECTION ("client port server port") puts
@@ -60,6 +80,7 @@ type approvalPage struct {
 	remote  bool
 	profile browser.Profile // the matched profile, when matched
 	matched bool
+	unread  error // why no profile could be matched at all, when none was read
 }
 
 // page is where the approval for email goes.
@@ -67,6 +88,7 @@ func (ap approver) page(email string) approvalPage {
 	pg := approvalPage{email: email, remote: ap.remote}
 	if !ap.remote {
 		pg.profile, pg.matched = browser.Match(ap.profiles, email)
+		pg.unread = ap.unread
 	}
 	return pg
 }
@@ -78,6 +100,8 @@ func (pg approvalPage) phrase() string {
 		return "over ssh: you open the printed URL where you are"
 	case pg.matched:
 		return "Chrome profile " + pg.profile.Label()
+	case pg.unread != nil:
+		return "default browser (" + pg.unread.Error() + ")"
 	}
 	return "default browser (no Chrome profile matches " + orNobody(pg.email) + ")"
 }

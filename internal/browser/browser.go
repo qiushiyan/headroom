@@ -8,6 +8,7 @@ package browser
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,19 +41,21 @@ func LocalStatePath(home string) string {
 	return filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Local State")
 }
 
-// ReadProfiles reads the registry at path. A missing or unreadable file is
-// no profiles: every account then opens in the default browser.
-func ReadProfiles(path string) []Profile {
+// ReadProfiles reads the registry at path. Without one every account opens
+// in the default browser, and the error says why there is none — no file
+// (os.ErrNotExist), or one that could not be read or parsed — so a plan never
+// reads "no profile matches" where no profile was read at all.
+func ReadProfiles(path string) ([]Profile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	return ParseLocalState(data)
 }
 
 // ParseLocalState extracts .profile.info_cache, ordered by directory so a
 // plan prints the same way each run.
-func ParseLocalState(data []byte) []Profile {
+func ParseLocalState(data []byte) ([]Profile, error) {
 	var doc struct {
 		Profile struct {
 			InfoCache map[string]struct {
@@ -61,15 +64,15 @@ func ParseLocalState(data []byte) []Profile {
 			} `json:"info_cache"`
 		} `json:"profile"`
 	}
-	if json.Unmarshal(data, &doc) != nil {
-		return nil
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("not Chrome's profile list: %w", err)
 	}
 	out := make([]Profile, 0, len(doc.Profile.InfoCache))
 	for dir, p := range doc.Profile.InfoCache {
 		out = append(out, Profile{Dir: dir, Name: p.Name, UserName: p.UserName})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
-	return out
+	return out, nil
 }
 
 // Match finds the one profile for email: the profile signed in to that
