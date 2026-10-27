@@ -306,6 +306,48 @@ Each case runs hermetically: a temp home, stub `claude` and `security`.
     start a@x.com` starts.
 17. A `.login` line in `.order` makes no account.
 
+## Verification
+
+Spikes before the build (throwaway code against Claude Code 2.1.311 under a
+scratch config dir, laptop, 2026-10-27):
+
+| Claim | Ran | Verdict |
+|---|---|---|
+| A `start` returns through a caller that reads its streams to their end (sshd) while a setsid'd holder keeps the vendor waiting | 3 runs: the caller saw end of file in 72–114ms; the holder survived a SIGHUP to the caller's process group | VERIFIED |
+| The vendor under a holder with no terminal prints its URL and waits | same 3 runs | VERIFIED |
+| `$BROWSER` is called just after the URL is printed | one run: the record appeared within 200ms | VERIFIED; a 3s wait covers it |
+| An orphaned vendor ends when its input reaches end of file | holder `kill -9`'d; vendor still alive 10s later | NOT VERIFIED — the design gained the recorded vendor identity and its cleanup |
+| A malformed code ends the sign-in | `bogus#` (empty state): `Invalid code…`, prompt still open after 60s | NOT VERIFIED — only a well-formed code the server rejects ends it |
+| `readBack` passes a login stored in the file beside a Keychain item | throwaway test on `main` | VERIFIED as a defect (`✓ a@x.com: logged in`); test plan 1 now pins ✗ |
+
+Verification after the build, the built binary against the real vendor in a
+scratch home, every code bogus:
+
+- `start` printed `awaiting_code` with the vendor's own code-page URL
+  (`platform.claude.com` callback, `login_hint` filled) in 0.55s; the
+  calling shell got its streams back; the holder leads its own session.
+- A malformed code and another sign-in's exited 3, `awaiting_code`, with
+  the vendor still waiting; a second `start` returned it, `reused: true`.
+- A well-formed bogus code reached the token endpoint: exit 1,
+  `vendor_rejected`, the vendor's own sentence in `problem`; holder and
+  vendor gone, `status` keeping the outcome.
+- `cancel` exited 0 and ended the vendor; `finish` after it exited 1,
+  `cancelled`.
+- Holder `kill -9`'d: the vendor kept waiting; `finish` exited 1,
+  `holder_gone`; the next `start` ended the orphan and began afresh.
+- The real home's plan, read-only, is line for line the installed build's
+  for all six accounts — none newly held — and created no `.login`.
+- Chrome, reproduced: in a sandboxed agent shell `Local State` reads
+  `operation not permitted`; the installed build printed `no Chrome profile
+  matches <email>` for every account, this build names the refusal.
+
+Found through the binary, not the in-process tests: the vendor inherited the
+holder's lock descriptor, so a killed holder's orphan kept the account
+`busy` for good. The holder now keeps the lock from the vendor.
+
+Not driven: a real renewal; a sealed-Keychain session (no key for an ssh to
+this machine); the agent's own harness.
+
 ## Owed
 
 - A real renewal through `start` and `finish`: it needs an approval.

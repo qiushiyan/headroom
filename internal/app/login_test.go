@@ -391,7 +391,7 @@ func TestLoginRenewedIntoTheFileBesideAKeychainItemDidNotTake(t *testing.T) {
 // one that could not be read, or one read with no profile for the email.
 func TestThePlanSaysWhyNoProfileMatched(t *testing.T) {
 	missing := approver{unread: profileListError{path: "/h/Local State", err: fs.ErrNotExist}}
-	unreadable := approver{unread: profileListError{path: "/h/Local State", err: fs.ErrPermission}}
+	unreadable := approver{unread: profileListError{path: "/h/Local State", err: &fs.PathError{Op: "open", Path: "/h/Local State", Err: fs.ErrPermission}}}
 	read := approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "b"}}}
 	for _, c := range []struct {
 		ap   approver

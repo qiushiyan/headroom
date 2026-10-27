@@ -56,7 +56,11 @@ func (e profileListError) Error() string {
 	if errors.Is(e.err, fs.ErrNotExist) {
 		return "no Chrome profile list at " + e.path
 	}
-	return "Chrome's profile list at " + e.path + " could not be read: " + e.err.Error()
+	why := e.err
+	if pe, ok := errors.AsType[*fs.PathError](e.err); ok {
+		why = pe.Err // the path is said once
+	}
+	return "Chrome's profile list at " + e.path + " could not be read: " + why.Error()
 }
 
 // sshRemote reports whether SSH_CONNECTION ("client port server port") puts
