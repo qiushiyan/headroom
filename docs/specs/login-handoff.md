@@ -6,7 +6,7 @@ recorded below; kept as the dated record of the decision and as the
 contract an agent that renews this machine's logins builds against — the
 commands, the document, its states and reasons, and the exit statuses. The
 design as it stands lives in `DESIGN.md` § Renewing logins. Written against `main` at 741038f and Claude Code 2.1.311,
-macOS; measurements were taken on the owner's laptop on that date.
+macOS; measurements were taken on the owner's mini, the machine the agent renews, on that date.
 
 ## Summary
 
@@ -29,7 +29,7 @@ Boundary: no notion of which inbox an account's mail reaches. The account's emai
 
 ## Vendor facts
 
-Measured on 2.1.311, laptop, 2026-10-27, under a scratch `CLAUDE_CONFIG_DIR`
+Measured on 2.1.311, mini, 2026-10-27, under a scratch `CLAUDE_CONFIG_DIR`
 with a stub `$BROWSER`, input on a pipe and output on a pipe or file:
 
 - `claude auth login --email <e>` prints plain lines on a pipe, no escape
@@ -364,7 +364,7 @@ Each case runs hermetically: a temp home, stub `claude` and `security`.
 ## Verification
 
 Spikes before the build (throwaway code against Claude Code 2.1.311 under a
-scratch config dir, laptop, 2026-10-27):
+scratch config dir, mini, 2026-10-27):
 
 | Claim | Ran | Verdict |
 |---|---|---|
@@ -392,9 +392,10 @@ scratch home, every code bogus:
   `holder_gone`; the next `start` ended the orphan and began afresh.
 - The real home's plan, read-only, is line for line the installed build's
   for all six accounts — none newly held — and created no `.login`.
-- Chrome, reproduced: in a sandboxed agent shell `Local State` reads
-  `operation not permitted`; the installed build printed `no Chrome profile
-  matches <email>` for every account, this build names the refusal.
+- Chrome, reproduced on the mini, where the agent hit it: in a sandboxed
+  agent shell `Local State` reads `operation not permitted`; the installed
+  build printed `no Chrome profile matches <email>` for every account, this
+  build names the refusal.
 
 Review r2 found that a vendor whose registration failed still ran, and the
 skill's recovery rules missing `exchanging` and `outcome_unknown`.
