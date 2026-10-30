@@ -716,3 +716,25 @@ func TestNothingRecordedIsAnEmptyReport(t *testing.T) {
 		t.Errorf("empty report = %+v", rep)
 	}
 }
+
+// Whether a reserved account could take a launch says something about that
+// launch's repository: it is no other work's room, even just after a launch
+// that was allowed to use it.
+func TestAReservedAccountIsNoOtherWorksRoom(t *testing.T) {
+	soon, week := at(2*time.Hour), at(3*24*time.Hour)
+	held := cand("b", at(0), limits(10, 10, soon, week))
+	held.Reservation = placement.ReservedHere
+	readings := []usagelog.Record{
+		logged(at(30*time.Minute), "a", 85, 10, soon, week),
+		logged(at(30*time.Minute), "b", 10, 10, soon, week),
+	}
+	rep := build([]Launch{auto(at(0), cand("a", at(0), limits(10, 10, soon, week)), held)}, readings, at(time.Hour))
+	if len(rep.Episodes) != 1 || rep.Episodes[0].Elsewhere != nil {
+		t.Errorf("episodes = %+v", rep.Episodes)
+	}
+	for _, d := range rep.Decisions {
+		if !d.Replay.Agrees {
+			t.Errorf("a line with a reservation did not replay: %+v", d.Replay)
+		}
+	}
+}

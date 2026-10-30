@@ -15,7 +15,7 @@ grammar the binary parses, and print whatever the configuration says. What
 holds across commands:
 
 - **Which vendor.** Commands that act on one account — `launch`, `resolve`,
-  `accounts add`, `accounts remove` — act on Claude Code unless `--vendor
+  `accounts add`, `accounts remove`, `accounts reserve` — act on Claude Code unless `--vendor
   codex` says otherwise, so an invocation without it means what it always
   meant. Commands that report — the board, `limits`, `launches`, `refresh` —
   cover every vendor on the machine unless `--vendor` names one. `login`,
@@ -95,7 +95,20 @@ that cannot be asked (its token aged out because nothing has used it) is tried
 rather than avoided, with the line saying how old its figures are. Its own
 launch then counts against it, so a second one does not follow blindly. An
 account is left out only on positive evidence: not logged in, login expired,
-blocked by the vendor, or a broken sessions link.
+blocked by the vendor, or a broken sessions link. Or because you said so: an
+account bought for one job can be kept to it, worktrees included.
+
+```sh
+headroom accounts reserve alice@example.com ~/dev/work ~/dev/work-cms
+```
+
+Automatic launches and headless placements elsewhere then never choose it, and
+in those repositories it is ranked like any other: a reservation never makes
+an account go first. Naming it, a pin and `--last` still work anywhere; a
+resumed session outside the repositories moves off it. `accounts reserve`
+bare lists what is kept and `--clear` drops one. A directory that goes missing
+leaves the account launchable only by name, and a `.reserved` that cannot be
+read refuses automatic choices until it is fixed.
 
 Choosing and recording happen in one locked step in `state.json`, so launches
 started together — an agent fanning out several sessions — see each other.
@@ -203,8 +216,8 @@ headroom is **read-only** toward that system: it never refreshes a token and
 no observation path writes anything of Claude Code's — Claude Code owns login
 state. It keeps files of its own — `state.json`, `.current`, the launch log
 `launches.jsonl`, the usage log `usage.jsonl`, and `.login/` for each
-account's login lock and handed-off sign-in — and `.ledger` when
-`accounts ledger` writes it; the only
+account's login lock and handed-off sign-in — and `.ledger` and `.reserved`
+when `accounts ledger` and `accounts reserve` write them; the only
 vendor-state mutations are explicit user commands naming their object — the
 session picker's `rename`/`delete`, and `accounts remove` deleting the
 removed account's own Keychain item — all refused while liveness is active
@@ -284,11 +297,12 @@ Nothing needs configuring on a standard install; environment variables re-point 
 | `HEADROOM_CODEX_PRIMARY_NAME` | *(derived)* | The name the primary `~/.codex` answers to, derived and pinned like `HEADROOM_PRIMARY_NAME` |
 | `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `.current`, `--account`, and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login). Set it to pin a name that must outlive a primary logout |
 
-One setting is a file rather than a variable, because it belongs to a home
+Two settings are files rather than variables, because they belong to a home
 and must hold on every path that home's processes are started from:
 `~/.claude-accounts/.ledger` names the accounts root whose ledger this home
 spends against (written by `headroom accounts ledger`). Absent, the home has
 its own; one that names no usable directory refuses every command.
+`~/.claude-accounts/.reserved` holds what `headroom accounts reserve` writes.
 
 ## Developing
 

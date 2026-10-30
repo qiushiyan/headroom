@@ -6,7 +6,6 @@ package app
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -338,10 +337,7 @@ func (ui *resumeUI) localSectionLabel() string {
 		}
 	}
 	if k := ui.listing.LocalKey; k != "" {
-		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(k, home+"/") {
-			k = "~" + strings.TrimPrefix(k, home)
-		}
-		return render.Sanitize(k)
+		return render.Sanitize(render.Tilde(k))
 	}
 	return "this repo"
 }

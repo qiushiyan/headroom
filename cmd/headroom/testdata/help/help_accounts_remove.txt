@@ -2,7 +2,8 @@ Usage: headroom accounts remove [<account>] [flags]
 
 Remove an extra account: its Keychain item and its dir.
 
-Removes an extra account: deletes its Keychain item and its dir, and scrubs .order.
+Removes an extra account: deletes its Keychain item and its dir, and scrubs .order and
+any reservation.
 Refused while a session is live on it, or when that cannot be verified. Bare on a terminal
 it offers a picker of the removable accounts; it asks y/N unless --yes. Transcripts are
 machine-global and survive. Also removes stranded <name>.lock debris. Codex accounts are

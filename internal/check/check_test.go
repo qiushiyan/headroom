@@ -803,3 +803,44 @@ func TestCheckHomesJudgesOnlyCurrentMembers(t *testing.T) {
 		t.Error("a home that left the ledger is still judged")
 	}
 }
+
+// `.reserved` is checked only where it exists, through the reader a launch
+// uses. A damaged file refuses automatic launches, and a stale row refuses
+// nothing but is worth hearing about.
+func TestCheckReservations(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		body func(dir string) string
+		fail string
+	}{
+		{"none", nil, ""},
+		{"sound", func(dir string) string { return "qiushi\t" + dir + "\n" }, ""},
+		{"damaged", func(string) string { return "not a row\n" }, ".reserved line 1"},
+		{"a directory gone", func(dir string) string { return "qiushi\t" + dir + "/gone\n" }, "can be launched only by name"},
+		{"an account gone", func(dir string) string { return "nobody@x.com\t" + dir + "\n" }, "not a discovered account"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := claudeScope(home, "qiushi")
+			if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if c.body != nil {
+				if err := os.WriteFile(cfg.ReservedFile(), []byte(c.body(home)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r, out := testReport()
+			checkReservations(accounts.Discover(cfg), r)
+			oks, fails, _ := printed(out)
+			switch {
+			case c.body == nil && len(oks)+len(fails) != 0:
+				t.Errorf("no file, and it said: %s", out)
+			case c.body != nil && c.fail == "" && len(oks) != 1:
+				t.Errorf("want an ok line: %s", out)
+			case c.fail != "" && (r.ownFails != 1 || !strings.Contains(out.String(), c.fail)):
+				t.Errorf("want one own failure naming %q: %s", c.fail, out)
+			}
+		})
+	}
+}

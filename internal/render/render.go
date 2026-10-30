@@ -53,11 +53,14 @@ func (p Palette) headerLine(v accountstate.Facts) string {
 		label = fmt.Sprintf("%s %s(dir says %s!)%s", label, p.Red, Sanitize(v.DirMismatch), p.Rst)
 	}
 	mark := ""
+	if v.Reserved != "" {
+		mark = "  " + p.Dim + Sanitize(v.Reserved) + p.Rst
+	}
 	switch {
 	case v.Current:
-		mark = "  " + p.Bold + "← current" + p.Rst
+		mark += "  " + p.Bold + "← current" + p.Rst
 	case v.Next:
-		mark = "  " + p.Bold + "← next" + p.Rst
+		mark += "  " + p.Bold + "← next" + p.Rst
 	}
 	if v.Plan != "" {
 		return fmt.Sprintf("%s%s%s %s(%s · %s)%s%s", p.Bold, label, p.Rst, p.Dim, v.Plan, v.Launcher, p.Rst, mark)

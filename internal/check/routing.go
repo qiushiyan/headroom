@@ -2,8 +2,10 @@ package check
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -35,6 +37,7 @@ func checkRouting(set accounts.Set, environ []string, r *report) {
 		label = fmt.Sprintf("%s (%s)", label, bare.Account.Name)
 	}
 	r.own(err == nil, label, fmt.Sprintf("%v — headroom launch refuses until it is fixed", err))
+	checkReservations(set, r)
 
 	// Not a failure and not drift: an inherited CLAUDE_CONFIG_DIR (a tmux
 	// server started inside a Claude Code session, a nested shell) is
@@ -187,4 +190,33 @@ func checkHomes(set accounts.Set, snap state.Snapshot, r *report) {
 		r.own(len(shared) == 0, "homes: no account dir belongs to two homes",
 			strings.Join(shared, ", ")+" — a launch in one home would run on the other's dir")
 	}
+}
+
+// checkReservations audits `.reserved`, when there is one, through the reader
+// a launch uses. A row naming an account that is gone is inert, and a
+// directory that is gone leaves its account launchable only by name: neither
+// refuses anything, and both are worth hearing about.
+func checkReservations(set accounts.Set, r *report) {
+	cfg := set.Scope
+	if _, err := os.Lstat(cfg.ReservedFile()); err != nil {
+		return
+	}
+	label := "reserved: .reserved names discovered accounts and directories that exist"
+	held, err := accounts.ReadReservations(cfg)
+	if err != nil {
+		r.own(false, label, fmt.Sprintf("%v — an automatic launch refuses until it is fixed", err))
+		return
+	}
+	var why []string
+	for _, name := range slices.Sorted(maps.Keys(held)) {
+		if !slices.ContainsFunc(set.Accounts, func(a accounts.Account) bool { return a.Name == name }) {
+			why = append(why, name+" is not a discovered account — headroom accounts reserve "+name+" --clear")
+		}
+		for _, dir := range held[name] {
+			if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+				why = append(why, fmt.Sprintf("%s is gone — %s can be launched only by name until its reservation is replaced", dir, name))
+			}
+		}
+	}
+	r.own(len(why) == 0, label, strings.Join(why, "; "))
 }

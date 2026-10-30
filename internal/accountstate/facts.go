@@ -136,8 +136,12 @@ type Facts struct {
 	// this surface holds. It is advice, set only by a surface that showed the
 	// figures it was computed from: the launch itself reads the disk again and
 	// counts whatever was placed since.
-	Next   bool
-	Health Health
+	Next bool
+	// Reserved says what the account is reserved for, in a person's words: ""
+	// when it has no reservation. A surface's note, not one of the document's
+	// fields: which accounts are kept for what is `accounts reserve`'s to list.
+	Reserved string
+	Health   Health
 	// AuthMode names a login headroom does not read usage for (a Codex API
 	// key, agent identity or Bedrock login); health is then unknown and the
 	// caption says why. "" otherwise.
@@ -156,8 +160,9 @@ type Facts struct {
 // Mark is what a surface showing figures is told about one account by the
 // placement rule: its load, and whether an automatic launch would take it now.
 type Mark struct {
-	Next bool
-	Load *Load
+	Next     bool
+	Load     *Load
+	Reserved string // what the account is reserved for, or ""
 }
 
 // Load is one subscription's busy sessions and recent launches, as the

@@ -207,6 +207,9 @@ func dryRunNote(c placement.Counted, now time.Time, home string, labels state.Ho
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
 	}
+	if c.Reservation == placement.ReservedHere {
+		notes = append(notes, "reserved here")
+	}
 	for _, sh := range c.Elsewhere(home) {
 		notes = append(notes, fmt.Sprintf("%s: %d busy, %d pending", render.Sanitize(labels.Of(sh.Home)), sh.Busy, sh.Pending))
 	}

@@ -159,7 +159,7 @@ func (e *evaluator) replay(l launch) Replay {
 	pid := 0
 	for _, c := range l.Candidates {
 		key := e.keyOrName(l.Home, c)
-		pc := placement.Candidate{Name: c.Name, Key: key, Excluded: c.Excluded, Source: c.Source, Statuses: c.Statuses}
+		pc := placement.Candidate{Name: c.Name, Key: key, Reservation: placement.Reservation(c.Reservation), Excluded: c.Excluded, Source: c.Source, Statuses: c.Statuses}
 		if !c.Eligible && pc.Excluded == "" {
 			pc.Excluded = "excluded"
 		}

@@ -95,7 +95,7 @@ type Plan struct {
 func Gather(req Request, deps Deps) *Plan {
 	automatic := req.Intent.Kind == placement.Auto
 	req.Intent.Home = req.Store.Home()
-	f := gather(req.Set, req.Store, req.Environ, automatic, req.Now, deps)
+	f := gather(req.Set, req.Store, req.Environ, req.CWD, automatic, req.Now, deps)
 	if len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
 		// A launch that names a session follows the account that last drove
 		// it, so its prompt cache and its checkpoints stay usable. Only Claude
@@ -123,6 +123,9 @@ func Gather(req Request, deps Deps) *Plan {
 // decision under its lock, and a re-home that must be written.
 func (p *Plan) preflight() error {
 	req, f := p.req, p.facts
+	if req.Intent.Kind == placement.Auto && f.reservedErr != nil {
+		return reservedRefusal(f.reservedErr)
+	}
 	if req.Intent.Kind == placement.Forced {
 		if c, ok := f.find(req.Intent.Account); ok && c.prepareErr != nil {
 			return c.prepareErr
@@ -134,6 +137,13 @@ func (p *Plan) preflight() error {
 		}
 	}
 	return nil
+}
+
+// reservedRefusal is why nothing automatic can be decided: which accounts are
+// kept for what is routing state, so damage to it refuses like damage to
+// `.current`, and never quietly releases an account.
+func reservedRefusal(err error) error {
+	return fmt.Errorf("%w — an automatic choice refuses until it is fixed, and a launch that names its account still runs", err)
 }
 
 // Preview writes what a launch would decide — the whole table it would choose

@@ -218,7 +218,7 @@ func HeadlessPlace(std Streams, scope config.Scope, opts HeadlessPlaceOptions, p
 	var outcome error
 	if d.Chosen == "" {
 		doc.Refusal, doc.RetryAt, outcome = d.Refusal, rfc(d.RoomAt), Status(ExitRefused)
-		if placed.Unrecorded != nil {
+		if placed.Failed != nil {
 			outcome = errors.New(d.Refusal)
 		}
 	} else {

@@ -209,24 +209,46 @@ waiting alone will not help). Report the session's process with headroom headles
 <placement> <pid>, and fetch the token with headroom headless token <account>.`
 
 const accountsHelp = `Bare, the account board (see headroom board --help). Its subcommands change the set of
-accounts: add seeds a new account's dir, remove deletes one, ledger shares the request
-budget with a second home on this machine.`
+accounts: add seeds a new account's dir, remove deletes one, reserve keeps one for certain
+repositories, ledger shares the request budget with a second home on this machine.`
 
 const addHelp = `Seeds the dir for a new subscription: ~/.claude-accounts/<email> (or ~/.codex-accounts/
 <email> under --vendor codex), its session store linked to the machine-global one so every
 account sees every session. --share-config links a whitelist of the primary's config —
 settings, skills, commands — into it; --share-config=<dir> links every entry of that dir.
 A login, its history and its session registry are never linked, whatever the source holds.
+For Claude Code, the primary's settings.json is linked even without the flag: every account
+prunes the one session store by its own settings, so an account with settings of its own can
+delete every other account's history.
 
 Then log in once: for Claude Code, headroom launch --account <email> and /login in the
 session; for Codex, headroom launch --vendor codex --account <email> -- login.`
 
-const removeHelp = `Removes an extra account: deletes its Keychain item and its dir, and scrubs .order.
+const removeHelp = `Removes an extra account: deletes its Keychain item and its dir, and scrubs .order and
+any reservation.
 Refused while a session is live on it, or when that cannot be verified. Bare on a terminal
 it offers a picker of the removable accounts; it asks y/N unless --yes. Transcripts are
 machine-global and survive. Also removes stranded <name>.lock debris. Codex accounts are
 never removed — headroom cannot tell whether a codex session is running on a home — and the
 refusal names the dir to delete by hand.`
+
+const reserveHelp = `Keeps an account for certain repositories. Bare, it lists every reservation; with
+directories it replaces the account's reservation; --clear drops it.
+
+An automatic launch or headless placement outside those repositories never chooses the
+account. Inside them it is ranked like any other account: a reservation says what an account
+may be used for, never that it goes first, and every other account stays available there. A
+launch that names its account, a pin and --last are not affected, and a resumed session moves
+off the account when its directory is outside them. Where a launch is decides this: the directory it starts in, a
+session's own directory on a resume, a headless caller's working directory.
+
+A repository counts with every worktree of it, wherever they live. A directory in no
+repository counts with everything under it. If a directory later goes missing the account
+stays kept: it can then be launched only by name. A reservation belongs to this home, so
+another home's login of the same subscription is not kept.
+
+The reservation lives in .reserved beside .current. While that file cannot be read, automatic
+choices refuse and launches that name their account still run.`
 
 const ledgerHelp = `Claude Code only. With a root, this home spends against that accounts root's ledger from
 now on — for a second home on this machine holding its own logins of the same

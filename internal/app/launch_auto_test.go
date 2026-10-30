@@ -87,7 +87,7 @@ func newAutoFixture(t *testing.T, extras ...string) autoFixture {
 // read the way the board's marks are: every account's mark, by name.
 func placementView(set accounts.Set, st *state.Store, now time.Time, place launchop.Deps) map[string]accountstate.Mark {
 	accts, _ := accountstate.Assemble(set, st.Load(), now)
-	return launchop.Mark(set, st, accts, "auto", os.Environ(), now, place).At(now)
+	return launchop.Mark(set, st, accts, "auto", os.Environ(), "", now, place).At(now)
 }
 
 func (f autoFixture) key(name string) state.Key {

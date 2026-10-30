@@ -78,22 +78,26 @@ type Record struct {
 
 // Candidate is one account as the rule counted it.
 type Candidate struct {
-	Name       string   `json:"name"`
-	Key        string   `json:"key"` // the subscription's ledger key: what joins this line to the usage log
-	Eligible   bool     `json:"eligible"`
-	Excluded   string   `json:"excluded,omitempty"`
-	NearLimit  bool     `json:"near_limit"`
-	ObservedAt *string  `json:"observed_at"` // RFC3339 UTC; null = never observed
-	Source     string   `json:"source,omitempty"`
-	Limits     []Limit  `json:"limits"`
-	Statuses   []string `json:"statuses"` // every live session's status, as the vendor wrote it
-	Busy       int      `json:"busy"`
-	BusyProcs  []Proc   `json:"busy_procs"` // the processes behind Busy, before the rule merged them with recent launches
-	Pending    int      `json:"pending"`
-	Load       int      `json:"load"`
-	Weekly     int      `json:"weekly"`
-	Week       Week     `json:"week"`
-	LastPlaced *string  `json:"last_placed_at,omitempty"` // RFC3339 UTC to the millisecond: a tie between two accounts is broken by it
+	Name     string `json:"name"`
+	Key      string `json:"key"` // the subscription's ledger key: what joins this line to the usage log
+	Eligible bool   `json:"eligible"`
+	Excluded string `json:"excluded,omitempty"`
+	// Reservation is how the account stood to this launch: "here", "elsewhere",
+	// or absent when it has no reservation. It is the launch's input, resolved
+	// once: a replay never reads `.reserved` or the repository.
+	Reservation string   `json:"reservation,omitempty"`
+	NearLimit   bool     `json:"near_limit"`
+	ObservedAt  *string  `json:"observed_at"` // RFC3339 UTC; null = never observed
+	Source      string   `json:"source,omitempty"`
+	Limits      []Limit  `json:"limits"`
+	Statuses    []string `json:"statuses"` // every live session's status, as the vendor wrote it
+	Busy        int      `json:"busy"`
+	BusyProcs   []Proc   `json:"busy_procs"` // the processes behind Busy, before the rule merged them with recent launches
+	Pending     int      `json:"pending"`
+	Load        int      `json:"load"`
+	Weekly      int      `json:"weekly"`
+	Week        Week     `json:"week"`
+	LastPlaced  *string  `json:"last_placed_at,omitempty"` // RFC3339 UTC to the millisecond: a tie between two accounts is broken by it
 
 	// Homes splits busy and pending by the home they came from, by accounts
 	// root: another home holding logins of the same subscription puts its
@@ -156,7 +160,7 @@ func New(d placement.Decision, cands []placement.Candidate, ledger placement.Led
 	}
 	for i, c := range d.Candidates {
 		lc := Candidate{
-			Name: c.Name, Key: c.Key, Eligible: c.Excluded == "", Excluded: c.Excluded, NearLimit: c.NearLimit,
+			Name: c.Name, Key: c.Key, Eligible: c.Excluded == "", Excluded: c.Excluded, Reservation: string(c.Reservation), NearLimit: c.NearLimit,
 			Source: c.Source, Statuses: c.Statuses, Busy: c.Busy, Pending: c.Pending, Load: c.Load, Weekly: c.Week.Counted,
 			Week: Week{
 				Kind: c.Week.Kind, Label: c.Week.Label, Counted: c.Week.Counted,

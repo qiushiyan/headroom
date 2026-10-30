@@ -1,0 +1,42 @@
+Usage: headroom accounts reserve [<account>] [<dirs> ...] [flags]
+
+Keep an account for certain repositories, and list what is kept.
+
+Keeps an account for certain repositories. Bare, it lists every reservation; with
+directories it replaces the account's reservation; --clear drops it.
+
+An automatic launch or headless placement outside those repositories never chooses the
+account. Inside them it is ranked like any other account: a reservation says what an account
+may be used for, never that it goes first, and every other account stays available there. A
+launch that names its account, a pin and --last are not affected, and a resumed session moves
+off the account when its directory is outside them. Where a launch is decides this: the directory it starts in, a
+session's own directory on a resume, a headless caller's working directory.
+
+A repository counts with every worktree of it, wherever they live. A directory in no
+repository counts with everything under it. If a directory later goes missing the account
+stays kept: it can then be launched only by name. A reservation belongs to this home, so
+another home's login of the same subscription is not kept.
+
+The reservation lives in .reserved beside .current. While that file cannot be read, automatic
+choices refuse and launches that name their account still run.
+
+Arguments:
+  <account>              The account to keep; every reservation is listed when absent (optional).
+  <dirs> ...             The repositories it is for, replacing any it had (optional).
+
+Flags:
+      --clear            Drop the account's reservation.
+
+Inherited flags:
+      --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
+                         remove act on it, Claude Code when absent (one of: claude, codex).
+  -h, --help             Show context-sensitive help.
+      --version          Print the build this binary is — its commit and the commit's time — and
+                         exit.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments, nothing was run; for check, an assertion it could not test (INCONCLUSIVE)
+  3    headless place refused: every account it could take is near a limit or excluded; login start,
+       finish or cancel refused, nothing spent or sent: the document's reason says why

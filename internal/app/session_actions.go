@@ -72,10 +72,15 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		Session: launchop.Session{Route: s.ID}, Owner: s.Owner,
 		CWD: s.CWD, Environ: os.Environ(), Now: time.Now(),
 	}
-	if override {
+	switch {
+	case override:
 		// The override moves the session, so its routing is part of the
 		// launch: written with it, or the launch does not happen.
 		req.Session.Record, req.MustReHome = s.ID, true
+	case intent.Kind == placement.Auto && intent.Owner != "":
+		// The rule may take the session off its owner, and then the next
+		// resume has to find it there.
+		req.Session.Record = s.ID
 	}
 	out, err := launchop.Gather(req, actions.place).Commit()
 	if err != nil {
@@ -115,11 +120,16 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 // would have fallen back to one asks the rule instead: a session with no
 // evidence, or whose owner is gone, is placed like a new one, and the override
 // moves the session to the least-loaded of the *other* accounts — moving means
-// somewhere other than where it is.
+// somewhere other than where it is. An owner a reservation keeps from the
+// session's directory is the one owner it does not follow: choosing a session
+// is not naming an account, so the rule decides, as it does for a launch that
+// names the session by id.
 func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) (placement.Intent, bool) {
 	_, owned := accountNamed(actions.set, s.Owner)
 	_, pinned := accountNamed(actions.set, actions.routing.Current)
 	switch {
+	case !override && owned && actions.auto() && launchop.HeldAway(actions.set.Scope, s.Owner, s.CWD):
+		return placement.Intent{Owner: s.Owner}, true
 	case !override && owned:
 		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}, true
 	case actions.auto() && override:

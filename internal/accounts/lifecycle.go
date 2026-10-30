@@ -62,6 +62,18 @@ var codexSharedConfig = []string{
 	"plugins",
 }
 
+// StoreSettings is what every account of a vendor must read from one file
+// because it governs the session store they share: each Claude Code account's
+// cleanup prunes that store by its own settings.json, so an account seeded
+// with none of its own config writes one and prunes everyone's history by the
+// vendor's default.
+func StoreSettings(v config.Vendor) []string {
+	if v == config.Claude {
+		return []string{"settings.json"}
+	}
+	return nil
+}
+
 // SharedConfigEntries is the vendor's default sharing whitelist: what a bare
 // `accounts add --share-config` links from the primary's dir.
 func SharedConfigEntries(v config.Vendor) []string {

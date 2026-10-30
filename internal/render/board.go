@@ -216,6 +216,9 @@ func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
 	if t := featureText(v); t != "" {
 		parts = append(parts, p.Yel+t+p.Rst)
 	}
+	if v.Reserved != "" {
+		parts = append(parts, p.Dim+Sanitize(v.Reserved)+p.Rst)
+	}
 	pr := provenance(v, now)
 	if pr.stale {
 		parts = append(parts, p.Yel+"stale"+p.Rst)
