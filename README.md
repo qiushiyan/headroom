@@ -61,6 +61,10 @@ first. Launches started together land on different accounts.
 `headroom launches` what was chosen before, `headroom launches --eval` how
 those choices turned out, and enter on a board row pins one account again.
 
+An account bought for one job can be kept to it: `headroom accounts reserve
+<email> ~/dev/work ~/dev/work-cms`. Automatic launches elsewhere never choose
+it, and in those repositories and their worktrees it is ranked like any other.
+
 Every session, whichever account started it, shows up in one picker:
 `headroom sessions` lists every conversation on the machine and resumes each
 in its own project directory, on the account that last drove it.
@@ -163,10 +167,10 @@ headroom                                                 # the new row is on the
 ```
 
 Repeat per subscription; that is the setup. Login state and history always
-stay per account. `--share-config` is optional, but `headroom check` expects
-every account to read the primary's `settings.json`, with
-`cleanupPeriodDays` set: every account's cleanup sweep prunes the one shared
-session store. Without `--share-config`, link that one file by hand. To retire one:
+stay per account. `--share-config` is optional; either way the account reads
+the primary's `settings.json`, because every account's cleanup sweep prunes
+the one shared session store, and `headroom check` expects
+`cleanupPeriodDays` set there. To retire one:
 `headroom accounts remove <email>`.
 
 Codex is the same shape — `~/.codex` is the primary, each further

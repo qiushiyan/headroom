@@ -83,7 +83,10 @@ Everything derives from that tree:
   alphabetically — configuration a human edits. Both stay outside
   `state.json` on purpose; see The one file headroom writes. A third,
   `.ledger` (optional, Claude Code only), names the accounts root whose
-  ledger this home spends against — see A second home.
+  ledger this home spends against — see A second home. `.reserved` (optional,
+  one `<account><TAB><dir>` per line) keeps accounts for repositories, written
+  by `accounts reserve` and read as strictly as `.current` — see Automatic
+  placement.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
 Keychain, never refreshes a token, and never writes vendor login or quota
@@ -96,8 +99,8 @@ launch log and the usage log nothing routes by (see Judging placement),
 `headless.json`, the one file that holds secrets — the headless tokens, mode
 0600 (see Headless tokens) — the `.login` directory, readable by the user
 alone, where each account dir's login lock, handed-off sign-in and running
-vendor login are kept (see Renewing logins), and, only when `accounts ledger` is asked to,
-`.ledger`. Three documented
+vendor login are kept (see Renewing logins), and, only when asked to,
+`.ledger` and `.reserved`. Three documented
 exceptions, every one an explicit user command naming its object and refused
 while a session is live or liveness is unverifiable: the session picker's `r`
 appends one vendor-format `custom-title` record (exactly what the native
@@ -122,7 +125,13 @@ verifier's error messages name something that exists on every install:
   config, and finishes by running `VerifyTopology` on what it built — the
   same check launch applies, so seed and gate cannot disagree. Names are
   emails: one path element, `@` present, never `.lock`. Sharing is a
-  caller choice, never a default: bare `--share-config` links a *whitelist*
+  caller choice, with one exception: a Claude Code dir gets the primary's
+  `settings.json` whatever is asked (`accounts.StoreSettings`), because a dir
+  with none writes its own at its first session and prunes every account's
+  history by the vendor's default. A primary with no such file has nothing to
+  link, and the add goes on, since refusing it would stop a fresh machine:
+  every account then reads one default, and `check` says so. Bare
+  `--share-config` links a *whitelist*
   from the primary's dir (`accounts.SharedConfigEntries`, per vendor —
   for Claude Code settings, skills, commands, agents, hooks, plugins, …; for
   Codex `config.toml`, `AGENTS.md`, themes, skills, prompts, rules, plugins), and
@@ -174,7 +183,7 @@ verifier's error messages name something that exists on every install:
   `.credentials.json`; `os.RemoveAll` does not
   follow symlinks, so the `projects/` link goes and the store behind it
   stays — pinned by test), then every `.order` line discovery reads as that
-  account, a trailing comment included. `.current` is never
+  account, a trailing comment included, and its reservation. `.current` is never
   rewritten: a removed current account makes launch refuse until the board
   repicks, so corrupt-vs-chosen stays distinguishable. Transcripts survive
   (they are the machine's); the picker shows the dead owner as degraded
@@ -1082,6 +1091,33 @@ that turning auto on forgets the pin.
   not decode is set aside and begun again by the launch's own placement,
   like the request ledger. Corrupt routing state still refuses, since an
   unreadable `.current` says nothing about what the person chose.
+- **A reservation says what an account may be used for, never that it goes
+  first.** A subscription bought for one job is kept to it by `accounts
+  reserve <account> <dir>...`. Elsewhere an automatic choice cannot take the
+  account: it is an ordinary exclusion, built with the rest (`keptOut`), for a
+  launch, the board's mark and a headless placement alike. In those
+  repositories it is ranked like any other, so the rule never reads a
+  directory and every other account stays available there. The obvious second
+  half, preferring the account in its own repositories, is what the design
+  declines: going first until 80% overruns a small plan's five-hour window in
+  a model of the owner's launches, because sessions already running keep
+  spending after the gate closes, and winning ties would give the rule a
+  second job for a modest gain. A plan is no input either: percentages are
+  relative to each account's own quota, and weighting by plan needs a ratio
+  nobody has measured. A launch's place is the directory
+  it starts in, a session's own on a resume, a headless caller's working
+  directory, resolved by `sessions.RepoKey`: the main checkout, whichever
+  worktree it is reached through, canonicalized first, since a symlink into a
+  worktree has no `.git` above its spelling. Paths compare by component, so
+  `~/dev/itell-cms` is not inside `~/dev/itell`. What fails closes: a directory
+  gone leaves its account launchable only by name, because a missing path is
+  not permission, and a `.reserved` that cannot be read refuses every automatic
+  choice and leaves a launch that names its account alone. Naming, a pin and
+  `--last` are the person's word and are obeyed anywhere, but choosing a session
+  is not naming an account: outside the repositories a resume moves off the
+  account and records the move, in the picker too, whose owner is otherwise
+  forced. A reservation is a home's, like `.current`, and binds no other home's
+  login of that subscription.
 - **The board's mark and the launch are one judgment.** `← next` and a launch
   build their candidates in one place (`launchop`'s `Mark` and `Gather`), from
   the same credential reader and the same exclusions, so the row the board marks is
@@ -1093,7 +1129,9 @@ that turning auto on forgets the pin.
   clock alone moves the choice — a window ending, a launch ageing out of the
   load, a weekly reset coming nearer — and rounds stop once nobody is at the
   keys, so a mark decided only per round drifts from the launch with nothing
-  re-read. A launch from another terminal shows at the next round. The same counting
+  re-read. A launch from another terminal shows at the next round. A
+  reservation makes the choice depend on the directory, so the mark speaks for
+  a launch from where the board was opened. The same counting
   gives every row its load on the board and in `--json` (schema 7): busy
   sessions and recent launches, with another home's share named, so the
   owner sees what the other home is running on each subscription.
@@ -1197,10 +1235,11 @@ was shown and chose, and what every account's windows did afterwards.
 - **A launch line is the decision's whole input.** `launches.jsonl`, per
   home, holds every candidate as counted and as the rule was handed it: its
   subscription key, its busy processes, its last placement to the
-  millisecond, the record of recent launches the rule read (`state.Place`
-  returns it before recording the launch), the intent, and the decision's
-  millisecond. So any rule can be run over a line again, one that counts load
-  differently included. Version 1 lines carried counts, names and seconds
+  millisecond, how its reservation stood to the launch, the record of recent
+  launches the rule read (`state.Place` returns it before recording the
+  launch), the intent, and the decision's millisecond. So any rule can be run
+  over a line again, one that counts load differently included, and a replay
+  reads neither `.reserved` nor the repository. Version 1 lines carried counts, names and seconds
   only; they are rebuilt from those and marked inexact wherever that could
   decide.
 - **A usage line is a reading, decoded.** `refresh` appends each reading it
@@ -1234,7 +1273,10 @@ was shown and chose, and what every account's windows did afterwards.
   reading before a renewal is usage at least that, and the room it left at
   most the rest. Another account had room only on a fresh reading or a
   session window that has ended since an older one — an old reading of a
-  window still open is a lower bound and shows none. The outcomes are what
+  window still open is a lower bound and shows none — and never on a reserved
+  account, whose eligibility says something about one launch's repository and
+  not about the account, so a window of its own work can show less room than
+  it had. The outcomes are what
   happened, never what another choice would have caused: a replayed choice's
   window is shown as observed, with the launch elsewhere.
 - **A rule that decides differently has a new name.** The replay of a line
@@ -1505,8 +1547,8 @@ each other. `accounts.Discover(scope)` returns a `Set` that owns `Select`,
 `SetCurrent` and `KnownDir`; an `Account` carries its scope, so no operation
 takes a scope beside an account. The set travels with whatever was built from
 it — a round, the page that shows it, the disk snapshot — and is never rebuilt
-from a scope plus a list. Each vendor keeps its own `.current`, `.order` and
-`state.json` under its own accounts root; a second home names another root's
+from a scope plus a list. Each vendor keeps its own `.current`, `.order`,
+`.reserved` and `state.json` under its own accounts root; a second home names another root's
 ledger in its `.ledger` (see A second home).
 
 - **The command line** is `cmd/headroom`: Kong structs on clikit
@@ -1579,7 +1621,7 @@ ledger in its `.ledger` (see A second home).
   `Mark` is the same gathering for the board's `← next` and load figures, and
   `PlaceHeadless` and `Started` are the protocol for a headless caller, with
   its own eligibility and no exec. `accounts.Set.Bare` is the one reader of
-  `.current`.
+  `.current`, `accounts.ReadReservations` of `.reserved`.
 - **Login.** `app/login.go` chooses accounts on the board's health evidence,
   builds `claude auth login` under `launch.Prepare`'s environment with the
   binary itself as `$BROWSER` (`loginCommand`, for the batch and the holder

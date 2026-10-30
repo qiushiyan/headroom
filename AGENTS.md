@@ -86,6 +86,14 @@ command's own reference.
   primary decision from corrupt routing state. Held by `TestEnv`,
   `TestCodexEnv` and `TestExtraAndForRefuseRelativeDirs`; DESIGN.md § The
   launch surface.
+- **A reservation says what an account may be used for, never that it goes
+  first.** It is resolved before the rule into an ordinary exclusion, binds
+  automatic choices only, and is never released by a missing directory or an
+  unreadable `.reserved`. Held by
+  `TestEveryAutomaticSurfaceHonoursAReservation`,
+  `TestAMissingRepositoryKeepsItsAccountHeld` and
+  `TestADamagedReservationRefusesOnlyAutomaticChoices`; DESIGN.md § Automatic
+  placement.
 - **A session's owner is evidence, newest wins, never re-stamped.** Resume
   never writes `.current`, and a session named by explicit id follows its
   owner, with any move recorded. Held by `TestResolveOwner` and

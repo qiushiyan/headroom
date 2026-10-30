@@ -27,9 +27,9 @@ named failure.
    `--share-config` when the user wants their `~/.claude` settings, skills,
    commands, hooks and plugins in this account too (a whitelist; login state
    and history stay per account); `--share-config=<dir>` links every entry
-   of a config package instead. Without it, link the account's
-   `settings.json` to the primary's by hand: `headroom check` fails unless
-   every account sharing the session store reads one `settings.json`.
+   of a config package instead. Either way a Claude Code account gets the
+   primary's `settings.json`: `headroom check` fails unless every account
+   sharing the session store reads one.
 2. Hand the user: `headroom launch --account <email>`, then `/login` in that
    session choosing **that** email.
 3. `headroom` — the board.
@@ -38,7 +38,8 @@ Done when the new row shows a plan and bars with no red `(dir says …!)` —
 that warning means the dir was logged in as the wrong account; `headroom
 login <email>` again. Repeat per subscription. With two or more logged in, `a` on the board
 makes bare launches choose the least-loaded account from then on; an account
-not yet logged in is left out of that choice until it is. The primary needs nothing; its board name is
+not yet logged in is left out of that choice until it is. An account bought
+for one job is kept to it by `headroom accounts reserve <email> <dir>...`. The primary needs nothing; its board name is
 its login's local part (`alice`), or `export HEADROOM_PRIMARY_NAME=<name>`.
 Board order after the primary: `~/.claude-accounts/.order`, one email per
 line.
@@ -114,9 +115,10 @@ Every account's Claude Code cleanup sweep prunes that one store with its own
 account shares the store, `headroom check` fails its `settings:` line unless
 every sharing account (the primary included) reads one `settings.json`, and
 its `retention:` line when they disagree or when `cleanupPeriodDays` is
-unset — the default is Claude Code's to change. `--share-config` links the
+unset — the default is Claude Code's to change. `accounts add` links the
 primary's `settings.json` into the account; set `cleanupPeriodDays` there to
-the period the user wants kept.
+the period the user wants kept. A dir that predates that link, or was seeded
+from a config package without one, is linked by hand.
 
 Codex is the same topology with its own store: each extra home's `sessions/`
 links to `~/.codex/sessions`, so Codex's own `resume` reaches any session
@@ -129,7 +131,8 @@ running.
 `headroom accounts remove <email>` (bare, it offers a picker of the
 removable accounts) — refuses while that account has a live session or an
 unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the
-account's own Keychain item and dir, scrubs `.order`. Transcripts survive.
+account's own Keychain item and dir, scrubs `.order` and its reservation.
+Transcripts survive.
 Done when `headroom` no longer lists the account; if the default pointed
 there, `headroom accounts` repicks. The same command clears stranded
 `<name>.lock` debris.

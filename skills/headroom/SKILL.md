@@ -75,6 +75,14 @@ shell's `x-<name>`) — quote that spelling.
   account again. `headroom launch --auto` places a single launch that way
   without changing the default; `headroom launch --last` reuses the account
   of the last launch.
+- **Keep an account for certain repositories**: `headroom accounts reserve
+  <name> <dir>...`, one directory per repository; its worktrees come with it.
+  Automatic launches and headless placements elsewhere then never choose the
+  account (`--dry-run` says `excluded: reserved for …`); in those repositories
+  it is ranked like any other, so it does not go first. Naming it, a pin and
+  `--last` still work anywhere. `headroom accounts reserve` lists what is kept;
+  `--clear` drops one. A launch refused with `.reserved line …` means that file
+  is damaged: `check` names it, and a launch that names its account still runs.
 - **Out of quota mid-session — continue it on another account**. Changing
   the default steers new sessions only; the old one moves by re-home:
   1. Quit the session.
