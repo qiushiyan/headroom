@@ -97,22 +97,12 @@ func scenarios() []struct {
 	busy := func(c placement.Candidate, procs ...placement.Proc) placement.Candidate { c.Busy = procs; return c }
 	excluded := func(c placement.Candidate, why string) placement.Candidate { c.Excluded = why; return c }
 	alias := func(c placement.Candidate, name string) placement.Candidate { c.Name = name; return c }
-	reserved := func(c placement.Candidate, r placement.Reservation) placement.Candidate { c.Reservation = r; return c }
 	return []struct {
 		name   string
 		intent placement.Intent
 		ledger placement.Ledger
 		cands  []placement.Candidate
 	}{
-		{"a reserved account wins a tie on load", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
-			cand("a", now, limits(0, 10, soon, soon)), reserved(cand("b", now, limits(0, 70, soon, week)), placement.ReservedHere),
-		}},
-		{"more load beats a reservation", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
-			cand("a", now, limits(0, 10, soon, week)), reserved(cand("b", now, limits(20, 10, soon, week)), placement.ReservedHere),
-		}},
-		{"an account reserved elsewhere is left out", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
-			cand("a", now, limits(60, 40, soon, week)), excluded(reserved(cand("b", now, limits(0, 0, soon, week)), placement.ReservedElsewhere), "reserved for ~/dev/other"),
-		}},
 		{"least load", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
 			cand("a", now, limits(40, 20, soon, week)), cand("b", now, limits(10, 60, soon, week)),
 		}},

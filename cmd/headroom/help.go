@@ -236,10 +236,10 @@ const reserveHelp = `Keeps an account for certain repositories. Bare, it lists e
 directories it replaces the account's reservation; --clear drops it.
 
 An automatic launch or headless placement outside those repositories never chooses the
-account. Inside them the account wins a tie on load and no more, so every other account stays
-available and a parallel launch goes to any account with less load. A launch that names its
-account, a pin and --last are not affected, and a resumed session moves off the account when
-its directory is outside them. Where a launch is decides this: the directory it starts in, a
+account. Inside them it is ranked like any other account: a reservation says what an account
+may be used for, never that it goes first, and every other account stays available there. A
+launch that names its account, a pin and --last are not affected, and a resumed session moves
+off the account when its directory is outside them. Where a launch is decides this: the directory it starts in, a
 session's own directory on a resume, a headless caller's working directory.
 
 A repository counts with every worktree of it, wherever they live. A directory in no

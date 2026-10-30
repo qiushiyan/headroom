@@ -14,17 +14,17 @@ import (
 	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
-// reservedFixture has three accounts where the account kept for the repository
-// is the emptiest but not the one a tie would otherwise go to: held has less
-// weekly room than free, which would win it on the ordinary rule. It returns
-// the repository's main checkout, a worktree of it and a directory outside it.
+// reservedFixture has three accounts where the one kept for the repository is
+// the one the rule would choose anywhere: held has the most weekly room, so
+// only a reservation can keep it out. It returns the repository's main
+// checkout, a worktree of it and a directory outside it.
 func reservedFixture(t *testing.T) (f autoFixture, repo, worktree, outside string) {
 	t.Helper()
 	f = newAutoFixture(t, "free@x.com", "held@x.com")
 	f.setCurrent("auto\n")
 	f.observe("qiushi", 50, 50, time.Minute)
-	f.observe("free@x.com", 0, 10, time.Minute)
-	f.observe("held@x.com", 0, 70, time.Minute)
+	f.observe("free@x.com", 0, 70, time.Minute)
+	f.observe("held@x.com", 0, 10, time.Minute)
 
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -115,13 +115,13 @@ func TestEveryAutomaticSurfaceHonoursAReservation(t *testing.T) {
 	}
 }
 
-// The rule still counts: a reservation wins a tie and nothing more, so a
-// parallel launch in the repository goes to any account with less load.
-func TestAReservationYieldsToLessLoad(t *testing.T) {
+// In its repository the account is ranked like any other, so a parallel launch
+// goes to any account with less load and every other account stays a candidate.
+func TestInItsRepositoryAReservedAccountYieldsToLessLoad(t *testing.T) {
 	f, repo, _, _ := reservedFixture(t)
 	t.Chdir(repo)
 	first := f.launch()
-	if got := first.account(f.cfg); got != "held@x.com" || !strings.Contains(first.stderr, "reserved for this repository") {
+	if got := first.account(f.cfg); got != "held@x.com" {
 		t.Fatalf("first launch: %s", first)
 	}
 	if got := f.launch().account(f.cfg); got != "free@x.com" {

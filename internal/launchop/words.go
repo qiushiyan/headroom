@@ -39,9 +39,6 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner, others
 		return strings.Join(parts, " · ")
 	}
 	parts = append(parts, "auto")
-	if d.Reason == placement.ReasonReserved {
-		parts = append(parts, "reserved for this repository")
-	}
 	switch {
 	case ref.Unidentified:
 		parts = append(parts, "session not identified")

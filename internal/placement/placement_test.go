@@ -550,37 +550,21 @@ func TestTheLastAccountUsedIsPerHome(t *testing.T) {
 	}
 }
 
-// A reservation wins a tie on load and nothing else: load still says whether
-// the account has the time, near a limit it is set aside like any other, and a
-// session's owner is followed before anything is ranked.
-func TestAReservationWinsATieOnLoadAndNoMore(t *testing.T) {
+// A reservation says what an account may be used for, never that it goes
+// first: in its repository the account is ranked like any other, and a tie
+// goes by weekly room.
+func TestInItsRepositoryAReservedAccountIsRankedLikeAnyOther(t *testing.T) {
 	held := acct("held", 0, 70)
 	held.Reservation = ReservedHere
 	free := acct("free", 0, 10)
-
-	d := chosen(t, []Candidate{free, held}, Ledger{}, Intent{})
-	if d.Chosen != "held" || d.Reason != ReasonReserved || d.RunnerUp != "free" {
-		t.Fatalf("tie = %+v", d)
+	if d := chosen(t, []Candidate{held, free}, Ledger{}, Intent{}); d.Chosen != "free" || d.Reason != ReasonLeastLoad {
+		t.Errorf("tie = %s, %s", d.Chosen, d.Reason)
 	}
-	d = chosen(t, []Candidate{held, free}, Ledger{}, Intent{Owner: "free"})
-	if d.Chosen != "free" || d.Reason != ReasonOwner {
-		t.Errorf("owner = %s, %s", d.Chosen, d.Reason)
-	}
-
-	busy := held
-	busy.Busy = []Proc{{PID: 1, StartedMS: 1}}
-	if d := chosen(t, []Candidate{busy, free}, Ledger{}, Intent{}); d.Chosen != "free" || d.Reason != ReasonLeastLoad {
-		t.Errorf("a busy reserved account beside an idle one = %s, %s", d.Chosen, d.Reason)
-	}
-	spent := acct("held", 10, 70)
-	spent.Reservation = ReservedHere
-	if d := chosen(t, []Candidate{spent, free}, Ledger{}, Intent{}); d.Chosen != "free" {
-		t.Errorf("a step of usage = %s", d.Chosen)
-	}
-	near := acct("held", 85, 10)
-	near.Reservation = ReservedHere
-	if d := chosen(t, []Candidate{near, free}, Ledger{}, Intent{}); d.Chosen != "free" {
-		t.Errorf("near a limit = %s", d.Chosen)
+	held = acct("held", 0, 10)
+	held.Reservation = ReservedHere
+	free = acct("free", 0, 70)
+	if d := chosen(t, []Candidate{free, held}, Ledger{}, Intent{}); d.Chosen != "held" || d.Reason != ReasonLeastLoad {
+		t.Errorf("more weekly room = %s, %s", d.Chosen, d.Reason)
 	}
 }
 

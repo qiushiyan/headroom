@@ -20,10 +20,9 @@
 // so a lower bound is never recorded as measured room.
 //
 // An account can be reserved for certain repositories, which is decided before
-// the rule and reaches it as data. Elsewhere the account is excluded like any
-// other. In those repositories it wins a tie on load, and no more: a
-// reservation says what the account is for, and load still says whether it
-// has the time, so parallel sessions spread over every account.
+// the rule: elsewhere the account is excluded like any other, and in them it is
+// ranked like any other. A reservation says what an account may be used for,
+// never that it goes first.
 package placement
 
 import (
@@ -39,7 +38,7 @@ import (
 // The constants are policy, chosen and not measured. They are named in Rule,
 // so a log line says which values decided it.
 const (
-	Rule = "load-3"
+	Rule = "load-2"
 
 	// StepPoints is one step of load: ten points of session-window usage, one
 	// busy session, or one pending placement.
@@ -95,7 +94,7 @@ const (
 type Reservation string
 
 const (
-	ReservedHere      Reservation = "here"      // kept for the repository this launch runs in: it wins a tie on load
+	ReservedHere      Reservation = "here"      // kept for the repository this launch runs in: ranked like any other
 	ReservedElsewhere Reservation = "elsewhere" // kept for others: Excluded says which
 )
 
@@ -126,7 +125,7 @@ type Candidate struct {
 	Name string // the account's name: what a launch selects and a line prints
 	Key  string // the quota it spends; two dirs on one account share a key
 
-	Reservation Reservation // how the account stands to this launch
+	Reservation Reservation // how the account stands to this launch; carried for the record
 
 	// Excluded says why an automatic choice avoids this account ("" = it may
 	// be chosen). Unlaunchable narrows that: no launch can run here at all, so
@@ -292,7 +291,6 @@ type Intent struct {
 // The reasons a decision carries.
 const (
 	ReasonLeastLoad = "least-load"
-	ReasonReserved  = "reserved"
 	ReasonNearLimit = "near-limit"
 	ReasonOwner     = "owner"
 	ReasonMoved     = "moved"
@@ -410,15 +408,6 @@ func (c Counted) Elsewhere(home string) []Share {
 	return out
 }
 
-// reservedHere orders an account kept for this launch's repository ahead of
-// one that is not.
-func (c Counted) reservedHere() int {
-	if c.Reservation == ReservedHere {
-		return 1
-	}
-	return 0
-}
-
 // Session returns the session window's row, if the account has one.
 func (c Counted) Session() (CountedLimit, bool) {
 	for _, l := range c.Limits {
@@ -512,7 +501,6 @@ func (d *Decision) auto(intent Intent) {
 	slices.SortStableFunc(open, func(a, b Counted) int {
 		return cmp.Or(
 			cmp.Compare(a.Load, b.Load),
-			cmp.Compare(b.reservedHere(), a.reservedHere()),
 			b.Week.pressing(a.Week),
 			cmp.Compare(a.LastPlacedMS, b.LastPlacedMS),
 			cmp.Compare(a.order, b.order),
@@ -558,8 +546,6 @@ func (d *Decision) auto(intent Intent) {
 		d.Reason = ReasonNearLimit
 	case intent.Owner != "":
 		d.Reason = ReasonMoved
-	case ranked[0].Reservation == ReservedHere:
-		d.Reason = ReasonReserved
 	case !observed:
 		d.Reason = ReasonRotation
 	default:
