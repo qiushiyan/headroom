@@ -93,6 +93,18 @@ func TestEveryAutomaticSurfaceHonoursAReservation(t *testing.T) {
 		}
 	}
 
+	// The board says what an account is kept for wherever it was opened, and
+	// its document says nothing new: that is `accounts reserve`'s to list.
+	set, now := accounts.Discover(f.cfg), time.Now()
+	accts, _ := accountstate.Assemble(set, f.st.Load(), now)
+	marks := launchop.Mark(set, f.st, accts, "auto", os.Environ(), outside, now, f.edges).At(now)
+	if got := marks["held@x.com"].Reserved; got != "reserved for "+repo {
+		t.Errorf("the held account's mark says %q", got)
+	}
+	if got := marks["free@x.com"].Reserved; got != "" {
+		t.Errorf("the free account's mark says %q", got)
+	}
+
 	t.Chdir(outside)
 	if doc, _, _ := f.place("--dry-run"); !strings.Contains(doc.find("held@x.com").Excluded, "reserved for") {
 		t.Errorf("held outside its repository: %+v", doc.find("held@x.com"))
