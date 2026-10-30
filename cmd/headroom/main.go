@@ -55,7 +55,7 @@ func main() {
 func loadConfig(ctx *kong.Context) (config.Config, error) {
 	cfg, err := config.Load()
 	if err == nil {
-		app.SettlePrimaryNames(cfg, ctx.Stderr)
+		cfg = app.SettlePrimaryNames(cfg, ctx.Stderr)
 	}
 	return cfg, err
 }

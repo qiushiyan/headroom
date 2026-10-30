@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -103,7 +104,7 @@ func TestLoadOverridesLandOnTheirOwnScope(t *testing.T) {
 			}
 			want := base
 			*tc.field(map[Vendor]*Scope{Claude: &want.Claude, Codex: &want.Codex}[tc.vendor]) = tc.value
-			if c.Claude != want.Claude || c.Codex != want.Codex {
+			if !reflect.DeepEqual(c.Claude, want.Claude) || !reflect.DeepEqual(c.Codex, want.Codex) {
 				t.Errorf("%s=%q:\n claude %+v\n  codex %+v\nwant only %s's field changed", tc.env, tc.value, c.Claude, c.Codex, tc.vendor)
 			}
 		})

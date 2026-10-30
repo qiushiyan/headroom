@@ -146,9 +146,10 @@ type request struct {
 }
 
 // primaryRec is the "primary" section: the name the home's records know its
-// primary by.
+// primary by, and the names it was known by before, oldest first.
 type primaryRec struct {
-	Name string `json:"name"`
+	Name   string   `json:"name"`
+	Former []string `json:"former,omitempty"`
 }
 
 type accountRec struct {
@@ -208,6 +209,10 @@ type doc struct {
 	// carries it, since the name belongs to one home.
 	primary    string
 	badPrimary bool
+	// primaryFormer is the names the primary's records were under before
+	// primary: a pin naming one comes from a shell started before the rename,
+	// and never moves the records back.
+	primaryFormer []string
 
 	// existed says the file was there when read: a run with nothing to move
 	// records no name into a document that does not exist yet.
@@ -349,7 +354,7 @@ func read(accountsRoot string) *doc {
 	d.adoptHomeless()
 	var pr primaryRec
 	if decoded("primary", &pr) {
-		d.primary = pr.Name
+		d.primary, d.primaryFormer = pr.Name, pr.Former
 	} else {
 		d.badPrimary = true
 		d.problems = append(d.problems, Problem{"primary", "unreadable — set aside at the next rename; the primary's records are taken to be under its local part"})
@@ -680,7 +685,7 @@ func (d *doc) marshal() ([]byte, error) {
 	put("sessions", d.badSessions, false, d.sessions)
 	put("members", d.badMembers, len(d.members) == 0, d.members)
 	put("runs", d.badRuns, len(d.runs) == 0, d.runs)
-	put("primary", d.badPrimary, d.primary == "", primaryRec{Name: d.primary})
+	put("primary", d.badPrimary, d.primary == "", primaryRec{Name: d.primary, Former: d.primaryFormer})
 	put("placements", d.badPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0, d.placements)
 	if err != nil {
 		return nil, err

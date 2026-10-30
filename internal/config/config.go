@@ -108,6 +108,10 @@ type Scope struct {
 	// is logged in. Pin it when the derived name must survive a primary logout
 	// (`.current` stores the name, not the dir).
 	PrimaryName string
+	// PrimaryAliases are names the primary had before PrimaryName, which
+	// still select it: a launcher defined in a shell started before a rename
+	// passes the old one.
+	PrimaryAliases []string
 
 	// LauncherFormat spells the command the board advertises for an account
 	// (`%s` = the account's name): every "run <this> and /login" hint and

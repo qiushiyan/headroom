@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -21,23 +22,34 @@ import (
 // exists. A changed pin moves them, once, under the store's lock, and says so
 // on w; changing the host file is all a person does.
 //
+// A pin naming a name the primary had before the recorded one comes from a
+// shell started before a rename: it moves nothing, and the run goes on under
+// the recorded name, so the records never flip back and forth between old and
+// new shells (state.FormerNames says why the newest name wins).
+//
+// It returns the configuration the run uses: each scope's PrimaryName is the
+// name the records are under, and PrimaryAliases its former names, which
+// still select the primary for a launcher an old shell defined.
+//
 // Only a pinned name is settled: a derived one follows whoever is logged in,
 // and is documented as no steadier than that login. The common run reads the
 // recorded name, finds it unchanged and does nothing more.
-func SettlePrimaryNames(cfg config.Config, w io.Writer) {
-	for _, scope := range []config.Scope{cfg.Claude, cfg.Codex} {
-		settlePrimaryName(scope, w)
-	}
+func SettlePrimaryNames(cfg config.Config, w io.Writer) config.Config {
+	cfg.Claude = settlePrimaryName(cfg.Claude, w)
+	cfg.Codex = settlePrimaryName(cfg.Codex, w)
+	return cfg
 }
 
-func settlePrimaryName(scope config.Scope, w io.Writer) {
+func settlePrimaryName(scope config.Scope, w io.Writer) config.Scope {
 	to := scope.PrimaryName
 	if to == "" {
-		return
+		return scope
 	}
 	st := state.Open(scope)
-	if st.RecordedPrimary() == to {
-		return
+	recorded := st.RecordedPrimary()
+	if recorded == to {
+		scope.PrimaryAliases = st.RecordedFormer()
+		return scope
 	}
 
 	// Nothing recorded yet: the records were written under the name the
@@ -58,9 +70,19 @@ func settlePrimaryName(scope config.Scope, w io.Writer) {
 	unpinned.PrimaryName = ""
 	inferred := accounts.PrimaryName(unpinned, email)
 	label := vendorLabel(scope.Vendor)
+	// A stale shell's pin: the run uses the recorded name, quietly, since every
+	// pane open at the rename runs into this until it is restarted.
+	stale := func() config.Scope {
+		scope.PrimaryName = st.RecordedPrimary()
+		scope.PrimaryAliases = state.FormerNames(scope.PrimaryName, st.RecordedFormer(), inferred)
+		return scope
+	}
+	if recorded != "" && slices.Contains(state.FormerNames(recorded, st.RecordedFormer(), inferred), to) {
+		return stale()
+	}
 	if extras[to] {
 		fmt.Fprintf(w, "headroom: %s's primary is named %s, which is also an extra account's dir — its records stay where they are until the name is one no other account has\n", label, to)
-		return
+		return scope
 	}
 
 	mv, err := st.RenamePrimary(inferred, to, func(from string) (int, error) {
@@ -98,9 +120,14 @@ func settlePrimaryName(scope config.Scope, w io.Writer) {
 		// next run looks again.
 	case err != nil:
 		fmt.Fprintf(w, "headroom: %s's primary is named %s, and its records could not be moved to it (%v); the next headroom command tries again\n", label, to, err)
+	case mv.Stale:
+		// Another run recorded a newer name between the read above and the lock.
+		return stale()
 	case mv.Moved() && mv.ReHomes+mv.Placements+mv.Files > 0:
 		fmt.Fprintf(w, "headroom: %s's primary is now %s; moved its records from %s (%s)\n", label, to, mv.From, movedSummary(mv))
 	}
+	scope.PrimaryAliases = st.RecordedFormer()
+	return scope
 }
 
 func movedSummary(mv state.PrimaryMove) string {

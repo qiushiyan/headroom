@@ -2,6 +2,7 @@ package state
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -22,6 +23,9 @@ type PrimaryMove struct {
 	Placements int  // this home's launch records moved to To, --last among them
 	Files      int  // records beside the store that files moved: `.current`, reservations, tokens
 	Recorded   bool // the document now records To where it recorded another name or none
+	// Stale says To is a name the primary had before From: the pin came from
+	// a shell started before a rename, and nothing moved.
+	Stale bool
 }
 
 // Moved says the records changed name.
@@ -31,6 +35,28 @@ func (m PrimaryMove) Moved() bool { return m.From != "" && m.From != m.To }
 // before one is recorded. A read without the lock, for the run that only
 // needs to see that nothing changed: RenamePrimary decides again under it.
 func (s *Store) RecordedPrimary() string { return read(s.root).primary }
+
+// RecordedFormer is the names the primary's records were under before the
+// recorded one, oldest first; a read without the lock, as RecordedPrimary.
+func (s *Store) RecordedFormer() []string { return slices.Clone(read(s.root).primaryFormer) }
+
+// FormerNames is every name the primary had before `recorded`: the ones the
+// home records, and — for a home that recorded no history, as builds before
+// it did not — `inferred`, the name its records had before any was pinned,
+// when the recorded name has since replaced it.
+//
+// A former name is never taken back by a pin. A pin cannot tell a shell
+// started before the rename from a person going back to the old name, and
+// the stale shells are many (every pane open at the rename) while going back
+// is a rare, deliberate act: the newest name the host file gave wins. Going
+// back means removing the name from the state file's primary.former first.
+func FormerNames(recorded string, former []string, inferred string) []string {
+	out := slices.Clone(former)
+	if recorded != "" && inferred != "" && inferred != recorded && !slices.Contains(out, inferred) {
+		out = append(out, inferred)
+	}
+	return slices.DeleteFunc(out, func(n string) bool { return n == recorded })
+}
 
 // RenamePrimary moves this home's records from the name they know its primary
 // by to `to`, under the store's locks, so two runs that both see the change
@@ -50,6 +76,11 @@ func (s *Store) RenamePrimary(inferred, to string, files func(from string) (int,
 			return false, homeErr
 		}
 		from := home.primary
+		former := FormerNames(home.primary, home.primaryFormer, inferred)
+		if home.primary != "" && slices.Contains(former, to) {
+			mv.From, mv.Stale = from, true
+			return false, nil
+		}
 		if from == "" {
 			from = inferred
 		}
@@ -101,7 +132,10 @@ func (s *Store) RenamePrimary(inferred, to string, files func(from string) (int,
 		// A home with no document and nothing moved gets none just to say so.
 		if home.primary != to && (home.existed || mv.ReHomes+mv.Placements+mv.Files > 0) {
 			home.setAside("primary", &home.badPrimary)
-			home.primary = to
+			if from != "" && from != to && !slices.Contains(former, from) {
+				former = append(former, from)
+			}
+			home.primary, home.primaryFormer = to, former
 			home.dirty = true
 			mv.Recorded = true
 		}

@@ -585,7 +585,15 @@ headless runs.
   store's lock, the document recording the new name last, so a run stopped
   partway is finished by the next (`app.SettlePrimaryNames`). Before any name
   is recorded the old one is the login's local part, the name every pin so
-  far kept. A name that is an extra's dir moves nothing, and an unreadable
+  far kept. The names the records had before are recorded too, and a pin
+  naming one moves nothing: it comes from a shell started before the rename,
+  and the run goes on under the recorded name, the old one still selecting
+  the primary for that shell's launchers. Otherwise the records would flip
+  between the names as old and new shells alternate, and a pin cannot tell a
+  stale shell from a person going back, so the newest name wins; going back
+  is removing the name from the document's `primary.former` first. Before
+  any history is recorded, the login's local part counts as a former name
+  once another name is recorded. A name that is an extra's dir moves nothing, and an unreadable
   `.reserved`, token file or re-homes section stops the move before anything
   is written. The launch and usage logs keep the old name: they are history,
   joined on the account key, never on the name. A second home that holds

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -491,6 +492,13 @@ func (s Set) byName(name string) (Account, error) {
 	for _, a := range s.Accounts {
 		if a.Name == name {
 			matches = append(matches, a)
+		}
+	}
+	if len(matches) == 0 && slices.Contains(s.Scope.PrimaryAliases, name) {
+		// A name the primary had before a rename (config.Scope.PrimaryAliases):
+		// no account answers to it any more, so it is unambiguous.
+		if p, err := primaryOf(s.Accounts); err == nil {
+			return p, nil
 		}
 	}
 	switch len(matches) {
