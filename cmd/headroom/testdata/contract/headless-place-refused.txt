@@ -4,7 +4,7 @@ exit 3
 {
   "schema": 1,
   "placed": false,
-  "rule": "load-2",
+  "rule": "load-3",
   "refusal": "no account can take a launch: p (no headless token — headroom headless mint p), a@x.com (excluded by the caller), b@x.com (excluded by the caller)",
   "retry_at": null,
   "accounts": [

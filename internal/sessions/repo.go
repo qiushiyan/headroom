@@ -56,6 +56,26 @@ type Head struct {
 	Commit string // abbreviated sha, when detached
 }
 
+// RepoKey is what a directory belongs to: the main checkout of the repository
+// it is in, whichever worktree it reached it through, or its own canonical path
+// when it is in none. "" when it is not an absolute path to a directory, so a
+// caller can tell nothing known from a match. The path is canonicalized before
+// the walk: a symlink into a worktree's subdirectory has no .git above its
+// spelling, only above what it resolves to.
+func RepoKey(dir string) string {
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	dir = canon(dir)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return ""
+	}
+	if key := (repoCache{}).lookup(dir).Key; key != "" {
+		return key
+	}
+	return dir
+}
+
 // repoCache memoizes per starting dir; the walker hits the same few dirs
 // hundreds of times.
 type repoCache map[string]repoInfo

@@ -97,12 +97,22 @@ func scenarios() []struct {
 	busy := func(c placement.Candidate, procs ...placement.Proc) placement.Candidate { c.Busy = procs; return c }
 	excluded := func(c placement.Candidate, why string) placement.Candidate { c.Excluded = why; return c }
 	alias := func(c placement.Candidate, name string) placement.Candidate { c.Name = name; return c }
+	reserved := func(c placement.Candidate, r placement.Reservation) placement.Candidate { c.Reservation = r; return c }
 	return []struct {
 		name   string
 		intent placement.Intent
 		ledger placement.Ledger
 		cands  []placement.Candidate
 	}{
+		{"a reserved account wins a tie on load", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
+			cand("a", now, limits(0, 10, soon, soon)), reserved(cand("b", now, limits(0, 70, soon, week)), placement.ReservedHere),
+		}},
+		{"more load beats a reservation", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
+			cand("a", now, limits(0, 10, soon, week)), reserved(cand("b", now, limits(20, 10, soon, week)), placement.ReservedHere),
+		}},
+		{"an account reserved elsewhere is left out", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
+			cand("a", now, limits(60, 40, soon, week)), excluded(reserved(cand("b", now, limits(0, 0, soon, week)), placement.ReservedElsewhere), "reserved for ~/dev/other"),
+		}},
 		{"least load", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
 			cand("a", now, limits(40, 20, soon, week)), cand("b", now, limits(10, 60, soon, week)),
 		}},
@@ -714,5 +724,27 @@ func TestNothingRecordedIsAnEmptyReport(t *testing.T) {
 	rep := Build(Input{Vendor: config.Claude, Home: home, Now: t0, Problems: []string{"cannot read x"}})
 	if len(rep.Rules) != 0 || rep.Sources.First != nil || rep.Episodes == nil || rep.Decisions == nil || len(rep.Sources.Problems) != 1 {
 		t.Errorf("empty report = %+v", rep)
+	}
+}
+
+// Whether a reserved account could take a launch says something about that
+// launch's repository: it is no other work's room, even just after a launch
+// that was allowed to use it.
+func TestAReservedAccountIsNoOtherWorksRoom(t *testing.T) {
+	soon, week := at(2*time.Hour), at(3*24*time.Hour)
+	held := cand("b", at(0), limits(10, 10, soon, week))
+	held.Reservation = placement.ReservedHere
+	readings := []usagelog.Record{
+		logged(at(30*time.Minute), "a", 85, 10, soon, week),
+		logged(at(30*time.Minute), "b", 10, 10, soon, week),
+	}
+	rep := build([]Launch{auto(at(0), cand("a", at(0), limits(10, 10, soon, week)), held)}, readings, at(time.Hour))
+	if len(rep.Episodes) != 1 || rep.Episodes[0].Elsewhere != nil {
+		t.Errorf("episodes = %+v", rep.Episodes)
+	}
+	for _, d := range rep.Decisions {
+		if !d.Replay.Agrees {
+			t.Errorf("a line with a reservation did not replay: %+v", d.Replay)
+		}
 	}
 }

@@ -7,7 +7,7 @@ exit 0
   "account": "a@x.com",
   "placement": "<id>",
   "reason": "owner",
-  "rule": "load-2",
+  "rule": "load-3",
   "token_ends_at": "<time>",
   "retry_at": null,
   "accounts": [

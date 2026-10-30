@@ -229,7 +229,7 @@ func (r *Round) Complete(ctx context.Context) {
 func (r *Round) Mark(marks map[string]accountstate.Mark) {
 	for _, d := range r.rows {
 		m := marks[d.Acct.Name]
-		d.View.Next, d.View.Load = m.Next, m.Load
+		d.View.Next, d.View.Load, d.View.Reserved = m.Next, m.Load, m.Reserved
 	}
 }
 

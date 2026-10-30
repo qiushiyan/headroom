@@ -18,6 +18,12 @@
 // account that cannot be asked is tried rather than avoided: the idle accounts
 // are the ones that cannot be asked. Every counted figure carries its basis,
 // so a lower bound is never recorded as measured room.
+//
+// An account can be reserved for certain repositories, which is decided before
+// the rule and reaches it as data. Elsewhere the account is excluded like any
+// other. In those repositories it wins a tie on load, and no more: a
+// reservation says what the account is for, and load still says whether it
+// has the time, so parallel sessions spread over every account.
 package placement
 
 import (
@@ -33,7 +39,7 @@ import (
 // The constants are policy, chosen and not measured. They are named in Rule,
 // so a log line says which values decided it.
 const (
-	Rule = "load-2"
+	Rule = "load-3"
 
 	// StepPoints is one step of load: ten points of session-window usage, one
 	// busy session, or one pending placement.
@@ -84,6 +90,15 @@ const (
 	TimeAssumed   TimeBasis = "assumed"   // nothing says: AssumedWindow
 )
 
+// Reservation is how an account kept for certain repositories stands to one
+// launch. "" is an account with no reservation.
+type Reservation string
+
+const (
+	ReservedHere      Reservation = "here"      // kept for the repository this launch runs in: it wins a tie on load
+	ReservedElsewhere Reservation = "elsewhere" // kept for others: Excluded says which
+)
+
 // Limit is one limit row of an account's newest observation.
 type Limit struct {
 	Kind    string // the vendor's word for the row
@@ -110,6 +125,8 @@ type Proc struct {
 type Candidate struct {
 	Name string // the account's name: what a launch selects and a line prints
 	Key  string // the quota it spends; two dirs on one account share a key
+
+	Reservation Reservation // how the account stands to this launch
 
 	// Excluded says why an automatic choice avoids this account ("" = it may
 	// be chosen). Unlaunchable narrows that: no launch can run here at all, so
@@ -275,6 +292,7 @@ type Intent struct {
 // The reasons a decision carries.
 const (
 	ReasonLeastLoad = "least-load"
+	ReasonReserved  = "reserved"
 	ReasonNearLimit = "near-limit"
 	ReasonOwner     = "owner"
 	ReasonMoved     = "moved"
@@ -293,6 +311,7 @@ type CountedLimit struct {
 type Counted struct {
 	Name         string
 	Key          string
+	Reservation  Reservation
 	Excluded     string
 	Unlaunchable bool
 	ObservedAt   int64
@@ -391,6 +410,15 @@ func (c Counted) Elsewhere(home string) []Share {
 	return out
 }
 
+// reservedHere orders an account kept for this launch's repository ahead of
+// one that is not.
+func (c Counted) reservedHere() int {
+	if c.Reservation == ReservedHere {
+		return 1
+	}
+	return 0
+}
+
 // Session returns the session window's row, if the account has one.
 func (c Counted) Session() (CountedLimit, bool) {
 	for _, l := range c.Limits {
@@ -484,6 +512,7 @@ func (d *Decision) auto(intent Intent) {
 	slices.SortStableFunc(open, func(a, b Counted) int {
 		return cmp.Or(
 			cmp.Compare(a.Load, b.Load),
+			cmp.Compare(b.reservedHere(), a.reservedHere()),
 			b.Week.pressing(a.Week),
 			cmp.Compare(a.LastPlacedMS, b.LastPlacedMS),
 			cmp.Compare(a.order, b.order),
@@ -529,6 +558,8 @@ func (d *Decision) auto(intent Intent) {
 		d.Reason = ReasonNearLimit
 	case intent.Owner != "":
 		d.Reason = ReasonMoved
+	case ranked[0].Reservation == ReservedHere:
+		d.Reason = ReasonReserved
 	case !observed:
 		d.Reason = ReasonRotation
 	default:
@@ -629,7 +660,7 @@ func whyNot(c Counted, intent Intent) string {
 func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 	nowS, nowMS := now.Unix(), now.UnixMilli()
 	out := Counted{
-		Name: c.Name, Key: c.Key, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
+		Name: c.Name, Key: c.Key, Reservation: c.Reservation, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
 		ObservedAt: c.ObservedAt, Source: c.Source, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
 		Stale:  c.ObservedAt > 0 && nowS-c.ObservedAt > int64(StaleAfter/time.Second),
 		Limits: make([]CountedLimit, 0, len(c.Limits)),

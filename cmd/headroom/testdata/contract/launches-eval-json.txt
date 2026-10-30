@@ -8,7 +8,7 @@ exit 0
     {
       "vendor": "claude",
       "home": "$BASE/home/.claude-accounts",
-      "rule": "load-2",
+      "rule": "load-3",
       "since": null,
       "until": "<time>",
       "thresholds": {
@@ -32,7 +32,7 @@ exit 0
       },
       "rules": [
         {
-          "rule": "load-2",
+          "rule": "load-3",
           "from": "<time>",
           "to": "<time>",
           "launches": {
@@ -177,7 +177,7 @@ exit 0
         {
           "at": "<time>",
           "home": "$BASE/home/.claude-accounts",
-          "rule": "load-2",
+          "rule": "load-3",
           "mode": "auto",
           "reason": "least-load",
           "chosen": "a@x.com",
@@ -197,7 +197,7 @@ exit 0
     {
       "vendor": "codex",
       "home": "$BASE/home/.codex-accounts",
-      "rule": "load-2",
+      "rule": "load-3",
       "since": null,
       "until": "<time>",
       "thresholds": {
@@ -221,7 +221,7 @@ exit 0
       },
       "rules": [
         {
-          "rule": "load-2",
+          "rule": "load-3",
           "from": "<time>",
           "to": "<time>",
           "launches": {

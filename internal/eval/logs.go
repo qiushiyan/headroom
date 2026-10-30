@@ -194,7 +194,11 @@ func (e *evaluator) readUsage() {
 	for _, l := range e.launches {
 		for _, c := range l.Candidates {
 			k := e.keyOrName(l.Home, c)
-			e.eligible[k] = append(e.eligible[k], eligibility{at: l.at, ok: c.Eligible})
+			// Whether a reserved account could take a launch says something
+			// about that launch's repository, not about the account: it is no
+			// other work's room, whichever way this line went. Where the work
+			// was its own, the report's room is a lower bound.
+			e.eligible[k] = append(e.eligible[k], eligibility{at: l.at, ok: c.Eligible && c.Reservation == ""})
 			if c.ObservedAt == nil {
 				continue
 			}

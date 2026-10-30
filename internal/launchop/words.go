@@ -39,6 +39,9 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner, others
 		return strings.Join(parts, " · ")
 	}
 	parts = append(parts, "auto")
+	if d.Reason == placement.ReasonReserved {
+		parts = append(parts, "reserved for this repository")
+	}
 	switch {
 	case ref.Unidentified:
 		parts = append(parts, "session not identified")
@@ -206,6 +209,9 @@ func dryRunNote(c placement.Counted, now time.Time, home string, labels state.Ho
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
+	}
+	if c.Reservation == placement.ReservedHere {
+		notes = append(notes, "reserved here")
 	}
 	for _, sh := range c.Elsewhere(home) {
 		notes = append(notes, fmt.Sprintf("%s: %d busy, %d pending", render.Sanitize(labels.Of(sh.Home)), sh.Busy, sh.Pending))

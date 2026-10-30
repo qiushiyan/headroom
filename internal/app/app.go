@@ -20,7 +20,8 @@ import (
 // so a board that stays open can mark again as time passes. The mode is the
 // round's own reading of `.current`, never a second one.
 func markBoard(r *round.Round, now time.Time, place launchop.Deps) *launchop.Marks {
-	m := launchop.Mark(r.Set, r.Store, r.Accounts(), r.Routing.Mode, os.Environ(), now, place)
+	cwd, _ := os.Getwd()
+	m := launchop.Mark(r.Set, r.Store, r.Accounts(), r.Routing.Mode, os.Environ(), cwd, now, place)
 	r.Mark(m.At(now))
 	return m
 }

@@ -458,6 +458,11 @@ func isDir(path string) bool {
 // govern the other.
 func (s Scope) CurrentFile() string { return filepath.Join(s.AccountsRoot, ".current") }
 
+// ReservedFile holds the accounts kept for certain repositories (optional, one
+// `<account>\t<dir>` per line). It is routing state, read as strictly as
+// .current: see accounts.ReadReservations.
+func (s Scope) ReservedFile() string { return filepath.Join(s.AccountsRoot, ".reserved") }
+
 // OrderFile sets dashboard display order after the primary (optional, one
 // email per line; unlisted accounts follow alphabetically).
 func (s Scope) OrderFile() string { return filepath.Join(s.AccountsRoot, ".order") }

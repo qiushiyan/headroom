@@ -549,3 +549,59 @@ func TestTheLastAccountUsedIsPerHome(t *testing.T) {
 		t.Errorf("an older launch replaced this home's last: %q", d.Chosen)
 	}
 }
+
+// A reservation wins a tie on load and nothing else: load still says whether
+// the account has the time, near a limit it is set aside like any other, and a
+// session's owner is followed before anything is ranked.
+func TestAReservationWinsATieOnLoadAndNoMore(t *testing.T) {
+	held := acct("held", 0, 70)
+	held.Reservation = ReservedHere
+	free := acct("free", 0, 10)
+
+	d := chosen(t, []Candidate{free, held}, Ledger{}, Intent{})
+	if d.Chosen != "held" || d.Reason != ReasonReserved || d.RunnerUp != "free" {
+		t.Fatalf("tie = %+v", d)
+	}
+	d = chosen(t, []Candidate{held, free}, Ledger{}, Intent{Owner: "free"})
+	if d.Chosen != "free" || d.Reason != ReasonOwner {
+		t.Errorf("owner = %s, %s", d.Chosen, d.Reason)
+	}
+
+	busy := held
+	busy.Busy = []Proc{{PID: 1, StartedMS: 1}}
+	if d := chosen(t, []Candidate{busy, free}, Ledger{}, Intent{}); d.Chosen != "free" || d.Reason != ReasonLeastLoad {
+		t.Errorf("a busy reserved account beside an idle one = %s, %s", d.Chosen, d.Reason)
+	}
+	spent := acct("held", 10, 70)
+	spent.Reservation = ReservedHere
+	if d := chosen(t, []Candidate{spent, free}, Ledger{}, Intent{}); d.Chosen != "free" {
+		t.Errorf("a step of usage = %s", d.Chosen)
+	}
+	near := acct("held", 85, 10)
+	near.Reservation = ReservedHere
+	if d := chosen(t, []Candidate{near, free}, Ledger{}, Intent{}); d.Chosen != "free" {
+		t.Errorf("near a limit = %s", d.Chosen)
+	}
+}
+
+// Elsewhere a reserved account is excluded like any other: no automatic choice
+// lands on it, its owner's session moves, and a choice that names it stands.
+func TestAnAccountReservedElsewhereIsChosenOnlyByName(t *testing.T) {
+	held := acct("held", 0, 0)
+	held.Reservation, held.Excluded = ReservedElsewhere, "reserved for ~/dev/itell"
+	free := acct("free", 60, 40)
+	cands := []Candidate{held, free}
+
+	if d := chosen(t, cands, Ledger{}, Intent{}); d.Chosen != "free" {
+		t.Errorf("auto = %s", d.Chosen)
+	}
+	if d := chosen(t, cands, Ledger{}, Intent{Owner: "held"}); d.Chosen != "free" || d.Reason != ReasonMoved {
+		t.Errorf("owner = %s, %s", d.Chosen, d.Reason)
+	}
+	if d := chosen(t, cands, Ledger{}, Intent{Kind: Forced, Account: "held", Reason: "named"}); d.Chosen != "held" {
+		t.Errorf("named = %s", d.Chosen)
+	}
+	if d := chosen(t, []Candidate{held}, Ledger{}, Intent{}); d.Chosen != "" || !strings.Contains(d.Refusal, "reserved for") {
+		t.Errorf("nothing else to take = %+v", d)
+	}
+}

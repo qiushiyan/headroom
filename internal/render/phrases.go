@@ -2,9 +2,19 @@ package render
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// Tilde is a path as a person writes it: the home directory as ~.
+func Tilde(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home+"/") {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
 
 // When is an instant as a date plus its distance from now: "Oct 30 (in 6d)".
 func When(ms int64, now time.Time) string {

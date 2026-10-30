@@ -10,7 +10,9 @@ package launchop
 // Nothing here writes a file or asks the network.
 
 import (
+	"cmp"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tag"
@@ -41,6 +44,10 @@ type candidate struct {
 	// cred is the account's stored credential, read only when the rule
 	// chooses: "" when it was not read, and when it could not be.
 	cred string
+
+	// reserved says what the account is reserved for, in a person's words: ""
+	// when it has no reservation.
+	reserved string
 
 	// prepared is the launch an ordinary launch on this account would run, and
 	// prepareErr why none can run here at all. A headless placement prepares
@@ -64,6 +71,45 @@ type facts struct {
 	// gone are the headless runs this reading proved over, for the next write
 	// of the ledger to drop.
 	gone []state.Run
+
+	// reservedErr is why `.reserved` could not be read. Nothing then says which
+	// accounts are kept for what, so no automatic choice can be made from
+	// these facts; a launch told where to run does not need to know.
+	reservedErr error
+}
+
+// keptOut is why a reservation keeps this account from this launch, or "".
+func (c candidate) keptOut() string {
+	if c.Reservation == placement.ReservedElsewhere {
+		return c.reserved
+	}
+	return ""
+}
+
+// HeldAway says a reservation keeps the account from work in dir, or that
+// nothing can say it does not: an unreadable `.reserved` never releases an
+// account.
+func HeldAway(scope config.Scope, account, dir string) bool {
+	held, err := accounts.ReadReservations(scope)
+	return err != nil || (held.Held(account) && !held.Admits(account, sessions.RepoKey(dir)))
+}
+
+// standing is how a reservation stands to a launch in project, and what it
+// is for in a person's words. An account whose repositories are all gone is
+// still kept from everything else: a missing directory is not permission.
+func standing(held accounts.Reservations, name, project string) (placement.Reservation, string) {
+	if !held.Held(name) {
+		return "", ""
+	}
+	dirs := make([]string, 0, len(held[name]))
+	for _, d := range held[name] {
+		dirs = append(dirs, render.Tilde(d))
+	}
+	words := "reserved for " + strings.Join(dirs, ", ")
+	if held.Admits(name, project) {
+		return placement.ReservedHere, words
+	}
+	return placement.ReservedElsewhere, words
 }
 
 // rule is the candidates as the rule and the store take them.
@@ -118,10 +164,11 @@ func diskSources(set accounts.Set, snap state.Snapshot, now time.Time) []source 
 }
 
 // gather reads what is known on disk about every account of the set, and
-// which of them an ordinary launch may run on: what a launch chooses from.
-func gather(set accounts.Set, st *state.Store, env []string, automatic bool, now time.Time, deps Deps) facts {
+// which of them an ordinary launch in dir may run on: what a launch chooses
+// from.
+func gather(set accounts.Set, st *state.Store, env []string, dir string, automatic bool, now time.Time, deps Deps) facts {
 	snap := st.Load()
-	return build(set, st, snap, diskSources(set, snap, now), env, automatic, now, deps)
+	return build(set, st, snap, diskSources(set, snap, now), env, dir, automatic, now, deps)
 }
 
 // OtherHomes is the other homes spending against this home's ledger today,
@@ -151,10 +198,15 @@ func OtherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 //
 // Who may be chosen is each caller's own policy over these facts, and none is
 // set here: an ordinary launch's is its preparation and positive evidence
-// (build); a headless placement's is the caller's (headless.go).
-func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, credentials bool, deps Deps) facts {
+// (build); a headless placement's is the caller's (headless.go). What holds
+// for all of them is read here: how each account's reservation stands to a
+// launch in dir, which each policy composes as keptOut.
+func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, dir string, credentials bool, deps Deps) facts {
 	scope := set.Scope
 	f := facts{set: set, snap: snap, home: st.Home(), labels: snap.HomeLabels(), cands: make([]candidate, len(src))}
+	held, err := accounts.ReadReservations(scope)
+	f.reservedErr = err
+	project := sessions.RepoKey(dir)
 
 	var blobs []string
 	if credentials && scope.Vendor == config.Claude {
@@ -175,6 +227,7 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 		c := candidate{acct: s.acct, key: s.key, obs: s.obs,
 			Name: s.acct.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
+		c.Reservation, c.reserved = standing(held, s.acct.Name, project)
 		if blobs != nil {
 			c.cred = blobs[i]
 		}
@@ -205,8 +258,8 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 // vendor's health probe is not consulted: it can say "logged in" over a
 // refresh token that has expired, and a launch has only the credential to go
 // by.
-func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, env []string, automatic bool, now time.Time, deps Deps) facts {
-	f := observe(set, st, snap, src, automatic, deps)
+func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, env []string, dir string, automatic bool, now time.Time, deps Deps) facts {
+	f := observe(set, st, snap, src, dir, automatic, deps)
 	for i := range f.cands {
 		c := &f.cands[i]
 		if p, err := launch.Prepare(c.acct, set, env); err != nil {
@@ -214,7 +267,7 @@ func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source,
 			c.Excluded, c.Unlaunchable = err.Error(), true
 		} else {
 			c.prepared = p
-			c.Excluded = avoidReason(c.acct, c.obs, c.cred, now)
+			c.Excluded = cmp.Or(avoidReason(c.acct, c.obs, c.cred, now), c.keptOut())
 		}
 	}
 	return f

@@ -7,6 +7,7 @@ package launchop
 // caller's own rule, handed in.
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -51,10 +52,11 @@ type HeadlessPlacement struct {
 	// ID is the placement's id, which `started` reports the session's process
 	// against; "" when nothing was placed.
 	ID string
-	// Unrecorded is why a choice could not be recorded. A placement nobody can
+	// Failed is why nothing could be placed: the reservations could not be
+	// read, or a choice could not be recorded. A placement nobody can
 	// see is a session the person's launches cannot steer around, so an
 	// unrecorded one is not handed out: Decision then chooses nobody.
-	Unrecorded error
+	Failed error
 	// Notes are bookkeeping that did not happen, for the caller to read.
 	Notes []string
 }
@@ -66,17 +68,22 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	st, now := req.Store, req.Now
 	intent := placement.Intent{Kind: placement.Auto, CanWait: true, Owner: req.Prefer, Home: st.Home()}
 	snap := st.Load()
-	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), true, deps)
+	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), req.CWD, true, deps)
 	for i := range f.cands {
 		c := &f.cands[i]
 		if req.Exclude[c.Name] {
 			c.Excluded = "excluded by the caller"
 			continue
 		}
-		c.Excluded = req.Eligible(c.acct, c.key)
+		c.Excluded = cmp.Or(req.Eligible(c.acct, c.key), c.keptOut())
 	}
 
 	var out HeadlessPlacement
+	if f.reservedErr != nil {
+		out.Failed = reservedRefusal(f.reservedErr)
+		out.Decision = placement.Decision{Rule: placement.Rule, Refusal: out.Failed.Error()}
+		return out
+	}
 	if req.DryRun {
 		out.Decision = placement.Choose(f.rule(), snap.Placements(), intent, now)
 		return out
@@ -87,7 +94,7 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	switch {
 	case err != nil:
 		out.Decision.Chosen, out.Decision.Refusal, out.Decision.RoomAt = "", fmt.Sprintf("the placement could not be recorded (%v)", err), 0
-		out.Unrecorded = err
+		out.Failed = err
 	case out.Decision.Chosen != "":
 		out.ID = id
 		// The placement's line in the launch log, as a launch's: `launches
