@@ -75,7 +75,8 @@ Configuration:
 
     HEADROOM_HOME                    everything home-derived, for both vendors (test isolation)
     HEADROOM_ACCOUNTS_ROOT           where Claude Code's extra account dirs live
-    HEADROOM_PRIMARY_NAME            the name ~/.claude answers to (default: its email's local part)
+    HEADROOM_PRIMARY_NAME            the name ~/.claude answers to (default: its email's local part);
+                                     a new name takes the old one's records at the next run
     HEADROOM_LAUNCHER_FORMAT         how the board spells an account's launch command (%s = name)
     HEADROOM_CODEX_ACCOUNTS_ROOT     where Codex's extra homes live
     HEADROOM_CODEX_PRIMARY_NAME      the name ~/.codex answers to

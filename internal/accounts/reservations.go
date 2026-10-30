@@ -83,6 +83,12 @@ func SetReservation(cfg config.Scope, name string, dirs []string) error {
 	} else {
 		held[name] = dirs
 	}
+	return writeReservations(cfg, held)
+}
+
+// writeReservations replaces `.reserved` with held, removing it with its
+// last row.
+func writeReservations(cfg config.Scope, held Reservations) error {
 	if len(held) == 0 {
 		return os.Remove(cfg.ReservedFile())
 	}

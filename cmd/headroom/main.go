@@ -29,7 +29,7 @@ var cli = clikit.App{
 	New: func() any { return &CLI{} },
 	Options: []kong.Option{
 		kong.Vars{"version": app.VersionLine()},
-		kong.BindSingletonProvider(config.Load),
+		kong.BindSingletonProvider(loadConfig),
 		kong.Bind(liveHost()),
 		kong.BindToProvider(terminalOf),
 	},
@@ -46,6 +46,18 @@ func main() {
 		os.Exit(code)
 	}
 	os.Exit(cli.Run(os.Args[1:]))
+}
+
+// loadConfig is every command's configuration, read once per run, with each
+// vendor's records first moved to the name its primary answers to now
+// (app.SettlePrimaryNames): a host file that renames the primary is all a
+// person changes.
+func loadConfig(ctx *kong.Context) (config.Config, error) {
+	cfg, err := config.Load()
+	if err == nil {
+		app.SettlePrimaryNames(cfg, ctx.Stderr)
+	}
+	return cfg, err
 }
 
 // host is the machine a run acts on: the edges a surface reaches through

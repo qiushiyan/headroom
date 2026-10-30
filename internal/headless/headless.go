@@ -108,6 +108,26 @@ func Put(accountsRoot, name string, t Token) error {
 	})
 }
 
+// Rename moves from's token to to and reports whether there was one. When to
+// already holds a token the one minted later stays: both were minted for the
+// same primary, and the newer is the one its owner last asked for.
+func Rename(accountsRoot, from, to string) (bool, error) {
+	moved := false
+	err := update(accountsRoot, func(tokens map[string]Token) bool {
+		t, ok := tokens[from]
+		if !ok {
+			return false
+		}
+		if cur, has := tokens[to]; !has || t.MintedMS > cur.MintedMS {
+			tokens[to] = t
+		}
+		delete(tokens, from)
+		moved = true
+		return true
+	})
+	return moved, err
+}
+
 // Remove drops name's token and reports whether there was one.
 func Remove(accountsRoot, name string) (bool, error) {
 	removed := false

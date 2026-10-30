@@ -145,6 +145,12 @@ type request struct {
 	Generation     int64 `json:"generation,omitempty"`
 }
 
+// primaryRec is the "primary" section: the name the home's records know its
+// primary by.
+type primaryRec struct {
+	Name string `json:"name"`
+}
+
 type accountRec struct {
 	// Name is the dir this key was last seen as, carried for whoever reads the
 	// file by hand. Nothing keys off it.
@@ -194,6 +200,18 @@ type doc struct {
 	// launch.
 	members    map[string]Member
 	badMembers bool
+
+	// primary is the name this home's records know its primary by — what its
+	// `.current`, re-homes, reservations and --last were written under — or ""
+	// before any is recorded. A home whose primary is renamed moves its
+	// records from this name (RenamePrimary); only the home's own document
+	// carries it, since the name belongs to one home.
+	primary    string
+	badPrimary bool
+
+	// existed says the file was there when read: a run with nothing to move
+	// records no name into a document that does not exist yet.
+	existed bool
 
 	// A section that failed to decode is empty above and true here, and the
 	// empty value is what a set-aside section is rebuilt from. The two
@@ -283,6 +301,7 @@ func read(accountsRoot string) *doc {
 		// No document yet: an empty store.
 		return d
 	}
+	d.existed = true
 	if err := json.Unmarshal(data, &d.raw); err != nil {
 		// The outer document is not JSON at all, so no section can be recovered
 		// from it — per-section tolerance only works while the envelope holds.
@@ -328,6 +347,13 @@ func read(accountsRoot string) *doc {
 		d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
 	}
 	d.adoptHomeless()
+	var pr primaryRec
+	if decoded("primary", &pr) {
+		d.primary = pr.Name
+	} else {
+		d.badPrimary = true
+		d.problems = append(d.problems, Problem{"primary", "unreadable — set aside at the next rename; the primary's records are taken to be under its local part"})
+	}
 	if !decoded("members", &d.members) {
 		d.members, d.badMembers = map[string]Member{}, true
 		d.problems = append(d.problems, Problem{"members", "unreadable — set aside at the next request; every home registers again"})
@@ -654,6 +680,7 @@ func (d *doc) marshal() ([]byte, error) {
 	put("sessions", d.badSessions, false, d.sessions)
 	put("members", d.badMembers, len(d.members) == 0, d.members)
 	put("runs", d.badRuns, len(d.runs) == 0, d.runs)
+	put("primary", d.badPrimary, d.primary == "", primaryRec{Name: d.primary})
 	put("placements", d.badPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0, d.placements)
 	if err != nil {
 		return nil, err

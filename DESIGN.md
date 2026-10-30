@@ -574,7 +574,21 @@ headless runs.
   the request ledger, the responses, the recent launches, the headless runs
   and the homes that spend against it — is about quota, keyed by account identity; the
   *re-homes* are about one home's sessions, named by that home's account
-  names. A home alone keeps both in its one file. A second home that holds
+  names. A home alone keeps both in its one file.
+- **A renamed primary takes its records with it.** Everything a person or a
+  launch writes about an account is written under its name — `.current`,
+  `.reserved`, the re-homes, `--last`, headless tokens — and the primary's
+  name is the one name that can change under them, when a host file pins
+  another (`HEADROOM_PRIMARY_NAME`, `HEADROOM_CODEX_PRIMARY_NAME`). The home's
+  document records the name its records are under, and every run that loads
+  the configuration compares it with the pin: a change moves them under the
+  store's lock, the document recording the new name last, so a run stopped
+  partway is finished by the next (`app.SettlePrimaryNames`). Before any name
+  is recorded the old one is the login's local part, the name every pin so
+  far kept. A name that is an extra's dir moves nothing, and an unreadable
+  `.reserved`, token file or re-homes section stops the move before anything
+  is written. The launch and usage logs keep the old name: they are history,
+  joined on the account key, never on the name. A second home that holds
   logins of the same subscriptions keeps its re-homes in its own file and
   spends against the first home's ledger (see A second home); this is the
   one place the rule bends, and it bends for the ledger only. `config.Load` refuses two
