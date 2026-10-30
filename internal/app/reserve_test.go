@@ -42,6 +42,7 @@ func TestAccountsReserve(t *testing.T) {
 		"no directories":       {Account: "free@x.com"},
 		"--clear with dirs":    {Account: "free@x.com", Dirs: []string{repo}, Clear: true},
 		"--clear with no name": {Clear: true},
+		"dirs with no name":    {Dirs: []string{repo}},
 	} {
 		if got := reserve(o); got.code != 2 {
 			t.Errorf("%s: exit %d", name, got.code)

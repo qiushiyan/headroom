@@ -28,8 +28,8 @@ type ReserveOptions struct {
 func AccountsReserve(std Streams, cfg config.Scope, opts ReserveOptions) error {
 	out := std.Out
 	switch {
-	case opts.Account == "" && opts.Clear:
-		return usagef("--clear needs the account")
+	case opts.Account == "" && (opts.Clear || len(opts.Dirs) > 0):
+		return usagef("name the account")
 	case opts.Clear && len(opts.Dirs) > 0:
 		return usagef("--clear drops the reservation, so it takes no directories")
 	case opts.Account == "":
