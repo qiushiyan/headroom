@@ -53,10 +53,11 @@ func (c *BoardCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cfg c
 type AccountsCmd struct {
 	Vendor *config.Vendor `enum:"claude,codex" help:"The vendor whose accounts these are: the board shows only its; add and remove act on it, Claude Code when absent."`
 
-	Board  AccountsBoardCmd `cmd:"" default:"withargs" help:"The account board."`
-	Add    AddCmd           `cmd:"" help:"Seed the dir for a new subscription."`
-	Remove RemoveCmd        `cmd:"" help:"Remove an extra account: its Keychain item and its dir."`
-	Ledger LedgerCmd        `cmd:"" help:"Spend against another home's ledger, and list the homes that share it."`
+	Board   AccountsBoardCmd `cmd:"" default:"withargs" help:"The account board."`
+	Add     AddCmd           `cmd:"" help:"Seed the dir for a new subscription."`
+	Remove  RemoveCmd        `cmd:"" help:"Remove an extra account: its Keychain item and its dir."`
+	Reserve ReserveCmd       `cmd:"" help:"Keep an account for certain repositories, and list what is kept."`
+	Ledger  LedgerCmd        `cmd:"" help:"Spend against another home's ledger, and list the homes that share it."`
 }
 
 func (AccountsCmd) Help() string { return accountsHelp }
@@ -113,6 +114,21 @@ func (c *RemoveCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cfg 
 		return err
 	}
 	return outcome(app.AccountsRemove(streams(ctx, in), term, scope, c.Account, c.Yes, h.place.Probe))
+}
+
+type ReserveCmd struct {
+	// Plain strings: an empty name is the bare form, the listing.
+	Account string   `arg:"" optional:"" help:"The account to keep; every reservation is listed when absent."`
+	Dirs    []string `arg:"" optional:"" help:"The repositories it is for, replacing any it had."`
+	Clear   bool     `help:"Drop the account's reservation."`
+}
+
+func (ReserveCmd) Help() string { return reserveHelp }
+
+func (c *ReserveCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, parent *AccountsCmd) error {
+	return outcome(app.AccountsReserve(streams(ctx, in), parent.one(cfg), app.ReserveOptions{
+		Account: c.Account, Dirs: c.Dirs, Clear: c.Clear,
+	}))
 }
 
 type LedgerCmd struct {

@@ -4,8 +4,8 @@ Usage: headroom accounts [<command>] [flags]
 The account board, and adding, removing and sharing accounts.
 
 Bare, the account board (see headroom board --help). Its subcommands change the set of
-accounts: add seeds a new account's dir, remove deletes one, ledger shares the request
-budget with a second home on this machine.
+accounts: add seeds a new account's dir, remove deletes one, reserve keeps one for certain
+repositories, ledger shares the request budget with a second home on this machine.
 
 Flags:
       --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
@@ -25,10 +25,13 @@ Constraints:
   At most one of --compact, --json.
 
 Commands:
-  board                 The account board (default).
-  add <email>           Seed the dir for a new subscription.
-  remove [<account>]    Remove an extra account: its Keychain item and its dir.
-  ledger [<root>]       Spend against another home's ledger, and list the homes that share it.
+  board                               The account board (default).
+  add <email>                         Seed the dir for a new subscription.
+  remove [<account>]                  Remove an extra account: its Keychain item and its dir.
+  reserve [<account>] [<dirs> ...]    Keep an account for certain repositories, and list what is
+                                      kept.
+  ledger [<root>]                     Spend against another home's ledger, and list the homes that
+                                      share it.
 
 Exit codes:
   0    success

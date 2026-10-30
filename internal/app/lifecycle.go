@@ -56,6 +56,11 @@ func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
 	case opts.ShareConfig:
 		// The primary's config, whitelisted.
 		opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), accounts.SharedConfigEntries(cfg.Vendor)
+	default:
+		// Sharing is optional; what governs the shared session store is not.
+		if names := accounts.StoreSettings(cfg.Vendor); names != nil {
+			opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), names
+		}
 	}
 	dir, shared, kept, err := accounts.Seed(cfg, name, opt)
 	if err != nil {
@@ -411,6 +416,9 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 		fmt.Fprintf(std.Err, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
 	} else if forgot {
 		fmt.Fprintln(out, "forgot its headless token — headroom does not revoke it with the vendor")
+	}
+	if err := accounts.SetReservation(cfg, name, nil); err != nil {
+		fmt.Fprintf(std.Err, "headroom accounts remove: its reservation was not dropped (%v) — headroom accounts reserve %s --clear\n", err, name)
 	}
 	fmt.Fprintln(out, "transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed")
 	if cur, err := os.ReadFile(cfg.CurrentFile()); err == nil && strings.TrimSpace(string(cur)) == name {

@@ -35,6 +35,8 @@ Commands:
   accounts board                 The account board (default).
   accounts add <email>           Seed the dir for a new subscription.
   accounts remove [<account>]    Remove an extra account: its Keychain item and its dir.
+  accounts reserve [<account>] [<dirs> ...]
+                                 Keep an account for certain repositories, and list what is kept.
   accounts ledger [<root>]       Spend against another home's ledger, and list the homes that share
                                  it.
   launch [<args> ...]            Run claude, or codex, on the account headroom decides.
