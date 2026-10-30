@@ -53,6 +53,12 @@ func TestSigninURL(t *testing.T) {
 	if u, state, ok := SigninURL("If the browser didn't open, visit: " + printed); !ok || u != printed || state != "hrfl-N8" {
 		t.Errorf("printed line: %q %q %v", u, state, ok)
 	}
+	// With FORCE_HYPERLINK set, as a host file sets it over ssh, the URL comes
+	// wrapped in an OSC 8 hyperlink: the escape around it is not part of it.
+	linked := "If the browser didn't open, visit: \x1b]8;;" + printed + "\x1b\\" + printed + "\x1b]8;;\x1b\\"
+	if u, state, ok := SigninURL(linked); !ok || u != printed || state != "hrfl-N8" {
+		t.Errorf("hyperlinked line: %q %q %v", u, state, ok)
+	}
 	for _, line := range []string{
 		"Opening browser to sign in…",
 		"Paste code here if prompted > ",

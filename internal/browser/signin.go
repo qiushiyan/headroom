@@ -2,6 +2,7 @@ package browser
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -54,7 +55,7 @@ func ParseCode(line string) (Code, bool) {
 // visit: <URL>`, redirecting to platform.claude.com/oauth/code/callback).
 // headroom hands out only a URL the vendor printed, never one it built.
 func SigninURL(line string) (signinURL, state string, ok bool) {
-	for field := range strings.FieldsSeq(line) {
+	for field := range strings.FieldsSeq(terminalEscape.ReplaceAllString(line, " ")) {
 		if !strings.HasPrefix(field, "https://") {
 			continue
 		}
@@ -71,6 +72,11 @@ func SigninURL(line string) (signinURL, state string, ok bool) {
 	}
 	return "", "", false
 }
+
+// terminalEscape matches what a terminal reads and never shows: an OSC
+// sequence (an OSC 8 hyperlink wraps the URL when FORCE_HYPERLINK is set, as a
+// host file sets it over ssh) and a CSI sequence such as a colour.
+var terminalEscape = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]`)
 
 func localHost(host string) bool {
 	return host == "" || host == "localhost" || strings.HasPrefix(host, "127.") || host == "::1"
