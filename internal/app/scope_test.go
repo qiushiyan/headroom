@@ -28,8 +28,8 @@ func withUsageURL(s config.Scope, url string) config.Scope {
 }
 
 // claudeBoard wraps accounts the way a Claude Code-only run reports them.
-func claudeBoard(accts []accountstate.Account, current string) []round.View {
-	return []round.View{{Scope: config.Scope{Vendor: config.Claude}, Accounts: accts, Routing: accounts.Routing{Current: current}}}
+func claudeBoard(accts []accountstate.Account) []round.View {
+	return []round.View{{Scope: config.Scope{Vendor: config.Claude}, Accounts: accts}}
 }
 
 // preparedWith is a round's local half with its credentials and health

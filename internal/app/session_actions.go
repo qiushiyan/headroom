@@ -18,14 +18,12 @@ import (
 // sessionActions owns routing and launch effects. The picker supplies terminal
 // restoration as the commit boundary; action tests need no terminal object.
 //
-// It holds the discovered set and the surface's one read of `.current`, and
-// derives everything else from those two — the accounts whose registries
-// gate a mutation, the current account, whether launches choose — so no two
-// of them can describe different accounts.
+// It holds the discovered set and derives from it the accounts whose
+// registries gate a mutation, so no two of them can describe different
+// accounts.
 type sessionActions struct {
 	st           *state.Store
 	set          accounts.Set
-	routing      accounts.Routing
 	cdFile       string
 	claudeArgs   []string
 	beforeLaunch func()
@@ -37,13 +35,6 @@ type sessionActions struct {
 	errw  io.Writer
 	// failed is why a committed launch did not start.
 	failed error
-}
-
-// auto says bare launches choose for themselves: there is then no current
-// account, and wherever this surface would fall back to one it asks the
-// placement rule instead.
-func (actions *sessionActions) auto() bool {
-	return actions.routing.Mode == "auto"
 }
 
 func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool, error) {
@@ -59,10 +50,7 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
-	intent, ok := actions.resumeIntent(s, override)
-	if !ok {
-		return false, fmt.Errorf("no account to resume on — run headroom accounts")
-	}
+	intent := actions.resumeIntent(s, override)
 
 	// From here the resume is a launch like any other: one operation decides
 	// the account, records the launch as load and — for the override — the
@@ -112,49 +100,25 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	return true, nil
 }
 
-// resumeIntent says how a resume's account is decided: the owner, then valid
-// current. An override chooses current directly; an unresolved current leaves
-// the action without a target, never the primary, which no evidence chose.
-//
-// Under automatic placement there is no current account, and each place this
-// would have fallen back to one asks the rule instead: a session with no
+// resumeIntent says how a resume's account is decided: enter follows the
+// session's owner, and everything else asks the rule. A session with no
 // evidence, or whose owner is gone, is placed like a new one, and the override
 // moves the session to the least-loaded of the *other* accounts — moving means
 // somewhere other than where it is. An owner a reservation keeps from the
-// session's directory is the one owner it does not follow: choosing a session
-// is not naming an account, so the rule decides, as it does for a launch that
-// names the session by id.
-func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) (placement.Intent, bool) {
-	_, owned := accountNamed(actions.set, s.Owner)
-	_, pinned := accountNamed(actions.set, actions.routing.Current)
+// session's directory is the one owner enter does not follow: choosing a
+// session is not naming an account, so the rule decides, as it does for a
+// launch that names the session by id.
+func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) placement.Intent {
+	owned := s.Owner != "" && actions.set.Has(s.Owner)
 	switch {
-	case !override && owned && actions.auto() && launchop.HeldAway(actions.set.Scope, s.Owner, s.CWD):
-		return placement.Intent{Owner: s.Owner}, true
-	case !override && owned:
-		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}, true
-	case actions.auto() && override:
-		return placement.Intent{Exclude: s.Owner}, true
-	case actions.auto():
-		return placement.Intent{}, true
-	case pinned:
-		// Degraded attribution — no evidence, or an owner the filesystem no
-		// longer has — falls back to the *current* account; the row's owner
-		// tag already says so.
-		return placement.Intent{Kind: placement.Forced, Account: actions.routing.Current, Reason: "pinned"}, true
+	case override:
+		return placement.Intent{Exclude: s.Owner}
+	case owned && launchop.HeldAway(actions.set.Scope, s.Owner, s.CWD):
+		return placement.Intent{Owner: s.Owner}
+	case owned:
+		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}
 	}
-	return placement.Intent{}, false
-}
-
-// accountNamed finds the set's account by name. A name the set does not hold
-// — an owner whose dir is gone, the empty current of unresolvable routing —
-// is not one this surface can route to.
-func accountNamed(set accounts.Set, name string) (accounts.Account, bool) {
-	for _, a := range set.Accounts {
-		if name != "" && a.Name == name {
-			return a, true
-		}
-	}
-	return accounts.Account{}, false
+	return placement.Intent{}
 }
 
 // liveNow re-establishes the selected session's liveness at action time —

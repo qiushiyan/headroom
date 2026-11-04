@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +49,7 @@ func injectedAccounts(pg *page, names ...string) []accountstate.Account {
 // injectedRound is a round over those accounts under the page's own scope and
 // store.
 func injectedRound(pg *page, accts []accountstate.Account) *round.Round {
-	return round.Of(accounts.Set{Scope: pg.scope}, pg.st, accounts.Routing{}, accts)
+	return round.Of(accounts.Set{Scope: pg.scope}, pg.st, accts)
 }
 
 func observed(percent int) refresh.Result {
@@ -133,8 +132,8 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 	}
 }
 
-// Enter and cancel leave the loop to its caller; enter on an empty page is
-// not a choice.
+// Quitting is the one key that leaves the loop; every other key keeps the
+// board open, on a page with accounts or without.
 func TestStepOutcomes(t *testing.T) {
 	pg, _, _ := injectedPage(t, config.Codex, "x0@x.com")
 	empty, _, _ := injectedPage(t, config.Claude)
@@ -144,40 +143,44 @@ func TestStepOutcomes(t *testing.T) {
 	ui.show(ctx, 0)
 	for _, c := range []struct {
 		key  tui.Key
-		want stepOutcome
+		quit bool
 	}{
-		{tui.Key{Kind: tui.KeyDown}, stepContinue},
-		{tui.Key{Kind: tui.KeyEnter}, stepChoose},
-		{tui.Key{Kind: tui.KeyEsc}, stepCancel},
+		{tui.Key{Kind: tui.KeyDown}, false},
+		{tui.Key{Kind: tui.KeyEnter}, false},
+		{tui.Key{Kind: tui.KeyEsc}, true},
+		{tui.Key{Kind: tui.KeyRune, Rune: 'q'}, true},
 	} {
 		keys <- c.key
-		if got := ui.step(ctx, nil, keys); got != c.want {
-			t.Errorf("key %+v: outcome %v, want %v", c.key, got, c.want)
+		if quit := ui.step(ctx, nil, keys); quit != c.quit {
+			t.Errorf("key %+v: quit %v, want %v", c.key, quit, c.quit)
 		}
 	}
 	ui.show(ctx, 1)
 	keys <- tui.Key{Kind: tui.KeyEnter}
-	if got := ui.step(ctx, nil, keys); got != stepContinue {
-		t.Errorf("enter on an empty page: outcome %v", got)
+	if ui.step(ctx, nil, keys) {
+		t.Error("enter on an empty page quit the board")
 	}
 }
 
-// Each page keeps its own selection, and the tab bar appears only when there
-// is more than one page.
-func TestPagesKeepTheirOwnSelectionAndTheTabBar(t *testing.T) {
+// Each page keeps its own scroll, the tab bar appears only when there is more
+// than one page, and the footer offers the arrows only on a board taller than
+// the terminal.
+func TestPagesKeepTheirOwnScrollAndTheTabBar(t *testing.T) {
 	claude, _, _ := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com")
 	codex, _, _ := injectedPage(t, config.Codex, "x0@x.com", "x1@x.com")
 	ui := &picker{pages: []*page{claude, codex}, p: render.NewPalette(false), lastKey: time.Now()}
 	ctx := context.Background()
+	keys := make(chan tui.Key, 1)
 	ui.show(ctx, 0)
-	ui.page().move(1)
+	keys <- tui.Key{Kind: tui.KeyDown}
+	ui.step(ctx, nil, keys)
 	ui.show(ctx, 1)
-	if ui.page().sel != 0 {
-		t.Errorf("Codex inherited Claude Code's selection: %d", ui.page().sel)
+	if ui.page().top != 0 {
+		t.Errorf("Codex inherited Claude Code's scroll: %d", ui.page().top)
 	}
 	ui.show(ctx, 0)
-	if ui.page().sel != 1 || ui.page().selName != "c1@x.com" {
-		t.Errorf("Claude Code's selection was lost: %d %q", ui.page().sel, ui.page().selName)
+	if ui.page().top != 1 {
+		t.Errorf("Claude Code's scroll was lost: %d", ui.page().top)
 	}
 
 	if bar := ui.tabBar(); !strings.Contains(bar, "[Claude Code]") || !strings.Contains(bar, "Codex") || strings.Contains(bar, "[Codex]") {
@@ -187,73 +190,19 @@ func TestPagesKeepTheirOwnSelectionAndTheTabBar(t *testing.T) {
 	if bar := ui.tabBar(); !strings.Contains(bar, "[Codex]") {
 		t.Errorf("tab bar = %q", bar)
 	}
-	if !strings.Contains(ui.status(time.Now()), "tab switch") {
-		t.Errorf("footer does not teach tab: %q", ui.status(time.Now()))
+	if !strings.Contains(ui.status(time.Now(), false), "tab switch") {
+		t.Errorf("footer does not teach tab: %q", ui.status(time.Now(), false))
+	}
+	if footer := ui.status(time.Now(), false); strings.Contains(footer, "scroll") || !strings.Contains(footer, "q quit") {
+		t.Errorf("a board that fits: footer = %q", footer)
+	}
+	if footer := ui.status(time.Now(), true); !strings.Contains(footer, "↑/↓ scroll") {
+		t.Errorf("a board taller than the terminal: footer = %q", footer)
 	}
 
 	solo := &picker{pages: []*page{claude}, p: render.NewPalette(false), lastKey: time.Now()}
-	if solo.tabBar() != "" || strings.Contains(solo.status(time.Now()), "tab switch") {
+	if solo.tabBar() != "" || strings.Contains(solo.status(time.Now(), false), "tab switch") {
 		t.Error("one vendor must render today's frame: no tab bar, no tab hint")
-	}
-}
-
-// A page's first visit opens on the row enter would re-confirm: the current
-// account, or under auto the account a launch would take now. Opening on row
-// 0 instead would make enter-without-moving pin whatever sorts first, and
-// silently re-route every bare launch. Disabling show's first-visit choice
-// must fail both halves.
-func TestAPageOpensOnTheRowEnterWouldConfirm(t *testing.T) {
-	ctx := context.Background()
-	pinned, _, _ := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com", "c2@x.com")
-	pinned.begin = func(ctx context.Context, pg *page) (*round.Round, <-chan round.Result) {
-		accts := injectedAccounts(pg, "c0@x.com", "c1@x.com", "c2@x.com")
-		accts[1].View.Current = true
-		r := injectedRound(pg, accts)
-		return r, r.Feed(make(chan refresh.Result))
-	}
-	(&picker{pages: []*page{pinned}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
-	if pinned.sel != 1 || pinned.selName != "c1@x.com" {
-		t.Errorf("pinned: opened on row %d (%q), want the current account's row 1", pinned.sel, pinned.selName)
-	}
-
-	// Under auto no row is current: the least-loaded one is marked next.
-	f := boardFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
-	f.observe("qiushi", 50, 10, time.Minute)
-	f.observe("a@x.com", 40, 10, time.Minute)
-	f.observe("b@x.com", 0, 10, time.Minute)
-	auto := newPage(f.cfg, f.boardDeps())
-	(&picker{pages: []*page{auto}, p: render.NewPalette(false), lastKey: time.Now()}).show(ctx, 0)
-	_, next := marks(auto.accounts())
-	if len(next) != 1 || next[0] == auto.accounts()[0].Acct.Name {
-		t.Fatalf("fixture: next %v must be one row other than the first", next)
-	}
-	if got := auto.accounts()[auto.sel].Acct.Name; got != next[0] || auto.selName != next[0] {
-		t.Errorf("auto: opened on %s (%q), want the next row %s", got, auto.selName, next[0])
-	}
-}
-
-// Rediscovery between rounds can reorder the list — an account dir added or
-// removed — and the cursor stays on the account, not the index: a user about
-// to press enter would otherwise commit whichever account slid under it.
-// Making restoreSelection a no-op must fail this.
-func TestTheSelectionFollowsItsAccountAcrossARediscovery(t *testing.T) {
-	pg, ch, _ := injectedPage(t, config.Claude, "a@x.com", "b@x.com", "c@x.com")
-	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now()}
-	ctx := context.Background()
-	ui.show(ctx, 0)
-	pg.move(1)
-	close(ch)
-	ui.step(ctx, nil, nil)
-
-	// The next round discovers one more account, sorted ahead of the chosen one.
-	pg.begin = func(_ context.Context, pg *page) (*round.Round, <-chan round.Result) {
-		r := injectedRound(pg, injectedAccounts(pg, "a@x.com", "aa@x.com", "b@x.com", "c@x.com"))
-		return r, r.Feed(make(chan refresh.Result))
-	}
-	pg.startRound(ctx, false)
-	if got := pg.accounts()[pg.sel].Acct.Name; got != "b@x.com" || pg.sel != 2 {
-		t.Errorf("the cursor moved to %s (row %d) when a rediscovery reordered the list; it was on b@x.com", got, pg.sel)
 	}
 }
 
@@ -272,35 +221,5 @@ func TestFooterCountsBlockedApartFromStale(t *testing.T) {
 	}
 	if blocked, stale := notActionable(list, now); blocked != 1 || stale != 1 {
 		t.Errorf("blocked=%d stale=%d, want 1 and 1", blocked, stale)
-	}
-}
-
-// The footer names an inherited home the current account's launch would
-// neutralize, and stays quiet for the ordinary case: the shell lives inside a
-// managed session, on a discovered account's own dir. It asks launch's
-// classifier, so the board and the launch's notice cannot disagree; dropping
-// the note, or the quieting, must fail this.
-func TestFooterSaysAnUnexplainedInheritedHome(t *testing.T) {
-	root := t.TempDir()
-	scope := config.Scope{Vendor: config.Claude, AccountsRoot: root}
-	a := accounts.Account{Scope: scope, Name: "a@x.com", ConfigDir: filepath.Join(root, "a@x.com")}
-	b := accounts.Account{Scope: scope, Name: "b@x.com", ConfigDir: filepath.Join(root, "b@x.com")}
-	pg := newPage(scope, BoardDeps{Round: LiveRound(true), Place: quietPlace()})
-	pg.round = round.Of(accounts.Set{Scope: scope, Accounts: []accounts.Account{a, b}}, pg.st, accounts.Routing{},
-		[]accountstate.Account{{Acct: a, View: accountstate.Facts{Label: a.Name, Current: true}}})
-	ui := &picker{pages: []*page{pg}}
-	now := time.Now()
-	for _, c := range []struct {
-		inherited string
-		said      bool
-	}{
-		{"/somewhere/else", true},
-		{b.ConfigDir, false}, // a managed session's shell: the ordinary case
-		{a.ConfigDir, false}, // what the launch sets anyway
-	} {
-		t.Setenv("CLAUDE_CONFIG_DIR", c.inherited)
-		if got := strings.Contains(ui.status(now), "ambient CLAUDE_CONFIG_DIR neutralized"); got != c.said {
-			t.Errorf("inherited %s: note said=%v, want %v — %q", c.inherited, got, c.said, ui.status(now))
-		}
 	}
 }

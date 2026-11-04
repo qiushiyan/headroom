@@ -1,13 +1,12 @@
-Usage: headroom resolve [<account>] [flags]
+Usage: headroom resolve <account> [flags]
 
 Print an account's name, dir and kind, for shell preflight.
 
 Prints one line for shell preflight: the account's canonical name, its config dir and its
-kind (primary or extra), separated by tabs. Bare, the pinned account; under automatic
-placement there is no one account to print, so a name is required.
+kind (primary or extra), separated by tabs.
 
 Arguments:
-  <account>              The account to resolve; the pinned one when absent (optional).
+  <account>              The account to resolve.
 
 Flags:
       --vendor=VENDOR    The vendor whose account this acts on (default: claude; one of: claude,

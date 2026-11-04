@@ -2,23 +2,14 @@ $ headroom limits --account a@x.com
 exit 0
 --- stdout
 {
-  "schema": 7,
+  "schema": 8,
   "generated_at": "<time>",
-  "current": {
-    "claude": "p",
-    "codex": "q"
-  },
-  "mode": {
-    "claude": "pinned",
-    "codex": "pinned"
-  },
   "accounts": [
     {
       "vendor": "claude",
       "name": "a@x.com",
       "email": "a@x.com",
       "launcher": "headroom launch --account a@x.com",
-      "current": false,
       "health": "unprobed",
       "usage": {
         "observed_at": "<time>",

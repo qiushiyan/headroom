@@ -27,8 +27,6 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner, others
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
 		switch d.Reason {
-		case "pinned":
-			parts = append(parts, "pinned (a on the board turns auto on)")
 		case placement.ReasonLast:
 			parts = append(parts, "the last account used")
 		case placement.ReasonOwner:

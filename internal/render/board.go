@@ -57,16 +57,15 @@ func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, wid
 	return b
 }
 
-// AutoHeader is what a board under automatic placement puts above its
-// accounts, in the layout's spacing: one dim line saying no row is the
-// current one and the marked row is where a launch would go now, and in the
-// blocks layout the blank line the blocks keep between them. The one-shot
-// print and the picker both put it there; this is its one spelling.
-func (p Palette) AutoHeader(layout Layout) []string {
+// Legend is what a board puts above its accounts to say what its mark means:
+// the compact row's bare → needs saying, the block's "← next" says itself.
+// The one-shot print and the picker both put it there; this is its one
+// spelling.
+func (p Palette) Legend(layout Layout) []string {
 	if layout == LayoutCompact {
-		return []string{p.Dim + "bare launches are automatic — → marks the account one would take now" + p.Rst}
+		return []string{p.Dim + "→ marks the account the next launch takes" + p.Rst}
 	}
-	return []string{p.Dim + "bare launches are automatic — ← next marks the account one would take now" + p.Rst, ""}
+	return nil
 }
 
 const (
@@ -82,8 +81,7 @@ const (
 	// selectionPrefix is the picker's mark column ("▶ "), reserved in the
 	// width arithmetic whether or not the caller draws one.
 	selectionPrefix = 2
-	// marksWidth holds the current mark (or, under automatic placement, the
-	// next mark) and the dir-mismatch mark.
+	// marksWidth holds the next mark and the dir-mismatch mark.
 	marksWidth = 2
 	colGap     = "  "
 )
@@ -357,12 +355,9 @@ func (p Palette) compactLine(v accountstate.Facts, row compactRow, cols []column
 	}
 	var b strings.Builder
 	b.WriteString(nameColor + PadCell(Sanitize(v.Label), nameW) + p.Rst + " ")
-	switch {
-	case v.Current:
-		b.WriteString(p.Bold + "●" + p.Rst)
-	case v.Next:
+	if v.Next {
 		b.WriteString(p.Bold + "→" + p.Rst)
-	default:
+	} else {
 		b.WriteString(" ")
 	}
 	if v.DirMismatch != "" {

@@ -305,8 +305,8 @@ func TestCompactCaptionStartsAtTheFirstColumnWhenThereAreNoRows(t *testing.T) {
 	}
 }
 
-// Marks and the name's colour are what survive a clipped caption: the
-// current account carries ●, a dir mismatch carries a red !, and a health
+// Marks and the name's colour are what survive a clipped caption: the next
+// account carries →, a dir mismatch carries a red !, and a health
 // problem or a vendor block turns the name red so green figures never sit
 // beside an unusable account with nothing else to say so.
 func TestCompactRowMarksAndHealthColour(t *testing.T) {
@@ -315,14 +315,14 @@ func TestCompactRowMarksAndHealthColour(t *testing.T) {
 	blocked := fresh(now, session(1, now+3600))
 	blocked.Allowance = usage.Allowance{State: usage.AllowanceBlocked}
 	views := []accountstate.Facts{
-		{Label: "a@x.com", Current: true, Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
+		{Label: "a@x.com", Next: true, Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 		{Label: "b@x.com", DirMismatch: "c@x.com", Obs: fresh(now, session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 		{Label: "d@x.com", Launcher: "x-d", Health: accountstate.HealthBadBlob, Obs: fresh(now, session(1, now+3600))},
 		{Label: "e@x.com", Obs: blocked, Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
 	g := p.Board(views, now, LayoutCompact, 0).Groups
-	if !strings.Contains(g[0][0], p.Bold+"●"+p.Rst) {
-		t.Errorf("current mark missing: %q", g[0][0])
+	if !strings.Contains(g[0][0], p.Bold+"→"+p.Rst) {
+		t.Errorf("next mark missing: %q", g[0][0])
 	}
 	if !strings.Contains(g[1][0], p.Red+"!"+p.Rst) {
 		t.Errorf("dir mismatch mark missing: %q", g[1][0])

@@ -130,10 +130,6 @@ func TestPrepareWith(t *testing.T) {
 		},
 		auth: map[string]auth.Status{}, // no Claude Code install: fall back to creds
 	}
-	if err := accounts.Discover(cfg).SetCurrent(accounts.Account{Scope: cfg, Name: "good@x.com"}); err != nil {
-		t.Fatal(err)
-	}
-
 	byName := f.run(now)
 	if len(byName) != 6 {
 		t.Fatalf("got %d accounts: %v", len(byName), byName)
@@ -146,7 +142,7 @@ func TestPrepareWith(t *testing.T) {
 		t.Errorf("primary: health=%v label=%q mismatch=%q", v.Health, v.Label, v.DirMismatch)
 	}
 	good := byName["good@x.com"]
-	if v := good.View; v.Health != accountstate.HealthOK || !v.Current || v.Plan != "max 20x" ||
+	if v := good.View; v.Health != accountstate.HealthOK || v.Plan != "max 20x" ||
 		v.Attempt.State != accountstate.AttemptPending {
 		t.Errorf("good: %+v", v)
 	}

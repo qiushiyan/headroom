@@ -203,7 +203,7 @@ type doc struct {
 	badMembers bool
 
 	// primary is the name this home's records know its primary by — what its
-	// `.current`, re-homes, reservations and --last were written under — or ""
+	// re-homes, reservations and --last were written under — or ""
 	// before any is recorded. A home whose primary is renamed moves its
 	// records from this name (RenamePrimary); only the home's own document
 	// carries it, since the name belongs to one home.

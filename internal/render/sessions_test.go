@@ -38,7 +38,7 @@ func TestSessionLinesNarrowKeepsAge(t *testing.T) {
 		Tail: sessions.Tail{AITitle: "a title", Branch: "a-longish-branch-name", Model: "claude-fable-5"},
 	}
 	for _, w := range []int{20, 30, 40, 120} {
-		lines := p.SessionLines(s, "someone@example.com", false, w, time.Now().Unix())
+		lines := p.SessionLines(s, false, w, time.Now().Unix())
 		line1 := lines[0]
 		if got := Cells(line1); got > w {
 			t.Errorf("w=%d: first line is %d cells — Clip would eat the right column", w, got)
@@ -75,7 +75,7 @@ func TestSessionLinesAreOnePhysicalRowEach(t *testing.T) {
 	} {
 		s := base()
 		c.set(&s)
-		lines := append(p.SessionLines(&s, "a@x.com", true, 200, time.Now().Unix()), p.SessionPreview(&s, 200)...)
+		lines := append(p.SessionLines(&s, true, 200, time.Now().Unix()), p.SessionPreview(&s, 200)...)
 		for _, line := range lines {
 			if strings.IndexFunc(line, unicode.IsControl) >= 0 {
 				t.Errorf("%s: a control byte reached the line: %q", c.field, line)
@@ -87,30 +87,27 @@ func TestSessionLinesAreOnePhysicalRowEach(t *testing.T) {
 // A row's degraded states are visible tokens, never a quiet fallback:
 // liveness that could not be verified (the state in which rename and delete
 // are refused), a project dir that is gone, an owner that cannot be named —
-// each routing to the current account, said so — and a current account that
-// failed to resolve.
+// each placed by the rule like a new session, said so.
 func TestSessionLinesShowEveryDegradation(t *testing.T) {
 	p := NewPalette(false)
 	for _, c := range []struct {
 		name    string
 		set     func(*sessions.Session)
-		current string
 		want    []string
 		notWant []string
 	}{
-		{"verified live", func(s *sessions.Session) { s.Live = sessions.Live }, "a@x.com", []string{"● live"}, []string{"live?"}},
-		{"liveness unverifiable", func(s *sessions.Session) { s.Live = sessions.LiveUnknown }, "a@x.com", []string{"● live?"}, nil},
-		{"dir gone", func(s *sessions.Session) { s.DirOK = false }, "a@x.com", []string{"✗ dir gone"}, nil},
-		{"owner known", func(s *sessions.Session) {}, "c@x.com", []string{"@b"}, []string{"→"}},
-		{"owner deleted", func(s *sessions.Session) { s.OwnerState = sessions.OwnerMissing }, "c@x.com", []string{"owner gone→c"}, nil},
-		{"owner contested", func(s *sessions.Session) { s.OwnerState = sessions.OwnerConflict }, "c@x.com", []string{"owner?→c"}, nil},
-		{"no owner evidence", func(s *sessions.Session) { s.OwnerState = sessions.OwnerNone }, "c@x.com", []string{"→c"}, []string{"owner", "@b"}},
-		{"current unresolvable", func(s *sessions.Session) { s.OwnerState = sessions.OwnerNone }, "", []string{"→?"}, nil},
+		{"verified live", func(s *sessions.Session) { s.Live = sessions.Live }, []string{"● live"}, []string{"live?"}},
+		{"liveness unverifiable", func(s *sessions.Session) { s.Live = sessions.LiveUnknown }, []string{"● live?"}, nil},
+		{"dir gone", func(s *sessions.Session) { s.DirOK = false }, []string{"✗ dir gone"}, nil},
+		{"owner known", func(s *sessions.Session) {}, []string{"@b"}, []string{"→"}},
+		{"owner deleted", func(s *sessions.Session) { s.OwnerState = sessions.OwnerMissing }, []string{"owner gone→auto"}, nil},
+		{"owner contested", func(s *sessions.Session) { s.OwnerState = sessions.OwnerConflict }, []string{"owner?→auto"}, nil},
+		{"no owner evidence", func(s *sessions.Session) { s.OwnerState = sessions.OwnerNone }, []string{"→auto"}, []string{"owner", "@b"}},
 	} {
 		s := sessions.Session{Local: true, DirOK: true, CWD: "/dev/proj", MTime: time.Now().Add(-time.Hour),
 			Owner: "b@x.com", OwnerState: sessions.OwnerHistory}
 		c.set(&s)
-		line := p.SessionLines(&s, c.current, false, 120, time.Now().Unix())[0]
+		line := p.SessionLines(&s, false, 120, time.Now().Unix())[0]
 		for _, w := range c.want {
 			if !strings.Contains(line, w) {
 				t.Errorf("%s: %q lacks %q", c.name, line, w)
@@ -135,8 +132,8 @@ func TestSessionLinesColourMovesNothing(t *testing.T) {
 		Head: sessions.Head{Kind: sessions.HeadBranch, Branch: "develop"},
 		Tail: sessions.Tail{AITitle: "a title", Branch: "a-longish-branch-name", Model: "claude-fable-5"}}
 	for _, w := range []int{30, 40, 60, 120} {
-		plain := NewPalette(false).SessionLines(s, "someone@example.com", true, w, now)
-		colour := NewPalette(true).SessionLines(s, "someone@example.com", true, w, now)
+		plain := NewPalette(false).SessionLines(s, true, w, now)
+		colour := NewPalette(true).SessionLines(s, true, w, now)
 		for i := range plain {
 			if got := bare(colour[i]); got != plain[i] {
 				t.Errorf("w=%d line %d: colour moved the layout:\n got %q\nwant %q", w, i, got, plain[i])

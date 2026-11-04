@@ -18,8 +18,8 @@ func secondHome(t *testing.T) config.Scope {
 	return s
 }
 
-// Spelled out, the primary is still the primary — it owns the store, is never
-// removed and is what `.current` absent means — but everything that reads or
+// Spelled out, the primary is still the primary — it owns the store and is
+// never removed — but everything that reads or
 // launches it names its dir: the identity inside the dir, the Keychain item
 // keyed on the dir, CLAUDE_CONFIG_DIR set to the dir.
 func TestASecondHomesPrimaryIsSpelledOut(t *testing.T) {
@@ -50,8 +50,8 @@ func TestASecondHomesPrimaryIsSpelledOut(t *testing.T) {
 	if err := VerifyTopology(p); err != nil {
 		t.Errorf("the primary owns the store; topology: %v", err)
 	}
-	if a, err := set.Select(""); err != nil || a.ConfigDir != cfg.PrimaryDir() {
-		t.Errorf("absent .current = %+v %v, want the spelled-out primary", a, err)
+	if a, err := set.Select("yan"); err != nil || a.ConfigDir != cfg.PrimaryDir() {
+		t.Errorf("the primary by name = %+v %v, want the spelled-out primary", a, err)
 	}
 	// The second home's own sessions inherit its primary's dir: that is its
 	// ordinary environment, not an anomaly to announce.

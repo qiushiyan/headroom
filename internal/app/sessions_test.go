@@ -35,9 +35,6 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// New sessions go to the extra, as `.current` says: the routing the
-	// picker carries is the one read a real run takes.
-	writeJSON(t, cfg.CurrentFile(), "yan@planlab.ai\n")
 	set := accounts.Discover(cfg)
 	// The real process table, through the ps(1) a test puts on PATH, and no
 	// refresh left behind.
@@ -46,7 +43,6 @@ func sessionsFixture(t *testing.T) (*resumeUI, *sessions.Session) {
 	ui := &resumeUI{beforeLaunch: func() {},
 		st:         state.Open(cfg),
 		set:        set,
-		routing:    set.Routing(),
 		claudeArgs: []string{"--dangerously-skip-permissions"},
 		place:      place, exec: (&execRecord{}).exec, errw: &bytes.Buffer{}}
 	s := &sessions.Session{
@@ -176,9 +172,6 @@ func TestSessionsCommitRefusalsExecNothing(t *testing.T) {
 		{"dir gone at action time", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
 			os.RemoveAll(s.CWD)
 		}, "directory is gone"},
-		{"no account at all", func(t *testing.T, ui *resumeUI, s *sessions.Session) {
-			s.Owner, ui.routing = "", accounts.Routing{}
-		}, "no account"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -246,7 +239,7 @@ func TestCollectSessionsRoutesByTheStoredReHomes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	listing, _, _ := collectSessions(cfg, st, quietPlace().Probe)
+	listing, _ := collectSessions(cfg, st, quietPlace().Probe)
 	if len(listing.Sessions) != 1 {
 		t.Fatalf("listed %d sessions, want 1", len(listing.Sessions))
 	}
@@ -297,13 +290,12 @@ func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	if done, code := ui.commitResume(true); !done || code != 1 {
 		t.Fatalf("commit: %v %d %s", done, code, ui.message)
 	}
-	output := ui.failed.Error()
-	if !strings.Contains(output, "re-home remains recorded for "+ui.routing.Current) {
-		t.Fatalf("missing persistence explanation: %s", output)
-	}
-
-	if owner := ui.st.Load().Owners()[s.ID]; owner.Account != ui.routing.Current {
+	owner := ui.st.Load().Owners()[s.ID]
+	if owner.Account == "" || owner.Account == "yan@planlab.ai" {
 		t.Fatalf("re-home after failed exec: %+v", owner)
+	}
+	if output := ui.failed.Error(); !strings.Contains(output, "re-home remains recorded for "+owner.Account) {
+		t.Fatalf("missing persistence explanation: %s", output)
 	}
 }
 
@@ -357,33 +349,19 @@ func TestAbsentProcessLeavesTheSessionMutable(t *testing.T) {
 	}
 }
 
-// The two fail-closed rules of resume routing. Pinned red against the
-// pre-review code, which fell back to the primary in both cases — minting a
-// launch decision no evidence had chosen.
-func TestResumeAccountFailsClosedOnInvalidCurrent(t *testing.T) {
-	ui := &sessionActions{set: accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}}}}
-	if intent, ok := ui.resumeIntent(&sessions.Session{}, false); ok {
-		t.Errorf("ownerless session with no valid current resumed on %q — a decision minted from corrupt routing state", intent.Account)
-	}
-	if intent, ok := ui.resumeIntent(&sessions.Session{Owner: "qiushi"}, true); ok {
-		t.Errorf("the override with no valid current chose %q", intent.Account)
-	}
-}
-
-func TestResumeAccountDeletedOwnerFallsToCurrentNeverPrimary(t *testing.T) {
-	ui := &sessionActions{
-		routing: accounts.Routing{Mode: "pinned", Current: "b@x.com"},
-		set:     accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}}},
-	}
-	intent, ok := ui.resumeIntent(&sessions.Session{Owner: "gone@x.com"}, false)
-	if !ok || intent.Kind != placement.Forced || intent.Account != "b@x.com" {
-		t.Errorf("deleted owner resumed on (%+v, %v) — degraded attribution falls back to current, never primary", intent, ok)
-	}
-	// An owner that exists is followed; the override goes to current instead.
-	if intent, _ := ui.resumeIntent(&sessions.Session{Owner: "qiushi"}, false); intent.Account != "qiushi" || intent.Reason != placement.ReasonOwner {
+// How a resume's account is decided: enter follows an owner the set has, and
+// everything else asks the rule — never the primary, which no evidence chose.
+func TestResumeIntent(t *testing.T) {
+	ui := &sessionActions{set: accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}}}}
+	if intent := ui.resumeIntent(&sessions.Session{Owner: "b@x.com"}, false); intent.Kind != placement.Forced || intent.Account != "b@x.com" || intent.Reason != placement.ReasonOwner {
 		t.Errorf("an existing owner: %+v", intent)
 	}
-	if intent, _ := ui.resumeIntent(&sessions.Session{Owner: "qiushi"}, true); intent.Account != "b@x.com" {
-		t.Errorf("the override: %+v", intent)
+	for _, owner := range []string{"", "gone@x.com"} {
+		if intent := ui.resumeIntent(&sessions.Session{Owner: owner}, false); intent.Kind != placement.Auto || intent.Exclude != "" {
+			t.Errorf("owner %q: %+v, want the rule", owner, intent)
+		}
+	}
+	if intent := ui.resumeIntent(&sessions.Session{Owner: "b@x.com"}, true); intent.Kind != placement.Auto || intent.Exclude != "b@x.com" {
+		t.Errorf("the override: %+v, want the rule, away from the owner", intent)
 	}
 }

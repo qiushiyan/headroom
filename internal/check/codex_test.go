@@ -152,7 +152,7 @@ func TestCodexCheckRequestVerdicts(t *testing.T) {
 				t.Errorf("a vendor finding was reported against headroom's own files:\n%s", strings.Join(r.lines, "\n"))
 			}
 			if tc.name == "sound" {
-				for _, want := range []string{"binary (codex)", "auth[a@x.com]", "isolation:", "credentials[a@x.com]", "credentials[primary]", "topology[a@x.com]: sessions/", "current:"} {
+				for _, want := range []string{"binary (codex)", "auth[a@x.com]", "isolation:", "credentials[a@x.com]", "credentials[primary]", "topology[a@x.com]: sessions/"} {
 					if !r.has("ok " + want) {
 						t.Errorf("sound tree is missing %q:\n%s", want, strings.Join(r.lines, "\n"))
 					}
@@ -302,18 +302,18 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 	}
 
 	// A failure against headroom's own files in Claude Code's group — a
-	// corrupt .current — is no evidence against Claude Code: the blame stays
+	// damaged .reserved — is no evidence against Claude Code: the blame stays
 	// with Codex alone.
 	if err := os.MkdirAll(claude.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(claude.CurrentFile(), nil, 0o644); err != nil {
+	if err := os.WriteFile(claude.ReservedFile(), []byte("not a row\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
 	code = Run(cfg, &out, false, nil)
 	text = out.String()
-	if code != ExitFail || !strings.Contains(text, "FAIL  current:") {
+	if code != ExitFail || !strings.Contains(text, "FAIL  reserved:") {
 		t.Fatalf("own failure beside Codex drift: exit %d\n%s", code, text)
 	}
 	if !strings.Contains(text, "— Codex likely changed a format") || strings.Contains(text, "Claude Code and Codex") {

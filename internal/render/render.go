@@ -41,8 +41,8 @@ func NewPalette(color bool) Palette {
 }
 
 // headerLine is the block's first line: the account, its plan and launcher,
-// and the routing mark — "← current", or under automatic placement "← next"
-// on the account a bare launch would take, never both.
+// what it is reserved for, and "← next" on the account a bare launch would
+// take.
 func (p Palette) headerLine(v accountstate.Facts) string {
 	// Both names come from files another program writes (the dir, the
 	// vendor's own record of the login), so they are sanitized like the
@@ -56,10 +56,7 @@ func (p Palette) headerLine(v accountstate.Facts) string {
 	if v.Reserved != "" {
 		mark = "  " + p.Dim + Sanitize(v.Reserved) + p.Rst
 	}
-	switch {
-	case v.Current:
-		mark += "  " + p.Bold + "← current" + p.Rst
-	case v.Next:
+	if v.Next {
 		mark += "  " + p.Bold + "← next" + p.Rst
 	}
 	if v.Plan != "" {

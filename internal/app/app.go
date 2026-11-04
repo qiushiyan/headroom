@@ -15,13 +15,12 @@ import (
 	"github.com/qiushiyan/headroom/internal/round"
 )
 
-// markBoard sets every account's load and, under auto, the account a launch
-// would take from the figures the round holds, and returns what it gathered,
-// so a board that stays open can mark again as time passes. The mode is the
-// round's own reading of `.current`, never a second one.
+// markBoard sets every account's load and the account a launch would take
+// from the figures the round holds, and returns what it gathered, so a board
+// that stays open can mark again as time passes.
 func markBoard(r *round.Round, now time.Time, place launchop.Deps) *launchop.Marks {
 	cwd, _ := os.Getwd()
-	m := launchop.Mark(r.Set, r.Store, r.Accounts(), r.Routing.Mode, os.Environ(), cwd, now, place)
+	m := launchop.Mark(r.Set, r.Store, r.Accounts(), os.Environ(), cwd, now, place)
 	r.Mark(m.At(now))
 	return m
 }

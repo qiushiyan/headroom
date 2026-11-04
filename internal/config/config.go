@@ -92,7 +92,7 @@ func (v Vendor) EnvPolicy() EnvPolicy {
 
 // Scope is the resolved configuration for one vendor. Everything that is
 // only a path, a name or a number lives here, so the mechanisms that own an
-// invariant (discovery, `.current`, topology, the claim ledger, launch
+// invariant (discovery, reservations, topology, the claim ledger, launch
 // preparation) are written once and take the scope.
 type Scope struct {
 	Vendor       Vendor
@@ -100,13 +100,13 @@ type Scope struct {
 	AccountsRoot string // one dir per extra subscription, keyed by email
 
 	// PrimaryName is the name the vendor's primary dir answers to — what
-	// `.current` records, `--account` selects and the board's launcher column
-	// shows. Set explicitly by HEADROOM_PRIMARY_NAME (HEADROOM_CODEX_PRIMARY_NAME
+	// `--account` selects, the records beside the store are kept under and the
+	// board's launcher column shows. Set explicitly by HEADROOM_PRIMARY_NAME (HEADROOM_CODEX_PRIMARY_NAME
 	// for Codex); "" means *derive it at discovery* from the primary's
 	// logged-in email (accounts.PrimaryName), so a fresh install needs no
 	// configuration and the primary is named the way the extras are — by who
 	// is logged in. Pin it when the derived name must survive a primary logout
-	// (`.current` stores the name, not the dir).
+	// (the records store the name, not the dir).
 	PrimaryName string
 	// PrimaryAliases are names the primary had before PrimaryName, which
 	// still select it: a launcher defined in a shell started before a rename
@@ -163,7 +163,7 @@ type Scope struct {
 	// responses and the recent launches, all keyed by account identity. ""
 	// means this home's own accounts root, as it always was. A second home
 	// that holds its own logins of the same subscriptions names the first
-	// home's root here (the `.ledger` file beside `.current`), so both homes
+	// home's root here (the `.ledger` file in the accounts root), so both homes
 	// ask each subscription once per spacing and count each other's launches.
 	// What belongs to a home alone — its session re-homes — stays in its own
 	// accounts root whatever this says.
@@ -290,11 +290,11 @@ func Load() (Config, error) {
 		}
 	}
 
-	// Distinct roots are what keep the two vendors' `.current`, `.order` and
+	// Distinct roots are what keep the two vendors' `.reserved`, `.order` and
 	// state.json apart; one location under two names would have each vendor
-	// reading the other's routing fact and ledger.
+	// reading the other's reservations and ledger.
 	if sameLocation(c.Claude.AccountsRoot, c.Codex.AccountsRoot) {
-		return Config{}, fmt.Errorf("the Claude Code accounts root (%s) and the Codex accounts root (%s) name the same location — each vendor keeps its own .current, .order and state.json, so the two roots must differ", c.Claude.AccountsRoot, c.Codex.AccountsRoot)
+		return Config{}, fmt.Errorf("the Claude Code accounts root (%s) and the Codex accounts root (%s) name the same location — each vendor keeps its own .reserved, .order and state.json, so the two roots must differ", c.Claude.AccountsRoot, c.Codex.AccountsRoot)
 	}
 
 	c.Codex.Present = isDir(c.Codex.PrimaryDir()) || isDir(c.Codex.AccountsRoot)
@@ -414,7 +414,7 @@ func relativeErr(name, v string) error {
 // compared case-insensitively: whether the filesystem would fold them cannot
 // be known before they exist, and refusing a pair of roots that differ only
 // by case costs a rename, while accepting one that folds puts both vendors'
-// .current and state.json in one directory.
+// .reserved and state.json in one directory.
 func sameLocation(a, b string) bool {
 	aDir, aRest := nearestExisting(filepath.Clean(a))
 	bDir, bRest := nearestExisting(filepath.Clean(b))
@@ -451,20 +451,9 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// CurrentFile records which account a bare launch targets, per vendor.
-// headroom is its only reader (the discovered set's Select, strictly —
-// corruption refuses, never defaults) and only writer (the board's enter,
-// `launch --remember`).
-//
-// It is deliberately not part of state.json: one human-legible routing fact
-// with a fail-closed policy of its own, kept apart from a ledger that is
-// disposable and self-heals by quarantine — neither failure policy should
-// govern the other.
-func (s Scope) CurrentFile() string { return filepath.Join(s.AccountsRoot, ".current") }
-
 // ReservedFile holds the accounts kept for certain repositories (optional, one
-// `<account>\t<dir>` per line). It is routing state, read as strictly as
-// .current: see accounts.ReadReservations.
+// `<account>\t<dir>` per line). It is routing state, read strictly: see
+// accounts.ReadReservations.
 func (s Scope) ReservedFile() string { return filepath.Join(s.AccountsRoot, ".reserved") }
 
 // OrderFile sets dashboard display order after the primary (optional, one

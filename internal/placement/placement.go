@@ -269,7 +269,7 @@ const (
 type Intent struct {
 	Kind    IntentKind
 	Account string // Forced: the account
-	Reason  string // Forced: why, for the record ("pinned", "named")
+	Reason  string // Forced: why, for the record ("named", ReasonOwner)
 
 	// Home is the accounts root of the home placing the launch: whose last
 	// launch LastUsed means, and whose share of the load is its own.

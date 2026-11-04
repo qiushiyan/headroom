@@ -17,12 +17,6 @@ func testConfig(t *testing.T) config.Scope {
 	return s
 }
 
-// setCurrent records a name whether or not discovery knows it, as a torn or
-// outdated `.current` would.
-func setCurrent(cfg config.Scope, name string) error {
-	return Set{Scope: cfg}.SetCurrent(Account{Scope: cfg, Name: name})
-}
-
 func mkAccount(t *testing.T, cfg config.Scope, email string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, email), 0o755); err != nil {
@@ -107,76 +101,21 @@ func TestLauncher(t *testing.T) {
 	}
 }
 
+// A name resolves to the one account that answers to it, and nothing else
+// does: no empty name, no unknown one, no fallback to anyone.
 func TestSelect(t *testing.T) {
 	cfg := testConfig(t)
 	mkAccount(t, cfg, "yan@planlab.ai")
 	set := Discover(cfg)
-
-	// Absent .current: the documented fresh-start default is the primary.
-	a, err := set.Select("")
-	if err != nil || !a.IsPrimary() {
-		t.Errorf("absent .current: got (%v, %v), want primary", a.Name, err)
+	if a, err := set.Select("yan@planlab.ai"); err != nil || a.Name != "yan@planlab.ai" {
+		t.Errorf("an extra: got (%v, %v)", a.Name, err)
 	}
-
-	// A recorded, discovered account resolves.
-	if err := setCurrent(cfg, "yan@planlab.ai"); err != nil {
-		t.Fatal(err)
+	if a, err := set.Select("qiushi"); err != nil || !a.IsPrimary() {
+		t.Errorf("the primary: got (%v, %v)", a.Name, err)
 	}
-	a, err = set.Select("")
-	if err != nil || a.Name != "yan@planlab.ai" {
-		t.Errorf("recorded account: got (%v, %v)", a.Name, err)
-	}
-
-	// An explicit selector bypasses .current.
-	a, err = set.Select("qiushi")
-	if err != nil || !a.IsPrimary() {
-		t.Errorf("explicit primary selector: got (%v, %v)", a.Name, err)
-	}
-
-	// Empty .current is corruption, not a choice: fail closed, no primary
-	// fallback — the shell used to launch with permissions bypassed on it.
-	if err := os.WriteFile(cfg.CurrentFile(), []byte(""), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := set.Select(""); err == nil {
-		t.Error("empty .current: want error, got none")
-	}
-
-	// A recorded account that no longer exists refuses, naming it.
-	if err := setCurrent(cfg, "gone@x.com"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := set.Select(""); err == nil {
-		t.Error("deleted account in .current: want error, got none")
-	}
-
-	// An unknown explicit selector refuses; nothing falls back.
-	if _, err := set.Select("nope@x.com"); err == nil {
-		t.Error("unknown selector: want error, got none")
-	}
-}
-
-func TestSetCurrentAtomicWrite(t *testing.T) {
-	cfg := testConfig(t)
-	mkAccount(t, cfg, "first@x.com")
-	mkAccount(t, cfg, "second@x.com")
-	if err := setCurrent(cfg, "first@x.com"); err != nil {
-		t.Fatal(err)
-	}
-	if err := setCurrent(cfg, "second@x.com"); err != nil {
-		t.Fatal(err)
-	}
-	if a, err := Discover(cfg).Select(""); err != nil || a.Name != "second@x.com" {
-		t.Errorf("got (%q, %v), want second@x.com", a.Name, err)
-	}
-	// The write goes through a temp file + rename; nothing may be left over.
-	entries, err := os.ReadDir(cfg.AccountsRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() && e.Name() != ".current" {
-			t.Errorf("stray file after SetCurrent: %q", e.Name())
+	for _, name := range []string{"", "nope@x.com"} {
+		if a, err := set.Select(name); err == nil {
+			t.Errorf("%q resolved to %s", name, a.Name)
 		}
 	}
 }

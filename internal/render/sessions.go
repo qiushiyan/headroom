@@ -92,25 +92,23 @@ func worktreeName(s *sessions.Session) string {
 	return ""
 }
 
-func ownerTag(s *sessions.Session, current string) string {
+// ownerTag is the account a session resumes on: its owner, or "auto" when
+// there is no owner to follow and the rule places it like a new session.
+func ownerTag(s *sessions.Session) string {
 	switch s.OwnerState {
 	case sessions.OwnerMissing:
-		return "owner gone→" + ShortAccount(current)
+		return "owner gone→auto"
 	case sessions.OwnerConflict:
-		return "owner?→" + ShortAccount(current)
+		return "owner?→auto"
 	case sessions.OwnerNone:
-		return "→" + ShortAccount(current)
+		return "→auto"
 	default:
 		return "@" + ShortAccount(s.Owner)
 	}
 }
 
+// ShortAccount is an account's name without its email domain.
 func ShortAccount(name string) string {
-	if name == "" {
-		// No valid current account: `.current` failed strict resolution.
-		// "?" over a name nobody chose.
-		return "?"
-	}
 	local, _, _ := strings.Cut(name, "@")
 	return local
 }
@@ -121,7 +119,7 @@ func ShortAccount(name string) string {
 // now, and the meta column: model, account, age. The second line, dimmed,
 // is just the confirming title. Every width is measured on plain text before
 // it is styled, so the arithmetic never meets an escape sequence.
-func (p Palette) SessionLines(s *sessions.Session, current string, selected bool, w int, now int64) []string {
+func (p Palette) SessionLines(s *sessions.Session, selected bool, w int, now int64) []string {
 	// The marks, as words to measure and as the styled text drawn.
 	var words, marks []string
 	mark := func(color, word string) {
@@ -152,7 +150,7 @@ func (p Palette) SessionLines(s *sessions.Session, current string, selected bool
 		// transcript, so it is made safe before it shares a line.
 		meta = append(meta, m)
 	}
-	meta = append(meta, ownerTag(s, current), Age(now-s.MTime.Unix()))
+	meta = append(meta, ownerTag(s), Age(now-s.MTime.Unix()))
 	metaAvail := max(w-2-4-2-marksCells, 2) // prefix, minimum label, gap
 	for len(meta) > 1 && Cells(strings.Join(meta, " · ")) > metaAvail {
 		meta = meta[1:]

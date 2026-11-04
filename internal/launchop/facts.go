@@ -159,8 +159,7 @@ func sources(accts []accountstate.Account) []source {
 // diskSources is every account of the set with its newest usable stored
 // observation: the disk's view, which a launch and a headless placement read.
 func diskSources(set accounts.Set, snap state.Snapshot, now time.Time) []source {
-	accts, _ := accountstate.Assemble(set, snap, now)
-	return sources(accts)
+	return sources(accountstate.Assemble(set, snap, now))
 }
 
 // gather reads what is known on disk about every account of the set, and

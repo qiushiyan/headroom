@@ -377,6 +377,7 @@ func episodeLine(ep eval.Episode, home string) string {
 	line += fmt.Sprintf(" · near %s, %s while another had room  %s", evalSpan(ep.NearS), evalSpan(ep.SqueezedS), evalCharged(ep.Rule))
 	if len(ep.Launches) > 0 {
 		var parts []string
+		// "pinned" is in logs written before bare launches always placed.
 		for _, mode := range []string{"auto", "headless", "pinned", "named", "last", "picker"} {
 			if n := ep.Launches[mode]; n > 0 {
 				parts = append(parts, fmt.Sprintf("%d %s", n, mode))

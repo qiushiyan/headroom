@@ -131,7 +131,6 @@ type Facts struct {
 	// wrapper passes arguments through is not headroom's to know. "" means
 	// "run Launcher and /login".
 	LoginCommand string
-	Current      bool // a bare launch (no --account) targets this account
 	// Next marks the account an automatic launch would take from the figures
 	// this surface holds. It is advice, set only by a surface that showed the
 	// figures it was computed from: the launch itself reads the disk again and

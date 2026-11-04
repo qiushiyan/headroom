@@ -108,7 +108,7 @@ func TestSearchReader(t *testing.T) {
 }
 
 // checkRouting is deliberately independent of state.json — it must report
-// corrupt `.current` and an inherited CLAUDE_CONFIG_DIR even when the state
+// a damaged `.reserved` and an inherited CLAUDE_CONFIG_DIR even when the state
 // document was written by a newer headroom and the state audit
 // short-circuits. Every failure here is headroom's own, never vendor drift;
 // TestRunVerdicts exercises the composition with fixture processes and HTTP.
@@ -116,13 +116,6 @@ func TestCheckRouting(t *testing.T) {
 	mkdir := func(t *testing.T, path string) {
 		t.Helper()
 		if err := os.MkdirAll(path, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	current := func(t *testing.T, cfg config.Scope, body string) {
-		t.Helper()
-		mkdir(t, cfg.AccountsRoot)
-		if err := os.WriteFile(cfg.CurrentFile(), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -135,11 +128,8 @@ func TestCheckRouting(t *testing.T) {
 		wantFail []string // own failures, each one line
 		absent   string
 	}{
-		// Absent .current is the documented default, and a clean environment
-		// earns no env line.
-		{name: "clean", wantOK: []string{"current: .current resolves to a launchable account (qiushi)"}, absent: "env:"},
-		// Corrupt (empty) .current is headroom's file, never vendor drift.
-		{name: "empty .current", setup: func(t *testing.T, cfg *config.Scope) { current(t, *cfg, "") }, wantFail: []string{"current:"}},
+		// A clean environment earns no env line.
+		{name: "clean", absent: "env:"},
 		// An inherited variable — present-but-empty included, which is
 		// unverified vendor territory rather than the verified absent state —
 		// earns the ok-with-detail line.
@@ -160,18 +150,6 @@ func TestCheckRouting(t *testing.T) {
 			mkdir(t, filepath.Join(cfg.AccountsRoot, "yan@planlab.ai", "projects")) // a real dir: the fork
 			mkdir(t, cfg.StoreDir())
 		}, wantFail: []string{"topology[yan@planlab.ai]: projects/ resolves to the canonical store"}},
-		// Automatic placement is a routing state, not a missing one.
-		{name: "auto", setup: func(t *testing.T, cfg *config.Scope) { current(t, *cfg, "auto\n") },
-			wantOK: []string{"current: .current says auto"}},
-		// And still fails the file when the word is ambiguous.
-		{name: "auto beside an account named auto", setup: func(t *testing.T, cfg *config.Scope) {
-			current(t, *cfg, "auto\n")
-			mkdir(t, filepath.Join(cfg.AccountsRoot, "auto"))
-			mkdir(t, cfg.StoreDir())
-			if err := os.Symlink(cfg.StoreDir(), filepath.Join(cfg.AccountsRoot, "auto", "projects")); err != nil {
-				t.Fatal(err)
-			}
-		}, wantFail: []string{"current: … reserved"}},
 		// A relocated home re-points what headroom observes but not what a
 		// primary launch would use, which the vendor resolves against the real
 		// home: launch refuses the primary, for either vendor, and check says

@@ -89,7 +89,6 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	// The line discovery honours — a trailing comment included — is the line
 	// removal takes out; a comment that only mentions the name stays.
 	os.WriteFile(cfg.OrderFile(), []byte("# order\nb@x.com\na@x.com   \nc@x.com\na@x.com # work\n# a@x.com, retired\n"), 0o644)
-	os.WriteFile(cfg.CurrentFile(), []byte("a@x.com\n"), 0o644)
 
 	if err := RemoveDir(cfg, "a@x.com"); err != nil {
 		t.Fatal(err)
@@ -102,9 +101,6 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(cfg.OrderFile()); string(got) != "# order\nb@x.com\nc@x.com\n# a@x.com, retired\n" {
 		t.Errorf(".order = %q", got)
-	}
-	if got, _ := os.ReadFile(cfg.CurrentFile()); string(got) != "a@x.com\n" {
-		t.Errorf(".current was rewritten to %q — it must be left for the board to repick", got)
 	}
 	// Lock debris is removable; a symlinked dir and bad names refuse.
 	os.Mkdir(filepath.Join(cfg.AccountsRoot, "a@x.com.lock"), 0o755)
@@ -254,18 +250,5 @@ func TestSeedCodexSharesOnlyWhitelistedConfig(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
 			t.Errorf("%s was shared: a login or per-home state must never be", n)
 		}
-	}
-}
-
-// A Codex account cannot be recorded as Claude Code's current account, or the
-// reverse: SetCurrent refuses the wrong pairing.
-func TestSetCurrentRefusesTheOtherVendorsAccount(t *testing.T) {
-	cfg := config.ForHome(t.TempDir())
-	codexAcct := Account{Scope: cfg.Codex, Name: "a@x.com"}
-	if err := Discover(cfg.Claude).SetCurrent(codexAcct); err == nil {
-		t.Error("a Codex account was written into Claude Code's .current")
-	}
-	if _, err := os.Stat(cfg.Claude.CurrentFile()); err == nil {
-		t.Error(".current was written through a refused pairing")
 	}
 }

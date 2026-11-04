@@ -22,7 +22,6 @@ import (
 // load for the next launch to count, no line in the log, no "last account".
 func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	// A sessions section that will not validate: re-homes cannot be written.
 	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":1,"sessions":{"hollow":{"account":"","atMs":5}}}`)
 	proj := filepath.Join(f.cfg.Home, "proj")
@@ -30,7 +29,7 @@ func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := accounts.Discover(f.cfg)
-	ui, _, _ := f.picker(set, accounts.Routing{Mode: "auto"})
+	ui, _, _ := f.picker(set)
 	s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: "a@x.com", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{s}
 	ui.rows = ui.listing.Sessions
@@ -105,7 +104,6 @@ func (f autoFixture) credential(name string, accessExpires, refreshExpires time.
 // goes by the credential, so the mark must too.
 func TestTheBoardAndALaunchJudgeAccountsByTheSameEvidence(t *testing.T) {
 	f := loginFixture(t, "http://127.0.0.1:1/usage", "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	now := time.Now()
 	f.credential("a@x.com", now.Add(-time.Hour), now.Add(-time.Hour)) // refresh token expired
 	f.credential("b@x.com", now.Add(-time.Hour), now.Add(30*24*time.Hour))
@@ -114,7 +112,7 @@ func TestTheBoardAndALaunchJudgeAccountsByTheSameEvidence(t *testing.T) {
 	f.observe("b@x.com", 20, 30, time.Minute)
 
 	board := fetchBoards([]config.Scope{f.cfg}, f.boardDeps())[0]
-	_, next := marks(board.Accounts)
+	next := nextMarked(board.Accounts)
 	got := f.launch()
 	if got.code != 0 {
 		t.Fatal(got.stderr)
@@ -127,48 +125,12 @@ func TestTheBoardAndALaunchJudgeAccountsByTheSameEvidence(t *testing.T) {
 	}
 }
 
-// The document says one thing about routing: mode, current and the per-account
-// flags come from one read of `.current`, however long the round takes and
-// whatever is written meanwhile.
-func TestTheDocumentCarriesOneRoutingSnapshot(t *testing.T) {
-	var current string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The mode changes while the round is in flight.
-		os.WriteFile(current, []byte("auto\n"), 0o644)
-		w.Write([]byte(`{"limits":[{"kind":"session","percent":5}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	f := loginFixture(t, srv.URL, "a@x.com")
-	current = f.cfg.CurrentFile()
-	f.setCurrent("a@x.com\n")
-	f.credential("a@x.com", time.Now().Add(time.Hour), time.Now().Add(30*24*time.Hour))
-
-	data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}, f.boardDeps()), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := decode5(t, data)
-	marked := 0
-	for _, a := range d.Accounts {
-		if a.Current {
-			marked++
-		}
-	}
-	mode, cur := d.Mode["claude"], d.Current["claude"]
-	pinned := mode == "pinned" && cur == "a@x.com" && marked == 1
-	auto := mode == "auto" && cur == "" && marked == 0
-	if !pinned && !auto {
-		t.Fatalf("the document contradicts itself: mode %q, current %q, %d account(s) marked current", mode, cur, marked)
-	}
-}
-
 // The launch path reads credentials through the reader the board uses: the
 // Keychain first, then the account's own .credentials.json — the primary's
 // included. An expired login found only in the primary's file must keep an
 // automatic launch off the primary.
 func TestPlacementReadsThePrimarysFileBackedCredential(t *testing.T) {
 	f := loginFixture(t, "http://127.0.0.1:1/usage", "a@x.com")
-	f.setCurrent("auto\n")
 	now := time.Now()
 	f.credential("qiushi", now.Add(-time.Hour), now.Add(-time.Hour)) // refresh token expired
 	f.credential("a@x.com", now.Add(time.Hour), now.Add(30*24*time.Hour))
@@ -230,7 +192,6 @@ func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
 	if err := os.Symlink(cfg.StoreDir(), filepath.Join(dir, "projects")); err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, cfg.CurrentFile(), "auto\n")
 
 	cmd := exec.Command(bin, "launch", "--", "-p", "hello")
 	cmd.Env = append(os.Environ(),
@@ -282,7 +243,6 @@ func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
 // `headroom launch` does.
 func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 50, 50, 3*time.Minute)
 	f.observe("a@x.com", 0, 5, 3*time.Minute)
 	f.observe("b@x.com", 0, 30, 3*time.Minute)
@@ -297,7 +257,7 @@ func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 	set := accounts.Discover(f.cfg)
 	resume := func(owner string, state sessions.OwnerState) string {
 		t.Helper()
-		ui, rec, errw := f.picker(set, accounts.Routing{Mode: "auto"})
+		ui, rec, errw := f.picker(set)
 		ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}}
 		ui.rows = ui.listing.Sessions
 		keepWorkingDir(t)
@@ -333,7 +293,6 @@ func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 // would grow the file for as long as nobody pressed `x`.
 func TestALaunchThatRecordsASessionSweepsTheGoneOnes(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	f.observe("a@x.com", 0, 5, time.Minute)
 	const (
 		gone  = "aaaaaaaa-1111-4111-8111-111111111111"

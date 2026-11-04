@@ -272,10 +272,6 @@ func CheckRemovable(cfg config.Scope, name string) error {
 // goes and the canonical store it points at is untouched — the property the
 // tests pin, since it is the difference between removing an account and
 // deleting every session on the machine.
-//
-// `.current` is deliberately not rewritten: it is headroom's routing fact
-// with a fail-closed reader, and a removed current account makes launch
-// refuse until the board repicks — corrupt-vs-chosen stays distinguishable.
 func RemoveDir(cfg config.Scope, name string) error {
 	if err := CheckRemovable(cfg, name); err != nil {
 		return err

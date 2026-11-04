@@ -47,7 +47,6 @@ func decodeEval(t *testing.T, out []byte) evalDoc {
 // evaluation joins that line to the readings that followed it.
 func TestTheEvaluationJoinsALaunchToWhatFollowed(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 40, 40, time.Minute)
 	f.observe("a@x.com", 5, 10, time.Minute)
 	if got := f.launch(); got.code != 0 {
@@ -181,7 +180,6 @@ func TestTheEvaluationReadsEveryHomeOnTheLedger(t *testing.T) {
 // older rule made: it means the column mixes two rules.
 func TestAReplayFaultIsSaidFirst(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 40, 40, time.Minute)
 	f.observe("a@x.com", 5, 10, time.Minute)
 	if got := f.launch(); got.code != 0 {

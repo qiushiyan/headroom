@@ -19,7 +19,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-func collectSessions(cfg config.Scope, st *state.Store, probe sessions.PIDProbe) (sessions.Listing, accounts.Set, accounts.Routing) {
+func collectSessions(cfg config.Scope, st *state.Store, probe sessions.PIDProbe) (sessions.Listing, accounts.Set) {
 	set := accounts.Discover(cfg)
 	cwd, _ := os.Getwd()
 	listing := sessions.Collect(sessions.Input{
@@ -29,13 +29,7 @@ func collectSessions(cfg config.Scope, st *state.Store, probe sessions.PIDProbe)
 		Owners:      st.Load().Owners(),
 		Probe:       probe,
 	})
-	// Strict, exactly as launch resolves it: corrupt or dangling `.current`
-	// yields "" — no current — rather than a primary nobody chose. Rows fall
-	// back to the current account by doctrine, so a tolerant read here would
-	// be the resume surface's route around the launch path's refusal.
-	// One read serves both facts: the current account, and whether there is
-	// none because launches choose.
-	return listing, set, set.Routing()
+	return listing, set
 }
 
 // SessionsOptions are what the shell wrapper and a person hand the session
@@ -95,7 +89,7 @@ func Sessions(std Streams, term Terminal, scope config.Scope, opts SessionsOptio
 	}
 
 	st := state.Open(scope)
-	listing, set, routing := collectSessions(scope, st, deps.Place.Probe)
+	listing, set := collectSessions(scope, st, deps.Place.Probe)
 	t, err := tui.OpenTTY()
 	if err != nil {
 		return err
@@ -103,7 +97,7 @@ func Sessions(std Streams, term Terminal, scope config.Scope, opts SessionsOptio
 	defer t.Close()
 
 	ui := &resumeUI{t: t, p: render.NewPalette(true), listing: listing,
-		st: st, set: set, routing: routing, cdFile: opts.CDFile, claudeArgs: opts.Args, beforeLaunch: t.Close,
+		st: st, set: set, cdFile: opts.CDFile, claudeArgs: opts.Args, beforeLaunch: t.Close,
 		errw: std.Err, place: deps.Place, exec: deps.Exec}
 	if !st.Load().OwnersReadable() {
 		// Routing has silently fallen back to derived evidence. Degraded

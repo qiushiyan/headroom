@@ -2,16 +2,8 @@ $ headroom --json
 exit 0
 --- stdout
 {
-  "schema": 7,
+  "schema": 8,
   "generated_at": "<time>",
-  "current": {
-    "claude": "p",
-    "codex": "q"
-  },
-  "mode": {
-    "claude": "pinned",
-    "codex": "pinned"
-  },
   "accounts": [
     {
       "vendor": "claude",
@@ -19,7 +11,6 @@ exit 0
       "email": "p@x.com",
       "launcher": "headroom launch --account p",
       "plan": "max",
-      "current": true,
       "health": "ok",
       "usage": {
         "observed_at": "<time>",
@@ -67,7 +58,6 @@ exit 0
       "email": "a@x.com",
       "launcher": "headroom launch --account a@x.com",
       "plan": "max",
-      "current": false,
       "health": "ok",
       "usage": {
         "observed_at": "<time>",
@@ -115,7 +105,6 @@ exit 0
       "email": "b@x.com",
       "launcher": "headroom launch --account b@x.com",
       "plan": "max",
-      "current": false,
       "health": "ok",
       "usage": {
         "observed_at": "<time>",
@@ -163,7 +152,6 @@ exit 0
       "email": "q@x.com",
       "launcher": "headroom launch --vendor codex --account q",
       "plan": "plus",
-      "current": true,
       "health": "ok",
       "usage": {
         "observed_at": "<time>",
@@ -201,7 +189,6 @@ exit 0
       "email": "c@x.com",
       "launcher": "headroom launch --vendor codex --account c@x.com",
       "plan": "plus",
-      "current": false,
       "health": "ok",
       "usage": {
         "observed_at": "<time>",

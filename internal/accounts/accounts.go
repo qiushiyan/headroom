@@ -90,9 +90,9 @@ func (a Account) MetaPath() string {
 	return filepath.Join(a.ConfigDir, ".claude.json")
 }
 
-// Set is what discovery found under one scope. Selection and recording the
-// current account are operations on it, so `.current` is only ever resolved
-// against — and written for — the accounts of the scope it belongs to.
+// Set is what discovery found under one scope. Selection is an operation on
+// it, so a name is only ever resolved against the accounts of the scope it
+// belongs to.
 type Set struct {
 	Scope    config.Scope
 	Accounts []Account
@@ -328,10 +328,9 @@ func MetaEmail(metaPath string) (string, bool) {
 // with an extra (dir names contain "@"; local parts do not). A primary that
 // has never logged in has no email to be named by and is called "primary".
 //
-// The derived name is only as stable as the login behind it: `.current`
-// records the *name*, so a primary logout after `.current` was pinned to it
-// makes Select refuse (fail-closed, as for any unmatched name) until the
-// board repicks — or the name is pinned by the variable.
+// The derived name is only as stable as the login behind it: the records
+// beside the store keep the *name*, so a host file pins it with the variable
+// when it must outlive a primary logout.
 func PrimaryName(cfg config.Scope, email string) string {
 	if cfg.PrimaryName != "" {
 		return cfg.PrimaryName
@@ -384,110 +383,16 @@ func (s Set) KnownDir(dir string) bool {
 	return false
 }
 
-// AutoWord is what `.current` says when a bare launch chooses its own account
-// instead of naming one. It is reserved: no account can be the target of a
-// pin and the word at once (see Bare).
-const AutoWord = "auto"
-
-// ErrAuto is Select("")'s answer under auto mode: there is no one account a
-// bare launch targets. Display surfaces already treat any error here as "no
-// current account" and mark nothing, which is exactly right for this one.
-var ErrAuto = errors.New("bare launches are automatic — no one account is current")
-
-// Bare is what a bare launch does: go to one account (pinned), or choose
-// (auto). Exactly one of the two is set.
-type Bare struct {
-	Auto    bool
-	Account Account
+// Has says some discovered account is named name, exactly: no former name of
+// the primary, which only Select resolves.
+func (s Set) Has(name string) bool {
+	return slices.ContainsFunc(s.Accounts, func(a Account) bool { return a.Name == name })
 }
 
-// Bare reads `.current`, strictly, and is its one reader. An absent file is
-// the documented fresh-start default (pinned to the primary); the reserved
-// word is auto mode; anything else must name exactly one discovered account.
-// Empty, unreadable or unmatched is an error — never a silent primary, and
-// never a silent auto: corrupt routing state says nothing about what the
-// person chose, so it refuses, which keeps corruption distinguishable from a
-// choice. A discovered account that is itself named with the reserved word
-// makes the file ambiguous, and ambiguity refuses like any other.
-func (s Set) Bare() (Bare, error) {
-	data, err := os.ReadFile(s.Scope.CurrentFile())
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		a, err := primaryOf(s.Accounts)
-		return Bare{Account: a}, err
-	case err != nil:
-		return Bare{}, fmt.Errorf(".current could not be read (%v)", err)
-	}
-	name := strings.TrimRight(string(data), "\n")
-	if name == "" {
-		return Bare{}, errors.New(".current is empty — run headroom accounts")
-	}
-	if name == AutoWord {
-		if a, clash := s.namedAuto(); clash {
-			return Bare{}, fmt.Errorf(".current says %q, which is also the name of an account (%s) — that word is reserved for automatic placement; rename the account", AutoWord, a.Dir())
-		}
-		return Bare{Auto: true}, nil
-	}
-	a, err := s.byName(name)
-	return Bare{Account: a}, err
-}
-
-// Routing is Bare for a surface that only reports it, from one read of
-// `.current`: Mode is "pinned", "auto", or "" when the file cannot be
-// resolved, and Current names the pinned account ("" otherwise). A surface
-// carries this one value through — its mode, its current and its per-account
-// flags are then one statement, whatever is written to `.current` while the
-// surface is still working.
-type Routing struct {
-	Mode    string
-	Current string
-}
-
-func (s Set) Routing() Routing {
-	b, err := s.Bare()
-	switch {
-	case err != nil:
-		return Routing{}
-	case b.Auto:
-		return Routing{Mode: "auto"}
-	default:
-		return Routing{Mode: "pinned", Current: b.Account.Name}
-	}
-}
-
-func (s Set) namedAuto() (Account, bool) {
-	for _, a := range s.Accounts {
-		if a.Name == AutoWord {
-			return a, true
-		}
-	}
-	return Account{}, false
-}
-
-// Select resolves a selector to a discovered account, strictly. selector ""
-// means the pinned account: an absent .current is the documented fresh-start
-// default (the primary), but an empty, unreadable or unmatched one is an
-// error — never a silent primary — and under auto mode there is no pinned
-// account at all (ErrAuto). It fails closed on purpose: the old shell
-// fallback turned a torn `.current` or a deleted account into "launch the
-// primary with permissions bypassed", which makes corruption
-// indistinguishable from a valid choice. Display surfaces treat the error as
-// "no current account" and mark nothing.
-func (s Set) Select(selector string) (Account, error) {
-	if selector == "" {
-		b, err := s.Bare()
-		switch {
-		case err != nil:
-			return Account{}, err
-		case b.Auto:
-			return Account{}, ErrAuto
-		}
-		return b.Account, nil
-	}
-	return s.byName(selector)
-}
-
-func (s Set) byName(name string) (Account, error) {
+// Select resolves a name to the one discovered account that answers to it,
+// strictly: an unknown name refuses, and so does a name two accounts answer
+// to, rather than routing to whichever discovery listed first.
+func (s Set) Select(name string) (Account, error) {
 	var matches []Account
 	for _, a := range s.Accounts {
 		if a.Name == name {
@@ -508,10 +413,8 @@ func (s Set) byName(name string) (Account, error) {
 		return Account{}, fmt.Errorf("%q is not a discovered account — run headroom accounts", name)
 	}
 	// Two accounts answer to one name — an extra dir named like the primary
-	// (dir basenames are otherwise unique). Returning the first match would
-	// route the name to whichever discovery listed first, silently; ambiguity
-	// refuses, same policy as corrupt `.current`. Discovery stays total so
-	// both rows still render — one bad dir must not become a process failure.
+	// (dir basenames are otherwise unique). Discovery stays total so both rows
+	// still render — one bad dir must not become a process failure.
 	return Account{}, fmt.Errorf("%q names %d accounts (an extra dir shares the primary's name) — rename %s", name, len(matches), matches[1].ConfigDir)
 }
 
@@ -526,37 +429,6 @@ func primaryOf(accts []Account) (Account, error) {
 	return Account{}, errors.New("no primary account in the discovered set")
 }
 
-// SetCurrent records the account bare `x` should target from now on,
-// written atomically (temp file + rename) so a concurrent reader — a
-// `headroom launch` resolving mid-write — never observes a truncated or
-// empty file. The Keychain and every other piece of Claude Code's state are
-// never touched.
-func (s Set) SetCurrent(a Account) error {
-	cfg, name := s.Scope, a.Name
-	if a.Scope.Vendor != cfg.Vendor || a.Scope.AccountsRoot != cfg.AccountsRoot {
-		return fmt.Errorf("%s account %q cannot be recorded as the %s current account", a.Scope.Vendor.Title(), name, cfg.Vendor.Title())
-	}
-	if name == AutoWord {
-		// Written as a pin it would be read back as the mode.
-		return fmt.Errorf("an account named %q cannot be pinned — that word is reserved for automatic placement; rename %s", AutoWord, a.Dir())
-	}
-	return s.writeCurrent(name)
-}
-
-// SetAuto records that a bare launch chooses its own account from now on. It
-// replaces the pin: one file holds one routing fact. Refused while an account
-// bears the reserved word, since the file could not then say which was meant.
-func (s Set) SetAuto() error {
-	if a, clash := s.namedAuto(); clash {
-		return fmt.Errorf("an account is named %q (%s) — that word is reserved for automatic placement; rename the account first", AutoWord, a.Dir())
-	}
-	return s.writeCurrent(AutoWord)
-}
-
-func (s Set) writeCurrent(content string) error {
-	return writeLine(s.Scope.AccountsRoot, s.Scope.CurrentFile(), content)
-}
-
 // writeLine replaces a one-line file beside the accounts atomically (temp file
 // + rename), so a concurrent reader never observes it truncated or empty.
 func writeLine(root, path, content string) error {
@@ -567,7 +439,7 @@ func writeLine(root, path, content string) error {
 }
 
 // ShareLedger records which accounts root's ledger this Claude Code home
-// spends against: the `.ledger` file beside `.current`, validated by the rule
+// spends against: the `.ledger` file in the accounts root, validated by the rule
 // Load reads it with, so the two cannot disagree. Naming this home's own root
 // removes the file — the home keeps its own ledger again. It returns the
 // root recorded, "" for this home's own.

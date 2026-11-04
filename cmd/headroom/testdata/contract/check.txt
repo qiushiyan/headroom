@@ -17,7 +17,6 @@ FAIL  binary (claude): endpoint + config-dir + credential seams present — miss
  ok   state[a@x.com]: stored usage response parses via shared contract
  ok   state[b@x.com]: stored usage response parses via shared contract
  ok   state[p]: stored usage response parses via shared contract
- ok   current: .current resolves to a launchable account (p)
  ok   dirs: every account config dir is absolute
  ok   topology[a@x.com]: projects/ resolves to the canonical store
  ok   topology[b@x.com]: projects/ resolves to the canonical store
@@ -39,7 +38,6 @@ FAIL  codex isolation: CODEX_HOME set to an empty dir answers not logged in — 
  ok   codex state[sessions]: re-home records readable
  ok   codex state[q]: stored usage response parses via shared contract
  ok   codex state[c@x.com]: stored usage response parses via shared contract
- ok   codex current: .current resolves to a launchable account (q)
  ok   codex dirs: every account config dir is absolute
  ok   codex topology[c@x.com]: sessions/ resolves to the canonical store
 

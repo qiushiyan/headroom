@@ -64,8 +64,7 @@ func (v vendorOne) scope(cfg config.Config) (config.Scope, error) {
 
 // accountName is an account named on the command line, by email or dir name.
 // An empty one is refused: it is a caller's expansion bug
-// (`--account "$broken"`), never a request for the pinned account, which is
-// what an absent name means.
+// (`--account "$broken"`), never a request for some default account.
 type accountName string
 
 func (a *accountName) Decode(ctx *kong.DecodeContext) error {

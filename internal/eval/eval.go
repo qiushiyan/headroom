@@ -10,7 +10,7 @@
 //     there while another account had room, how much weekly room may have
 //     renewed unspent, and how high the chosen account's session window went
 //     after each automatic launch. They are what actually happened — under
-//     everything that happened on the machine, since a pinned launch spends
+//     everything that happened on the machine, since a named launch spends
 //     quota too, and never what a different choice would have caused. A
 //     window counts under the rule whose automatic launch last went into it;
 //     one no automatic launch went into counts as Unplaced. Time across the
@@ -114,7 +114,8 @@ type Report struct {
 
 	// Rules summarizes each rule version, oldest first: its decisions, and the
 	// windows its automatic launches went into. Unplaced holds the windows no
-	// automatic launch went into — pinned, named and resumed work, or work no
+	// automatic launch went into — named and resumed work (pinned, in older
+	// logs), or work no
 	// launch logged. Fleet is time across every account, owned by no rule.
 	Rules    []RuleSummary `json:"rules"`
 	Unplaced RuleSummary   `json:"unplaced"`

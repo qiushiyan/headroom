@@ -114,7 +114,7 @@ type removeDeps struct {
 // AccountsRemove removes one extra account: its Keychain item and its dir,
 // refused while a session is live on it or its liveness cannot be verified,
 // after a confirmation unless yes. A bare removal on a terminal picks from
-// what is removable. It never touches .current. Codex accounts are never
+// what is removable. Codex accounts are never
 // removed: headroom cannot tell whether a codex session is running on a home.
 func AccountsRemove(std Streams, term Terminal, cfg config.Scope, name string, yes bool, probe sessions.PIDProbe) error {
 	if cfg.Vendor == config.Codex {
@@ -421,8 +421,5 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 		fmt.Fprintf(std.Err, "headroom accounts remove: its reservation was not dropped (%v) — headroom accounts reserve %s --clear\n", err, name)
 	}
 	fmt.Fprintln(out, "transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed")
-	if cur, err := os.ReadFile(cfg.CurrentFile()); err == nil && strings.TrimSpace(string(cur)) == name {
-		fmt.Fprintln(out, "note: .current pointed here — launches refuse until `headroom accounts` repicks")
-	}
 	return nil
 }

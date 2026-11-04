@@ -3,19 +3,18 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
 // isCancelKey is the shared "get me out" chord set: esc, q, ctrl-c, ctrl-d.
+// On the board it closes the board; in the other pickers it cancels a choice.
 func isCancelKey(k tui.Key) bool {
 	return k.Kind == tui.KeyEsc ||
 		k == tui.Key{Kind: tui.KeyRune, Rune: 'q'} ||
@@ -48,6 +47,12 @@ func notActionable(list []accountstate.Account, now int64) (blocked, stale int) 
 // picker is the interactive board: the pages, which one is visible, and the
 // terminal. Only the visible page starts rounds; a hidden page keeps its
 // figures and their age, and its deadline never wakes the loop.
+//
+// The board is read-only: no key on it records routing or starts a session.
+// Its enter once pinned the selected row, and a stray enter on a board opened
+// only to read it took every later bare launch out of automatic placement. An
+// account is chosen by naming it for one launch (`launch --account`, a shell's
+// x-<name>); every other launch is placed.
 type picker struct {
 	pages   []*page
 	visible int
@@ -80,7 +85,7 @@ func runPicker(std Streams, term Terminal, scopes []config.Scope, layout render.
 	for _, scope := range scopes {
 		ui.pages = append(ui.pages, newPage(scope, deps))
 	}
-	// Every exit — enter, cancel, the deferred Close, a signal death — steps
+	// Every exit — a quit key, the deferred Close, a signal death — steps
 	// below the newline-less frame through the same once-guarded path.
 	t.OnClose(ui.fp.finish)
 	ui.show(ctx, 0)
@@ -89,53 +94,22 @@ func runPicker(std Streams, term Terminal, scopes []config.Scope, layout render.
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 
-	for {
-		switch ui.step(ctx, tick.C, t.Events()) {
-		case stepCancel:
-			t.Close()
-			return Status(1)
-		case stepAuto:
-			pg := ui.page()
-			t.Close()
-			// Like enter, this records the visible page's vendor's routing and
-			// nothing else, and starts no session.
-			if err := pg.round.Set.SetAuto(); err != nil {
-				return err
-			}
-			fmt.Fprintln(std.Out, autoLine(pg.scope))
-			return nil
-		case stepChoose:
-			pg := ui.page()
-			chosen := pg.accounts()[pg.sel]
-			t.Close()
-			// Enter records this page's vendor's current account and nothing
-			// else: the other vendor's .current is not touched.
-			if err := pg.round.Set.SetCurrent(chosen.Acct); err != nil {
-				return err
-			}
-			fmt.Fprintln(std.Out, chosenLine(pg.scope, chosen.View.Label))
-			return nil
-		}
+	for !ui.step(ctx, tick.C, t.Events()) {
 		ui.draw()
 	}
+	// Closing a board that could not have recorded anything is its ordinary
+	// end, so it exits 0.
+	t.Close()
+	return nil
 }
 
-// stepOutcome is what one turn of the board's loop asks of its caller.
-type stepOutcome int
-
-const (
-	stepContinue stepOutcome = iota
-	stepCancel
-	stepChoose // enter on a row of the visible page
-	stepAuto   // a: bare launches of the visible page's vendor choose for themselves
-)
-
 // step is one turn of the board's loop: one refresh result, one tick or one
-// key. It is the only place results are routed and rounds are started, which
-// is what the page model's two promises rest on — a result is applied to the
-// page whose channel delivered it, whichever page is visible, and only the
-// visible page is ever asked whether a round is due.
-func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan tui.Key) stepOutcome {
+// key, and whether that key quit the board. It is the only place results are
+// routed and rounds are started, which is what the page model's two promises
+// rest on — a result is applied to the page whose channel delivered it,
+// whichever page is visible, and only the visible page is ever asked whether
+// a round is due.
+func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan tui.Key) (quit bool) {
 	// The vendor set is closed at two, so the loop receives from every
 	// page's channel by name. A page with no round in flight has a nil
 	// channel, which never delivers.
@@ -158,45 +132,29 @@ func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan t
 		pg := ui.page()
 		switch {
 		case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
-			pg.move(-1)
+			pg.top--
 		case k.Kind == tui.KeyDown || k == tui.Key{Kind: tui.KeyRune, Rune: 'j'}:
-			pg.move(1)
+			// Past the end is clamped by the next draw, which knows the height.
+			pg.top++
 		case k.Kind == tui.KeyTab:
 			ui.show(ctx, (ui.visible+1)%len(ui.pages))
 		case k == tui.Key{Kind: tui.KeyRune, Rune: 'r'}:
 			pg.refresh(ctx)
-		case k == tui.Key{Kind: tui.KeyRune, Rune: 'a'}:
-			return stepAuto
 		case isCancelKey(k):
-			return stepCancel
-		case k.Kind == tui.KeyEnter:
-			if len(pg.accounts()) > 0 {
-				return stepChoose
-			}
+			return true
 		}
 	}
-	return stepContinue
+	return false
 }
 
 // show makes a page visible. A page seen for the first time has nothing to
 // draw, so its first round starts now; one whose deadline passed while it was
-// hidden is simply due at the next tick. The first draw of a page shows the
-// current account selected; after that the selection follows the user.
+// hidden is simply due at the next tick. Each page keeps its own scroll.
 func (ui *picker) show(ctx context.Context, i int) {
 	ui.visible = i
 	pg := ui.pages[i]
 	if pg.round == nil && pg.updates == nil {
 		pg.startRound(ctx, false)
-	}
-	if !pg.opened {
-		pg.opened = true
-		for j, d := range pg.accounts() {
-			// Under auto there is no current account; the row a launch would
-			// take is the one worth opening on.
-			if d.View.Current || d.View.Next {
-				pg.sel, pg.selName = j, d.Acct.Name
-			}
-		}
 	}
 }
 
@@ -220,50 +178,34 @@ func (ui *picker) draw() {
 			header = append(header, "")
 		}
 	}
-	if pg.round != nil && pg.round.Routing.Mode == "auto" {
-		for _, line := range ui.p.AutoHeader(ui.layout) {
-			if line != "" {
-				line = "  " + line
-			}
-			header = append(header, line)
-		}
+	for _, line := range ui.p.Legend(ui.layout) {
+		header = append(header, "  "+line)
 	}
 	for _, line := range b.Header {
 		header = append(header, "  "+line)
 	}
 	var body []string
-	selStart, selEnd := 0, 0
 	for i, g := range b.Groups {
-		if i == pg.sel {
-			selStart = len(body)
-		}
-		for j, line := range g {
-			prefix := "  "
-			if i == pg.sel && j == 0 {
-				prefix = ui.p.Bold + "▶ " + ui.p.Rst
-			}
-			body = append(body, prefix+line)
-		}
-		if i == pg.sel {
-			selEnd = len(body)
+		for _, line := range g {
+			body = append(body, "  "+line)
 		}
 		if i < len(b.Groups)-1 && ui.layout == render.LayoutBlocks {
 			body = append(body, "")
 		}
 	}
-	footer := []string{"", ui.p.Dim + ui.status(now) + ui.p.Rst}
 	// Fit the board to the terminal — framePrinter's move-up arithmetic
 	// cannot survive a frame taller than the screen, and its own clamp cuts
-	// blindly from the tail.
+	// blindly from the tail. The footer is two lines whatever it says.
 	var keepHeader, keepFooter bool
 	var view int
-	pg.top, view, keepHeader, keepFooter = boardWindow(pg.top, selStart, selEnd, len(body), len(header), len(footer), h)
+	pg.top, view, keepHeader, keepFooter = boardWindow(pg.top, len(body), len(header), 2, h)
+	var footer []string
+	if keepFooter {
+		footer = []string{"", ui.p.Dim + ui.status(now, view < len(body)) + ui.p.Rst}
+	}
 	body = body[pg.top : pg.top+view]
 	if !keepHeader {
 		header = nil
-	}
-	if !keepFooter {
-		footer = nil
 	}
 	frame := append(header, body...)
 	ui.fp.print(append(frame, footer...), w, h)
@@ -298,8 +240,9 @@ func (ui *picker) tabBar() string {
 // status is the board's one footer line. Clause order is clip order —
 // render.Clip cuts from the right, so what must survive a narrow terminal
 // comes first: the refresh state (the user's most recent question), then the
-// two warnings, then the hints as the designated casualty.
-func (ui *picker) status(now time.Time) string {
+// two warnings, then the hints as the designated casualty. scrolls says the
+// board is taller than the terminal, the one case the arrows do anything.
+func (ui *picker) status(now time.Time, scrolls bool) string {
 	pg := ui.page()
 	var parts []string
 	switch {
@@ -325,22 +268,6 @@ func (ui *picker) status(now time.Time) string {
 		parts = append(parts, "HEADROOM_HOME set — primary launches refuse")
 	}
 	accts := pg.accounts()
-	for _, d := range accts {
-		if !d.View.Current {
-			continue
-		}
-		// An inherited value that disagrees with `← current` would re-route a
-		// bare launch; managed launches neutralize it, and the board must not
-		// silently rely on that. The classifier is launch's own, so this note
-		// and the launch's notice cannot disagree about which values go
-		// unsaid.
-		if tgt, err := launch.For(pg.scope.Vendor, d.Acct.ConfigDir); err == nil {
-			if _, unexplained := launch.Unexplained(tgt, pg.round.Set, os.Environ()); unexplained {
-				parts = append(parts, "ambient "+pg.scope.Env().HomeVar+" neutralized")
-			}
-		}
-		break
-	}
 	blocked, stale := notActionable(accts, now.Unix())
 	if blocked > 0 {
 		// Positive evidence from the vendor, not age: these accounts are not
@@ -353,10 +280,14 @@ func (ui *picker) status(now time.Time) string {
 		// are current, and no window has rolled over since they were taken.
 		parts = append(parts, fmt.Sprintf("%d too old to pick on", stale))
 	}
-	hints := "↑/↓ move · enter select · a auto · r refresh · esc cancel"
+	var hints []string
 	if len(ui.pages) > 1 {
-		hints = "tab switch · " + hints
+		hints = append(hints, "tab switch")
 	}
-	parts = append(parts, hints)
+	if scrolls {
+		hints = append(hints, "↑/↓ scroll")
+	}
+	hints = append(hints, "r refresh", "q quit")
+	parts = append(parts, hints...)
 	return strings.Join(parts, " · ")
 }

@@ -81,11 +81,9 @@ func launchOptions(t *testing.T, args ...string) LaunchOptions {
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
 		case "--auto":
-			o.Auto = true
+			// What a bare launch does, said outright: nothing to carry.
 		case "--last":
 			o.Last = true
-		case "--remember":
-			o.Remember = true
 		case "--dry-run":
 			o.DryRun = true
 		case "--account":
@@ -108,11 +106,11 @@ func (f autoFixture) boardDeps() BoardDeps {
 	return BoardDeps{Round: LiveRound(true), Place: f.edges}
 }
 
-// picker is a session picker over set under routing, its exec recorded and
-// what it says after the picker closes written to errw.
-func (f autoFixture) picker(set accounts.Set, routing accounts.Routing) (*resumeUI, *execRecord, *bytes.Buffer) {
+// picker is a session picker over set, its exec recorded and what it says
+// after the picker closes written to errw.
+func (f autoFixture) picker(set accounts.Set) (*resumeUI, *execRecord, *bytes.Buffer) {
 	rec, errw := &execRecord{}, &bytes.Buffer{}
-	ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, routing: routing, place: f.edges, exec: rec.exec, errw: errw}
+	ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, place: f.edges, exec: rec.exec, errw: errw}
 	return ui, rec, errw
 }
 

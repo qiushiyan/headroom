@@ -98,18 +98,14 @@ func TestCodexRefreshRound(t *testing.T) {
 	l := login(1)
 	f.extra(t, l)
 
-	// A Claude Code quiet period and routing fact that must survive untouched.
+	// A Claude Code quiet period that must survive untouched.
 	claudeStore := state.Open(f.cfg.Claude)
 	claudeKey := state.Key{UUID: "claude-uuid", Name: "c@x.com"}
 	if decs, err := claudeStore.Claim([]state.Key{claudeKey}, time.Now()); err != nil || !decs[0].Permit {
 		t.Fatalf("claude claim: %v %v", decs, err)
 	}
-	if err := os.WriteFile(f.cfg.Claude.CurrentFile(), []byte("c@x.com\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	claudeState := filepath.Join(f.cfg.Claude.AccountsRoot, "state.json")
 	beforeState, _ := os.ReadFile(claudeState)
-	beforeCurrent, _ := os.ReadFile(f.cfg.Claude.CurrentFile())
 
 	byName := f.round(t)
 	d, ok := byName["u1@x.com"]
@@ -153,9 +149,6 @@ func TestCodexRefreshRound(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(claudeState); string(after) != string(beforeState) {
 		t.Error("a Codex refresh rewrote Claude Code's state.json")
-	}
-	if after, _ := os.ReadFile(f.cfg.Claude.CurrentFile()); string(after) != string(beforeCurrent) {
-		t.Error("a Codex refresh rewrote Claude Code's .current")
 	}
 	if decs, _ := claudeStore.Claim([]state.Key{claudeKey}, time.Now()); decs[0].Permit {
 		t.Error("an outstanding Claude Code quiet period stopped deferring")

@@ -18,12 +18,10 @@ Inherited flags:
       --version          Print the build this binary is — its commit and the commit's time — and
                          exit.
 
-The JSON document (schema 7):
-  {"schema": 7, "generated_at": RFC3339,
-   "current": {"claude": "<account>", ...},   the account a bare launch of that vendor takes
-   "mode": {"claude": "pinned"|"auto"|"", ...},   "" when .current cannot be resolved
+The JSON document (schema 8):
+  {"schema": 8, "generated_at": RFC3339,
    "accounts": [{
-     "vendor": "claude"|"codex", "name", "email", "launcher", "plan", "current": bool,
+     "vendor": "claude"|"codex", "name", "email", "launcher", "plan",
      "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
      "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
        "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",

@@ -156,7 +156,7 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 func TestAnIdleBoardStillComesBack(t *testing.T) {
 	now := time.Now()
 	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}),
-		round: round.Of(accounts.Set{}, nil, accounts.Routing{}, []accountstate.Account{{Key: state.Key{Name: "a"}}})}
+		round: round.Of(accounts.Set{}, nil, []accountstate.Account{{Key: state.Key{Name: "a"}}})}
 	ui.schedule()
 
 	if wait := ui.nextAt.Sub(now); wait >= presenceWindow {

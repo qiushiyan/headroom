@@ -3,9 +3,9 @@ Usage: headroom [<command>] [flags]
 
 headroom shows which of this machine's Claude Code and Codex accounts has quota left, launches claude or codex on the account it decides, and continues any Claude Code session on the account that last drove it.
 
-Bare, headroom is the board (see headroom board --help). Two things decide where a bare
-headroom launch goes: the board's enter pins an account, and its a key turns automatic
-placement on, so each bare launch takes the least-loaded account instead.
+Bare, headroom is the board (see headroom board --help): it shows every account and
+records nothing. A bare headroom launch takes the least-loaded account; headroom launch
+--account <name> starts one session on the account named.
 
 An account is a config dir: Claude Code's primary is ~/.claude and the others are
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
@@ -64,7 +64,7 @@ Commands:
                                  while it runs.
   headless token <account>       Print one account's headless token, and nothing else.
   headless forget <account>      Forget one account's headless token.
-  resolve [<account>]            Print an account's name, dir and kind, for shell preflight.
+  resolve <account>              Print an account's name, dir and kind, for shell preflight.
   refresh                        Ask the usage endpoint about every account that may be asked, and
                                  store the answers.
   check                          Verify the vendor facts headroom relies on, and its own state.

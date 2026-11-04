@@ -386,7 +386,7 @@ func TestEachHomesSessionsStayInItsHome(t *testing.T) {
 	}
 
 	ids := func(s config.Scope) []string {
-		listing, _, _ := collectSessions(s, state.Open(s), f.edges.Probe)
+		listing, _ := collectSessions(s, state.Open(s), f.edges.Probe)
 		var out []string
 		for _, sess := range listing.Sessions {
 			out = append(out, sess.ID)
@@ -494,7 +494,7 @@ func TestOneHomesTwoDirsOnOneSubscriptionShareTheirLoad(t *testing.T) {
 }
 
 // The owner's own surfaces, as they run: the board printed off a terminal in
-// both layouts and --json, in pinned mode, with one account the other home
+// both layouts and --json, with one account the other home
 // launched on and one with no figures yet that both homes have a session on.
 // Each says how much is the other home's, and this home's own share is
 // counted once.
@@ -512,9 +512,6 @@ func TestTheOwnersSurfacesCarryTheOtherHomesLoad(t *testing.T) {
 	f.busy(filepath.Join(f.owner.AccountsRoot, "a@x.com"), 952)
 
 	boards := fetchBoards([]config.Scope{f.owner}, BoardDeps{Round: LiveRound(true), Place: f.edges})
-	if boards[0].Routing.Mode != "pinned" {
-		t.Fatalf("mode %q", boards[0].Routing.Mode)
-	}
 	for layout, want := range map[render.Layout][]string{
 		render.LayoutBlocks:  {"sessions: 2 busy (steward-home: 1 busy)", "sessions: 1 launched (steward-home: 1 launched)"},
 		render.LayoutCompact: {"2 busy (steward-home: 1 busy)"},

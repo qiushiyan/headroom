@@ -15,15 +15,12 @@ import (
 )
 
 type doc5 struct {
-	Schema   int               `json:"schema"`
-	Current  map[string]string `json:"current"`
-	Mode     map[string]string `json:"mode"`
+	Schema   int `json:"schema"`
 	Accounts []struct {
-		Vendor  string `json:"vendor"`
-		Name    string `json:"name"`
-		Plan    string `json:"plan"`
-		Current bool   `json:"current"`
-		Usage   *struct {
+		Vendor string `json:"vendor"`
+		Name   string `json:"name"`
+		Plan   string `json:"plan"`
+		Usage  *struct {
 			Source          string   `json:"source"`
 			Allowance       string   `json:"allowance"`
 			AllowanceReason string   `json:"allowance_reason"`
@@ -54,11 +51,21 @@ func decode5(t *testing.T, data []byte) doc5 {
 	if err := json.Unmarshal(data, &d); err != nil {
 		t.Fatalf("not one JSON object: %v\n%s", err, data)
 	}
-	// `current` must be an object, never the schema-4 string.
-	var raw map[string]json.RawMessage
-	json.Unmarshal(data, &raw)
-	if len(raw["current"]) == 0 || raw["current"][0] != '{' {
-		t.Fatalf("current is not an object: %s", raw["current"])
+	// No routing fields, on the envelope or any account: every bare launch
+	// places itself (schema 8).
+	var envelope map[string]json.RawMessage
+	var accts []map[string]json.RawMessage
+	json.Unmarshal(data, &envelope)
+	json.Unmarshal(envelope["accounts"], &accts)
+	for _, field := range []string{"current", "mode"} {
+		if _, ok := envelope[field]; ok {
+			t.Fatalf("the document carries %q", field)
+		}
+	}
+	for _, a := range accts {
+		if _, ok := a["current"]; ok {
+			t.Fatalf("an account carries \"current\": %v", a)
+		}
 	}
 	return d
 }
@@ -86,9 +93,6 @@ func TestSchema5TwoVendors(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(f.scope.CurrentFile(), []byte("u1@x.com\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("PATH", t.TempDir()) // no claude, no security: probes answer "unavailable"
 	both := []config.Scope{f.cfg.Claude, f.scope}
 
@@ -97,11 +101,8 @@ func TestSchema5TwoVendors(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := decode5(t, data)
-	if d.Schema != 7 {
+	if d.Schema != 8 {
 		t.Errorf("schema = %d", d.Schema)
-	}
-	if d.Current["claude"] != "primary" || d.Current["codex"] != "u1@x.com" || len(d.Current) != 2 {
-		t.Errorf("current = %v", d.Current)
 	}
 	vendors := map[string]int{}
 	for _, a := range d.Accounts {
@@ -112,7 +113,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 			}
 			continue
 		}
-		if !a.Current || a.Usage == nil {
+		if a.Usage == nil {
 			t.Fatalf("codex account: %+v", a)
 		}
 		u := a.Usage
@@ -157,8 +158,8 @@ func TestSchema5TwoVendors(t *testing.T) {
 		t.Fatalf("limits exit %d", code)
 	}
 	ld := decode5(t, buf.Bytes())
-	if len(ld.Accounts) != 5 || ld.Current["codex"] != "u1@x.com" {
-		t.Errorf("limits: %d accounts, current %v", len(ld.Accounts), ld.Current)
+	if len(ld.Accounts) != 5 {
+		t.Errorf("limits: %d accounts", len(ld.Accounts))
 	}
 	for _, a := range ld.Accounts {
 		if a.Vendor == "codex" && a.Name == "u1@x.com" && (a.Usage == nil || a.Usage.Source != "headroom_cache" || a.Usage.Allowance != "blocked") {
@@ -174,14 +175,14 @@ func TestSchema5TwoVendors(t *testing.T) {
 		}
 	}
 
-	// --vendor restricts accounts, current and problems to the one vendor.
+	// --vendor restricts accounts and problems to the one vendor.
 	buf.Reset()
 	if code := limitsTo(&buf, []config.Scope{f.scope}, ""); code != 0 {
 		t.Fatal("limits --vendor codex failed")
 	}
 	only := decode5(t, buf.Bytes())
-	if len(only.Current) != 1 || only.Current["codex"] != "u1@x.com" || len(only.Accounts) != 2 {
-		t.Errorf("filtered: current %v accounts %d", only.Current, len(only.Accounts))
+	if len(only.Accounts) != 2 {
+		t.Errorf("filtered: %d accounts", len(only.Accounts))
 	}
 	for _, a := range only.Accounts {
 		if a.Vendor != "codex" {
@@ -196,17 +197,16 @@ func TestSchema5TwoVendors(t *testing.T) {
 		t.Fatal("limits --account failed")
 	}
 	named := decode5(t, buf.Bytes())
-	if len(named.Accounts) != 2 || named.Accounts[0].Vendor == named.Accounts[1].Vendor || len(named.Current) != 2 {
-		t.Errorf("--account across vendors: %+v current %v", named.Accounts, named.Current)
+	if len(named.Accounts) != 2 || named.Accounts[0].Vendor == named.Accounts[1].Vendor {
+		t.Errorf("--account across vendors: %+v", named.Accounts)
 	}
-	// A name only one vendor has still answers, and the other vendor stays in
-	// the envelope — its `current` is still a fact — with no accounts.
+	// A name only one vendor has still answers.
 	buf.Reset()
 	if code := limitsTo(&buf, both, "claude-only@x.com"); code != 0 {
 		t.Fatal("limits --account claude-only@x.com failed")
 	}
-	if p := decode5(t, buf.Bytes()); len(p.Accounts) != 1 || p.Accounts[0].Vendor != "claude" || p.Current["codex"] != "u1@x.com" {
-		t.Errorf("--account claude-only@x.com: %+v current %v", p.Accounts, p.Current)
+	if p := decode5(t, buf.Bytes()); len(p.Accounts) != 1 || p.Accounts[0].Vendor != "claude" {
+		t.Errorf("--account claude-only@x.com: %+v", p.Accounts)
 	}
 	buf.Reset()
 	if code := limitsTo(&buf, both, "nobody@x.com"); code != 1 || buf.Len() != 0 {
