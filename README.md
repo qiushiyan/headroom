@@ -2,18 +2,18 @@
 
 Several Claude Code subscriptions on one machine, each logged in under its
 own config dir. headroom is the instrument for that setup: it shows which
-account has quota left, starts sessions on the account you choose, and lets
-a conversation move between accounts — so a rate limit on one subscription
-stops nothing. It does the same for several Codex CLI subscriptions: the
-board gets a Codex page, and the same launcher starts `codex` on the account
-you choose.
+account has quota left, starts each session on the least-loaded account (or
+the one you name), and lets a conversation move between accounts — so a rate
+limit on one subscription stops nothing. It does the same for several Codex
+CLI subscriptions: the board gets a Codex page, and the same launcher starts
+`codex`.
 
 ```
 alice@example.com (max 20x · headroom launch --account alice@example.com)
   5h session       [███░░░░░░░░░░░░░░░░░]  17%  resets 03:19 (in 2.1h)
   All models (7d)  [████████████░░░░░░░░]  61%  resets Thu 17:59 (in 4.7d)
 
-bob@example.com (max 5x · headroom launch --account bob@example.com)  ← current
+bob@example.com (max 5x · headroom launch --account bob@example.com)  ← next
   5h session       [█████████░░░░░░░░░░░]  45%  resets 01:50 (in 0.6h)
   All models (7d)  [█░░░░░░░░░░░░░░░░░░░]   6%  resets Mon 17:00 (in 1.6d)
 ```
@@ -24,9 +24,9 @@ bob@example.com (max 5x · headroom launch --account bob@example.com)  ← curre
 
 `headroom` is the board: every account's 5-hour and weekly limits as live
 bars, refreshing while it stays open, with the command that launches each
-account and `← current` on the one a bare launch targets. It reads the same
-endpoint Claude Code's own `/usage` screen reads, subject to a shared
-per-account request budget. A deferred or failed refresh keeps the newest
+account and `← next` on the one a bare launch would take; no key on it
+changes where a launch goes. It reads the same endpoint Claude Code's own
+`/usage` screen reads, subject to a shared per-account request budget. A deferred or failed refresh keeps the newest
 usable observation, with its age and request status alongside the figures.
 Severity colours remain visible when data is stale.
 
@@ -36,18 +36,10 @@ the board.
 
 ### 2. Spread sessions across accounts
 
-Each subscription has its own 5-hour window. Start work on the account with
-room and leave the others to recover:
-
-- `headroom accounts` — pick where new sessions go. Enter records it and
-  exits; from then on a bare `headroom launch` starts `claude` there.
-  `--compact` shows one row per account instead of bars.
-- `headroom launch --account <email>` — one session on another account, the
-  default untouched. Anything after `--` goes to `claude`.
-
-Or let headroom choose. Press `a` on the board and each bare launch goes to
-the least-loaded account. Every launch says which account it took before
-`claude` starts:
+Each subscription has its own 5-hour window. A bare `headroom launch` starts
+`claude` on the least-loaded account; `headroom launch --account <email>`
+starts one session on the account named. Anything after `--` goes to
+`claude`. Every launch says which account it took before `claude` starts:
 
 ```
 headroom launch: alice@example.com · auto · 5h 1% · week 3%, resets in 4.2d · load 0 (next: bob@example.com)
@@ -58,8 +50,8 @@ launches just made there; an account near any limit is set aside, and among
 equally loaded accounts the weekly room that would lapse first is spent
 first. Launches started together land on different accounts.
 `headroom launch --dry-run` shows the whole table without starting anything,
-`headroom launches` what was chosen before, `headroom launches --eval` how
-those choices turned out, and enter on a board row pins one account again.
+`headroom launches` what was chosen before, and `headroom launches --eval` how
+those choices turned out.
 
 An account bought for one job can be kept to it: `headroom accounts reserve
 <email> ~/dev/work ~/dev/work-cms`. Automatic launches elsewhere never choose
@@ -75,12 +67,9 @@ A session on account A hits its limit with work unfinished. The transcript
 belongs to the machine, not the account, so any account can pick it up:
 
 1. Quit the session.
-2. `headroom accounts` — enter on an account with headroom left (skip if
-   the default already has some, or if bare launches are automatic).
-3. `headroom sessions` — find the row, press **`x`**: the session continues
-   on the current account — under auto, on the least-loaded of the others —
-   in its own project dir, and is re-homed there. (Enter would send it back
-   to A.)
+2. `headroom sessions` — find the row, press **`x`**: the session continues
+   on the least-loaded of the other accounts, in its own project dir, and is
+   re-homed there. (Enter would send it back to A.)
 
 Without the picker: `headroom launch --account <email> -- --resume <id>`
 (`headroom sessions --json` lists ids), or `-- --continue` for the newest
@@ -89,11 +78,10 @@ account that drives a session last is its owner.
 
 ### 4. The same, for Codex
 
-With Codex on the machine the board has a second page — **tab** switches — and
-enter there records the Codex account a bare Codex launch targets:
+With Codex on the machine the board has a second page — **tab** switches:
 
-- `headroom launch --vendor codex` — `codex` on the chosen account;
-  `--account <email>` for one session elsewhere, the default untouched.
+- `headroom launch --vendor codex` — `codex` on the least-loaded Codex
+  account; `--account <email>` for one session on the account named.
 - Out of quota mid-session: Codex's sessions are shared across its accounts,
   so continuing elsewhere is naming the account —
   `headroom launch --vendor codex --account <other> -- resume` (add `--all`
@@ -137,7 +125,7 @@ root>`, run as that home — and `headroom accounts ledger` once as the first
 home, so each can find the other's sessions — makes both homes ask each
 subscription once per spacing and count each other's busy sessions and
 launches. Each home keeps
-its own dirs, settings, sessions and default; the board names the other
+its own dirs, settings and sessions; the board names the other
 home's share (`sessions: 2 busy (steward-home: 1 busy)`). See
 [docs/REFERENCE.md](docs/REFERENCE.md#a-second-home-on-the-same-machine).
 
@@ -192,7 +180,7 @@ Every command's reference is `headroom <command> --help`. **Shell shortcuts**
 
 ## For your agent
 
-The repo ships two agent skills — `headroom` (reading the board, switching,
+The repo ships two agent skills — `headroom` (reading the board, launching,
 the out-of-quota flow, diagnosing) and `headroom-setup` (the setup above,
 plus folding in older session dirs and shell launchers):
 

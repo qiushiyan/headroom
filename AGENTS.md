@@ -25,9 +25,9 @@ command's own reference.
     `name<TAB>dir<TAB>primary|extra` line.
   - `limits [--vendor claude]`, and `accounts --compact` off a terminal →
     dotfiles' quota mod and `claude-quota-refresh.sh`, `steward.ts`: schema
-    7's fields, one frame, exit 0.
+    8's fields, one frame, exit 0.
   - The launch's stderr line → steward's `turn_runner.ts` regex:
-    `headroom launch: <account> · auto|pinned|…`.
+    `headroom launch: <account> · auto|…`.
   - `launch [flags] -- <args>` → the dotfiles zsh and codex wrappers, envoy,
     brief, gazette, steward: a bare trailing `--`, a second `--` reaching the
     vendor, `--vendor` after `--` belonging to the vendor.
@@ -80,10 +80,15 @@ command's own reference.
   `headroom launches --eval` judges it before and after. Held by
   `TestPlaceIsChooseAndRecord` and `TestFrozenLinesOfThisRuleAreDecidedAlike`;
   DESIGN.md § Automatic placement.
+- **Nothing records where a bare launch goes.** Every bare launch is placed,
+  naming an account lasts one launch, and the board writes no routing — a
+  pinned default was the easiest mistake on the board to make. Held by
+  `TestOnlyTheRuleRoutesABareLaunch` and `TestTheBoardHasNoRoutingKeys`;
+  DESIGN.md § The launch surface.
 - **A launched child's environment is a total function of the validated
   decision** (`config.EnvPolicy`, applied through `launch.Target`'s
   constructors). Dirs crossing the seam are absolute, and no surface mints a
-  primary decision from corrupt routing state. Held by `TestEnv`,
+  primary decision nobody made. Held by `TestEnv`,
   `TestCodexEnv` and `TestExtraAndForRefuseRelativeDirs`; DESIGN.md § The
   launch surface.
 - **A reservation says what an account may be used for, never that it goes
@@ -94,10 +99,10 @@ command's own reference.
   `TestAMissingRepositoryKeepsItsAccountHeld` and
   `TestADamagedReservationRefusesOnlyAutomaticChoices`; DESIGN.md § Automatic
   placement.
-- **A session's owner is evidence, newest wins, never re-stamped.** Resume
-  never writes `.current`, and a session named by explicit id follows its
-  owner, with any move recorded. Held by `TestResolveOwner` and
-  `TestANamedSessionFollowsItsOwner`; DESIGN.md § The session surface.
+- **A session's owner is evidence, newest wins, never re-stamped.** A session
+  named by explicit id follows its owner, with any move recorded. Held by
+  `TestResolveOwner` and `TestANamedSessionFollowsItsOwner`; DESIGN.md § The
+  session surface.
 - **One vendor login per account dir, and a code sent once.** Whatever runs
   `claude auth login` — the batch or a handed-off sign-in's holder — holds
   the dir's login lock and registers the vendor from its launch, and a
@@ -118,7 +123,7 @@ command's own reference.
   status line, never a process failure. `check` tells broken (exit 1) from
   couldn't test (exit 2), and its own files from the vendor's.
 - Tests never touch live state. That means the Keychain, the vendors' dirs and
-  usage endpoints, the user's `.current`, and live session registries. Each
+  usage endpoints, the user's accounts roots, and live session registries. Each
   test uses a temporary `HEADROOM_HOME`, with stub `claude`, `codex`,
   `security` and `open` on a `PATH` without the real ones, and usage URLs on a
   local server or `127.0.0.1:1`; `TestMain` clears the environment a managed
