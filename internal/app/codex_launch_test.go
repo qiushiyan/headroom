@@ -102,20 +102,6 @@ func TestCodexLaunchEnvironment(t *testing.T) {
 	}
 }
 
-// --remember records Codex's .current, under Codex's root.
-func TestCodexLaunchRemember(t *testing.T) {
-	scope := codexLaunchFixture(t)
-	if got := launchOn(t, scope, quietPlace(), "--remember", "--account", "cx@x.com"); got.code != 0 {
-		t.Fatalf("exit %d: %s", got.code, got.stderr)
-	}
-	if got, _ := os.ReadFile(scope.CurrentFile()); string(got) != "cx@x.com\n" {
-		t.Errorf(".current = %q", got)
-	}
-	if a, err := accounts.Discover(scope).Select(""); err != nil || a.Name != "cx@x.com" {
-		t.Errorf("bare Codex launch resolves to %v, %v", a.Name, err)
-	}
-}
-
 // accounts add --vendor codex: the link, and a log-in hint in the engine's own
 // spelling that never says /login.
 func TestCodexAccountsAdd(t *testing.T) {

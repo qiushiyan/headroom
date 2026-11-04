@@ -4,15 +4,14 @@ Continue any Claude Code session on this machine, on the account that last drove
 
 An interactive picker over every Claude Code session on this machine — transcripts are
 machine-global — that enters the chosen session's project dir and continues it, by exec, on
-the account that last drove it. x continues it on the current account instead and records
-the move (under auto, on the least-loaded of the others); r renames, dd deletes; both are
-refused while the session is open. It needs a terminal on stdin and stdout: claude takes
-them over.
+the account that last drove it. x continues it on the least-loaded of the other accounts
+instead and records the move; r renames, dd deletes; both are refused while the session is
+open. It needs a terminal on stdin and stdout: claude takes them over.
 
 --json lists the sessions instead, with no terminal: each one's id, title, project dir,
-branch, owner and whether it is live now, beside "current" and "mode" as in the board's
-document. --cd-file is for a shell wrapper: it is created empty first and holds the entered
-dir only once a session was committed, so the shell can cd there after claude exits.
+branch, owner and whether it is live now. --cd-file is for a shell wrapper: it is created
+empty first and holds the entered dir only once a session was committed, so the shell can
+cd there after claude exits.
 
 Arguments go to claude before the picker's own --resume; --resume and --continue are
 refused, since the picker chooses the session.

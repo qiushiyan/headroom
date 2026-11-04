@@ -46,16 +46,15 @@ type Deps struct {
 }
 
 // Round is one vendor's round: the scope and store it ran under, the set it
-// discovered, its one read of `.current`, the problems of the vendor's own
-// state file as it loaded it, and a row per account. The picker's page, the
-// one-shot print, --json and limits each hold one per vendor, so mode,
-// current and the marks cannot come from two reads.
+// discovered, the problems of the vendor's own state file as it loaded it,
+// and a row per account. The picker's page, the one-shot print, --json and
+// limits each hold one per vendor, so the rows and the marks cannot come from
+// two reads.
 type Round struct {
 	Scope    config.Scope
 	Store    *state.Store
 	Set      accounts.Set
-	Routing  accounts.Routing // one read of `.current`: mode and current together
-	Problems []state.Problem  // the store's own, as this round loaded it
+	Problems []state.Problem // the store's own, as this round loaded it
 
 	rows  []*row
 	start func(ctx context.Context, st *state.Store, requests []*refresh.Candidate) <-chan refresh.Result
@@ -69,11 +68,10 @@ type row struct {
 	request *refresh.Candidate
 }
 
-// View is a round as a surface shows it: the vendor, the read of `.current`,
-// the store's problems and every account's facts, copied.
+// View is a round as a surface shows it: the vendor, the store's problems and
+// every account's facts, copied.
 type View struct {
 	Scope    config.Scope
-	Routing  accounts.Routing
 	Problems []state.Problem
 	Accounts []accountstate.Account
 }
@@ -92,8 +90,8 @@ func Prepare(ctx context.Context, scope config.Scope, st *state.Store, now time.
 func prepare(ctx context.Context, set accounts.Set, st *state.Store, now time.Time, deps Deps) *Round {
 	scope := set.Scope
 	snap := st.Load()
-	accts, routing := accountstate.Assemble(set, snap, now)
-	r := &Round{Scope: scope, Store: st, Set: set, Routing: routing, Problems: snap.Problems(), rows: rowsOf(accts), start: deps.Start}
+	accts := accountstate.Assemble(set, snap, now)
+	r := &Round{Scope: scope, Store: st, Set: set, Problems: snap.Problems(), rows: rowsOf(accts), start: deps.Start}
 	var health auth.QueryFunc = func(string) auth.Status { return auth.Status{} }
 	if scope.Vendor == config.Claude && deps.Health != nil {
 		health = deps.Health(set.Accounts)
@@ -112,22 +110,21 @@ func prepare(ctx context.Context, set accounts.Set, st *state.Store, now time.Ti
 }
 
 // FromDisk is a vendor's round read from disk alone, through accountstate:
-// discovery, `.current`, the newest stored observation and the store's
-// problems. Health is unprobed, no credential is read, and no row carries a
+// discovery, the newest stored observation and the store's problems. Health is unprobed, no credential is read, and no row carries a
 // request, so nothing built from it can spend one.
 func FromDisk(scope config.Scope, now time.Time) *Round {
 	st := state.Open(scope)
 	disk := accountstate.Read(scope, st, now)
-	r := Of(disk.Set, st, disk.Routing, disk.Accounts)
+	r := Of(disk.Set, st, disk.Accounts)
 	r.Problems = disk.Store.Problems()
 	return r
 }
 
-// Of is a round over facts a caller already holds: the accounts of set, as
-// assembled under routing, against st. No account carries a request, so
-// Fetch asks nobody; the facts are shown and marked like any round's.
-func Of(set accounts.Set, st *state.Store, routing accounts.Routing, accts []accountstate.Account) *Round {
-	return &Round{Scope: set.Scope, Store: st, Set: set, Routing: routing, rows: rowsOf(accts)}
+// Of is a round over facts a caller already holds: the accounts of set,
+// against st. No account carries a request, so Fetch asks nobody; the facts
+// are shown and marked like any round's.
+func Of(set accounts.Set, st *state.Store, accts []accountstate.Account) *Round {
+	return &Round{Scope: set.Scope, Store: st, Set: set, rows: rowsOf(accts)}
 }
 
 func rowsOf(accts []accountstate.Account) []*row {
@@ -140,7 +137,7 @@ func rowsOf(accts []accountstate.Account) []*row {
 
 // View is the round as it stands, copied for a surface to show.
 func (r *Round) View() View {
-	return View{Scope: r.Scope, Routing: r.Routing, Problems: r.Problems, Accounts: r.Accounts()}
+	return View{Scope: r.Scope, Problems: r.Problems, Accounts: r.Accounts()}
 }
 
 // Accounts is every account's facts as they stand, copied.

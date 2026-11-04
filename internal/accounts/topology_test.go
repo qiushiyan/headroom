@@ -90,8 +90,8 @@ func TestVerifyTopologyClassifies(t *testing.T) {
 
 // An extra dir named like the primary makes one name answer for two accounts.
 // Discovery stays total (accounts fail independently; both rows render) but
-// resolving that name refuses — returning the first match routed `.current`
-// silently to whichever discovery listed first.
+// resolving that name refuses — returning the first match routed it silently
+// to whichever discovery listed first.
 func TestSelectRefusesAmbiguousName(t *testing.T) {
 	home := t.TempDir()
 	cfg := claudeScope(home, "qiushi")
@@ -104,11 +104,6 @@ func TestSelectRefusesAmbiguousName(t *testing.T) {
 	}
 	if _, err := accts.Select("qiushi"); err == nil {
 		t.Error("an ambiguous name resolved instead of refusing")
-	}
-	// The unambiguous path is untouched.
-	os.WriteFile(cfg.CurrentFile(), []byte("qiushi\n"), 0o644)
-	if _, err := accts.Select(""); err == nil {
-		t.Error(".current naming an ambiguous account resolved instead of refusing")
 	}
 }
 

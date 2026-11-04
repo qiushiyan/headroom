@@ -39,14 +39,14 @@ func TestAStalePinNeverMovesTheRecordsBack(t *testing.T) {
 	if after := readFile(t, statePath); after != before {
 		t.Errorf("a stale run rewrote state.json")
 	}
-	if got := readFile(t, cfg.Claude.CurrentFile()); got != "qiushi@planlab.ai\n" {
-		t.Errorf(".current: %q", got)
+	if held, _ := accounts.ReadReservations(cfg.Claude); !held.Admits("qiushi@planlab.ai", "/work/a") || held.Held("qiushi") {
+		t.Errorf("reservations: %v", held)
 	}
 	if eff.Claude.PrimaryName != "qiushi@planlab.ai" || !slices.Contains(eff.Claude.PrimaryAliases, "qiushi") {
 		t.Errorf("effective scope: %q aliases %v", eff.Claude.PrimaryName, eff.Claude.PrimaryAliases)
 	}
 	set := accounts.Discover(eff.Claude)
-	for _, sel := range []string{"", "qiushi", "qiushi@planlab.ai"} {
+	for _, sel := range []string{"qiushi", "qiushi@planlab.ai"} {
 		if a, err := set.Select(sel); err != nil || !a.IsPrimary() || a.Name != "qiushi@planlab.ai" {
 			t.Errorf("select %q: %+v (%v)", sel, a, err)
 		}
@@ -135,7 +135,10 @@ func TestAStaleCodexPinMovesNothing(t *testing.T) {
 	if err := os.MkdirAll(scope.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, scope.CurrentFile(), "qiushi\n")
+	work := t.TempDir()
+	if err := os.WriteFile(scope.ReservedFile(), []byte("qiushi\t"+work+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
 	for _, name := range []string{"qiushi@planlab.ai", "qiushi", "qiushi@planlab.ai", "qiushi"} {
 		c := cfg
@@ -144,14 +147,14 @@ func TestAStaleCodexPinMovesNothing(t *testing.T) {
 		if eff.Codex.PrimaryName != "qiushi@planlab.ai" {
 			t.Errorf("pin %q: effective %q", name, eff.Codex.PrimaryName)
 		}
-		if a, err := accounts.Discover(eff.Codex).Select(""); err != nil || !a.IsPrimary() {
-			t.Errorf("pin %q: .current resolves to %+v (%v)", name, a, err)
+		if a, err := accounts.Discover(eff.Codex).Select(name); err != nil || !a.IsPrimary() {
+			t.Errorf("pin %q resolves to %+v (%v)", name, a, err)
 		}
 	}
 	if n := strings.Count(out.String(), "moved its records"); n != 1 {
 		t.Errorf("%d moves: %q", n, out.String())
 	}
-	if got := readFile(t, scope.CurrentFile()); got != "qiushi@planlab.ai\n" {
-		t.Errorf(".current: %q", got)
+	if held, _ := accounts.ReadReservations(scope); !held.Admits("qiushi@planlab.ai", work) || held.Held("qiushi") {
+		t.Errorf("reservations: %v", held)
 	}
 }

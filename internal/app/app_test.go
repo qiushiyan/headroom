@@ -170,11 +170,11 @@ func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
 func TestSuccessfulRefreshPresentation(t *testing.T) {
 	for _, state := range []accountstate.AttemptState{accountstate.AttemptOK, accountstate.AttemptNoLimits} {
 		accts := []accountstate.Account{{Acct: accounts.Account{Name: "a"}, View: accountstate.Facts{Attempt: accountstate.Attempt{State: state, HTTPCode: 200}}}}
-		ui := page{round: round.Of(accounts.Set{}, nil, accounts.Routing{}, accts)}
+		ui := page{round: round.Of(accounts.Set{}, nil, accts)}
 		if got := ui.ackString(time.Now()); !strings.Contains(got, "all current") {
 			t.Errorf("%v: ack=%q", state, got)
 		}
-		data, err := jsonDocument(claudeBoard(accts, ""), time.Now())
+		data, err := jsonDocument(claudeBoard(accts), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

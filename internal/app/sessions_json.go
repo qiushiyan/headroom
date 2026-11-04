@@ -10,23 +10,16 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
 type resumeDoc struct {
-	Schema      int    `json:"schema"`
-	GeneratedAt string `json:"generated_at"` // RFC3339 UTC
-	// Current is the pinned account new sessions target; "" under auto, when
-	// the rule places each one, and when `.current` will not resolve. Mode
-	// says which, in the board's words: "pinned", "auto", or "". A consumer
-	// that read an empty current as broken routing must read mode first.
-	Current  string        `json:"current"`
-	Mode     string        `json:"mode"`
-	LocalKey string        `json:"local_key"` // what "local" groups on
-	Sessions []jsonSession `json:"sessions"`
+	Schema      int           `json:"schema"`
+	GeneratedAt string        `json:"generated_at"` // RFC3339 UTC
+	LocalKey    string        `json:"local_key"`    // what "local" groups on
+	Sessions    []jsonSession `json:"sessions"`
 }
 
 type jsonSession struct {
@@ -58,24 +51,22 @@ type jsonSession struct {
 }
 
 func sessionsJSON(std Streams, cfg config.Scope, probe sessions.PIDProbe) error {
-	listing, _, routing := collectSessions(cfg, state.Open(cfg), probe)
+	listing, _ := collectSessions(cfg, state.Open(cfg), probe)
 	enc := json.NewEncoder(std.Out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(sessionsDoc(listing, routing, time.Now()))
+	return enc.Encode(sessionsDoc(listing, time.Now()))
 }
 
 // sessionsDoc is the whole wire contract as a pure function of the listing —
 // no config, no store, no stdout — so the mapping every consumer depends on
 // can be asserted directly rather than inferred from a run.
-func sessionsDoc(listing sessions.Listing, routing accounts.Routing, now time.Time) resumeDoc {
+func sessionsDoc(listing sessions.Listing, now time.Time) resumeDoc {
 	doc := resumeDoc{
-		// 4: "mode", so an empty "current" under auto reads apart from one
-		// that will not resolve. (3: "branch" is the live HEAD; the
-		// observation is "branch_at_last_activity".)
-		Schema:      4,
+		// 5: no "current" or "mode" — every launch places itself. (3:
+		// "branch" is the live HEAD; the observation is
+		// "branch_at_last_activity".)
+		Schema:      5,
 		GeneratedAt: now.UTC().Format(time.RFC3339),
-		Current:     routing.Current,
-		Mode:        routing.Mode,
 		LocalKey:    listing.LocalKey,
 	}
 	for _, s := range listing.Sessions {

@@ -21,7 +21,7 @@ type PrimaryMove struct {
 	From, To   string
 	ReHomes    int  // session re-homes moved to To
 	Placements int  // this home's launch records moved to To, --last among them
-	Files      int  // records beside the store that files moved: `.current`, reservations, tokens
+	Files      int  // records beside the store that files moved: reservations, tokens
 	Recorded   bool // the document now records To where it recorded another name or none
 	// Stale says To is a name the primary had before From: the pin came from
 	// a shell started before a rename, and nothing moved.
@@ -62,7 +62,7 @@ func FormerNames(recorded string, former []string, inferred string) []string {
 // by to `to`, under the store's locks, so two runs that both see the change
 // move it once. The name moved from is the recorded one, or `inferred` when
 // none is recorded yet. files moves the records kept beside the store
-// (`.current`, `.reserved`, headless tokens) and runs first: the document
+// (`.reserved`, headless tokens) and runs first: the document
 // recording `to` is the commit, so a run that stops partway is finished by the
 // next, which finds the same name still recorded and the files already moved.
 //

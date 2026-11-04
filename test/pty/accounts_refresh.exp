@@ -38,14 +38,14 @@ expect {
 send -- "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
 sleep 0.5
 expect {
-    "esc cancel" {}
+    "q quit" {}
     timeout { puts "board stopped responding after a burst of r"; exit 2 }
 }
 
 send -- "q"
 expect eof
 catch wait result
-if {[lindex $result 3] != 1} {
-    puts "quit exited [lindex $result 3], want 1 (nothing was picked)"
+if {[lindex $result 3] != 0} {
+    puts "quit exited [lindex $result 3], want 0"
     exit 2
 }

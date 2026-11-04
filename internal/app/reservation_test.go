@@ -21,7 +21,6 @@ import (
 func reservedFixture(t *testing.T) (f autoFixture, repo, worktree, outside string) {
 	t.Helper()
 	f = newAutoFixture(t, "free@x.com", "held@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 50, 50, time.Minute)
 	f.observe("free@x.com", 0, 70, time.Minute)
 	f.observe("held@x.com", 0, 10, time.Minute)
@@ -56,8 +55,7 @@ func reservedFixture(t *testing.T) (f autoFixture, repo, worktree, outside strin
 func (f autoFixture) marked(dir string) string {
 	f.t.Helper()
 	set, now := accounts.Discover(f.cfg), time.Now()
-	accts, _ := accountstate.Assemble(set, f.st.Load(), now)
-	for name, m := range launchop.Mark(set, f.st, accts, "auto", os.Environ(), dir, now, f.edges).At(now) {
+	for name, m := range launchop.Mark(set, f.st, accountstate.Assemble(set, f.st.Load(), now), os.Environ(), dir, now, f.edges).At(now) {
 		if m.Next {
 			return name
 		}
@@ -96,8 +94,7 @@ func TestEveryAutomaticSurfaceHonoursAReservation(t *testing.T) {
 	// The board says what an account is kept for wherever it was opened, and
 	// its document says nothing new: that is `accounts reserve`'s to list.
 	set, now := accounts.Discover(f.cfg), time.Now()
-	accts, _ := accountstate.Assemble(set, f.st.Load(), now)
-	marks := launchop.Mark(set, f.st, accts, "auto", os.Environ(), outside, now, f.edges).At(now)
+	marks := launchop.Mark(set, f.st, accountstate.Assemble(set, f.st.Load(), now), os.Environ(), outside, now, f.edges).At(now)
 	if got := marks["held@x.com"].Reserved; got != "reserved for "+repo {
 		t.Errorf("the held account's mark says %q", got)
 	}
@@ -129,7 +126,7 @@ func TestInItsRepositoryAReservedAccountYieldsToLessLoad(t *testing.T) {
 	}
 }
 
-// Named and pinned launches say where to go: a reservation governs automatic
+// Named launches and --last say where to go: a reservation governs automatic
 // choices only.
 func TestAReservationLeavesAnExplicitLaunchAlone(t *testing.T) {
 	f, _, _, outside := reservedFixture(t)
@@ -139,10 +136,6 @@ func TestAReservationLeavesAnExplicitLaunchAlone(t *testing.T) {
 	}
 	if got := f.launch("--last").account(f.cfg); got != "held@x.com" {
 		t.Errorf("--last went to %s", got)
-	}
-	f.setCurrent("held@x.com\n")
-	if got := f.launch().account(f.cfg); got != "held@x.com" {
-		t.Errorf("pinned launch went to %s", got)
 	}
 }
 
@@ -194,8 +187,7 @@ func TestADamagedReservationRefusesOnlyAutomaticChoices(t *testing.T) {
 
 // A session is not an account the person named: outside the repositories its
 // owner is kept from, a resume moves it and records the move, on the CLI and
-// in the picker alike. In them, and when bare launches are pinned, the owner is
-// followed as it always was.
+// in the picker alike. In them the owner is followed as it always was.
 func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	f, repo, _, outside := reservedFixture(t)
 	for _, id := range []string{sessA, sessB} {
@@ -221,9 +213,9 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	}
 
 	set := accounts.Discover(f.cfg)
-	resume := func(routing accounts.Routing, dir string) (*execRecord, *resumeUI) {
+	resume := func(dir string) (*execRecord, *resumeUI) {
 		t.Helper()
-		ui, _, _ := f.picker(set, routing)
+		ui, _, _ := f.picker(set)
 		ui.listing.Sessions = []*sessions.Session{{ID: sessB, CWD: dir, DirOK: true, Owner: "held@x.com", OwnerState: sessions.OwnerHistory}}
 		ui.rows = ui.listing.Sessions
 		keepWorkingDir(t)
@@ -240,16 +232,13 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 		return "qiushi"
 	}
 
-	if rec, _ := resume(set.Routing(), repo); account(rec) != "held@x.com" {
+	if rec, _ := resume(repo); account(rec) != "held@x.com" {
 		t.Errorf("a picker resume in the repository went to %s", account(rec))
 	}
 	if _, ok := f.st.Load().Owner(sessB); ok {
 		t.Error("following the owner wrote a re-home")
 	}
-	if rec, _ := resume(accounts.Routing{Mode: "pinned", Current: "free@x.com"}, outside); account(rec) != "held@x.com" {
-		t.Errorf("a pinned picker resume went to %s: only an automatic choice is kept out", account(rec))
-	}
-	if rec, _ := resume(set.Routing(), outside); account(rec) == "held@x.com" {
+	if rec, _ := resume(outside); account(rec) == "held@x.com" {
 		t.Error("a picker resume outside the repository stayed on the held account")
 	}
 	if rec, ok := f.st.Load().Owner(sessB); !ok || rec.Account == "held@x.com" {
@@ -265,7 +254,7 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 func TestTheOverrideCannotLandOnAHeldAccount(t *testing.T) {
 	f, _, _, outside := reservedFixture(t)
 	set := accounts.Discover(f.cfg)
-	ui, _, _ := f.picker(set, set.Routing())
+	ui, _, _ := f.picker(set)
 	ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: outside, DirOK: true, Owner: "free@x.com", OwnerState: sessions.OwnerHistory}}
 	ui.rows = ui.listing.Sessions
 	keepWorkingDir(t)

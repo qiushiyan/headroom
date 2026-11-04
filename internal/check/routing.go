@@ -14,29 +14,11 @@ import (
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// checkRouting audits the launch-routing state: the `.current` selection and
-// the process environment. It runs for every vendor unconditionally — nothing
+// checkRouting audits the launch-routing state: the reservations and the
+// process environment. It runs for every vendor unconditionally — nothing
 // here reads state.json, so no state-schema condition may suppress it.
 func checkRouting(set accounts.Set, environ []string, r *report) {
 	cfg, accts := set.Scope, set.Accounts
-
-	// The launch path's own resolver, applied exactly as `headroom launch`
-	// applies it: absent is the documented fresh-start default, while empty,
-	// unreadable or naming a deleted account is corrupt routing state — launch
-	// refuses on it, so the board is where the user hears about it first only
-	// if this line is missing.
-	bare, err := set.Bare()
-	label := "current: .current resolves to a launchable account"
-	switch {
-	case err != nil:
-	case bare.Auto:
-		// Automatic placement is a valid routing state, not a missing one:
-		// there is no single account, and a bare launch chooses.
-		label = "current: .current says auto — a bare launch chooses the least-loaded account"
-	default:
-		label = fmt.Sprintf("%s (%s)", label, bare.Account.Name)
-	}
-	r.own(err == nil, label, fmt.Sprintf("%v — headroom launch refuses until it is fixed", err))
 	checkReservations(set, r)
 
 	// Not a failure and not drift: an inherited CLAUDE_CONFIG_DIR (a tmux
@@ -209,7 +191,7 @@ func checkReservations(set accounts.Set, r *report) {
 	}
 	var why []string
 	for _, name := range slices.Sorted(maps.Keys(held)) {
-		if !slices.ContainsFunc(set.Accounts, func(a accounts.Account) bool { return a.Name == name }) {
+		if !set.Has(name) {
 			why = append(why, name+" is not a discovered account — headroom accounts reserve "+name+" --clear")
 		}
 		for _, dir := range held[name] {

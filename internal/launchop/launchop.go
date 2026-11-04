@@ -50,7 +50,7 @@ type Request struct {
 	Set    accounts.Set
 	Store  *state.Store
 	Intent placement.Intent
-	Mode   string // how the account came to be decided: auto, pinned, named, last, picker
+	Mode   string // how the account came to be decided: auto, named, last, picker
 
 	// Session is the session the launch is for. Its Record id is re-homed
 	// when the launch puts it somewhere other than its owner; MustReHome says
@@ -66,15 +66,9 @@ type Request struct {
 	// names its session there rather than in Session. An automatic Claude Code
 	// launch reads them (SessionOf): it follows the owner of a session named
 	// by id while that account has room, and records the re-home when it
-	// places the session elsewhere. A named or pinned launch was told where to
-	// go and reads nothing from them; the arguments reach the vendor as given.
+	// places the session elsewhere. A named launch was told where to go and
+	// reads nothing from them; the arguments reach the vendor as given.
 	VendorArgs []string
-
-	// Remember records the decision in `.current` — the account forced, or
-	// auto — before anything else is written. "Chosen and recorded" is one step
-	// to the person, so a choice that cannot be recorded refuses the launch:
-	// launching anyway would send the next bare launch somewhere else.
-	Remember bool
 
 	CWD     string
 	Environ []string // the environment a launch's child is built from
@@ -111,11 +105,9 @@ func Gather(req Request, deps Deps) *Plan {
 
 // preflight is every refusal a launch can know before it writes anything, and
 // the one place each is decided: a preview asks it, and so does Commit before
-// its first write. An account the launch was told to run on — by flag, by pin,
-// or as a session's owner — that cannot be launched at all refuses with its
-// own preparation error, said the way it always was. A launch that records
-// auto as the mode refuses when the rule would choose nobody, since recording
-// it would move every later bare launch on the strength of one that never ran.
+// its first write. An account the launch was told to run on — by name, or as
+// a session's owner — that cannot be launched at all refuses with its own
+// preparation error, said the way it always was.
 //
 // A forced refusal never reaches the store: Place registers the home, prunes
 // and commits even when its rule refuses, and a launch that cannot start must
@@ -131,17 +123,12 @@ func (p *Plan) preflight() error {
 			return c.prepareErr
 		}
 	}
-	if req.Remember && req.Intent.Kind == placement.Auto {
-		if d := placement.Choose(f.rule(), f.snap.Placements(), req.Intent, req.Now); d.Chosen == "" {
-			return errors.New(d.Refusal)
-		}
-	}
 	return nil
 }
 
 // reservedRefusal is why nothing automatic can be decided: which accounts are
-// kept for what is routing state, so damage to it refuses like damage to
-// `.current`, and never quietly releases an account.
+// kept for what is routing state, so damage to it refuses, and never quietly
+// releases an account.
 func reservedRefusal(err error) error {
 	return fmt.Errorf("%w — an automatic choice refuses until it is fixed, and a launch that names its account still runs", err)
 }
@@ -159,13 +146,13 @@ func (p *Plan) Preview(w io.Writer, binary string) (chosen bool, err error) {
 	return d.Chosen != "", nil
 }
 
-// Commit refuses what Preview refuses, records `.current` when asked to,
-// decides the account and records the launch and whatever it means for the
-// session in one store operation, and appends the log line — in that order,
-// so nothing is written for a launch that is then refused for a reason known
-// before the write. An error is a refusal and nothing may start. Bookkeeping
-// that merely failed is a note on the Launch, never a refusal: in auto mode
-// every usable account is a correct answer.
+// Commit refuses what Preview refuses, decides the account and records the
+// launch and whatever it means for the session in one store operation, and
+// appends the log line — in that order, so nothing is written for a launch
+// that is then refused for a reason known before the write. An error is a
+// refusal and nothing may start. Bookkeeping that merely failed is a note on
+// the Launch, never a refusal: for an automatic launch every usable account
+// is a correct answer.
 //
 // What a launch owes the next one is decided here too, not by the surface: a
 // launch that writes a re-home sweeps the ones whose transcripts are gone,
@@ -175,11 +162,6 @@ func (p *Plan) Commit() (*Launch, error) {
 	scope := f.set.Scope
 	if err := p.preflight(); err != nil {
 		return nil, err
-	}
-	if req.Remember {
-		if err := p.remember(); err != nil {
-			return nil, fmt.Errorf("could not record .current (%v) — not launching", err)
-		}
 	}
 	cands := f.rule()
 	l := state.Launch{
@@ -225,18 +207,6 @@ func (p *Plan) Commit() (*Launch, error) {
 		_ = p.deps.Refresh(scope)
 	}
 	return out, nil
-}
-
-// remember writes the decision to `.current`: auto, or the account the
-// launch was told to run on.
-func (p *Plan) remember() error {
-	if p.req.Intent.Kind == placement.Auto {
-		return p.facts.set.SetAuto()
-	}
-	if c, ok := p.facts.find(p.req.Intent.Account); ok {
-		return p.facts.set.SetCurrent(c.acct)
-	}
-	return nil
 }
 
 // Launch is a launch that has been decided and recorded and has not yet

@@ -86,8 +86,7 @@ func newAutoFixture(t *testing.T, extras ...string) autoFixture {
 // placementView is what an automatic launch would count and choose at now,
 // read the way the board's marks are: every account's mark, by name.
 func placementView(set accounts.Set, st *state.Store, now time.Time, place launchop.Deps) map[string]accountstate.Mark {
-	accts, _ := accountstate.Assemble(set, st.Load(), now)
-	return launchop.Mark(set, st, accts, "auto", os.Environ(), "", now, place).At(now)
+	return launchop.Mark(set, st, accountstate.Assemble(set, st.Load(), now), os.Environ(), "", now, place).At(now)
 }
 
 func (f autoFixture) key(name string) state.Key {
@@ -120,13 +119,6 @@ func (f autoFixture) observeWeek(name string, session, weekly int, left, age tim
 		f.t.Fatalf("claim %s: %+v %v", name, dec, err)
 	}
 	if _, err := f.st.Complete(k, dec[0].Generation, state.OutcomeStored, []byte(body), at); err != nil {
-		f.t.Fatal(err)
-	}
-}
-
-func (f autoFixture) setCurrent(content string) {
-	f.t.Helper()
-	if err := os.WriteFile(f.cfg.CurrentFile(), []byte(content), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -189,7 +181,6 @@ func (f autoFixture) log() []launchlog.Record {
 
 func TestAutoLaunchChoosesTheLeastLoadedAccountAndSaysSo(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 34, 40, 3*time.Minute)
 	f.observe("a@x.com", 4, 30, 3*time.Minute)
 	f.observe("b@x.com", 2, 60, 3*time.Minute)
@@ -221,9 +212,6 @@ func TestAutoLaunchChoosesTheLeastLoadedAccountAndSaysSo(t *testing.T) {
 	if *f.refreshes != 1 {
 		t.Errorf("%d refreshes started, want one for the next launch", *f.refreshes)
 	}
-	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
-		t.Errorf(".current = %q", data)
-	}
 }
 
 // The refresh a launch leaves behind is for the next launch, and only when
@@ -231,7 +219,6 @@ func TestAutoLaunchChoosesTheLeastLoadedAccountAndSaysSo(t *testing.T) {
 // would refuse them all, and the process is not started.
 func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 0, 0, 10*time.Second)
 	f.observe("a@x.com", 0, 0, 10*time.Second)
 	if got := f.launch(); got.code != 0 {
@@ -245,7 +232,6 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	// be asked either: an idle machine must not spawn a process per launch to
 	// learn that again.
 	stale := newAutoFixture(t, "a@x.com")
-	stale.setCurrent("auto\n")
 	stale.observe("qiushi", 0, 0, time.Hour)
 	stale.observe("a@x.com", 0, 0, time.Hour)
 	past := time.Now().Add(-time.Hour).UnixMilli()
@@ -265,7 +251,6 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 // old, and its own placement keeps the next launch from following it there.
 func TestAStaleAccountIsTriedOnceAndSaysItsFiguresAreOld(t *testing.T) {
 	f := newAutoFixture(t, "idle@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 3, 20, time.Minute)
 	f.observe("idle@x.com", 0, 5, 40*time.Hour)
 
@@ -284,54 +269,15 @@ func TestAStaleAccountIsTriedOnceAndSaysItsFiguresAreOld(t *testing.T) {
 	}
 }
 
-// Pinned mode routes as it did: same account, same environment, same argv. It
-// is recorded — a pinned launch is load an automatic one must see — and it
-// asks nothing of the network.
-func TestPinnedLaunchRoutesAsBeforeAndIsRecorded(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("a@x.com\n")
-	t.Setenv("CLAUDE_CONFIG_DIR", "/leaked/other-account")
-
-	got := f.launch("--", "--model", "x")
-	if got.code != 0 || got.account(f.cfg) != "a@x.com" || !slices.Equal(got.args, []string{"--model", "x"}) {
-		t.Fatalf("pinned launch: %+v", got)
-	}
-	n := 0
-	for _, kv := range got.env {
-		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Errorf("%d CLAUDE_CONFIG_DIR entries, want exactly 1", n)
-	}
-	if !strings.Contains(got.stderr, "a@x.com · pinned") {
-		t.Errorf("a forgotten pin must be visible at every launch:\n%s", got.stderr)
-	}
-	if recs := f.log(); len(recs) != 1 || recs[0].Mode != "pinned" || recs[0].Reason != "pinned" {
-		t.Errorf("log = %+v", recs)
-	}
-	if len(f.st.Load().Placements().Recent) != 1 {
-		t.Error("the pinned launch was not recorded as load")
-	}
-	if *f.refreshes != 0 {
-		t.Error("a pinned launch started a refresh")
-	}
-}
-
 // A named launch says where it went, like every other launch, and is load.
 func TestNamedLaunchSaysWhereItWentAndCounts(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 0, 50, time.Minute)
 	f.observe("a@x.com", 0, 10, time.Minute)
 
 	named := f.launch("--account", "a@x.com")
 	if named.code != 0 || named.account(f.cfg) != "a@x.com" || !strings.Contains(named.stderr, "a@x.com · named") || strings.Contains(named.stderr, "auto") {
 		t.Fatalf("named launch: %+v", named)
-	}
-	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
-		t.Errorf("a named launch changed the mode: %q", data)
 	}
 	// a would have won on weekly room; the named launch on it is one step.
 	if next := f.launch(); next.account(f.cfg) != "qiushi" {
@@ -342,47 +288,29 @@ func TestNamedLaunchSaysWhereItWentAndCounts(t *testing.T) {
 	}
 }
 
-func TestModeIsReadStrictly(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-
-	// Absent still means the primary, pinned.
-	if got := f.launch(); got.account(f.cfg) != "qiushi" || !strings.Contains(got.stderr, "pinned") {
-		t.Fatalf("absent .current: %+v", got)
-	}
-	for name, content := range map[string]string{"empty": "", "unknown": "gone@x.com\n", "near miss": "Auto\n"} {
-		f.setCurrent(content)
-		if got := f.launch(); got.code != 1 || got.called {
-			t.Errorf("%s .current: exit %d called %v", name, got.code, got.called)
+// The rule routes every bare launch. A `.current` an older headroom left — a
+// pin, the word, or damage — is not read, and "auto" is a name like any other.
+func TestOnlyTheRuleRoutesABareLaunch(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com", "auto")
+	for _, content := range []string{"a@x.com\n", "auto\n", "", "gone@x.com\n"} {
+		if err := os.WriteFile(filepath.Join(f.cfg.AccountsRoot, ".current"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.launch(); got.code != 0 || !got.called || !strings.Contains(got.stderr, " · auto") {
+			t.Errorf(".current %q: %+v", content, got)
 		}
 	}
-	// An unknown name refuses the same way: no fallback to anyone, no exec.
+	if got := f.launch("--account", "auto"); got.code != 0 || got.account(f.cfg) != "auto" {
+		t.Errorf("an account named auto: %+v", got)
+	}
+	// An unknown name refuses: no fallback to anyone, no exec.
 	if got := f.launch("--account", "gone@x.com"); got.code != 1 || got.called {
 		t.Errorf("--account gone@x.com: exit %d called %v", got.code, got.called)
-	}
-
-	// The word names the mode and nothing else: an account bearing it makes the
-	// file ambiguous, and ambiguity refuses.
-	clash := filepath.Join(f.cfg.AccountsRoot, "auto")
-	if err := os.MkdirAll(clash, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.setCurrent("auto\n")
-	got := f.launch()
-	if got.code != 1 || got.called || !strings.Contains(got.stderr, clash) {
-		t.Fatalf("auto beside an account named auto: %+v", got)
-	}
-	set := accounts.Discover(f.cfg)
-	if err := set.SetAuto(); err == nil {
-		t.Error("SetAuto succeeded beside an account named auto")
-	}
-	if set.Routing().Mode != "" {
-		t.Errorf("mode = %q, want unresolvable", set.Routing().Mode)
 	}
 }
 
 func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	f := newAutoFixture(t, "out@x.com", "expired@x.com", "ok@x.com")
-	f.setCurrent("auto\n")
 	// Parsed, and names nobody: never logged in.
 	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "out@x.com", ".claude.json"), `{}`)
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
@@ -432,7 +360,6 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 
 func TestANamedSessionFollowsItsOwner(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 0, 0, time.Minute)
 	f.observe("a@x.com", 30, 30, time.Minute)
 	f.observe("b@x.com", 60, 60, time.Minute)
@@ -481,7 +408,6 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 
 func TestAnOwnerNearALimitIsLeftAndTheMoveIsRecorded(t *testing.T) {
 	f := newAutoFixture(t, "full@x.com", "room@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 50, 50, time.Minute)
 	f.observe("full@x.com", 10, 91, time.Minute)
 	f.observe("room@x.com", 0, 5, time.Minute)
@@ -504,7 +430,6 @@ func TestAnOwnerNearALimitIsLeftAndTheMoveIsRecorded(t *testing.T) {
 // session at this instant.
 func TestALiveClaimOutranksAReHome(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	if err := rehome(f.st, sessA, "a@x.com", time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +451,6 @@ func TestALiveClaimOutranksAReHome(t *testing.T) {
 // is inferred, and nothing is recorded about a session.
 func TestUnidentifiedSessionsArePlacedAndNothingIsRecorded(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	if err := rehome(f.st, sessA, "a@x.com", time.Now().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +480,6 @@ func TestUnidentifiedSessionsArePlacedAndNothingIsRecorded(t *testing.T) {
 func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	t.Run("held lock", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
-		f.setCurrent("auto\n")
 		if err := rehome(f.st, sessA, "a@x.com", time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -585,7 +508,6 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	})
 	t.Run("newer schema", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
-		f.setCurrent("auto\n")
 		statePath := filepath.Join(f.cfg.AccountsRoot, "state.json")
 		doc := `{"version":99,"sessions":{"` + sessA + `":{"account":"a@x.com","atMs":5}}}`
 		writeJSON(t, statePath, doc)
@@ -599,7 +521,6 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	})
 	t.Run("unreadable session routing", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
-		f.setCurrent("auto\n")
 		// A sessions section that will not validate: the placement is
 		// recorded, the session's routing is not, and the launch says so.
 		writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":1,"sessions":{"hollow":{"account":"","atMs":5}}}`)
@@ -613,7 +534,6 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	})
 	t.Run("unwritable log", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
-		f.setCurrent("auto\n")
 		if err := os.Mkdir(launchlog.Path(f.cfg.AccountsRoot), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -629,7 +549,6 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 func TestTheLogIsInert(t *testing.T) {
 	choose := func(t *testing.T, damage func(root string)) string {
 		f := newAutoFixture(t, "a@x.com", "b@x.com")
-		f.setCurrent("auto\n")
 		f.observe("qiushi", 20, 10, time.Minute)
 		f.observe("a@x.com", 0, 30, time.Minute)
 		f.observe("b@x.com", 0, 20, time.Minute)
@@ -669,7 +588,6 @@ func TestTheLogIsInert(t *testing.T) {
 // and the line, the table and the log each say when that room ends.
 func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observeWeek("qiushi", 0, 5, 6*24*time.Hour, time.Minute)
 	f.observeWeek("a@x.com", 0, 30, 20*time.Hour, time.Minute)
 
@@ -700,7 +618,6 @@ func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
 // table saying the renewal is projected rather than reported.
 func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observeWeek("qiushi", 0, 60, -13*time.Hour, 14*time.Hour)
 	f.observeWeek("a@x.com", 0, 0, 166*time.Hour, time.Minute)
 
@@ -734,13 +651,12 @@ func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
 
 func TestDryRunHasNoEffects(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 40, 40, time.Minute)
 	f.observe("a@x.com", 0, 85, time.Minute)
 	if got := f.launch(); got.code != 0 {
 		t.Fatal(got.stderr)
 	}
-	files := []string{filepath.Join(f.cfg.AccountsRoot, "state.json"), launchlog.Path(f.cfg.AccountsRoot), f.cfg.CurrentFile()}
+	files := []string{filepath.Join(f.cfg.AccountsRoot, "state.json"), launchlog.Path(f.cfg.AccountsRoot)}
 	read := func() [][]byte {
 		var out [][]byte
 		for _, p := range files {
@@ -793,23 +709,14 @@ func TestOverrides(t *testing.T) {
 		t.Fatalf("--last with nothing recorded: %+v", got)
 	}
 	// The last account used is whichever launch came last, however decided.
-	f.setCurrent("b@x.com\n")
-	pinned := f.launch()
-	if got := f.launch("--last"); got.account(f.cfg) != pinned.account(f.cfg) || !strings.Contains(got.stderr, "the last account used") {
-		t.Fatalf("--last after a pinned launch: %+v", got)
-	}
 	f.launch("--account", "a@x.com")
-	if got := f.launch("--last"); got.account(f.cfg) != "a@x.com" {
-		t.Fatalf("--last after a named launch went to %s", got.account(f.cfg))
+	if got := f.launch("--last"); got.account(f.cfg) != "a@x.com" || !strings.Contains(got.stderr, "the last account used") {
+		t.Fatalf("--last after a named launch: %+v", got)
 	}
-	// --auto places one launch and leaves the pin alone.
-	before, _ := os.ReadFile(f.cfg.CurrentFile())
+	// --auto says outright what a bare launch does.
 	auto := f.launch("--auto")
 	if auto.code != 0 || !strings.Contains(auto.stderr, "· auto ·") {
-		t.Fatalf("--auto under a pin: %+v", auto)
-	}
-	if after, _ := os.ReadFile(f.cfg.CurrentFile()); !bytes.Equal(before, after) {
-		t.Errorf("--auto changed .current: %q → %q", before, after)
+		t.Fatalf("--auto: %+v", auto)
 	}
 	if got := f.launch("--last"); got.account(f.cfg) != auto.account(f.cfg) {
 		t.Fatalf("--last after an automatic launch went to %s, want %s", got.account(f.cfg), auto.account(f.cfg))
@@ -844,74 +751,10 @@ func TestOverrides(t *testing.T) {
 	// are the grammar's refusals: cmd/headroom's TestGrammar.
 }
 
-func TestRememberRecordsTheMode(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("a@x.com\n")
-	if got := f.launch("--auto", "--remember"); got.code != 0 {
-		t.Fatal(got.stderr)
-	}
-	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
-		t.Fatalf(".current = %q, want auto", data)
-	}
-	if set := accounts.Discover(f.cfg); set.Routing().Mode != "auto" {
-		t.Errorf("mode = %q", set.Routing().Mode)
-	}
-	if _, err := accounts.Discover(f.cfg).Select(""); err != accounts.ErrAuto {
-		t.Errorf("Select(\"\") under auto = %v, want ErrAuto", err)
-	}
-	// Enter's scriptable spelling pins again.
-	if got := f.launch("--account", "a@x.com", "--remember"); got.code != 0 {
-		t.Fatal(got.stderr)
-	}
-	if set := accounts.Discover(f.cfg); set.Routing().Mode != "pinned" {
-		t.Errorf("mode after pinning = %q", set.Routing().Mode)
-	}
-
-	// A failed exec leaves the recorded mode, and says so.
-	rec := &execRecord{err: os.ErrPermission}
-	failed := call(func(std Streams) error {
-		return Launch(std, f.cfg, launchOptions(t, "--auto", "--remember"), f.edges, rec.exec)
-	})
-	if failed.code != 1 {
-		t.Fatalf("exit %d", failed.code)
-	}
-	if out := failed.stderr; !strings.Contains(out, ".current remains auto") {
-		t.Errorf("missing persistence explanation: %s", out)
-	}
-
-	// A launch no account can take records nothing either: the mode it would
-	// have recorded is not written for a launch that never ran.
-	f.setCurrent("a@x.com\n")
-	writeJSON(t, f.cfg.PrimaryMeta(), `{}`)
-	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "a@x.com", ".claude.json"), `{}`)
-	if got := f.launch("--auto", "--remember"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no account can take a launch") {
-		t.Fatalf("--auto --remember with every account excluded: %+v", got)
-	}
-	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "a@x.com\n" {
-		t.Errorf(".current = %q after a refused --auto --remember, want the pin it had", data)
-	}
-}
-
-func TestResolveRefusesUnderAuto(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
-	bare := call(func(std Streams) error { return Resolve(std, f.cfg, "") })
-	if bare.code != 1 {
-		t.Errorf("bare resolve under auto: exit %d, want 1", bare.code)
-	}
-	if !strings.Contains(bare.stderr, "--dry-run") {
-		t.Errorf("the refusal does not point to --dry-run: %s", bare.stderr)
-	}
-	if named := call(func(std Streams) error { return Resolve(std, f.cfg, "a@x.com") }); named.code != 0 {
-		t.Errorf("a name still resolves: exit %d", named.code)
-	}
-}
-
 // Busy sessions are load: the registry's own word for a session, read from a
 // verified-live claim, counts one step.
 func TestBusySessionsAreLoad(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 0, 5, time.Minute)
 	f.observe("a@x.com", 0, 50, time.Minute)
 	started := time.Now().Add(-time.Hour)
@@ -1018,7 +861,6 @@ func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
 
 func TestLaunchesPrintsTheLog(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 20, 40, time.Minute)
 	f.observe("a@x.com", 0, 10, time.Minute)
 	f.launch()

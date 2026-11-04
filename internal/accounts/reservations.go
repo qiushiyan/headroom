@@ -16,7 +16,7 @@ import (
 
 // Reservations is `.reserved`: the directories each account is kept for, by
 // account name. A reservation is a person's statement of what an account is
-// for, so it lives beside `.current` and not in the store, whose bookkeeping
+// for, so it lives in its own file and not in the store, whose bookkeeping
 // sets aside what it cannot decode: losing this file would quietly release
 // every account in it.
 type Reservations map[string][]string
@@ -84,6 +84,26 @@ func SetReservation(cfg config.Scope, name string, dirs []string) error {
 		held[name] = dirs
 	}
 	return writeReservations(cfg, held)
+}
+
+// RenameReservations moves the reservation held under from to the name to,
+// joining any to already has, and says whether there was one to move: the
+// primary's records follow a rename (state.Store.RenamePrimary, whose lock the
+// caller holds). A `.reserved` that does not read is an error and nothing is
+// written: a reservation is a person's statement, never rewritten from a
+// guess.
+func RenameReservations(cfg config.Scope, from, to string) (bool, error) {
+	held, err := ReadReservations(cfg)
+	if err != nil || !held.Held(from) {
+		return false, err
+	}
+	for _, d := range held[from] {
+		if !slices.Contains(held[to], d) {
+			held[to] = append(held[to], d)
+		}
+	}
+	delete(held, from)
+	return true, writeReservations(cfg, held)
 }
 
 // writeReservations replaces `.reserved` with held, removing it with its

@@ -23,7 +23,7 @@ import (
 const presenceWindow = 5 * time.Minute
 
 // page is one vendor's page of the picker: its newest round's board, its
-// selection, its scroll position and its refresh schedule. A page owns its
+// scroll position and its refresh schedule. A page owns its
 // in-flight round — one list and one channel until that channel closes and
 // drains — so a result can only ever land on the page that started the round,
 // never on whichever page happens to be visible when it arrives.
@@ -31,16 +31,12 @@ type page struct {
 	scope config.Scope
 	st    *state.Store
 	deps  BoardDeps
-	// round is the newest round's: the accounts on screen, the set they were
-	// discovered as and the read of `.current` that marked them — "pinned",
-	// "auto", or "" when the file will not resolve — under the page's scope
-	// and store, which every round keeps. nil until the first round.
+	// round is the newest round's: the accounts on screen and the set they
+	// were discovered as, under the page's scope and store, which every round
+	// keeps. nil until the first round.
 	round *round.Round
 
 	updates <-chan round.Result // non-nil while this page's round is in flight
-	sel     int
-	selName string // survives a round that reorders or re-discovers accounts
-	opened  bool   // the first visit has chosen the initial selection
 
 	lastLocal time.Time // when the local half last ran — the floor's clock
 	nextAt    time.Time // next scheduled cadence round
@@ -95,7 +91,7 @@ func (pg *page) receive(u round.Result, open bool, now time.Time) {
 }
 
 // startRound runs one full round: a local half — re-read everything free
-// (health, discovery, credentials, `.current`, the store's replay) — and a
+// (health, discovery, credentials, the store's replay) — and a
 // budget half, the claim plus whatever fetches it permits. The two halves are
 // named because only the first needs the floor: it costs a `claude auth
 // status` spawn per account, which a held key must not spin, while the second
@@ -113,7 +109,6 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	r, updates := begin(ctx, ui)
 	ui.round = r
 	ui.mark(time.Now())
-	ui.restoreSelection()
 	ui.lastLocal = time.Now()
 	ui.armed = false
 	ui.manual = manual
@@ -128,11 +123,10 @@ func beginRound(ctx context.Context, pg *page) (*round.Round, <-chan round.Resul
 	return r, r.Fetch(ctx)
 }
 
-// mark gathers what the marks are decided from and sets every row's load and,
-// under auto, the row a launch would take from the figures this page holds.
-// It runs when a round starts — the stored figures are already worth a mark —
-// and again when its results have landed. The mode is the round's own reading
-// of `.current`, never a second one.
+// mark gathers what the marks are decided from and sets every row's load and
+// the row a launch would take from the figures this page holds. It runs when
+// a round starts — the stored figures are already worth a mark — and again
+// when its results have landed.
 func (ui *page) mark(now time.Time) {
 	ui.placed = markBoard(ui.round, now, ui.deps.Place)
 }
@@ -249,39 +243,6 @@ func (ui *page) refresh(ctx context.Context) {
 		return
 	}
 	ui.startRound(ctx, true)
-}
-
-func (ui *page) move(delta int) {
-	accts := ui.accounts()
-	n := ui.sel + delta
-	if n < 0 || n >= len(accts) {
-		return
-	}
-	ui.sel = n
-	ui.selName = accts[n].Acct.Name
-}
-
-// restoreSelection re-finds the selected account by name. Rediscovery can
-// reorder the list — an account dir added or removed between rounds — and a
-// preserved index would silently move the cursor to a different account under
-// a user about to press enter.
-func (ui *page) restoreSelection() {
-	if ui.selName == "" {
-		return
-	}
-	accts := ui.accounts()
-	for i, d := range accts {
-		if d.Acct.Name == ui.selName {
-			ui.sel = i
-			return
-		}
-	}
-	if ui.sel >= len(accts) {
-		ui.sel = len(accts) - 1
-	}
-	if ui.sel < 0 {
-		ui.sel = 0
-	}
 }
 
 func until(t, now time.Time) string {

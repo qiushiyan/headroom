@@ -1,15 +1,12 @@
 package app
 
 import (
-	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -44,9 +41,9 @@ func launchConfig(t *testing.T) config.Scope {
 // exactly one for an extra, and a home that spells its primary out names that
 // dir — which a re-pointed home does not refuse, since the refusal exists for
 // selection by absence. Arguments after `--` reach the vendor unchanged. A
-// pinned or named launch that names a session records nothing about it: it
-// was told where to go, and a re-home written onto the pin would steer the
-// session's next automatic turn.
+// named launch that names a session records nothing about it: it was told
+// where to go, and a re-home written onto the name would steer the session's
+// next automatic turn.
 func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 	for _, c := range []struct {
 		name     string
@@ -54,7 +51,7 @@ func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 		args     []string
 		dirs     func(cfg config.Scope) []string
 	}{
-		{"the primary, pinned by absence", false, []string{"--", "--resume", sessA},
+		{"the primary, named", false, []string{"--account", "qiushi", "--", "--resume", sessA},
 			func(config.Scope) []string { return nil }},
 		{"an extra, named", false, []string{"--account", "yan@planlab.ai", "--", "--resume", sessA},
 			func(cfg config.Scope) []string { return []string{filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")} }},
@@ -107,7 +104,8 @@ func TestResolveProtocol(t *testing.T) {
 		code     int
 		out      string
 	}{
-		{"no .current: the primary", "", 0, "qiushi\t" + cfg.PrimaryDir() + "\tprimary\n"},
+		{"no name", "", 1, ""},
+		{"the primary", "qiushi", 0, "qiushi\t" + cfg.PrimaryDir() + "\tprimary\n"},
 		{"an extra", "yan@planlab.ai", 0, "yan@planlab.ai\t" + filepath.Join(cfg.AccountsRoot, "yan@planlab.ai") + "\textra\n"},
 		{"a name with a TAB", "tab\tname", 1, ""},
 		{"a name with a newline", "new\nline", 1, ""},
@@ -120,9 +118,7 @@ func TestResolveProtocol(t *testing.T) {
 }
 
 // A launch that cannot run refuses before it writes anything: before the
-// `.current` a --remember would write — a choice recorded by a launch that then
-// refused would move where a bare launch goes as a side effect of nothing —
-// before the placement the store would record, and before exec. Each row
+// placement the store would record, and before exec. Each row
 // breaks one thing preparation checks; a dry run refuses it the same way, on
 // the same stream.
 func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
@@ -149,7 +145,7 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 		want  []string
 	}{
 		{"projects is a real directory", forkedClaude,
-			[]string{"--remember", "--account", "yan@planlab.ai"}, []string{"not launching"}},
+			[]string{"--account", "yan@planlab.ai"}, []string{"not launching"}},
 		{"a dry run of it", forkedClaude,
 			[]string{"--dry-run", "--account", "yan@planlab.ai"}, []string{"not launching"}},
 		// HEADROOM_HOME re-points what headroom observes, but the primary is
@@ -160,28 +156,24 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 			cfg.PrimaryRelocated = true
 			return cfg
 		}, []string{"--account", "qiushi"}, []string{"HEADROOM_HOME"}},
-		{"no claude on PATH, over an earlier pin", func(t *testing.T) config.Scope {
+		{"no claude on PATH", func(t *testing.T) config.Scope {
 			cfg := launchConfig(t)
-			if err := accounts.Discover(cfg).SetCurrent(accounts.Account{Scope: cfg, Name: "qiushi"}); err != nil {
-				t.Fatal(err)
-			}
 			t.Setenv("PATH", t.TempDir())
 			return cfg
-		}, []string{"--remember", "--account", "yan@planlab.ai"}, []string{"not found on PATH"}},
+		}, []string{"--account", "yan@planlab.ai"}, []string{"not found on PATH"}},
 		{"Codex: sessions is a real directory", func(t *testing.T) config.Scope {
 			scope := codexLaunchFixture(t)
 			fork(t, filepath.Join(scope.AccountsRoot, "cx@x.com", "sessions"))
 			return scope
-		}, []string{"--remember", "--account", "cx@x.com"}, []string{"not launching", "sessions"}},
+		}, []string{"--account", "cx@x.com"}, []string{"not launching", "sessions"}},
 		{"Codex: the primary under a re-pointed home", func(t *testing.T) config.Scope {
 			scope := codexLaunchFixture(t)
 			scope.PrimaryRelocated = true
 			return scope
-		}, []string{"--remember", "--account", "primary"}, []string{"HEADROOM_HOME"}},
+		}, []string{"--account", "primary"}, []string{"HEADROOM_HOME"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := c.scope(t)
-			before, _ := os.ReadFile(cfg.CurrentFile())
 			got := launchOn(t, cfg, quietPlace(), c.args...)
 			stdout, stderr := got.stdout, got.stderr
 			if got.code != 1 || got.called {
@@ -194,9 +186,6 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 			}
 			if stdout != "" {
 				t.Errorf("a refusal printed to stdout:\n%s", stdout)
-			}
-			if after, _ := os.ReadFile(cfg.CurrentFile()); !bytes.Equal(after, before) {
-				t.Errorf(".current %q → %q by a launch that refused", before, after)
 			}
 			// The store registers, prunes and commits even when its rule
 			// refuses: a launch that cannot run must not reach it.
@@ -214,31 +203,14 @@ func TestALaunchThatCannotRunRefusesBeforeWriting(t *testing.T) {
 	}
 }
 
-// --remember is written before the exec: read from inside the exec, the
-// choice is already recorded, and a failed exec leaves it and says so.
-func TestExecFailureKeepsRememberedChoice(t *testing.T) {
+// A failed exec is the launch's failure, said with the vendor's name.
+func TestAFailedExecSaysSo(t *testing.T) {
 	cfg := launchConfig(t)
-	atExec := ""
-	rec := &execRecord{err: os.ErrPermission, atExec: func() {
-		a, err := accounts.Discover(cfg).Select("")
-		atExec = fmt.Sprintf("%s %v", a.Name, err)
-	}}
+	rec := &execRecord{err: os.ErrPermission}
 	failed := call(func(std Streams) error {
-		return Launch(std, cfg, launchOptions(t, "--remember", "--account", "yan@planlab.ai"), quietPlace(), rec.exec)
+		return Launch(std, cfg, launchOptions(t, "--account", "yan@planlab.ai"), quietPlace(), rec.exec)
 	})
-	if failed.code != 1 {
-		t.Fatalf("exit %d", failed.code)
-	}
-	output := failed.stderr
-	if atExec != "yan@planlab.ai <nil>" {
-		t.Errorf("at exec .current resolved to %q, want yan@planlab.ai: the choice is recorded first", atExec)
-	}
-	if !strings.Contains(output, ".current remains yan@planlab.ai") {
-		t.Fatalf("missing persistence explanation: %s", output)
-	}
-
-	a, err := accounts.Discover(cfg).Select("")
-	if err != nil || a.Name != "yan@planlab.ai" {
-		t.Fatalf("choice after failed exec: %+v %v", a, err)
+	if failed.code != 1 || !strings.Contains(failed.stderr, "exec claude: permission denied") {
+		t.Fatalf("exit %d: %s", failed.code, failed.stderr)
 	}
 }

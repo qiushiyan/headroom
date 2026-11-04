@@ -138,7 +138,7 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 	// theirs, for every assertion that reads them.
 	snap := st.Load()
 	checkOwnState(snap, r)
-	// Deliberately outside checkOwnState: these depend on .current and the
+	// Deliberately outside checkOwnState: these depend on .reserved and the
 	// process environment, not on state.json, so a state document written by
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.

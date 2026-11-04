@@ -80,10 +80,8 @@ func writeBoards(out io.Writer, p render.Palette, boards []round.View, now int64
 			}
 		}
 		b := p.Board(views(vb.Accounts), now, layout, width)
-		if vb.Routing.Mode == "auto" {
-			for _, line := range p.AutoHeader(layout) {
-				fmt.Fprintln(out, line)
-			}
+		for _, line := range p.Legend(layout) {
+			fmt.Fprintln(out, line)
 		}
 		for _, line := range b.Header {
 			fmt.Fprintln(out, line)
@@ -97,21 +95,4 @@ func writeBoards(out io.Writer, p render.Palette, boards []round.View, now int64
 			}
 		}
 	}
-}
-
-// chosenLine says what enter just did, naming the bare launch that now
-// targets the account.
-func chosenLine(scope config.Scope, label string) string {
-	if scope.Vendor == config.Codex {
-		return fmt.Sprintf("→ %s — bare Codex launches (headroom launch --vendor codex, no --account) now target it", label)
-	}
-	return fmt.Sprintf("→ %s — bare launches (no --account) now target it", label)
-}
-
-// autoLine says what `a` just did, in the words chosenLine uses for enter.
-func autoLine(scope config.Scope) string {
-	if scope.Vendor == config.Codex {
-		return "→ auto — bare Codex launches (headroom launch --vendor codex, no --account) now choose the least-loaded account"
-	}
-	return "→ auto — bare launches (no --account) now choose the least-loaded account"
 }

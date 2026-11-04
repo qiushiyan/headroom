@@ -37,21 +37,18 @@ func boardFixture(t *testing.T, extras ...string) autoFixture {
 	return f
 }
 
-func marks(list []accountstate.Account) (current, next []string) {
+// nextMarked is the accounts a board marks as the one a launch would take.
+func nextMarked(list []accountstate.Account) (next []string) {
 	for _, d := range list {
-		if d.View.Current {
-			current = append(current, d.Acct.Name)
-		}
 		if d.View.Next {
 			next = append(next, d.Acct.Name)
 		}
 	}
-	return
+	return next
 }
 
 // With inputs frozen and no placement in between, the row a board marks is the
-// account a launch then takes. Under a pin nothing is marked next, and under
-// auto nothing is marked current.
+// account a launch then takes.
 func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	f := boardFixture(t, "a@x.com", "b@x.com")
 	f.observe("qiushi", 30, 20, time.Minute)
@@ -59,31 +56,20 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 	f.observe("b@x.com", 0, 10, time.Minute)
 
 	boards := fetchBoards([]config.Scope{f.cfg}, f.boardDeps())
-	board := boards[0]
-	if current, next := marks(board.Accounts); len(current) != 1 || current[0] != "qiushi" || len(next) != 0 || board.Routing.Mode != "pinned" {
-		t.Fatalf("pinned: current %v next %v mode %q", current, next, board.Routing.Mode)
-	}
-
-	f.setCurrent("auto\n")
-	boards = fetchBoards([]config.Scope{f.cfg}, f.boardDeps())
-	board = boards[0]
-	current, next := marks(board.Accounts)
-	if len(current) != 0 || len(next) != 1 || board.Routing.Mode != "auto" {
-		t.Fatalf("auto: current %v next %v mode %q", current, next, board.Routing.Mode)
+	next := nextMarked(boards[0].Accounts)
+	if len(next) != 1 {
+		t.Fatalf("marked next: %v", next)
 	}
 	if got := f.launch(); got.account(f.cfg) != next[0] {
 		t.Fatalf("the board marked %s and the launch took %s:\n%s", next[0], got.account(f.cfg), got.stderr)
 	}
 
-	// Both layouts and the one-shot print carry the mark and say the mode.
+	// Both layouts and the one-shot print carry the mark on one row.
 	p := render.NewPalette(false)
 	for layout, mark := range map[render.Layout]string{render.LayoutBlocks: "← next", render.LayoutCompact: "→"} {
 		var out bytes.Buffer
 		writeBoards(&out, p, boards, time.Now().Unix(), layout, 0)
 		text := out.String()
-		if !strings.Contains(text, "bare launches are automatic") || strings.Contains(text, "← current") || strings.Contains(text, "●") {
-			t.Errorf("layout %v does not say the mode:\n%s", layout, text)
-		}
 		marked := 0
 		for line := range strings.SplitSeq(text, "\n") {
 			if strings.Contains(line, next[0]) && strings.Contains(line, mark) {
@@ -101,7 +87,6 @@ func TestTheBoardMarksWhatALaunchWouldTake(t *testing.T) {
 // up with room that lasts longer, and the mark moves with it.
 func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
 	f := boardFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 30, 0, time.Minute)
 	f.observeWeek("a@x.com", 0, 70, time.Hour, time.Minute)
 	f.observeWeek("b@x.com", 0, 0, 7*time.Hour, time.Minute)
@@ -112,7 +97,7 @@ func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
 		fp: &framePrinter{out: &out, size: func() (int, int, error) { return 120, 60, nil }}}
 	ui.show(context.Background(), 0)
 	next := func() string {
-		_, n := marks(pg.accounts())
+		n := nextMarked(pg.accounts())
 		if len(n) != 1 {
 			t.Fatalf("%d rows marked next", len(n))
 		}
@@ -131,94 +116,33 @@ func TestAnOpenBoardMarksAtEachFrame(t *testing.T) {
 	}
 }
 
-func TestSchema6SaysTheMode(t *testing.T) {
-	f := boardFixture(t, "a@x.com")
-	doc := func() doc5 {
-		t.Helper()
-		data, err := jsonDocument(fetchBoards([]config.Scope{f.cfg}, f.boardDeps()), time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return decode5(t, data)
-	}
-	limits := func() doc5 {
-		t.Helper()
-		got := call(func(std Streams) error { return Limits(std, []config.Scope{f.cfg}, "") })
-		if got.code != 0 {
-			t.Fatalf("limits: exit %d", got.code)
-		}
-		return decode5(t, []byte(got.stdout))
-	}
-	check := func(name, mode, current string) {
-		t.Helper()
-		for surface, d := range map[string]doc5{"--json": doc(), "limits": limits()} {
-			marked := 0
-			for _, a := range d.Accounts {
-				if a.Current {
-					marked++
-				}
-			}
-			wantMarked := 0
-			if current != "" {
-				wantMarked = 1
-			}
-			if d.Schema != 7 || d.Mode["claude"] != mode || d.Current["claude"] != current || marked != wantMarked {
-				t.Errorf("%s under %s: schema %d mode %q current %q, %d marked current", surface, name, d.Schema, d.Mode["claude"], d.Current["claude"], marked)
-			}
-		}
-	}
-	check("the fresh-start default", "pinned", "qiushi")
-	f.setCurrent("a@x.com\n")
-	check("a pin", "pinned", "a@x.com")
-	f.setCurrent("auto\n")
-	check("auto", "auto", "")
-	f.setCurrent("gone@x.com\n")
-	check("an unresolvable .current", "", "")
-}
-
-func TestTheAKeyAsksForAuto(t *testing.T) {
-	pg, _, _ := injectedPage(t, config.Claude, "c0@x.com")
+// The board records no routing: enter and a, the keys that once pinned the
+// selected row and turned auto on, are keys it does not have, and its footer
+// does not offer them. A stray enter on a board opened to read it pinned
+// whatever row the cursor was on.
+func TestTheBoardHasNoRoutingKeys(t *testing.T) {
+	pg, _, _ := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com")
 	ui := &picker{pages: []*page{pg}, p: render.NewPalette(false), lastKey: time.Now()}
 	ctx := context.Background()
 	ui.show(ctx, 0)
 	keys := make(chan tui.Key, 1)
-	keys <- tui.Key{Kind: tui.KeyRune, Rune: 'a'}
-	if got := ui.step(ctx, nil, keys); got != stepAuto {
-		t.Fatalf("a → %v, want stepAuto", got)
+	for _, k := range []tui.Key{{Kind: tui.KeyEnter}, {Kind: tui.KeyRune, Rune: 'a'}} {
+		keys <- k
+		if ui.step(ctx, nil, keys) {
+			t.Errorf("key %+v quit the board", k)
+		}
 	}
-	if !strings.Contains(ui.status(time.Now()), "a auto") {
-		t.Error("the footer does not offer the key")
-	}
-
-	// What the key commits: the visible vendor's `.current`, and nothing else.
-	f := boardFixture(t, "a@x.com")
-	set := accounts.Discover(f.cfg)
-	if err := set.SetAuto(); err != nil {
-		t.Fatal(err)
-	}
-	if data, _ := os.ReadFile(f.cfg.CurrentFile()); string(data) != "auto\n" {
-		t.Errorf(".current = %q", data)
-	}
-	// Enter pins again.
-	a, _ := set.Select("a@x.com")
-	if err := set.SetCurrent(a); err != nil {
-		t.Fatal(err)
-	}
-	if got := accounts.Discover(f.cfg).Routing().Mode; got != "pinned" {
-		t.Errorf("mode after enter = %q", got)
-	}
-	// The word cannot be written as a pin.
-	if err := set.SetCurrent(accounts.Account{Scope: f.cfg, Name: accounts.AutoWord}); err == nil {
-		t.Error("an account named with the reserved word was pinned")
+	for _, scrolls := range []bool{false, true} {
+		if footer := ui.status(time.Now(), scrolls); strings.Contains(footer, "enter") || strings.Contains(footer, "a auto") {
+			t.Errorf("the footer offers a routing key: %q", footer)
+		}
 	}
 }
 
-// The picker under auto: where it used to fall back to the current account it
-// asks the rule, and the override moves the session somewhere other than where
-// it is.
-func TestThePickerPlacesUnderAuto(t *testing.T) {
+// The picker: a session with no owner to follow is placed by the rule, and the
+// override moves the session somewhere other than where it is.
+func TestThePickerPlaces(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.setCurrent("auto\n")
 	f.observe("qiushi", 50, 50, time.Minute)
 	f.observe("a@x.com", 0, 5, time.Minute)
 	f.observe("b@x.com", 0, 30, time.Minute)
@@ -228,7 +152,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 	set := accounts.Discover(f.cfg)
 	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
-		ui, _, _ := f.picker(set, set.Routing())
+		ui, _, _ := f.picker(set)
 		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
 		ui.listing.Sessions = []*sessions.Session{s}
 		ui.rows = ui.listing.Sessions
@@ -255,7 +179,7 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 		t.Error("an ordinary resume wrote a re-home")
 	}
 
-	// An owner that exists is followed, auto or not.
+	// An owner that exists is followed.
 	ui, _ = newUI("b@x.com", sessions.OwnerHistory)
 	keepWorkingDir(t)
 	rec = rearm(ui)
@@ -293,9 +217,8 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 
 	// With nowhere else to go, x says so and commits nothing.
 	solo := newAutoFixture(t)
-	solo.setCurrent("auto\n")
 	soloSet := accounts.Discover(solo.cfg)
-	ui, rec, _ = solo.picker(soloSet, accounts.Routing{Mode: "auto"})
+	ui, rec, _ = solo.picker(soloSet)
 	sess := &sessions.Session{ID: sessB, CWD: proj, DirOK: true, Owner: "qiushi", OwnerState: sessions.OwnerHistory}
 	ui.listing.Sessions = []*sessions.Session{sess}
 	ui.rows = ui.listing.Sessions
@@ -305,9 +228,9 @@ func TestThePickerPlacesUnderAuto(t *testing.T) {
 	}
 }
 
-// Codex follows its own mode: its own `.current`, its own rows, its own record
-// — and no busy sessions, no session routing, and nothing of Claude Code's.
-func TestCodexFollowsItsOwnMode(t *testing.T) {
+// Codex places its own launches: its own rows, its own record — and no busy
+// sessions, no session routing, and nothing of Claude Code's.
+func TestCodexPlacesItsOwnLaunches(t *testing.T) {
 	f := newCodexFixture(t, "http://127.0.0.1:1/usage")
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -362,14 +285,6 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 		`,"additional_rate_limits":[{"limit_name":"spark","metered_feature":"spark","rate_limit":` + spent + `}],"spend_control"`})
 	store(3, 0, [2]string{`"limit_reached":false`, `"limit_reached":true`}) // the emptiest, and the vendor refuses work on it
 
-	if err := os.MkdirAll(f.scope.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(f.scope.CurrentFile(), []byte("auto\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	claudeCurrent := f.cfg.Claude.CurrentFile()
-
 	launch := func(args ...string) (string, string) {
 		t.Helper()
 		got := launchOn(t, f.scope, place, args...)
@@ -422,9 +337,6 @@ func TestCodexFollowsItsOwnMode(t *testing.T) {
 	}
 	if named, stderr := launch("--account", "u1@x.com"); named != "u1@x.com" || refreshes != 2 {
 		t.Errorf("a named launch went to %q and left %d refreshes in all:\n%s", named, refreshes, stderr)
-	}
-	if _, err := os.Stat(claudeCurrent); err == nil {
-		t.Error("a Codex launch wrote Claude Code's .current")
 	}
 	if _, err := os.Stat(filepath.Join(f.cfg.Claude.AccountsRoot, "state.json")); err == nil {
 		t.Error("a Codex launch wrote Claude Code's state.json")

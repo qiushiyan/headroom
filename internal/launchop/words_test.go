@@ -65,8 +65,6 @@ func TestLaunchLineWording(t *testing.T) {
 			[]string{"session had no known account"}, nil},
 		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, Session{Unidentified: true}, "",
 			[]string{"session not identified"}, nil},
-		{"pinned", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "pinned"}, obs("a", 0, 0, time.Minute)), false, Session{}, "",
-			[]string{"a · pinned", "turns auto on"}, []string{"auto ·", "load"}},
 	}
 	// The other ways of deciding say which they were, and no figures: the
 	// rule chose nothing.

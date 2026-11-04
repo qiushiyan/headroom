@@ -1,0 +1,7 @@
+$ headroom resolve
+exit 2
+--- stdout
+--- stderr
+headroom: error: expected "<account>"
+Usage: headroom resolve <account> [flags]
+Run "headroom resolve --help" for details.

@@ -21,7 +21,7 @@ func TestJSONDocument(t *testing.T) {
 		{
 			Acct: accounts.Account{Name: "primary", Email: "p@x.com"},
 			View: accountstate.Facts{
-				Label: "p@x.com", Launcher: "x-primary", Plan: "max 20x", Current: true,
+				Label: "p@x.com", Launcher: "x-primary", Plan: "max 20x",
 				Health: accountstate.HealthOK,
 				Obs: &accountstate.Observation{
 					ObservedAt: generatedAt.Unix() - 10,
@@ -79,7 +79,7 @@ func TestJSONDocument(t *testing.T) {
 			},
 		},
 	}
-	data, err := jsonDocument(claudeBoard(list, "primary"), generatedAt)
+	data, err := jsonDocument(claudeBoard(list), generatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +88,8 @@ func TestJSONDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
-	if doc["schema"] != float64(7) || doc["current"].(map[string]any)["claude"] != "primary" {
-		t.Errorf("envelope: %v %v", doc["schema"], doc["current"])
+	if _, routed := doc["current"]; doc["schema"] != float64(8) || routed {
+		t.Errorf("envelope: schema %v, current %v", doc["schema"], doc["current"])
 	}
 	if doc["generated_at"] != "2025-08-02T07:50:00Z" {
 		t.Errorf("generated_at not UTC RFC3339: %v", doc["generated_at"])
@@ -100,7 +100,7 @@ func TestJSONDocument(t *testing.T) {
 		t.Fatalf("got %d accounts", len(accts))
 	}
 	a0 := accts[0].(map[string]any)
-	if a0["health"] != "ok" || a0["current"] != true || a0["launcher"] != "x-primary" {
+	if _, routed := a0["current"]; a0["health"] != "ok" || routed || a0["launcher"] != "x-primary" {
 		t.Errorf("account 0: %v", a0)
 	}
 	if at0 := a0["attempt"].(map[string]any); at0["state"] != "ok" || at0["next_eligible_at"] != nil || at0["http_status"] != nil {

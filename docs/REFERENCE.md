@@ -50,7 +50,7 @@ holds across commands:
 There is no account list: Claude Code's default `~/.claude` plus every
 directory under `~/.claude-accounts` (one per extra login, named by its
 email) *is* the account set — and `~/.codex` plus `~/.codex-accounts` is
-Codex's, with its own `.current`, `.order` and `state.json`. Each Claude Code
+Codex's, with its own `.order`, `.reserved` and `state.json`. Each Claude Code
 account, including the primary, uses the Keychain item for its config dir
 when readable; otherwise headroom reads `.credentials.json` inside the real
 config dir. Headroom calls the same usage endpoint Claude Code's own `/usage`
@@ -65,9 +65,8 @@ are reported as unreadable by `check`.
 
 ### Automatic placement
 
-`a` on the board (or `headroom launch --auto --remember`) writes the word
-`auto` into `.current` in place of an account name. From then on a bare launch
-chooses for itself, and says what it chose:
+A bare launch chooses its account, and says what it chose; naming one with
+`--account` is the only other way to decide it, and lasts for that launch:
 
 ```
 headroom launch: alice@example.com · auto · 5h 1% · week 3%, resets in 4.2d · load 0 (next: bob@example.com)
@@ -104,7 +103,7 @@ headroom accounts reserve alice@example.com ~/dev/work ~/dev/work-cms
 
 Automatic launches and headless placements elsewhere then never choose it, and
 in those repositories it is ranked like any other: a reservation never makes
-an account go first. Naming it, a pin and `--last` still work anywhere; a
+an account go first. Naming it and `--last` still work anywhere; a
 resumed session outside the repositories moves off it. `accounts reserve`
 bare lists what is kept and `--clear` drops one. A directory that goes missing
 leaves the account launchable only by name, and a `.reserved` that cannot be
@@ -112,7 +111,7 @@ read refuses automatic choices until it is fixed.
 
 Choosing and recording happen in one locked step in `state.json`, so launches
 started together — an agent fanning out several sessions — see each other.
-Every launch is recorded, pinned and named ones included: they are load too.
+Every launch is recorded, named ones included: they are load too.
 
 A launch that names a session by id (`--resume <id>`, `--session-id <id>`)
 follows the account that last drove it while that account is not near a limit,
@@ -182,7 +181,7 @@ From then on a claim from either home is the claim the other is denied by —
 each subscription is asked once per spacing, by whichever home asks first —
 a figure either home bought is the one both place on, and every launch and
 busy session on a subscription counts for both, whichever home it is in.
-What a home owns stays its own: its dirs and logins, its `.current`, its
+What a home owns stays its own: its dirs and logins, its reservations, its
 session store, its re-homes (in its own `state.json`), its launch log and
 its `--last`. The first home's board names the other's share of each
 account's load, and both homes' readings land in the first home's usage log.
@@ -210,11 +209,12 @@ endpoint result and figures visible alongside a persistence warning.
 Session transcripts on this setup are machine-global (every account's
 `projects/` links to one store), so `sessions` lists every conversation
 regardless of account and routes each back to the account that last drove
-it — changing the default steers new sessions; an old one moves to another account by `x` in the picker (or `launch --account … -- --resume <id>`).
+it; one moves to another account by `x` in the picker (or `launch --account …
+-- --resume <id>`).
 
 headroom is **read-only** toward that system: it never refreshes a token and
 no observation path writes anything of Claude Code's — Claude Code owns login
-state. It keeps files of its own — `state.json`, `.current`, the launch log
+state. It keeps files of its own — `state.json`, the launch log
 `launches.jsonl`, the usage log `usage.jsonl`, and `.login/` for each
 account's login lock and handed-off sign-in — and `.ledger` and `.reserved`
 when `accounts ledger` and `accounts reserve` write them; the only
@@ -235,15 +235,15 @@ patterns below are what the author runs, reduced to the engine calls:
 
 ```sh
 # the two daily verbs
-x()   { headroom launch -- "$@"; }                   # a session where the board says: the pinned account, or under auto the least-loaded
-xa()  { headroom launch --account "$1" -- "${@:2}"; } # one session on <account>; the default stays
-xacc(){ headroom accounts --compact; }               # the board, one row per account; enter pins, a turns auto on, then type x
+x()   { headroom launch -- "$@"; }                   # a session on the least-loaded account
+xa()  { headroom launch --account "$1" -- "${@:2}"; } # one session on <account>
+xacc(){ headroom accounts --compact; }               # the board, one row per account; it records nothing
 xl()  { headroom launch --last -- "$@"; }            # one more session on the account the last launch used
 
 # the session picker, with the cd that outlives the session
 xs() {
   local tmp; tmp=$(mktemp -d) || return
-  headroom sessions --cd-file "$tmp/cwd" -- "$@"     # enter: same account · x: current account + re-home
+  headroom sessions --cd-file "$tmp/cwd" -- "$@"     # enter: same account · x: least-loaded other account + re-home
   local rc=$? dir; dir=$(cat "$tmp/cwd" 2>/dev/null); rm -rf "$tmp"
   [[ "$dir" == /* ]] && cd -- "$dir"
   return $rc
@@ -257,18 +257,16 @@ cxa() { headroom launch --vendor codex --account "$1" -- "${@:2}"; }   # cxa <ac
 export HEADROOM_CODEX_LAUNCHER_FORMAT="cxa %s"
 ```
 
-The out-of-quota flow in the README becomes `xacc`, then `xs` and `x` on the row
-(under auto, just `xs` and `x`). A flag for headroom itself — `--auto`,
-`--last`, `--dry-run` — needs a function of its own, because everything typed
-after `x` goes to the vendor.
+The out-of-quota flow in the README becomes `xs`, then `x` on the row. A flag
+for headroom itself — `--last`, `--dry-run` — needs a function of its own,
+because everything typed after `x` goes to the vendor.
 Flags every session should carry — `--dangerously-skip-permissions`, say —
 go after the `--` inside the wrapper. Per-account names (`x-alice`) are a
 loop over `~/.claude-accounts/*` at shell init; the author's version also
 generates short local-part aliases when unambiguous.
 
 A wrapper passes names and flags and nothing else. `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`, the
-current-account file and every validation stay in `headroom launch`, which
+`CODEX_HOME` and every validation stay in `headroom launch`, which
 is re-resolved from PATH at every keystroke while a shell function is frozen
 at shell init. When `headroom` is missing or refuses, a wrapper stops rather
 than falling back to bare `claude` or `codex`.
@@ -276,12 +274,11 @@ than falling back to bare `claude` or `codex`.
 A tool that spawns `claude` or `codex` headlessly joins the same door by
 running `headroom launch [--vendor codex] --` in front of its arguments:
 launch execs the binary, so stdio, signals and the exit status are the
-child's. Under auto its sessions are placed like any other, and one that
-passes `--session-id <uuid>` on its first turn and `--resume <uuid>` after
-keeps one account across turns. The launch line goes to stderr. A tool that
-must place automatically whatever the board has pinned spells `--auto`
-(`headroom launch --auto --`); one running under a second home's `HOME`
-needs nothing more once that home shares the ledger.
+child's. Its sessions are placed like any other, and one that passes
+`--session-id <uuid>` on its first turn and `--resume <uuid>` after keeps one
+account across turns. The launch line goes to stderr. `--auto` says outright
+what a bare launch does (`headroom launch --auto --`); one running under a
+second home's `HOME` needs nothing more once that home shares the ledger.
 
 ## Configuration
 
@@ -295,7 +292,7 @@ Nothing needs configuring on a standard install; environment variables re-point 
 | `HEADROOM_CODEX_ACCOUNTS_ROOT` | `~/.codex-accounts` | Where the extra Codex homes live. It must not name the same location as the Claude Code root |
 | `HEADROOM_CODEX_LAUNCHER_FORMAT` | `headroom launch --vendor codex --account %s` | The Codex counterpart of `HEADROOM_LAUNCHER_FORMAT`. Log-in hints keep the engine's own spelling whatever this says |
 | `HEADROOM_CODEX_PRIMARY_NAME` | *(derived)* | The name the primary `~/.codex` answers to, derived and pinned like `HEADROOM_PRIMARY_NAME` |
-| `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `.current`, `--account`, and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login). Set it to pin a name that must outlive a primary logout. Changing it moves `.current`, `.reserved`, re-homes, `--last` and headless tokens to the new name at the next run, which says so on stderr; a shell still pinning a former name moves nothing back and runs under the recorded name |
+| `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `--account`, the records beside the store, and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login). Set it to pin a name that must outlive a primary logout. Changing it moves `.reserved`, re-homes, `--last` and headless tokens to the new name at the next run, which says so on stderr; a shell still pinning a former name moves nothing back and runs under the recorded name |
 
 Two settings are files rather than variables, because they belong to a home
 and must hold on every path that home's processes are started from:

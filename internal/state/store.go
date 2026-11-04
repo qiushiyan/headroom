@@ -459,7 +459,8 @@ type Placed struct {
 // unreadable sessions section is.
 //
 // An error means nothing was recorded. For an ordinary launch that is never a
-// reason to stop — in auto mode every usable account is a correct answer — so
+// reason to stop — for an automatic launch every usable account is a correct
+// answer — so
 // the decision is then made from an unlocked read and Recorded is false. For a
 // launch that must re-home it is: the caller refuses.
 func (s *Store) Place(l Launch) (Placed, error) {

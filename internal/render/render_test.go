@@ -160,40 +160,42 @@ func TestClip(t *testing.T) {
 	}
 }
 
-// The header names the account, its plan and its launcher, and carries the
-// routing mark: "← current" on the account new sessions go to and, under
-// automatic placement, "← next" on the one a bare launch would take — never
-// both. The compact row carries the same two marks as ● and →. These marks
-// are what the pty harness reads (accounts_auto.exp), so their spelling is
-// pinned here and nowhere else.
+// The header names the account, its plan and its launcher, and carries
+// "← next" on the account a bare launch would take; the compact row carries
+// the same mark as →, explained by the compact legend. These marks are what
+// the pty harness reads (accounts_auto.exp), so their spelling is pinned here
+// and nowhere else.
 func TestHeaderLine(t *testing.T) {
 	p := NewPalette(false)
 	now := time.Now().Unix()
 	for _, c := range []struct {
-		name                  string
-		plan                  string
-		current, next         bool // the facts
-		wantCurrent, wantNext bool // the marks
+		name string
+		plan string
+		next bool
 	}{
-		{"current", "max 20x", true, false, true, false},
-		{"next, under auto", "max 20x", false, true, false, true},
-		{"a current account is never also marked next", "max 20x", true, true, true, false},
-		{"neither, and no plan to name", "", false, false, false, false},
+		{"next", "max 20x", true},
+		{"not next, and no plan to name", "", false},
 	} {
-		v := accountstate.Facts{Label: "a@b.c", Plan: c.plan, Launcher: "x-a", Current: c.current, Next: c.next}
+		v := accountstate.Facts{Label: "a@b.c", Plan: c.plan, Launcher: "x-a", Next: c.next}
 		header := p.Board([]accountstate.Facts{v}, now, LayoutBlocks, 0).Groups[0][0]
 		for _, tok := range []string{"a@b.c", c.plan, "x-a"} {
 			if !strings.Contains(header, tok) {
 				t.Errorf("%s: header %q lacks %q", c.name, header, tok)
 			}
 		}
-		if strings.Contains(header, "← current") != c.wantCurrent || strings.Contains(header, "← next") != c.wantNext {
+		if strings.Contains(header, "← next") != c.next {
 			t.Errorf("%s: header = %q", c.name, header)
 		}
 		row := p.Board([]accountstate.Facts{v}, now, LayoutCompact, 0).Groups[0][0]
-		if strings.Contains(row, "●") != c.wantCurrent || strings.Contains(row, "→") != c.wantNext {
+		if strings.Contains(row, "→") != c.next {
 			t.Errorf("%s: compact row = %q", c.name, row)
 		}
+	}
+	if legend := p.Legend(LayoutCompact); len(legend) != 1 || !strings.Contains(legend[0], "→") {
+		t.Errorf("compact legend = %q", legend)
+	}
+	if legend := p.Legend(LayoutBlocks); legend != nil {
+		t.Errorf("blocks legend = %q; ← next says itself", legend)
 	}
 }
 

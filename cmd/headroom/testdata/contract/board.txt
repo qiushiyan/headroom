@@ -3,12 +3,12 @@ exit 0
 --- stdout
 Claude Code
 
-p@x.com (max · headroom launch --account p)  ← current
+p@x.com (max · headroom launch --account p)
   5h session       [██░░░░░░░░░░░░░░░░░░]  12%  resets <clock> (in 2.5h)
   All models (7d)  [████████░░░░░░░░░░░░]  40%  resets <day> <clock> (in 4.2d)
   stale · observed 10m ago · access token stale — any headroom launch --account p session refreshes it
 
-a@x.com (max · headroom launch --account a@x.com)
+a@x.com (max · headroom launch --account a@x.com)  ← next
   5h session       [█░░░░░░░░░░░░░░░░░░░]   3%  resets <clock> (in 3.3h)
   All models (7d)  [████░░░░░░░░░░░░░░░░]  22%  resets <day> <clock> (in 2.1d)
   stale · observed 10m ago · access token stale — any headroom launch --account a@x.com session refreshes it
@@ -20,7 +20,7 @@ b@x.com (max · headroom launch --account b@x.com)
 
 Codex
 
-q@x.com (plus · headroom launch --vendor codex --account q)  ← current
+q@x.com (plus · headroom launch --vendor codex --account q)  ← next
   weekly           [██████░░░░░░░░░░░░░░]  30%  resets <day> <clock> (in 3.0d)
   stale · observed 10m ago · access token stale — any headroom launch --vendor codex --account q session refreshes it
 

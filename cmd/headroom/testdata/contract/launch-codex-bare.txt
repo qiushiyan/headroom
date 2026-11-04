@@ -2,7 +2,7 @@ $ headroom launch --vendor codex --
 exit 0
 --- stdout
 --- stderr
-headroom launch: q · pinned (a on the board turns auto on)
+headroom launch: q · auto · weekly 30% · load 3 (next: c@x.com)
 --- vendor
 codex 
 CODEX_HOME=<unset>

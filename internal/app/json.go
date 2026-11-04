@@ -18,20 +18,9 @@ import (
 )
 
 type jsonDoc struct {
-	Schema      int    `json:"schema"`
-	GeneratedAt string `json:"generated_at"` // RFC3339 UTC
-	// Current is keyed by vendor and holds only the vendors in this document:
-	// the account name a bare launch of that vendor targets ("" = none
-	// resolvable). The same email can be an account of both vendors, so one
-	// string could not say which.
-	Current map[string]string `json:"current"`
-	// Mode is keyed by vendor like Current: what a bare launch of that vendor
-	// does — "pinned" to current's account, "auto" (it chooses the
-	// least-loaded account, and current is then ""), or "" when `.current`
-	// cannot be resolved. A consumer that read an empty current as corrupt
-	// routing state must read mode first.
-	Mode     map[string]string `json:"mode"`
-	Accounts []jsonAccount     `json:"accounts"` // one flat list; select by "vendor"
+	Schema      int           `json:"schema"`
+	GeneratedAt string        `json:"generated_at"` // RFC3339 UTC
+	Accounts    []jsonAccount `json:"accounts"`     // one flat list; select by "vendor"
 
 	// Problems are defects in headroom's own state file, never statements
 	// about Claude Code. They exist so a machine consumer can tell "nothing
@@ -58,7 +47,6 @@ type jsonAccount struct {
 	Email       string      `json:"email,omitempty"`
 	Launcher    string      `json:"launcher"`
 	Plan        string      `json:"plan,omitempty"`
-	Current     bool        `json:"current"`
 	Health      string      `json:"health"`
 	DirMismatch string      `json:"dir_mismatch,omitempty"`
 	Usage       *jsonUsage  `json:"usage"`   // null = nothing known
@@ -154,13 +142,12 @@ var attemptNames = map[accountstate.AttemptState]string{
 	accountstate.AttemptIdentityUnknown:      "identity_unknown",
 }
 
-// jsonDocument serializes one board per vendor. Each vendor's `current` and
-// `mode` are its board's routing — the read of `.current` that marked the
-// rows — so the envelope and the per-account flags say one thing even if the
-// file is rewritten while a round is in flight.
+// jsonDocument serializes one board per vendor.
 func jsonDocument(boards []round.View, generatedAt time.Time) ([]byte, error) {
 	now := generatedAt.Unix()
 	doc := jsonDoc{
+		// 8: no `current` or `mode`, on the envelope or an account — every
+		// bare launch places itself, so no account is the one it targets.
 		// 7: `load` on every account — busy sessions and recent launches,
 		// split by the home they came from, since a second home on the machine
 		// may hold logins of the same subscriptions and share the ledger.
@@ -170,15 +157,11 @@ func jsonDocument(boards []round.View, generatedAt time.Time) ([]byte, error) {
 		// (5: a second vendor — "vendor" on every account and problem,
 		// `current` keyed by vendor, feature / window_seconds / unstarted on
 		// limits, the allowance on usage.)
-		Schema:      7,
+		Schema:      8,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
-		Current:     map[string]string{},
-		Mode:        map[string]string{},
 		Accounts:    []jsonAccount{},
 	}
 	for _, b := range boards {
-		doc.Current[string(b.Scope.Vendor)] = b.Routing.Current
-		doc.Mode[string(b.Scope.Vendor)] = b.Routing.Mode
 		for _, p := range b.Problems {
 			doc.Problems = append(doc.Problems, jsonProblem{Vendor: string(b.Scope.Vendor), Section: p.Section, Detail: p.Detail})
 		}
@@ -196,7 +179,6 @@ func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
 			Email:       d.Acct.Email,
 			Launcher:    v.Launcher,
 			Plan:        v.Plan,
-			Current:     v.Current,
 			Health:      healthNames[v.Health],
 			DirMismatch: v.DirMismatch,
 			Attempt: jsonAttempt{

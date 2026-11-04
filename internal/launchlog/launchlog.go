@@ -45,8 +45,9 @@ type Record struct {
 	PID    int    `json:"pid"`
 	CWD    string `json:"cwd"`
 
-	// Mode is how the account came to be decided: "auto", "pinned", "named",
-	// "last" or "picker". Reason is the rule's own word for its choice.
+	// Mode is how the account came to be decided: "auto", "named", "last" or
+	// "picker" — "pinned" in records written before every bare launch placed
+	// itself. Reason is the rule's own word for its choice.
 	Mode     string `json:"mode"`
 	Reason   string `json:"reason"`
 	Rule     string `json:"rule"`

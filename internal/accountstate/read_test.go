@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -51,16 +50,8 @@ func TestReadDiskFacts(t *testing.T) {
 	if _, err := st.Complete(key, decs[0].Generation, state.OutcomeStored, []byte(body), now); err != nil {
 		t.Fatal(err)
 	}
-	if err := accounts.Discover(cfg).SetCurrent(accounts.Account{Scope: cfg, Name: "b@x.com"}); err != nil {
-		t.Fatal(err)
-	}
-
 	t.Setenv("PATH", t.TempDir())
-	disk := Read(cfg, st, now)
-	list, current := disk.Accounts, disk.Routing.Current
-	if current != "b@x.com" {
-		t.Errorf("current = %q", current)
-	}
+	list := Read(cfg, st, now).Accounts
 	byName := map[string]Account{}
 	for _, a := range list {
 		byName[a.Acct.Name] = a
@@ -90,9 +81,6 @@ func TestReadDiskFacts(t *testing.T) {
 	b := byName["b@x.com"].View
 	if b.Obs == nil || b.Obs.Source != SourceCache || b.Obs.Rows[0].Percent != 31 {
 		t.Errorf("claude cache not replayed: %+v", b.Obs)
-	}
-	if !b.Current {
-		t.Error("current marker lost")
 	}
 }
 

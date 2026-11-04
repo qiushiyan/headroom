@@ -36,9 +36,9 @@ named failure.
 
 Done when the new row shows a plan and bars with no red `(dir says …!)` —
 that warning means the dir was logged in as the wrong account; `headroom
-login <email>` again. Repeat per subscription. With two or more logged in, `a` on the board
-makes bare launches choose the least-loaded account from then on; an account
-not yet logged in is left out of that choice until it is. An account bought
+login <email>` again. Repeat per subscription. Bare launches choose the
+least-loaded account; an account not yet logged in is left out of that
+choice until it is. An account bought
 for one job is kept to it by `headroom accounts reserve <email> <dir>...`. The primary needs nothing; its board name is
 its login's local part (`alice`), or `export HEADROOM_PRIMARY_NAME=<name>`.
 Board order after the primary: `~/.claude-accounts/.order`, one email per
@@ -84,8 +84,7 @@ own logins of the same subscriptions. Every command runs as that home
    --account <email>`, then `/login` as that email. Under another `HOME` no
    login keychain is searched, so the login lands in the dir's
    `.credentials.json`, which the home's unattended processes can read.
-4. The tool's launcher prefix: `headroom launch --auto --` (`--auto`, so the
-   home's own `.current` cannot pin it).
+4. The tool's launcher prefix: `headroom launch --auto --`.
 
 Done when `headroom check`, run as that home, reports no FAIL and its
 `ledger:` line counts the other home.
@@ -107,8 +106,8 @@ hand them to the user to reconcile. Only once nothing is left under
 `<dir>/projects`: `rmdir <dir>/projects && ln -s ~/.claude/projects
 <dir>/projects`. Done when `headroom check` passes topology and
 `headroom launch --account <email>` starts. Folded-in sessions carry no
-ownership evidence, so the picker resumes them on the current account until
-one is re-homed there (`x` on its row).
+ownership evidence, so the picker places them like new sessions until one
+is re-homed (`x` on its row).
 
 Every account's Claude Code cleanup sweep prunes that one store with its own
 `settings.json`'s `cleanupPeriodDays`, so the shortest wins. Once a second
@@ -133,15 +132,15 @@ removable accounts) — refuses while that account has a live session or an
 unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the
 account's own Keychain item and dir, scrubs `.order` and its reservation.
 Transcripts survive.
-Done when `headroom` no longer lists the account; if the default pointed
-there, `headroom accounts` repicks. The same command clears stranded
+Done when `headroom` no longer lists the account. The same command clears
+stranded
 `<name>.lock` debris.
 
 ## Shell launchers (optional)
 
 Short names over the engine — the shell owns the spelling, headroom owns
 the routing. A wrapper passes names and flags and nothing else:
-`CLAUDE_CONFIG_DIR`, `.current` and every check stay in `headroom launch`,
+`CLAUDE_CONFIG_DIR` and every check stay in `headroom launch`,
 re-resolved from PATH at each keystroke, while a shell function is frozen
 at shell init. Codex gets the same pair over `headroom launch --vendor
 codex` and `HEADROOM_CODEX_LAUNCHER_FORMAT`. The starter set (`x`, `xa`, `xacc` — the board, passed

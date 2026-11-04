@@ -1,6 +1,6 @@
 #!/bin/sh
 # PTY harness for the picker — the behavior `go test` can't reach: real
-# raw-mode terminal sessions, selection/cancel through a pty, and
+# raw-mode terminal sessions, keys and quitting through a pty, and
 # signal-time terminal restoration. Driven with expect(1) (ships with
 # macOS); `make test-pty` runs it.
 #
@@ -158,7 +158,7 @@ fi
 # the interactive case alone would stay green with the one-shot path
 # quietly printing blocks.
 compact_out=$("$HEADROOM_BIN" accounts --compact 2>/dev/null)
-if ! printf '%s\n' "$compact_out" | head -1 | grep -q '^account' ||
+if ! printf '%s\n' "$compact_out" | grep -q '^account' ||
     [ "$(printf '%s\n' "$compact_out" | grep -c '@x.com')" -ne 2 ]; then
     echo "FAIL compact-print: off a terminal, accounts --compact must print the header and one row per account"
     printf '%s\n' "$compact_out" | sed 's/^/     /'
@@ -167,41 +167,31 @@ else
     echo "ok   compact-print"
 fi
 
-# Arrows + enter select the second account and write state.
-run accounts_write
-if [ "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "a@x.com" ]; then
-    echo "FAIL accounts_write: .current not written with a@x.com"
-    fail=1
-fi
-
-# ESC cancels and writes nothing.
+# ESC closes the board and writes nothing.
 run accounts_cancel
 if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
-    echo "FAIL accounts_cancel: cancel must write nothing"
+    echo "FAIL accounts_cancel: closing must write nothing"
     fail=1
 fi
 
 # The board redraws its countdown, survives a burst of refresh keys, and quits.
 run accounts_refresh
 
-# The compact layout draws its column header and one row per account, moves
-# the selection and quits clean — the same loop under a second presentation.
+# The compact layout draws its column header and one row per account and quits
+# clean — the same loop under a second presentation.
 run accounts_compact
 if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
     echo "FAIL accounts_compact: quit must write nothing"
     fail=1
 fi
 
-# `a` records auto for the visible vendor (the script checks the file between
-# its two boards); the board then says so, and enter pins an account again.
+# The board marks the next account; enter and a, the keys that once recorded
+# routing, write nothing.
 run accounts_auto
-case "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)" in
-primary | a@x.com | b@x.com) ;;
-*)
-    echo "FAIL accounts_auto: enter under auto left .current as '$(cat "$HEADROOM_ACCOUNTS_ROOT/.current" 2>/dev/null)', want an account"
+if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+    echo "FAIL accounts_auto: enter or a wrote .current ('$(cat "$HEADROOM_ACCOUNTS_ROOT/.current")')"
     fail=1
-    ;;
-esac
+fi
 
 # Automatic placement through the real binary. Four more accounts with a valid
 # topology join a@x.com; the primary cannot be launched under a re-pointed
@@ -214,14 +204,12 @@ for n in c d e f; do
     ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/$n@x.com/projects"
 done
 rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
-printf 'auto\n' >"$HEADROOM_ACCOUNTS_ROOT/.current"
 
-# A dry run changes nothing: no state file, no log, the mode untouched.
+# A dry run changes nothing: no state file, no log.
 dry_out=$("$HEADROOM_BIN" launch --dry-run 2>&1) && dry_code=0 || dry_code=$?
 if [ "$dry_code" != 0 ] || ! printf '%s\n' "$dry_out" | grep -q 'would start claude on a@x.com' ||
     ! printf '%s\n' "$dry_out" | grep -q 'b@x.com.*excluded' ||
-    [ -e "$HEADROOM_ACCOUNTS_ROOT/state.json" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl" ] ||
-    [ "$(cat "$HEADROOM_ACCOUNTS_ROOT/.current")" != "auto" ]; then
+    [ -e "$HEADROOM_ACCOUNTS_ROOT/state.json" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl" ]; then
     echo "FAIL launch-dry-run: exit $dry_code, or it left something behind"
     printf '%s\n' "$dry_out" | sed 's/^/     /'
     fail=1
@@ -266,13 +254,10 @@ if [ -z "$first" ] || [ "$first" != "$second" ] || ! grep -q "this session's acc
 else
     echo "ok   launch-auto-session"
 fi
-# The one-shot board says the mode and marks one account's row — the header
-# names the mark too, so the count is of rows; --json says the mode as well.
+# The one-shot board marks one account's row.
 auto_board=$("$HEADROOM_BIN" 2>/dev/null)
-if ! printf '%s\n' "$auto_board" | grep -q 'bare launches are automatic' ||
-    [ "$(printf '%s\n' "$auto_board" | grep -c '@x\.com.*← next')" != 1 ] ||
-    ! "$HEADROOM_BIN" --json 2>/dev/null | grep -q '"claude": "auto"'; then
-    echo "FAIL board-auto: the board under auto must say the mode and mark one row"
+if [ "$(printf '%s\n' "$auto_board" | grep -c '@x\.com.*← next')" != 1 ]; then
+    echo "FAIL board-auto: the board must mark one row"
     printf '%s\n' "$auto_board" | sed 's/^/     /'
     fail=1
 else
@@ -280,7 +265,7 @@ else
 fi
 # Back to the fixture every other case expects.
 for n in c d e f; do rm -rf "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"; done
-rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
 
 # Two vendors. Codex is absent from every other case — its directories do not
 # exist under the fixture home, so those frames are what they always were —
@@ -296,7 +281,7 @@ printf '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"%s","
     "$id_token" "$access_token" >"$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/auth.json"
 
 # Off a terminal, two vendors print under a heading each, and --json is still
-# one document whose `current` is an object keyed by vendor.
+# one document with a vendor on every account.
 two_out=$("$HEADROOM_BIN" 2>/dev/null)
 if ! printf '%s\n' "$two_out" | grep -q '^Claude Code$' || ! printf '%s\n' "$two_out" | grep -q '^Codex$' ||
     ! printf '%s\n' "$two_out" | grep -q 'cx@x.com'; then
@@ -307,9 +292,8 @@ else
     echo "ok   two-vendor-print"
 fi
 two_json=$("$HEADROOM_BIN" --json 2>/dev/null)
-if ! printf '%s' "$two_json" | grep -q '"schema": 7' || ! printf '%s' "$two_json" | grep -q '"codex": "' ||
-    ! printf '%s' "$two_json" | grep -q '"vendor": "codex"'; then
-    echo "FAIL two-vendor-json: want schema 7, a vendor per account and current keyed by vendor"
+if ! printf '%s' "$two_json" | grep -q '"schema": 8' || ! printf '%s' "$two_json" | grep -q '"vendor": "codex"'; then
+    echo "FAIL two-vendor-json: want schema 8 and a vendor per account"
     fail=1
 else
     echo "ok   two-vendor-json"
@@ -322,26 +306,12 @@ else
     echo "ok   one-vendor-print"
 fi
 
-# Tab switches pages; enter on the Codex page writes only Codex's .current.
+# Tab switches pages; enter and a on the Codex page write neither vendor's
+# .current.
 rm -f "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" "$HEADROOM_CODEX_ACCOUNTS_ROOT/state.json"
 run accounts_tab
-if [ "$(cat "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "cx@x.com" ]; then
-    echo "FAIL accounts_tab: Codex .current not written with cx@x.com"
-    fail=1
-fi
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
-    echo "FAIL accounts_tab: enter on the Codex page wrote Claude Code's .current"
-    fail=1
-fi
-# `a` on the Codex page records auto for Codex and leaves Claude Code alone.
-rm -f "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" "$HEADROOM_CODEX_ACCOUNTS_ROOT/state.json"
-run accounts_tab_auto
-if [ "$(cat "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" 2>/dev/null)" != "auto" ]; then
-    echo "FAIL accounts_tab_auto: Codex .current not written with auto"
-    fail=1
-fi
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
-    echo "FAIL accounts_tab_auto: a on the Codex page wrote Claude Code's .current"
+if [ -e "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+    echo "FAIL accounts_tab: a key on the Codex page wrote a .current"
     fail=1
 fi
 # Codex goes absent again for everything below.

@@ -18,8 +18,8 @@ This file records the mental model and the vendor contracts — the things the
 code can't say about itself.
 
 Most of this file is written about Claude Code, the vendor the model was
-built on. The mechanisms it describes — discovery, `.current`, the claim
-ledger, the three axes, launch preparation — are the same code for Codex;
+built on. The mechanisms it describes — discovery, the claim ledger, the
+three axes, launch preparation — are the same code for Codex;
 A second vendor: Codex says where Codex differs and why.
 
 ## The system observed: the filesystem is the registry
@@ -73,25 +73,22 @@ Everything derives from that tree:
   dir, from local state: ~170ms, no network, no usage budget. headroom infers
   account health from credential timestamps only when that command can't
   answer.
-- **Two one-line files beside the accounts.** `.current` says what a bare
-  `x` does next — the name of the account it targets, or the word `auto`
-  (see Automatic placement) — written atomically by headroom alone (the
-  board's enter and `a`, `launch --remember`) and read strictly by headroom
-  alone (the discovered set's `Bare`; see The launch surface for why corrupt
-  state refuses rather than defaulting). `.order` (optional; one email per line, `#`
-  comments) sets display order after the primary; unlisted accounts follow
-  alphabetically — configuration a human edits. Both stay outside
-  `state.json` on purpose; see The one file headroom writes. A third,
-  `.ledger` (optional, Claude Code only), names the accounts root whose
-  ledger this home spends against — see A second home. `.reserved` (optional,
-  one `<account><TAB><dir>` per line) keeps accounts for repositories, written
-  by `accounts reserve` and read as strictly as `.current` — see Automatic
-  placement.
+- **Small files beside the accounts.** `.order` (optional; one email per
+  line, `#` comments) sets display order after the primary; unlisted
+  accounts follow alphabetically — configuration a human edits. `.reserved`
+  (optional, one `<account><TAB><dir>` per line) keeps accounts for
+  repositories, written by `accounts reserve` and read strictly: damage
+  refuses every automatic choice rather than releasing an account — see
+  Automatic placement. `.ledger` (optional, Claude Code only) names the
+  accounts root whose ledger this home spends against — see A second home.
+  `.order`, `.reserved` and `.ledger` stay outside `state.json` on purpose;
+  see The one file headroom writes. Nothing records where a bare launch goes: the rule decides it at
+  every launch.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
 Keychain, never refreshes a token, and never writes vendor login or quota
 state — Claude Code owns all of it. `login` is no exception: it runs Claude
-Code's own login command, and Claude Code stores what results. What it writes is its own: `.current`,
+Code's own login command, and Claude Code stores what results. What it writes is its own:
 one `state.json` holding non-secret request timestamps, the usage
 responses it fetched itself, session re-homes, the record of recent
 launches and the headless runs, `launches.jsonl` and `usage.jsonl`, the
@@ -151,7 +148,7 @@ verifier's error messages name something that exists on every install:
   store link) are skipped and named: a config package that happens to hold
   a login must not make two dirs one login, and `check` fails on a dir
   whose login, history or registry is a link. Seeding never writes
-  `.current` or `.order`.
+  `.order`.
   A dir that fails half-way is left in place and named: it is inert
   (discovery lists it, launch refuses it on topology) and deleting a
   directory to tidy up is not seeding's call.
@@ -183,9 +180,7 @@ verifier's error messages name something that exists on every install:
   `.credentials.json`; `os.RemoveAll` does not
   follow symlinks, so the `projects/` link goes and the store behind it
   stays — pinned by test), then every `.order` line discovery reads as that
-  account, a trailing comment included, and its reservation. `.current` is never
-  rewritten: a removed current account makes launch refuse until the board
-  repicks, so corrupt-vs-chosen stays distinguishable. Transcripts survive
+  account, a trailing comment included, and its reservation. Transcripts survive
   (they are the machine's); the picker shows the dead owner as degraded
   until each is re-homed.
 
@@ -567,8 +562,8 @@ headless runs.
   the generation its claim was issued under, so a slow request that outlived
   its claim is dropped instead of overwriting a newer answer.
 - **One store per accounts root, one ledger per set of homes.** Each vendor's
-  `state.json` sits under its own accounts root beside its own `.current` and
-  `.order`, so nothing in Claude Code's files is re-keyed by Codex existing,
+  `state.json` sits under its own accounts root beside its own `.order` and
+  `.reserved`, so nothing in Claude Code's files is re-keyed by Codex existing,
   and the store a body was read from says which vendor's parser reads it. A
   file holds two halves with different owners: the *subscription ledger* —
   the request ledger, the responses, the recent launches, the headless runs
@@ -576,8 +571,8 @@ headless runs.
   *re-homes* are about one home's sessions, named by that home's account
   names. A home alone keeps both in its one file.
 - **A renamed primary takes its records with it.** Everything a person or a
-  launch writes about an account is written under its name — `.current`,
-  `.reserved`, the re-homes, `--last`, headless tokens — and the primary's
+  launch writes about an account is written under its name — `.reserved`,
+  the re-homes, `--last`, headless tokens — and the primary's
   name is the one name that can change under them, when a host file pins
   another (`HEADROOM_PRIMARY_NAME`, `HEADROOM_CODEX_PRIMARY_NAME`). The home's
   document records the name its records are under, and every run that loads
@@ -652,12 +647,12 @@ headless runs.
   section that will not decode is set aside and the record starts empty: that
   costs a few launches their view of each other and nothing else. A binary
   from before the section existed carries it through its writes untouched.
-- **`.current` and `.order` stay out of it.** `.current` is one human-legible
-  routing fact with its own failure policy — corrupt refuses the launch,
-  visibly — while this document's ledger section is disposable and
-  self-heals by quarantine; folding the two together would put a routing
-  decision under the ledger's corruption policy or vice versa. `.order` is
-  configuration a human edits, comments included.
+- **`.reserved` and `.order` stay out of it.** `.reserved` is a person's
+  statement with its own failure policy — damage refuses every automatic
+  choice, visibly — while this document's ledger section is disposable and
+  self-heals by quarantine; one file would put a reservation under the
+  ledger's corruption policy or the ledger under the reservation's. `.order`
+  is configuration a human edits, comments included.
 
 A `legacy_import` section in an older file is the checkpoint of a retired
 one-time upgrade from `.owners` and `.throttle`; nothing reads it, and like
@@ -686,22 +681,26 @@ asking after a few minutes without a keypress, since a surface that polls for
 hours with nobody looking is the background daemon this design declines to
 have, wearing a TUI.
 
-The interactive board is one page per present vendor. A page owns its list,
-selection, scroll position, schedule and its in-flight round, so a result
-lands on the page that started the round and never on whichever page is
-visible when it arrives. Only the visible page starts rounds: a hidden page
-keeps its figures and their age, its deadline never wakes the loop, and one
-that passed while hidden is simply due at the next tick. Tab switches pages,
-the tab bar ranks with the header when the terminal is short, and enter
-records the visible page's vendor's `.current` and nothing else. With one
-vendor there is no tab bar and no heading. Off a terminal each present
+The interactive board is one page per present vendor, and it is read-only:
+no key on it records routing or starts a session. It once pinned the row
+under its cursor on enter, and a stray enter on a board opened only to read
+it took every later bare launch out of automatic placement; choosing an
+account is naming it for one launch. A page owns its list, scroll position,
+schedule and its in-flight round, so a result lands on the page that started
+the round and never on whichever page is visible when it arrives. Only the
+visible page starts rounds: a hidden page keeps its figures and their age,
+its deadline never wakes the loop, and one that passed while hidden is
+simply due at the next tick. Tab switches pages, the arrows scroll a board
+taller than the terminal, the tab bar ranks with the header when the
+terminal is short, and quitting exits 0. With one vendor there is no tab bar
+and no heading. Off a terminal each present
 vendor runs one round, side by side, and the pages print in vendor order
 under a heading each.
 
 `r` means *ask now*, and the claim — never the board's loop — answers. A
 round owns its account list and result channel until the channel has closed
 and drained. Its local half re-reads everything free (health,
-discovery, credentials, `.current`, the store's replay of what another
+discovery, credentials, the store's replay of what another
 surface may have bought seconds ago); its budget half is the claim plus
 whatever fetches it permits. `r` runs both immediately; an account still
 inside its quiet period comes back annotated with when it can next be asked,
@@ -725,7 +724,7 @@ instrument for them twice over: it probes health for every account
 (`claude auth status` at ~170ms each is the dominant term of its ~300ms
 warm), and it may spend every account's request budget to answer about one.
 `headroom limits [--vendor <v>] [--account <name>]` is the read that fits:
-the same versioned document, assembled from disk alone — discovery, `.current`, and
+the same versioned document, assembled from disk alone — discovery and
 the newest stored observation through `accountstate.Read`
 (headroom's own store and Claude Code's cache, newest wins). No health
 probe, no Keychain read, no claim, no request: it is not a second door onto
@@ -826,11 +825,10 @@ engineered from the 2.1.220 store and all perishable:
   re-homes of deleted transcripts leaves a record younger than ten minutes
   alone — a first turn's id is known before the vendor has written a line.
   Degradation is visible: no evidence, a re-home to a deleted account, or a
-  same-instant conflict each fall back to the current account under their
-  own tag. Under auto mode there is no current account, and each of those
-  asks the placement rule instead; the override then moves the session to
-  the least-loaded of the *other* accounts, since moving means somewhere
-  other than where it is.
+  same-instant conflict each ask the placement rule under their own tag, as
+  a new session would — never the primary, which no evidence chose. The
+  override moves the session to the least-loaded of the *other* accounts,
+  since moving means somewhere other than where it is.
 - **Retention is one setting, read per account.** Claude Code's cleanup
   sweep deletes transcripts older than the `cleanupPeriodDays` in its config
   dir's `settings.json` (30 when unset), and through the store link every
@@ -888,9 +886,7 @@ engineered from the 2.1.220 store and all perishable:
   dir was entered" (regardless of how claude then exited). Nothing
   routing-relevant is representable in it, and deleting the flag changes
   no routing — it is advisory by construction. A write failure is one
-  stderr line, never a refusal. Deliberately without `--remember`, which
-  the exec makes tempting: `.current` means "where new sessions go", and
-  this picker leaves it untouched. The picker itself does no network I/O
+  stderr line, never a refusal. The picker itself does no network I/O
   and spends none of the usage budget; a resume is a launch like any other
   (see Automatic placement), so one the rule places leaves the same
   detached refresh behind it.
@@ -913,7 +909,7 @@ that session's `CLAUDE_CONFIG_DIR` in its global environment, and a wrapper
 that set the variable for extra accounts but left the ambient environment
 alone for the primary silently routed every "primary" launch to whatever
 account that session ran on — while the board truthfully reported the
-primary as pinned. The invariant, and the reason `internal/launch` exists:
+primary as the target. The invariant, and the reason `internal/launch` exists:
 
 - **The child environment is a total function of the validated decision.**
   The variables are one policy table with a row per vendor
@@ -930,25 +926,19 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   their environments through the same constructor, so a polluted shell can
   neither re-route a launch nor make every health answer come from one
   login.
-- **`headroom launch [--auto | --last | --account <name>] [--remember]
-  [--dry-run] [-- args]`** decides the account (bare means the recorded
-  choice: the pinned account, or under auto the rule's — see Automatic
-  placement), optionally
-  records it as where bare `x` goes next — before the exec, and a failed
-  record refuses the launch — then execs `claude`, preserving stdio,
-  signals and exit status by replacement rather than proxying. `--remember`
-  is an explicit ask, never a launcher default: the wrappers' generated
-  `x-<name>` launchers deliberately omit it, because a named launch means
-  "this session, that account" — scoped — and a pin riding along as its
-  side effect let a two-minute hop to another account silently retarget
-  every later bare `x`. In ordinary use only the board's enter moves
-  `.current`; the flag remains the scriptable spelling of that decision.
-  Both launch entry points call `launch.Prepare` before recording a choice:
-  routing, relocated-primary refusal (a primary selected by absence under a
+- **`headroom launch [--auto | --last | --account <name>] [--dry-run] [--
+  args]`** decides the account — bare or `--auto`, the rule's (see Automatic
+  placement); a name, that account for this launch alone — then execs
+  `claude`, preserving stdio, signals and exit status by replacement rather
+  than proxying. Nothing records a choice for later launches. A recorded
+  default was tried: whether a board's enter or a flag set it, a pin made by
+  mistake silently took every later bare `x` out of placement, and naming an
+  account per launch covers every deliberate use. Both launch entry points
+  call `launch.Prepare` before anything is written: routing,
+  relocated-primary refusal (a primary selected by absence under a
   re-pointed `HEADROOM_HOME`), shared topology, executable path and child
-  environment are resolved together. A failure at that stage leaves
-  the choice untouched. If process replacement fails after persistence, the
-  remembered account or re-home remains recorded and the error says so.
+  environment are resolved together. If process replacement fails after
+  persistence, a re-home remains recorded and the error says so.
 - **The shared-sessions topology is headroom's invariant, verified at
   launch.** The session surface's whole model — one picker over one
   machine-global store — holds only while every extra account's `projects/`
@@ -960,7 +950,7 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   cannot disagree), and creation belongs to `accounts add`: a launch that
   quietly repaired topology would hide exactly the state the refusal exists
   to surface.
-  **`headroom resolve [<name>]`** prints
+  **`headroom resolve <name>`** prints
   `canonical-name<TAB>config-dir<TAB>kind` (kind: `primary`|`extra`) for
   shell preflight: the dir so personal checks can run against it, the kind
   so *which* preflight applies is headroom's classification — a wrapper
@@ -968,25 +958,22 @@ primary as pinned. The invariant, and the reason `internal/launch` exists:
   silently skips its checks whenever a `HEADROOM_*` override moves the real
   one. Resolve is advice, not a capability: launch revalidates whatever
   comes back.
-- **Selection fails closed.** An absent `.current` is the documented
-  fresh-start default (the primary, pinned); the reserved word is auto mode;
-  an empty, unreadable one, or one naming a deleted account, refuses with an
-  actionable message — on the
-  launch, in `check` (an own-state FAIL), and as an unset `← current` marker on
-  the board. The old shell fallback turned all of those into "launch the
-  primary with permissions bypassed", which made corruption
-  indistinguishable from a choice; no surface may mint a primary decision
-  from corrupt routing state, resume's attribution fallback included (owner
-  → valid current → refuse — never a final fall to primary).
+- **Selection fails closed.** A name nothing answers to, or two accounts
+  answer to, refuses with an actionable message; an empty one is a caller's
+  expansion bug and the command line refuses it. The old shell fallback
+  turned an unresolvable choice into "launch the primary with permissions
+  bypassed", which made corruption indistinguishable from a choice; no
+  surface mints a primary decision nobody made — a resume without an owner
+  to follow asks the rule, never falls to the primary.
 - **A neutralized inherited value is visible when it cannot be explained,
   never silently obeyed.** Every managed launch strips the ambient variable
   regardless; what varies is the reporting. A value naming a discovered
   extra account's dir is what every shell *inside* a managed session
   inherits — this machine's ordinary environment all day — and a notice
-  that fires on the ordinary case is noise, so the board's note and the
-  launch's notice stay quiet for it (the discovered set's `KnownDir`,
-  one classifier for both, beside the target's own conflict classifier so
-  diagnostics and the environment built cannot disagree). What stays loud, because tools
+  that fires on the ordinary case is noise, so the launch's notice stays
+  quiet for it (the discovered set's `KnownDir`, beside the target's own
+  conflict classifier so diagnostics and the environment built cannot
+  disagree). What stays loud, because tools
   *outside* the managed path still obey the variable: a relative value
   (the stale-wrapper incident signature — an own-state FAIL in `check`), a
   value naming nothing discovered, and the primary dir spelled explicitly
@@ -1004,7 +991,7 @@ resolves there. Short local-part aliases are shell convenience, invisible
 to headroom — the old shared naming policy ("keep the two rule copies in
 sync") was a cross-repo contract that could drift. Wrappers own what is
 personal: the share source at seeding, flags, aliases — and they never touch
-`CLAUDE_CONFIG_DIR`, never parse `.current`, and hold no verification a
+`CLAUDE_CONFIG_DIR` and hold no verification a
 launch depends on (topology verification moved into the binary for exactly
 that reason). When headroom is missing or refuses, the wrapper stops loudly
 rather than degrading to bare `claude`, which in a polluted shell is
@@ -1029,15 +1016,12 @@ name.)
 
 ## Automatic placement
 
-A person with several subscriptions spreads sessions by hand: a named launcher
-per session, or a trip to the board. Under auto mode a bare launch chooses the
-account itself. The mode lives where the pin lives — `.current` holds an
-account name or the word `auto` — because it is the same routing fact, and one
-strict read with one failure policy cannot disagree with itself. It is not a
-flag the shell wrapper passes: shell functions are frozen at shell init, and
-panes would disagree about what `x` does for weeks. The costs are a reserved
-word (an account so named makes the file ambiguous, and ambiguity refuses) and
-that turning auto on forgets the pin.
+A person with several subscriptions would otherwise spread sessions by hand, a
+named launcher per session. A bare launch chooses the account itself, every
+time: there is no mode to turn on and nothing a shell wrapper passes, since
+shell functions are frozen at shell init and panes would disagree about what
+`x` does for weeks. Naming an account is the one way to overrule the rule,
+and it lasts one launch.
 
 - **Placement is launch-time and nothing else.** A session runs where it was
   started; no request is proxied and no running session is moved. The promise
@@ -1106,13 +1090,13 @@ that turning auto on forgets the pin.
   out when its identity document parsed and names nobody, its refresh token is
   demonstrably expired, the vendor says it is blocked, or it cannot be
   launched at all. A credential that could not be read excludes nothing: with
-  a locked Keychain every account reads that way, and in auto mode every
-  usable account is a correct answer. For the same reason missing bookkeeping
+  a locked Keychain every account reads that way, and for an automatic
+  launch every usable account is a correct answer. For the same reason missing bookkeeping
   never refuses an ordinary launch: a busy lock or a newer schema costs the
   launch its record and a line on stderr, and a placements section that does
   not decode is set aside and begun again by the launch's own placement,
-  like the request ledger. Corrupt routing state still refuses, since an
-  unreadable `.current` says nothing about what the person chose.
+  like the request ledger. A damaged `.reserved` still refuses, since it
+  says nothing about which accounts the person kept for what.
 - **A reservation says what an account may be used for, never that it goes
   first.** A subscription bought for one job is kept to it by `accounts
   reserve <account> <dir>...`. Elsewhere an automatic choice cannot take the
@@ -1134,12 +1118,12 @@ that turning auto on forgets the pin.
   `~/dev/itell-cms` is not inside `~/dev/itell`. What fails closes: a directory
   gone leaves its account launchable only by name, because a missing path is
   not permission, and a `.reserved` that cannot be read refuses every automatic
-  choice and leaves a launch that names its account alone. Naming, a pin and
+  choice and leaves a launch that names its account alone. Naming and
   `--last` are the person's word and are obeyed anywhere, but choosing a session
   is not naming an account: outside the repositories a resume moves off the
   account and records the move, in the picker too, whose owner is otherwise
-  forced. A reservation is a home's, like `.current`, and binds no other home's
-  login of that subscription.
+  forced. A reservation is a home's, and binds no other home's login of that
+  subscription.
 - **The board's mark and the launch are one judgment.** `← next` and a launch
   build their candidates in one place (`launchop`'s `Mark` and `Gather`), from
   the same credential reader and the same exclusions, so the row the board marks is
@@ -1154,7 +1138,7 @@ that turning auto on forgets the pin.
   re-read. A launch from another terminal shows at the next round. A
   reservation makes the choice depend on the directory, so the mark speaks for
   a launch from where the board was opened. The same counting
-  gives every row its load on the board and in `--json` (schema 7): busy
+  gives every row its load on the board and in `--json` (schema 8): busy
   sessions and recent launches, with another home's share named, so the
   owner sees what the other home is running on each subscription.
 - **Choosing and recording are one store operation.** `state.Place` reads the
@@ -1162,16 +1146,16 @@ that turning auto on forgets the pin.
   section, which is `Claim`'s shape applied to launches: two launches started
   together cannot both see an account as empty. The rule is imported and
   called by the store, so no caller hands a function into the lock. Every
-  launch that can start goes through it — a pinned or named one with its
-  account forced — because a session started by name is load an automatic
+  launch that can start goes through it — a named one or a resume on its
+  owner with the account forced — because a session started by name is load an automatic
   one must count.
 - **A launch is one operation, whoever asks for it.** `headroom launch` and
   the session picker each build a request and commit it through `launchop`'s
-  plan. It refuses first whatever is known before a write — a named or pinned account
-  that cannot be launched, `--auto --remember` the rule would refuse — since
+  plan. It refuses first whatever is known before a write — a named account
+  that cannot be launched, a reservation that cannot be read — since
   `state.Place` registers the home and prunes even when its rule refuses, and
-  a launch that cannot start must leave nothing behind; then it records
-  `.current` when asked, places and logs, and the surface announces the
+  a launch that cannot start must leave nothing behind; then it places and
+  logs, and the surface announces the
   outcome and execs. What the launch means for a session travels into
   `state.Place` with it, so the load and the session's re-home
   are one write: both land or neither does. The picker's `x` is the one
@@ -1187,8 +1171,8 @@ that turning auto on forgets the pin.
   every run would grow the file until somebody pressed `x`. A surface keeps
   its terminal, its working directory and the exec.
 - **Every launch says where it went, and what its figures rest on.** One line
-  on stderr before the vendor starts, on every path — automatic, pinned,
-  named, `--last`, the picker — because a line that appears on some paths
+  on stderr before the vendor starts, on every path — automatic, named,
+  `--last`, the picker — because a line that appears on some paths
   teaches nothing about the others. A figure from an old observation is
   printed as a bound (`≥12%`), a window whose reset has passed as
   `window ended`, a percent that does not parse as `?%`: the rule counts
@@ -1230,7 +1214,7 @@ that turning auto on forgets the pin.
   apart: where a session is routed (the re-home), which account drove it (the
   registry and prompt history), and how much load is on its way (the
   placements).
-Codex follows the same mode through its own `.current`, with what it has:
+Codex places its launches the same way, with what it has:
 the shortest window of its main rate limit as the session window, its
 allowance as the block, and launches as the only load. It has no registry to
 read and no session ownership, so `resume` is placed like a new session.
@@ -1285,11 +1269,12 @@ was shown and chose, and what every account's windows did afterwards.
   before its own. Each outcome — the chosen account's window after a launch,
   a window that reached 80%, a weekly renewal — counts under the rule of the
   newest automatic launch into that window, whichever home made it, and
-  under *unplaced* when only pinned, named or resumed work went there. Time
+  under *unplaced* when only named or resumed work went there (pinned work,
+  in logs older than placement on every bare launch). Time
   across every account is reported beside them and owned by no rule: the
   logs say which launches went into a window, never which rule a moment
   belongs to, and charging time to the rule in force would charge it for
-  windows pinned launches filled.
+  windows named launches filled.
 - **Every figure says which way it bounds.** A percent never falls within a
   window, so a window near its limit stays near until its reset; the last
   reading before a renewal is usage at least that, and the room it left at
@@ -1333,7 +1318,7 @@ spend it.
   both.
 - **A second accounts root that spends against the first's ledger.** The
   second home is an ordinary home — its `HOME`, its primary, its accounts root,
-  its `.current`, `.order`, launch log and session store — whose accounts root
+  its `.order`, `.reserved`, launch log and session store — whose accounts root
   holds `.ledger`, one line naming the first home's accounts root. `headroom
   accounts ledger <root>` writes it by the rule `config.Load` reads it with:
   absolute, an existing directory, not the Codex root, and a ledger of its
@@ -1346,7 +1331,7 @@ spend it.
   filling, silently. It is a file and not a variable because the second
   home's processes start from several places (plists, ssh, sessions
   dispatching sessions), and a variable lost on one path forks the ledger on
-  that path alone; a file beside `.current` travels with `HOME`. Two other shapes lose on the re-homes: a profile kept
+  that path alone; a file in the accounts root travels with `HOME`. Two other shapes lose on the re-homes: a profile kept
   in the owner's configuration is unreachable from a process that has only
   its own `HOME`, and one shared file holding both homes' re-homes would mix
   records named by account names that both homes spell alike — and each
@@ -1566,11 +1551,11 @@ The vendor set is closed at `claude` and `codex`. `config.Load` resolves one
 `Scope` per vendor — paths, binary, usage URL, request spacing, launcher
 format, environment policy, presence — and refuses accounts roots that alias
 each other. `accounts.Discover(scope)` returns a `Set` that owns `Select`,
-`SetCurrent` and `KnownDir`; an `Account` carries its scope, so no operation
+`Has` and `KnownDir`; an `Account` carries its scope, so no operation
 takes a scope beside an account. The set travels with whatever was built from
 it — a round, the page that shows it, the disk snapshot — and is never rebuilt
-from a scope plus a list. Each vendor keeps its own `.current`, `.order`,
-`.reserved` and `state.json` under its own accounts root; a second home names another root's
+from a scope plus a list. Each vendor keeps its own `.order`, `.reserved`
+and `state.json` under its own accounts root; a second home names another root's
 ledger in its `.ledger` (see A second home).
 
 - **The command line** is `cmd/headroom`: Kong structs on clikit
@@ -1595,8 +1580,8 @@ ledger in its `.ledger` (see A second home).
   streams; `cmd/headroom`'s `host` binds the live edges once, and a test binds
   its own.
 - **Account facts and live requests have separate owners.** `accountstate`
-  assembles discovery, strict `.current` resolution, the newest usable disk
-  observation and a Codex account's plan; it owns `Health`, `Observation`
+  assembles discovery, the newest usable disk observation and a Codex
+  account's plan; it owns `Health`, `Observation`
   and `Attempt`, and its read has no credential, probe or HTTP dependency.
   `refresh` owns credential and identity eligibility, durable request
   claims, parallel fetches, response interpretation and completion
@@ -1635,15 +1620,14 @@ ledger in its `.ledger` (see A second home).
   owner evidence from this home's claims alone) and, when the rule will
   choose, credentials — and builds the candidates. The `Plan` it returns
   previews (the dry run, through the same refusals) or commits: preflight
-  refuses what is known before any write, then `.current` if asked,
-  `state.Place` (the placement and a session's re-home in one locked
+  refuses what is known before any write, then `state.Place` (the placement and a session's re-home in one locked
   section), the launch log line, and for an automatic choice the detached
   refresh. `headroom launch` and the session picker both commit through it,
   keeping only their terminal, working directory, announcement and exec.
   `Mark` is the same gathering for the board's `← next` and load figures, and
   `PlaceHeadless` and `Started` are the protocol for a headless caller, with
-  its own eligibility and no exec. `accounts.Set.Bare` is the one reader of
-  `.current`, `accounts.ReadReservations` of `.reserved`.
+  its own eligibility and no exec. `accounts.ReadReservations` is the one
+  reader of `.reserved`.
 - **Login.** `app/login.go` chooses accounts on the board's health evidence,
   builds `claude auth login` under `launch.Prepare`'s environment with the
   binary itself as `$BROWSER` (`loginCommand`, for the batch and the holder
@@ -1780,14 +1764,14 @@ the session picker's header holding the first row of a full, a short and a
 narrow pane.
 Automatic placement is exercised there through the real binary: five launches
 started together reach five accounts, a session named on its first turn
-resumes on the same account, the board under auto marks an account's row,
-and `a` and enter move one vendor's `.current` between the word and a pin.
+resumes on the same account, the board marks one account's row, and no key
+on the board writes routing.
 Both vendors' accounts roots and usage URLs are fixture values from the
 harness's first command, because `HEADROOM_HOME` does not override an accounts
 root a caller's shell exports. Codex's fixture root does not exist until its
 block creates it — so every frame before that is the single-vendor one — and
 Codex is present for one block that pins the two-vendor print,
-tab switching, and enter on the Codex page writing Codex's `.current` alone.
+tab switching, and keys on the Codex page writing nothing.
 Successful session launch must hand the child the restored terminal mode;
 signals must restore it before exit. The harness uses fixture `claude` and
 `security` commands and redirects account and transcript state into a temporary

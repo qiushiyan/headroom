@@ -146,7 +146,7 @@ func TestApplyWritesEachAxisOnItsOwn(t *testing.T) {
 		{"a store error rides beside a refusal",
 			refresh.Result{Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429}, StoreErr: state.ErrReadOnly}, prior, state.ErrReadOnly.Error()},
 	} {
-		r := Of(accounts.Set{}, nil, accounts.Routing{}, []accountstate.Account{{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}})
+		r := Of(accounts.Set{}, nil, []accountstate.Account{{View: accountstate.Facts{Health: accountstate.HealthOK, Obs: prior}}})
 		r.Apply(Result{Result: c.result, of: r})
 		d := r.Accounts()[0]
 		if d.View.Obs != c.obs {
@@ -171,7 +171,7 @@ func TestApplyIgnoresAnotherRoundsResult(t *testing.T) {
 	facts := func() []accountstate.Account {
 		return []accountstate.Account{{View: accountstate.Facts{Label: "a@x.com"}}, {View: accountstate.Facts{Label: "b@x.com"}}}
 	}
-	ours, theirs := Of(accounts.Set{}, nil, accounts.Routing{}, facts()), Of(accounts.Set{}, nil, accounts.Routing{}, facts())
+	ours, theirs := Of(accounts.Set{}, nil, facts()), Of(accounts.Set{}, nil, facts())
 	src := make(chan refresh.Result, 1)
 	reading := &accountstate.Observation{Rows: []usage.Row{{Percent: 61}}, ObservedAt: time.Now().Unix(), Source: accountstate.SourceLive}
 	src <- refresh.Result{Index: 1, Attempt: accountstate.Attempt{State: accountstate.AttemptOK}, Observation: reading}

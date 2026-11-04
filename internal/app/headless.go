@@ -318,7 +318,7 @@ func HeadlessList(std Streams, scope config.Scope, asJSON bool, now time.Time) e
 		return err
 	}
 	st := state.Open(scope)
-	facts, _ := accountstate.Assemble(accounts.Discover(scope), st.Load(), now)
+	facts := accountstate.Assemble(accounts.Discover(scope), st.Load(), now)
 	doc := headlessListDoc{Schema: headlessSchema}
 	for _, fa := range facts {
 		tok, ok := tokens[fa.Acct.Name]

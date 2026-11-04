@@ -198,29 +198,26 @@ func TestFinishRacingPrintAlwaysEndsTheOutput(t *testing.T) {
 	}
 }
 
-// boardWindow ranks what a chooser needs: the selected block stays visible at
-// every height; the header (the compact layout's column headings, chrome that
-// never scrolls) comes next, since a row of figures without its headings is
+// boardWindow ranks what a reader needs: a body line stays visible at every
+// height; the header (the compact layout's column headings, chrome that never
+// scrolls) comes next, since a row of figures without its headings is
 // unreadable; and the footer goes first, since the refresh countdown is the
-// one thing a chooser can do without. Each renders whenever a body row can
+// one thing a reader can do without. Each renders whenever a body row can
 // stand beside everything that outranks it. The block layout has no header,
 // and the ranking is the same.
-func TestBoardWindowRanksHeaderBetweenSelectionAndFooter(t *testing.T) {
+func TestBoardWindowRanksHeaderBetweenBodyAndFooter(t *testing.T) {
 	const bodyLen, footerLen = 10, 2
 	for _, c := range []struct {
-		name                        string
-		selStart, selEnd, headerLen int
+		name           string
+		top, headerLen int
 	}{
-		{"blocks: a four-line block, no header", 4, 8, 0},
-		{"compact: a one-row selection under its headings", 4, 5, 1},
+		{"blocks: scrolled into the body, no header", 4, 0},
+		{"compact: scrolled into the body under its headings", 4, 1},
 	} {
 		for h := 1; h <= 14; h++ {
-			top, view, keepHeader, keepFooter := boardWindow(0, c.selStart, c.selEnd, bodyLen, c.headerLen, footerLen, h)
+			top, view, keepHeader, keepFooter := boardWindow(c.top, bodyLen, c.headerLen, footerLen, h)
 			if view < 1 || top < 0 || top+view > bodyLen {
 				t.Fatalf("%s, h=%d: window [%d,%d) out of a %d-line body", c.name, h, top, top+view, bodyLen)
-			}
-			if c.selStart < top || c.selStart >= top+view {
-				t.Fatalf("%s, h=%d: selection's first line %d outside window [%d,%d)", c.name, h, c.selStart, top, top+view)
 			}
 			rows := view
 			if keepHeader {
@@ -242,26 +239,24 @@ func TestBoardWindowRanksHeaderBetweenSelectionAndFooter(t *testing.T) {
 	}
 }
 
-// fitTop is the board's viewport: the selected block scrolls into view whole,
-// its first line winning when the block outgrows the viewport.
-func TestFitTop(t *testing.T) {
+// clampTop is the board's viewport: a scroll stays where it was put, and one
+// past either end stops at the end, so the next arrow the other way moves
+// the view at once instead of first unwinding presses that showed nothing.
+func TestClampTop(t *testing.T) {
 	cases := []struct {
-		name                               string
-		top, selStart, selEnd, total, view int
-		want                               int
+		name             string
+		top, total, view int
+		want             int
 	}{
-		{"everything above stays put", 0, 0, 4, 20, 10, 0},
-		{"selection below scrolls down", 0, 12, 16, 20, 10, 6},
-		{"selection above scrolls up", 8, 4, 8, 20, 10, 4},
-		{"tail never over-scrolls", 15, 16, 20, 20, 10, 10},
-		{"oversized block shows its first line", 0, 4, 20, 30, 10, 4},
-		{"never negative", 5, 0, 2, 6, 10, 0},
+		{"inside the body stays put", 6, 20, 10, 6},
+		{"past the end stops at the last screen", 15, 20, 10, 10},
+		{"above the start stops at the first line", -3, 20, 10, 0},
+		{"a body that fits never scrolls", 2, 6, 10, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fitTop(tc.top, tc.selStart, tc.selEnd, tc.total, tc.view); got != tc.want {
-				t.Fatalf("fitTop(%d,%d,%d,%d,%d) = %d, want %d",
-					tc.top, tc.selStart, tc.selEnd, tc.total, tc.view, got, tc.want)
+			if got := clampTop(tc.top, tc.total, tc.view); got != tc.want {
+				t.Fatalf("clampTop(%d,%d,%d) = %d, want %d", tc.top, tc.total, tc.view, got, tc.want)
 			}
 		})
 	}

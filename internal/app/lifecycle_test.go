@@ -190,7 +190,6 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	}
 	// Dead pid: the claim is stale, removal proceeds — Keychain first, then
 	// dir, then the account's headless token, and no other's.
-	os.WriteFile(cfg.CurrentFile(), []byte("a@x.com\n"), 0o644)
 	os.WriteFile(filepath.Join(cfg.StoreDir(), "t.jsonl"), []byte("x"), 0o644)
 	for _, n := range []string{"a@x.com", "other@x.com"} {
 		if err := headless.Put(cfg.AccountsRoot, n, headless.Token{Value: testToken}); err != nil {
@@ -212,11 +211,8 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cfg.StoreDir(), "t.jsonl")); err != nil {
 		t.Error("store contents deleted")
 	}
-	if !strings.Contains(out.String(), "deleted Keychain item") || !strings.Contains(out.String(), ".current pointed here") {
+	if !strings.Contains(out.String(), "deleted Keychain item") {
 		t.Errorf("report:\n%s", out.String())
-	}
-	if got, _ := os.ReadFile(cfg.CurrentFile()); string(got) != "a@x.com\n" {
-		t.Errorf(".current rewritten: %q", got)
 	}
 
 	// A Keychain failure leaves the dir for a retry.

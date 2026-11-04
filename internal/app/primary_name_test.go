@@ -20,8 +20,8 @@ import (
 const tokenA = "sk-ant-oat01-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 // renameHome is a home whose records were written while its primary,
-// logged in as qiushi@planlab.ai, was named "qiushi": `.current`, a
-// reservation, a headless token, two re-homes (one the primary's, one an
+// logged in as qiushi@planlab.ai, was named "qiushi": a reservation, a
+// headless token, two re-homes (one the primary's, one an
 // extra's), and its --last. An extra, yqs@planlab.ai, sits beside it.
 func renameHome(t *testing.T) config.Config {
 	t.Helper()
@@ -37,7 +37,6 @@ func renameHome(t *testing.T) config.Config {
 	}
 	writeJSON(t, cfg.Claude.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"qiushi@planlab.ai","accountUuid":"u-q"}}`)
 	writeJSON(t, filepath.Join(extra, ".claude.json"), `{"oauthAccount":{"emailAddress":"yqs@planlab.ai","accountUuid":"u-y"}}`)
-	writeJSON(t, cfg.Claude.CurrentFile(), "qiushi\n")
 	if err := os.WriteFile(cfg.Claude.ReservedFile(), []byte("qiushi\t/work/a\nyqs@planlab.ai\t/work/b\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -84,9 +83,6 @@ func TestARenamedPrimaryTakesItsRecords(t *testing.T) {
 	}
 
 	scope := cfg.Claude
-	if got := readFile(t, scope.CurrentFile()); got != "qiushi@planlab.ai\n" {
-		t.Errorf(".current: %q", got)
-	}
 	held, err := accounts.ReadReservations(scope)
 	if err != nil || !held.Admits("qiushi@planlab.ai", "/work/a") || held.Held("qiushi") || !held.Admits("yqs@planlab.ai", "/work/b") {
 		t.Errorf("reservations: %v %v", held, err)
@@ -113,10 +109,8 @@ func TestARenamedPrimaryTakesItsRecords(t *testing.T) {
 	if got := st.RecordedPrimary(); got != "qiushi@planlab.ai" {
 		t.Errorf("recorded: %q", got)
 	}
-
-	set := accounts.Discover(scope)
-	if a, err := set.Select(""); err != nil || !a.IsPrimary() || a.Name != "qiushi@planlab.ai" {
-		t.Errorf(".current resolves to %+v (%v)", a, err)
+	if a, err := accounts.Discover(scope).Select("qiushi@planlab.ai"); err != nil || !a.IsPrimary() {
+		t.Errorf("the new name resolves to %+v (%v)", a, err)
 	}
 }
 
@@ -174,21 +168,21 @@ func TestARenamedCodexPrimaryTakesItsRecords(t *testing.T) {
 	if err := os.MkdirAll(scope.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, scope.CurrentFile(), "qiushi\n")
+	work := t.TempDir()
+	if err := os.WriteFile(scope.ReservedFile(), []byte("qiushi\t"+work+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg.Codex.PrimaryName = "qiushi@planlab.ai"
 	var out bytes.Buffer
 	SettlePrimaryNames(cfg, &out)
 	if !strings.Contains(out.String(), "Codex's primary is now qiushi@planlab.ai; moved its records from qiushi") {
 		t.Errorf("note: %q", out.String())
 	}
-	if got := readFile(t, scope.CurrentFile()); got != "qiushi@planlab.ai\n" {
-		t.Errorf(".current: %q", got)
+	if held, err := accounts.ReadReservations(scope); err != nil || !held.Admits("qiushi@planlab.ai", work) || held.Held("qiushi") {
+		t.Errorf("reservations: %v %v", held, err)
 	}
 	if got := state.Open(scope).RecordedPrimary(); got != "qiushi@planlab.ai" {
 		t.Errorf("recorded: %q", got)
-	}
-	if a, err := accounts.Discover(cfg.Codex).Select(""); err != nil || !a.IsPrimary() || a.Name != "qiushi@planlab.ai" {
-		t.Errorf(".current resolves to %+v (%v)", a, err)
 	}
 }
 
@@ -202,8 +196,8 @@ func TestAPrimaryNamedLikeAnExtraMovesNothing(t *testing.T) {
 	if !strings.Contains(out.String(), "also an extra account's dir") {
 		t.Errorf("note: %q", out.String())
 	}
-	if got := readFile(t, cfg.Claude.CurrentFile()); got != "qiushi\n" {
-		t.Errorf(".current: %q", got)
+	if held, _ := accounts.ReadReservations(cfg.Claude); !held.Held("qiushi") {
+		t.Errorf("reservations moved: %v", held)
 	}
 	if got := state.Open(cfg.Claude).RecordedPrimary(); got != "" {
 		t.Errorf("recorded: %q", got)
@@ -211,8 +205,7 @@ func TestAPrimaryNamedLikeAnExtraMovesNothing(t *testing.T) {
 }
 
 // A reservation file that does not read is a person's statement nobody can
-// see: nothing moves — `.current` included — nothing is recorded, and the next
-// run tries again.
+// see: nothing moves, nothing is recorded, and the next run tries again.
 func TestUnreadableReservationsMoveNothing(t *testing.T) {
 	cfg := renameHome(t)
 	if err := os.WriteFile(cfg.Claude.ReservedFile(), []byte("not a reservation\n"), 0o644); err != nil {
@@ -222,9 +215,6 @@ func TestUnreadableReservationsMoveNothing(t *testing.T) {
 	SettlePrimaryNames(cfg, &out)
 	if !strings.Contains(out.String(), "could not be moved") {
 		t.Errorf("note: %q", out.String())
-	}
-	if got := readFile(t, cfg.Claude.CurrentFile()); got != "qiushi\n" {
-		t.Errorf(".current moved: %q", got)
 	}
 	st := state.Open(cfg.Claude)
 	if o, _ := st.Load().Owner("s-primary"); o.Account != "qiushi" || st.RecordedPrimary() != "" {
@@ -238,8 +228,8 @@ func TestNothingToSettleWritesNothing(t *testing.T) {
 	cfg := renameHome(t)
 	cfg.Claude.PrimaryName = ""
 	SettlePrimaryNames(cfg, &bytes.Buffer{})
-	if got := readFile(t, cfg.Claude.CurrentFile()); got != "qiushi\n" {
-		t.Errorf("an unpinned name moved .current: %q", got)
+	if held, _ := accounts.ReadReservations(cfg.Claude); !held.Held("qiushi") {
+		t.Errorf("an unpinned name moved the reservations: %v", held)
 	}
 
 	fresh := config.ForHome(t.TempDir())
@@ -270,7 +260,7 @@ func TestARunSettlesThePrimaryBeforeItsCommand(t *testing.T) {
 	if !strings.Contains(stderr.String(), "moved its records from qiushi") {
 		t.Errorf("stderr: %q", stderr.String())
 	}
-	if got := readFile(t, cfg.Claude.CurrentFile()); got != "qiushi@planlab.ai\n" {
-		t.Errorf(".current: %q", got)
+	if held, _ := accounts.ReadReservations(cfg.Claude); !held.Admits("qiushi@planlab.ai", "/work/a") {
+		t.Errorf("reservations: %v", held)
 	}
 }

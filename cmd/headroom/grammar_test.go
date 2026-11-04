@@ -130,18 +130,18 @@ func TestGrammarRefuses(t *testing.T) {
 		args []string
 		want string
 	}{
-		// A launch decides one way, and records or previews, not both.
+		// A launch decides one way. Nothing records a choice for later.
 		{[]string{"launch", "--auto", "--last"}, "--auto and --last can't be used together"},
 		{[]string{"launch", "--auto", "--account", "a@x.com"}, "can't be used together"},
 		{[]string{"launch", "--last", "--account", "a@x.com"}, "can't be used together"},
-		{[]string{"launch", "--last", "--remember"}, "can't be used together"},
-		{[]string{"launch", "--dry-run", "--remember"}, "can't be used together"},
+		{[]string{"launch", "--remember", "--account", "a@x.com"}, "unknown flag --remember"},
 		{[]string{"launch", "--resume", "abc"}, "unknown flag --resume"},
 		{[]string{"launch", "--vendor", "gemini"}, "--vendor"},
 
-		// An empty name is a caller's expansion bug, never "the pinned account".
+		// An empty name is a caller's expansion bug, never some default account.
 		{[]string{"launch", "--account", ""}, "an account name cannot be empty"},
 		{[]string{"resolve", ""}, "an account name cannot be empty"},
+		{[]string{"resolve"}, "<account>"},
 		{[]string{"limits", "--account", ""}, "an account name cannot be empty"},
 		{[]string{"login", ""}, "an account name cannot be empty"},
 		{[]string{"headless", "place", "--exclude", ""}, "an account name cannot be empty"},
@@ -369,7 +369,7 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"launch", "--vendor", "codex", "--account", "a@x.com"},
-		{"resolve", "--vendor", "codex"},
+		{"resolve", "--vendor", "codex", "a@x.com"},
 		{"limits", "--vendor", "codex"},
 		{"accounts", "remove", "--vendor", "codex", "a@x.com"},
 		{"accounts", "--vendor", "codex"},
@@ -403,9 +403,8 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 	}
 
 	// The reporting surfaces: unfiltered they hold both vendors, and --vendor
-	// restricts accounts and current to one.
+	// restricts the accounts to one.
 	type document struct {
-		Current  map[string]string `json:"current"`
 		Accounts []struct {
 			Vendor string `json:"vendor"`
 		} `json:"accounts"`
@@ -420,12 +419,16 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 		return d
 	}
 	all, only, fetched := decode("limits"), decode("limits", "--vendor", "codex"), decode("--json", "--vendor", "codex")
-	if len(all.Current) != 2 || len(only.Current) != 1 || len(only.Accounts) != 2 {
-		t.Errorf("limits: unfiltered current %v; filtered current %v, %d accounts", all.Current, only.Current, len(only.Accounts))
+	vendors := map[string]bool{}
+	for _, acct := range all.Accounts {
+		vendors[acct.Vendor] = true
+	}
+	if !vendors["claude"] || !vendors["codex"] {
+		t.Errorf("limits: unfiltered vendors %v, want both", vendors)
 	}
 	for _, d := range []document{only, fetched} {
-		if len(d.Current) != 1 || len(d.Accounts) != 2 {
-			t.Errorf("--vendor codex: current %v, %d accounts", d.Current, len(d.Accounts))
+		if len(d.Accounts) != 2 {
+			t.Errorf("--vendor codex: %d accounts", len(d.Accounts))
 		}
 		for _, acct := range d.Accounts {
 			if acct.Vendor != "codex" {
@@ -451,8 +454,8 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 		t.Errorf("CODEX_HOME not the account's: %q", rec.env)
 	}
 
-	if r := run("resolve"); r.Code != 0 || !strings.HasSuffix(r.Stdout, filepath.Join(home, ".claude")+"\tprimary\n") {
-		t.Errorf("bare resolve: exit %d %q %s", r.Code, r.Stdout, r.Stderr)
+	if r := run("resolve", "primary"); r.Code != 0 || !strings.HasSuffix(r.Stdout, filepath.Join(home, ".claude")+"\tprimary\n") {
+		t.Errorf("resolve primary: exit %d %q %s", r.Code, r.Stdout, r.Stderr)
 	}
 }
 

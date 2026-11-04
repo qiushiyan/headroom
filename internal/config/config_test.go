@@ -169,7 +169,7 @@ func TestLoadResolvesBothScopes(t *testing.T) {
 	}
 }
 
-// Distinct roots keep the two vendors' .current, .order and state.json apart.
+// Distinct roots keep the two vendors' .reserved, .order and state.json apart.
 // One location refuses however it is spelled or reached: through a symlink,
 // through an alias above several components that do not exist yet, and under
 // a spelling that differs only in case on a filesystem that folds it —

@@ -5,9 +5,9 @@ import "github.com/qiushiyan/clikit"
 // The prose that is not one command's own: the root page, and the sections
 // several pages return from one value.
 
-const rootHelp = `Bare, headroom is the board (see headroom board --help). Two things decide where a bare
-headroom launch goes: the board's enter pins an account, and its a key turns automatic
-placement on, so each bare launch takes the least-loaded account instead.
+const rootHelp = `Bare, headroom is the board (see headroom board --help): it shows every account and
+records nothing. A bare headroom launch takes the least-loaded account; headroom launch
+--account <name> starts one session on the account named.
 
 An account is a config dir: Claude Code's primary is ~/.claude and the others are
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
@@ -39,25 +39,24 @@ const boardHelp = `The account board: a block per account with its usage limits 
 window and the weekly ones, each with its percent used and when it resets — the account's
 health, and the load an automatic launch counts on it. Open on a terminal, it refreshes
 itself as often as the usage endpoint allows and goes quiet after five minutes without a
-key; r asks now. Enter pins the selected account for bare launches and a turns automatic
-placement on; either prints what it recorded and exits. Tab switches vendor, esc cancels.
+key; r asks now. It records nothing and launches nothing: ← next marks the account a bare
+launch would take, and each account's launcher is the command that starts one session
+there. Tab switches vendor, ↑/↓ scroll a board taller than the terminal, q or esc quits.
 
 --compact draws one row per account: each limit's percent and time to reset (not started
-for a Codex window nobody has spent against), then every warning the block would show. ●
-marks the current account (→ the next one, under auto), a red ! a dir logged in as another
-account, and a red name an account that cannot be used.
+for a Codex window nobody has spent against), then every warning the block would show. →
+marks the next account, a red ! a dir logged in as another account, and a red name an
+account that cannot be used.
 
 Off a terminal — a pipe, a script, a hook — it prints the board once and exits 0. --json
 prints it as a document after one refresh round, for a script that wants fresh figures;
 headroom limits prints the same document from disk alone, without probing or asking.`
 
 var boardDocument = clikit.Section{
-	Title: "The JSON document (schema 7)",
-	Body: `{"schema": 7, "generated_at": RFC3339,
- "current": {"claude": "<account>", ...},   the account a bare launch of that vendor takes
- "mode": {"claude": "pinned"|"auto"|"", ...},   "" when .current cannot be resolved
+	Title: "The JSON document (schema 8)",
+	Body: `{"schema": 8, "generated_at": RFC3339,
  "accounts": [{
-   "vendor": "claude"|"codex", "name", "email", "launcher", "plan", "current": bool,
+   "vendor": "claude"|"codex", "name", "email", "launcher", "plan",
    "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
    "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
      "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",
@@ -78,41 +77,38 @@ CODEX_HOME and its credential variables) is stripped, never obeyed. The process 
 replaced, so the vendor's exit status is the command's.
 
 How the account is decided:
-  bare          what the board recorded: the pinned account, or under auto the least-loaded
-  --account N   that account, whatever the mode
-  --auto        this one launch placed automatically; the pin is untouched
+  bare, --auto  the least-loaded account
+  --account N   that account, for this one launch
   --last        the account of the newest recorded launch
 
 Every launch says on stderr where it went and why before the vendor starts, as one line:
   headroom launch: a@x.com · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: b@x.com)
 A figure that is not a fresh measurement says so: ≥12% is a lower bound from figures older
 than fifteen minutes, "window ended" a window whose reset has passed, ?% a percent that
-did not parse. Under auto, -- --resume <id> and -- --session-id <id> follow the account
-that last drove that session while it has room, and record where it went.
+did not parse. A bare launch with -- --resume <id> or -- --session-id <id> follows the
+account that last drove that session while it has room, and records where it went.
 
 Codex's sessions are shared across its accounts: headroom launch --vendor codex --account
 <other> -- resume continues one on another account.`
 
 var launchExamples = clikit.Section{
 	Title: "Examples",
-	Body: `  headroom launch                                   the recorded choice
+	Body: `  headroom launch                                   the least-loaded account
   headroom launch --account a@x.com -- --resume 1f2e…   continue a session on a@x.com
-  headroom launch --auto --remember                 turn automatic placement on, and launch
   headroom launch --dry-run                         what a bare launch would choose, and why
   headroom launch --vendor codex --account a@x.com -- login`,
 }
 
 const sessionsHelp = `An interactive picker over every Claude Code session on this machine — transcripts are
 machine-global — that enters the chosen session's project dir and continues it, by exec, on
-the account that last drove it. x continues it on the current account instead and records
-the move (under auto, on the least-loaded of the others); r renames, dd deletes; both are
-refused while the session is open. It needs a terminal on stdin and stdout: claude takes
-them over.
+the account that last drove it. x continues it on the least-loaded of the other accounts
+instead and records the move; r renames, dd deletes; both are refused while the session is
+open. It needs a terminal on stdin and stdout: claude takes them over.
 
 --json lists the sessions instead, with no terminal: each one's id, title, project dir,
-branch, owner and whether it is live now, beside "current" and "mode" as in the board's
-document. --cd-file is for a shell wrapper: it is created empty first and holds the entered
-dir only once a session was committed, so the shell can cd there after claude exits.
+branch, owner and whether it is live now. --cd-file is for a shell wrapper: it is created
+empty first and holds the entered dir only once a session was committed, so the shell can
+cd there after claude exits.
 
 Arguments go to claude before the picker's own --resume; --resume and --continue are
 refused, since the picker chooses the session.`
@@ -239,17 +235,18 @@ directories it replaces the account's reservation; --clear drops it.
 An automatic launch or headless placement outside those repositories never chooses the
 account. Inside them it is ranked like any other account: a reservation says what an account
 may be used for, never that it goes first, and every other account stays available there. A
-launch that names its account, a pin and --last are not affected, and a resumed session moves
-off the account when its directory is outside them. Where a launch is decides this: the directory it starts in, a
-session's own directory on a resume, a headless caller's working directory.
+launch that names its account and --last are not affected, and a resumed session moves off
+the account when its directory is outside them. Where a launch is decides this: the
+directory it starts in, a session's own directory on a resume, a headless caller's working
+directory.
 
 A repository counts with every worktree of it, wherever they live. A directory in no
 repository counts with everything under it. If a directory later goes missing the account
 stays kept: it can then be launched only by name. A reservation belongs to this home, so
 another home's login of the same subscription is not kept.
 
-The reservation lives in .reserved beside .current. While that file cannot be read, automatic
-choices refuse and launches that name their account still run.`
+The reservation lives in .reserved in the accounts root. While that file cannot be read,
+automatic choices refuse and launches that name their account still run.`
 
 const ledgerHelp = `Claude Code only. With a root, this home spends against that accounts root's ledger from
 now on — for a second home on this machine holding its own logins of the same
@@ -272,5 +269,4 @@ twelve seconds; SIGTERM, SIGINT or SIGHUP stop it within one, with the request i
 recorded.`
 
 const resolveHelp = `Prints one line for shell preflight: the account's canonical name, its config dir and its
-kind (primary or extra), separated by tabs. Bare, the pinned account; under automatic
-placement there is no one account to print, so a name is required.`
+kind (primary or extra), separated by tabs.`

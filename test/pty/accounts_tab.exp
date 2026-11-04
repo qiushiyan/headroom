@@ -1,7 +1,7 @@
 #!/usr/bin/expect -f
-# Two vendors: the board opens on the Claude Code page with a tab bar, tab
-# switches to the Codex page, and enter there records the Codex current
-# account. run.sh asserts that only Codex's .current was written.
+# Two vendors: the board opens on the Claude Code page with a tab bar, and tab
+# switches to the Codex page. Enter and a there keep the board open and record
+# nothing; run.sh asserts that neither vendor's .current was written.
 set timeout 10
 spawn sh -c "stty rows 24 columns 200; exec $env(HEADROOM_BIN) accounts"
 expect {
@@ -18,17 +18,20 @@ expect {
     "cx@x.com" {}
     timeout { puts "tab did not show the Codex page"; exit 2 }
 }
-# Down to the extra (the primary is first), then enter.
 send -- "\033\[B"
 sleep 0.3
 send -- "\r"
+sleep 0.3
+send -- "a"
+sleep 0.3
 expect {
-    "bare Codex launches" {}
-    timeout { puts "no Codex confirmation line after enter"; exit 2 }
+    "q quit" {}
+    timeout { puts "the board closed or stopped drawing after enter and a"; exit 2 }
 }
+send -- "q"
 expect eof
 catch wait result
 if {[lindex $result 3] != 0} {
-    puts "select exited [lindex $result 3], want 0"
+    puts "quit exited [lindex $result 3], want 0"
     exit 2
 }

@@ -10,20 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
-
-// shown is the name the picker prints for where new sessions go: the current
-// account, or the word for there being none because launches choose.
-func (actions *sessionActions) shown() string {
-	if actions.auto() {
-		return accounts.AutoWord
-	}
-	return actions.routing.Current
-}
 
 // resumeUI is the picker's whole mutable state. One mode value at a time —
 // pending-delete, confirm, rename and search each replace it wholesale, so
@@ -174,9 +164,8 @@ func (ui *resumeUI) handle(k tui.Key) (bool, int) {
 	case k.Kind == tui.KeyEnter:
 		return ui.commitResume(false)
 	case k == tui.Key{Kind: tui.KeyRune, Rune: 'x'}:
-		// Resume on the current account instead of the owner — and re-home:
-		// from now on this session runs where the user just pointed it. Under
-		// automatic placement, on the least-loaded of the other accounts.
+		// Resume on the least-loaded of the other accounts instead of the
+		// owner — and re-home: from now on this session runs there.
 		return ui.commitResume(true)
 	}
 	return false, 0
@@ -357,7 +346,7 @@ func (ui *resumeUI) draw() {
 	var lines []string
 	title := ui.selectedTitleForHeader()
 	lines = append(lines, p.Bold+"resume"+p.Rst+p.Dim+
-		fmt.Sprintf(" · %d session(s) · new sessions → %s%s", len(ui.rows), render.ShortAccount(ui.shown()), title)+p.Rst)
+		fmt.Sprintf(" · %d session(s)%s", len(ui.rows), title)+p.Rst)
 
 	rowLines, selLine, selSpan := ui.rowLines(layoutW, now)
 	body := max(h-3, 1) // header + footer + input/message line
@@ -396,22 +385,15 @@ func (ui *resumeUI) draw() {
 	fmt.Fprint(ui.t.Out(), b.String())
 }
 
-// selectedTitleForHeader states the second account pointer when it differs
-// from the first: this repo's model is "independent facts stay independent",
-// and a resumed session's account is not the new-session account.
+// selectedTitleForHeader names the account enter resumes the selected session
+// on, when it has an owner to follow; a session without one is placed like a
+// new one, which the rows already say.
 func (ui *resumeUI) selectedTitleForHeader() string {
 	s := ui.selected()
-	if s == nil {
+	if s == nil || s.Owner == "" {
 		return ""
 	}
-	target := s.Owner
-	if target == "" {
-		target = ui.shown()
-	}
-	if target == ui.shown() {
-		return ""
-	}
-	return " · this session → " + render.ShortAccount(target)
+	return " · this session → " + render.ShortAccount(s.Owner)
 }
 
 // rowLines renders every visible row (plus section labels and the expanded
@@ -441,7 +423,7 @@ func (ui *resumeUI) rowLines(w int, now int64) ([]string, int, int) {
 		if i == ui.sel {
 			selLine = len(lines)
 		}
-		lines = append(lines, ui.p.SessionLines(s, ui.shown(), i == ui.sel, w, now)...)
+		lines = append(lines, ui.p.SessionLines(s, i == ui.sel, w, now)...)
 		if i == ui.sel {
 			if ui.preview {
 				lines = append(lines, ui.p.SessionPreview(s, w)...)

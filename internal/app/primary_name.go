@@ -15,11 +15,11 @@ import (
 )
 
 // SettlePrimaryNames keeps each vendor's records under the name its primary
-// answers to now. `.current`, re-homes, reservations, --last and headless
-// tokens are written under the primary's name, so a host file that pins
-// another (HEADROOM_PRIMARY_NAME, HEADROOM_CODEX_PRIMARY_NAME) would strand
-// them — `.current` refusing, re-homes pointing at an account that no longer
-// exists. A changed pin moves them, once, under the store's lock, and says so
+// answers to now. Re-homes, reservations, --last and headless tokens are
+// written under the primary's name, so a host file that pins another
+// (HEADROOM_PRIMARY_NAME, HEADROOM_CODEX_PRIMARY_NAME) would strand them —
+// re-homes pointing at an account that no longer exists, a reservation
+// keeping nothing. A changed pin moves them, once, under the store's lock, and says so
 // on w; changing the host file is all a person does.
 //
 // A pin naming a name the primary had before the recorded one comes from a
@@ -98,9 +98,13 @@ func settlePrimaryName(scope config.Scope, w io.Writer) config.Scope {
 				return 0, err
 			}
 		}
-		n, err := accounts.RenamePrimaryFiles(scope, from, to)
+		n := 0
+		moved, err := accounts.RenameReservations(scope, from, to)
 		if err != nil {
 			return n, err
+		}
+		if moved {
+			n++
 		}
 		if tokens {
 			moved, err := headless.Rename(scope.AccountsRoot, from, to)
@@ -140,7 +144,7 @@ func movedSummary(mv state.PrimaryMove) string {
 			parts = append(parts, fmt.Sprintf("%d %s", n, many))
 		}
 	}
-	add(mv.Files, "record beside the store (.current, .reserved, headless tokens)", "records beside the store (.current, .reserved, headless tokens)")
+	add(mv.Files, "record beside the store (.reserved, headless tokens)", "records beside the store (.reserved, headless tokens)")
 	add(mv.ReHomes, "session re-home", "session re-homes")
 	add(mv.Placements, "launch record", "launch records")
 	return strings.Join(parts, ", ")

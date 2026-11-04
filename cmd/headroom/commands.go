@@ -146,12 +146,14 @@ func (c *LedgerCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, pare
 
 type LaunchCmd struct {
 	vendorOne
-	Auto     bool        `xor:"decide" help:"Place this one launch on the least-loaded account, whatever the board pins."`
-	Last     bool        `xor:"decide,pin" help:"Launch on the account of the newest recorded launch."`
-	Account  accountName `xor:"decide" placeholder:"NAME" help:"Launch on this account, named by email or dir name."`
-	Remember bool        `xor:"once,pin" help:"Record the decision for later bare launches: the account, or with --auto the automatic mode."`
-	DryRun   bool        `xor:"once" help:"Print the choice and every account's figures; record, log and start nothing."`
-	Args     []string    `arg:"" optional:"" passthrough:"partial" help:"Arguments for claude (or codex), passed on unchanged; put them after --."`
+	// Auto is read by nobody: a bare launch is already automatic. It stays a
+	// flag because callers spell it (steward's `headroom launch --auto --`),
+	// and it still excludes the flags that decide otherwise.
+	Auto    bool        `xor:"decide" help:"Place the launch on the least-loaded account: what a bare launch does, said outright."`
+	Last    bool        `xor:"decide" help:"Launch on the account of the newest recorded launch."`
+	Account accountName `xor:"decide" placeholder:"NAME" help:"Launch on this account, named by email or dir name."`
+	DryRun  bool        `help:"Print the choice and every account's figures; record, log and start nothing."`
+	Args    []string    `arg:"" optional:"" passthrough:"partial" help:"Arguments for claude (or codex), passed on unchanged; put them after --."`
 }
 
 func (LaunchCmd) Help() string                   { return launchHelp }
@@ -163,7 +165,7 @@ func (c *LaunchCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, h ho
 		return err
 	}
 	return outcome(app.Launch(streams(ctx, in), scope, app.LaunchOptions{
-		Account: string(c.Account), Auto: c.Auto, Last: c.Last, Remember: c.Remember, DryRun: c.DryRun,
+		Account: string(c.Account), Last: c.Last, DryRun: c.DryRun,
 		Args: vendorArgs(c.Args),
 	}, h.place, h.exec))
 }
@@ -425,7 +427,7 @@ func (c *HeadlessForgetCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Conf
 
 type ResolveCmd struct {
 	vendorOne
-	Account accountName `arg:"" optional:"" help:"The account to resolve; the pinned one when absent."`
+	Account accountName `arg:"" help:"The account to resolve."`
 }
 
 func (ResolveCmd) Help() string { return resolveHelp }
