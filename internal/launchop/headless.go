@@ -68,7 +68,7 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	st, now := req.Store, req.Now
 	intent := placement.Intent{Kind: placement.Auto, CanWait: true, Owner: req.Prefer, Home: st.Home()}
 	snap := st.Load()
-	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), req.CWD, true, deps)
+	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), readReservations(req.Set.Scope), req.CWD, true, deps)
 	for i := range f.cands {
 		c := &f.cands[i]
 		if req.Exclude[c.Name] {

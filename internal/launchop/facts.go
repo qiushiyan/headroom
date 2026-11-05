@@ -86,28 +86,39 @@ func (c candidate) keptOut() string {
 	return ""
 }
 
-// HeldAway says a reservation keeps the account from work in dir, or that
+// reservations is `.reserved` as one placement read it: which accounts are
+// kept for what, or why nothing can say.
+type reservations struct {
+	held accounts.Reservations
+	err  error
+}
+
+func readReservations(scope config.Scope) reservations {
+	held, err := accounts.ReadReservations(scope)
+	return reservations{held, err}
+}
+
+// keeps says a reservation keeps the account from work in project, or that
 // nothing can say it does not: an unreadable `.reserved` never releases an
 // account.
-func HeldAway(set accounts.Set, account, dir string) bool {
-	held, err := accounts.ReadReservations(set.Scope)
-	ref := set.RefOf(account)
-	return err != nil || (held.Held(ref) && !held.Admits(ref, sessions.RepoKey(dir)))
+func (r reservations) keeps(ref, project string) bool {
+	s, _ := standing(r.held, ref, project)
+	return r.err != nil || s == placement.ReservedElsewhere
 }
 
 // standing is how a reservation stands to a launch in project, and what it
 // is for in a person's words. An account whose repositories are all gone is
 // still kept from everything else: a missing directory is not permission.
-func standing(held accounts.Reservations, name, project string) (placement.Reservation, string) {
-	if !held.Held(name) {
+func standing(held accounts.Reservations, ref, project string) (placement.Reservation, string) {
+	if !held.Held(ref) {
 		return "", ""
 	}
-	dirs := make([]string, 0, len(held[name]))
-	for _, d := range held[name] {
+	dirs := make([]string, 0, len(held[ref]))
+	for _, d := range held[ref] {
 		dirs = append(dirs, render.Tilde(d))
 	}
 	words := "reserved for " + strings.Join(dirs, ", ")
-	if held.Admits(name, project) {
+	if held.Admits(ref, project) {
 		return placement.ReservedHere, words
 	}
 	return placement.ReservedElsewhere, words
@@ -166,9 +177,9 @@ func diskSources(set accounts.Set, snap state.Snapshot, now time.Time) []source 
 // gather reads what is known on disk about every account of the set, and
 // which of them an ordinary launch in dir may run on: what a launch chooses
 // from.
-func gather(set accounts.Set, st *state.Store, env []string, dir string, automatic bool, now time.Time, deps Deps) facts {
+func gather(set accounts.Set, st *state.Store, res reservations, env []string, dir string, automatic bool, now time.Time, deps Deps) facts {
 	snap := st.Load()
-	return build(set, st, snap, diskSources(set, snap, now), env, dir, automatic, now, deps)
+	return build(set, st, snap, diskSources(set, snap, now), res, env, dir, automatic, now, deps)
 }
 
 // OtherHomes is the other homes spending against this home's ledger today,
@@ -201,11 +212,10 @@ func OtherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 // (build); a headless placement's is the caller's (headless.go). What holds
 // for all of them is read here: how each account's reservation stands to a
 // launch in dir, which each policy composes as keptOut.
-func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, dir string, credentials bool, deps Deps) facts {
+func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, res reservations, dir string, credentials bool, deps Deps) facts {
 	scope := set.Scope
 	f := facts{set: set, snap: snap, home: st.Home(), labels: snap.HomeLabels(), cands: make([]candidate, len(src))}
-	held, err := accounts.ReadReservations(scope)
-	f.reservedErr = err
+	f.reservedErr = res.err
 	project := sessions.RepoKey(dir)
 
 	var blobs []string
@@ -227,7 +237,7 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 		c := candidate{acct: s.acct, key: s.key, obs: s.obs,
 			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
-		c.Reservation, c.reserved = standing(held, s.acct.Ref(), project)
+		c.Reservation, c.reserved = standing(res.held, s.acct.Ref(), project)
 		if blobs != nil {
 			c.cred = blobs[i]
 		}
@@ -258,8 +268,8 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 // vendor's health probe is not consulted: it can say "logged in" over a
 // refresh token that has expired, and a launch has only the credential to go
 // by.
-func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, env []string, dir string, automatic bool, now time.Time, deps Deps) facts {
-	f := observe(set, st, snap, src, dir, automatic, deps)
+func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, res reservations, env []string, dir string, automatic bool, now time.Time, deps Deps) facts {
+	f := observe(set, st, snap, src, res, dir, automatic, deps)
 	for i := range f.cands {
 		c := &f.cands[i]
 		if p, err := launch.Prepare(c.acct, set, env); err != nil {

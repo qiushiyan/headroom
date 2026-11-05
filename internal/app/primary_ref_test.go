@@ -39,7 +39,7 @@ func TestARenamedPrimaryKeepsItsRecords(t *testing.T) {
 	if out := launchOn(t, renamed, f.edges, "--last", "--dry-run").stdout; !strings.Contains(out, "would start claude on q2") {
 		t.Errorf("--last after the rename:\n%s", out)
 	}
-	if launchop.HeldAway(set, "q2", work) || !launchop.HeldAway(set, "q2", t.TempDir()) {
+	if keptFrom(t, renamed, "q2", work) || !keptFrom(t, renamed, "q2", t.TempDir()) {
 		t.Error("the reservation did not stay with the primary")
 	}
 }

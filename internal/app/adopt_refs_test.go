@@ -46,6 +46,19 @@ func legacyRehome(account string) map[string]any {
 	return map[string]any{"account": account, "atMs": 1}
 }
 
+// keptFrom says a bare launch from dir leaves the account named name out
+// because a reservation keeps it for other work.
+func keptFrom(t *testing.T, scope config.Scope, name, dir string) bool {
+	t.Helper()
+	t.Chdir(dir)
+	for line := range strings.SplitSeq(launchOn(t, scope, quietPlace(), "--dry-run").stdout, "\n") {
+		if strings.Contains(line, name) && strings.Contains(line, "excluded: reserved for") {
+			return true
+		}
+	}
+	return false
+}
+
 func ownerOf(t *testing.T, scope config.Scope, id string) string {
 	t.Helper()
 	set := accounts.Discover(scope)
@@ -139,7 +152,7 @@ func TestRecordsUnderTheDefaultPinAreAdoptedUnderAnyName(t *testing.T) {
 	if got := ownerOf(t, cfg.Claude, "s1"); got != "qiushi" {
 		t.Errorf("owner = %q", got)
 	}
-	if launchop.HeldAway(accounts.Discover(cfg.Claude), "qiushi", t.TempDir()) == false {
+	if !keptFrom(t, cfg.Claude, "qiushi", t.TempDir()) {
 		t.Error("the reservation did not stay with the primary")
 	}
 }

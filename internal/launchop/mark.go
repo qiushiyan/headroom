@@ -45,7 +45,7 @@ func Mark(set accounts.Set, st *state.Store, accts []accountstate.Account, envir
 		return nil
 	}
 	snap := st.Load()
-	f := build(set, st, snap, sources(accts), environ, dir, true, now, deps)
+	f := build(set, st, snap, sources(accts), readReservations(set.Scope), environ, dir, true, now, deps)
 	reserved := map[string]string{}
 	for _, c := range f.cands {
 		if c.reserved != "" {
