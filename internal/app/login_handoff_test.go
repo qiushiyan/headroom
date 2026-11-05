@@ -36,6 +36,9 @@ type handoffWorld struct {
 
 	mu      sync.Mutex
 	vendors []*fakeVendor
+	// signal is the newest holder's signal channel, as a session ending or a
+	// person stopping the holder would send to it.
+	signal chan<- os.Signal
 	// screen is what each new vendor prints; "" lines are left out. The
 	// default is 2.1.311's, with the state the vendor is given.
 	screen func(state string) []string
@@ -87,7 +90,13 @@ func newHandoffWorld(t *testing.T) *handoffWorld {
 			h.vendors = append(h.vendors, v)
 			return v, nil
 		},
-		ps:  sessions.PS,
+		ps: sessions.PS,
+		signals: func(c chan<- os.Signal) func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.signal = c
+			return func() {}
+		},
 		now: time.Now,
 		bounds: handoffBounds{url: time.Second, opener: 200 * time.Millisecond, awaiting: 5 * time.Second,
 			exchange: 2 * time.Second, stop: 100 * time.Millisecond, reply: 5 * time.Second, status: 5 * time.Second, start: 5 * time.Second},
@@ -764,6 +773,11 @@ func TestHandoffDuringAnExchange(t *testing.T) {
 	if doc, code := h.run(loginStart, "a@x.com", ""); code != 3 || doc.reason() != reasonExchanging {
 		t.Errorf("start: exit %d, %+v", code, doc)
 	}
+	// Stopped mid-exchange, the holder still owes the exchange's answer: a
+	// record ending here would say no code was sent when one was.
+	h.mu.Lock()
+	h.signal <- syscall.SIGTERM
+	h.mu.Unlock()
 	if got := <-done; got.State != signin.Renewed || len(h.sent()) != 1 {
 		t.Errorf("the exchange: %+v, codes %q", got, h.sent())
 	}

@@ -151,7 +151,7 @@ func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 // or its record says.
 func liveSignin(scope config.Scope) func(accounts.Account) signin.Record {
 	return func(a accounts.Account) signin.Record {
-		rec, _, err := liveRecord(a, signin.For(scope.AccountsRoot, a.Dir()), defaultHandoff.status)
+		rec, _, _, err := ask(a, signin.For(scope.AccountsRoot, a.Dir()), signin.Request{Op: signin.OpStatus}, defaultHandoff.status)
 		if err != nil {
 			return signin.Record{} // unreadable: the plan prints null, never a guess
 		}
@@ -625,8 +625,8 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 		return err
 	}
 	defer os.RemoveAll(dir)
-	signin := filepath.Join(dir, "state")
-	cmd, err := loginCommand(acct, set, page, signin, std.Err)
+	stateFile := filepath.Join(dir, "state")
+	cmd, err := loginCommand(acct, set, page, stateFile, std.Err)
 	if err != nil {
 		return err
 	}
@@ -637,13 +637,8 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 	}
 	lines := pasted()
 	drainLines(lines)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	forget, err := registerVendor(set.Scope, acct, cmd.Process.Pid)
+	v, err := signin.For(set.Scope.AccountsRoot, acct.Dir()).StartVendor(cmd, sessions.PS)
 	if err != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
 		return err
 	}
 	done, relayed := make(chan struct{}), make(chan struct{})
@@ -655,15 +650,14 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 			// moment before calling the state unknown. With no opener of
 			// headroom's, a pasted code goes unchecked.
 			for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-				state, err := os.ReadFile(signin)
+				state, err := os.ReadFile(stateFile)
 				if err == nil || !page.recorded() || time.Now().After(deadline) {
 					return string(state)
 				}
 			}
 		}, done)
 	}()
-	err = cmd.Wait()
-	forget()
+	err = v.Wait()
 	close(done)
 	<-relayed
 	return err
@@ -694,24 +688,6 @@ func loginCommand(acct accounts.Account, set accounts.Set, page approvalPage, op
 	cmd.Args[0] = p.Binary
 	cmd.Env = env
 	return cmd, nil
-}
-
-// registerVendor records beside the account's login lock the vendor login
-// just started for its dir, so that whoever next holds the lock can end it
-// should its owner die first — the vendor outlives the input it was given
-// (measured, 2.1.311). forget removes the record once the vendor is reaped.
-// A vendor runs only while registered: on an error the caller ends it, since
-// an unregistered vendor is the orphan nothing could find.
-func registerVendor(scope config.Scope, acct accounts.Account, pid int) (forget func(), err error) {
-	path := signin.For(scope.AccountsRoot, acct.Dir()).Vendor()
-	start, err := sessions.PS(pid)
-	if err == nil {
-		err = signin.WriteVendor(path, signin.Proc{PID: pid, Start: start})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("claude auth login could not be registered, so it was ended: %w", err)
-	}
-	return func() { os.Remove(path) }, nil
 }
 
 // readLines is r, line by line, until it ends.
