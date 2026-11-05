@@ -15,7 +15,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/qiushiyan/headroom/internal/atomicfile"
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
@@ -445,35 +444,4 @@ func (s Set) NameOf(ref string) string {
 		}
 	}
 	return ref
-}
-
-// writeLine replaces a one-line file beside the accounts atomically (temp file
-// + rename), so a concurrent reader never observes it truncated or empty.
-func writeLine(root, path, content string) error {
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return err
-	}
-	return atomicfile.Write(path, "."+filepath.Base(path)+"-*", []byte(content+"\n"))
-}
-
-// ShareLedger records which accounts root's ledger this Claude Code home
-// spends against: the `.ledger` file in the accounts root, validated by the rule
-// Load reads it with, so the two cannot disagree. Naming this home's own root
-// removes the file — the home keeps its own ledger again. It returns the
-// root recorded, "" for this home's own.
-func ShareLedger(claude, codex config.Scope, v string) (string, error) {
-	if claude.Vendor != config.Claude {
-		return "", fmt.Errorf("only Claude Code homes share a ledger")
-	}
-	root, err := config.LedgerRoot(claude, codex, v)
-	if err != nil {
-		return "", err
-	}
-	if root == "" {
-		if err := os.Remove(claude.LedgerFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return "", err
-		}
-		return "", nil
-	}
-	return root, writeLine(claude.AccountsRoot, claude.LedgerFile(), root)
 }

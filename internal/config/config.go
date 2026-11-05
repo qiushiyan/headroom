@@ -4,9 +4,7 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -321,71 +319,6 @@ func SameDir(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-// readLedger reads the Claude Code scope's `.ledger`, strictly. Absent is
-// this home's own ledger. Anything present must pass LedgerRoot; a file that
-// does not refuses, the way a relative override does: a home that meant to
-// share a ledger and quietly kept its own would ask every subscription twice
-// per spacing and pile launches onto accounts the other home is filling —
-// silently.
-func readLedger(claude, codex Scope) (string, error) {
-	path := claude.LedgerFile()
-	data, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return "", nil
-	case err != nil:
-		return "", fmt.Errorf("%s could not be read (%v) — it names the accounts root whose ledger this home shares", path, err)
-	}
-	v := strings.TrimSpace(string(data))
-	if v == "" {
-		return "", fmt.Errorf("%s is empty — it must name the accounts root whose ledger this home shares, or be deleted", path)
-	}
-	root, err := LedgerRoot(claude, codex, v)
-	if err != nil {
-		return "", fmt.Errorf("%s: %v — correct it, or delete it to keep this home's own ledger", path, err)
-	}
-	return root, nil
-}
-
-// LedgerRoot validates v as the accounts root whose ledger a Claude Code home
-// shares: one absolute path to an existing directory, other than the Codex
-// accounts root. It returns the cleaned path, or "" when v names this home's
-// own root — sharing one's own ledger is having one's own.
-func LedgerRoot(claude, codex Scope, v string) (string, error) {
-	switch {
-	case strings.ContainsAny(v, "\n\r"):
-		return "", errors.New("a ledger is one accounts root, on one line")
-	case !filepath.IsAbs(v):
-		return "", fmt.Errorf("%q is not absolute", v)
-	case !isDir(v):
-		return "", fmt.Errorf("%s is not a directory — it must be the accounts root whose state.json the homes share", v)
-	case sameLocation(v, codex.AccountsRoot):
-		return "", fmt.Errorf("%s is the Codex accounts root — a Claude Code ledger cannot live there", v)
-	case sameLocation(v, claude.AccountsRoot):
-		return "", nil
-	}
-	// A ledger is a place, not a pointer to follow: a root that spends
-	// against another root's ledger holds no ledger of its own for this home
-	// to share, and two roots naming each other would each spend against the
-	// other's file while both read as shared.
-	if target := LedgerOf(v); !SameDir(target, v) {
-		return "", fmt.Errorf("%s itself spends against %s's ledger — name that root instead", v, target)
-	}
-	return filepath.Clean(v), nil
-}
-
-// LedgerOf is the accounts root whose ledger the home at accountsRoot spends
-// against today: what its `.ledger` names, or the root itself when it has
-// none. It reads the file and judges nothing — Load is where a home's own
-// file is held to the rules; this is how one home asks about another.
-func LedgerOf(accountsRoot string) string {
-	data, err := os.ReadFile(filepath.Join(accountsRoot, ".ledger"))
-	if v := strings.TrimSpace(string(data)); err == nil && v != "" {
-		return filepath.Clean(v)
-	}
-	return filepath.Clean(accountsRoot)
-}
-
 func relativeErr(name, v string) error {
 	return fmt.Errorf("%s=%q is not absolute — a relative config-dir path would make claude run as the primary while writing state beside the cwd; spell it absolute", name, v)
 }
@@ -474,20 +407,6 @@ func (s Scope) RequirePresent() error {
 // resolves against the real home. A primary spelled out by its dir names the
 // tree the board describes, so it launches.
 func (s Scope) PrimaryLaunchRefused() bool { return s.PrimaryRelocated && !s.PrimaryExplicit }
-
-// LedgerFile names the accounts root whose state.json this home's subscription
-// ledger lives in (one absolute path on one line). Absent means this home's
-// own. Configuration a human or `headroom accounts ledger` writes; read
-// strictly by Load.
-func (s Scope) LedgerFile() string { return filepath.Join(s.AccountsRoot, ".ledger") }
-
-// Ledger is the accounts root whose state.json holds the subscription ledger.
-func (s Scope) Ledger() string {
-	if s.LedgerRoot == "" {
-		return s.AccountsRoot
-	}
-	return s.LedgerRoot
-}
 
 // PrimaryDir is the primary account's state dir. Accounts carry "" for it
 // (the vendor's home variable absent), so readers of per-account files

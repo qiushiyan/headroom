@@ -119,36 +119,3 @@ func TestNoLoginIsLinkedBetweenDirs(t *testing.T) {
 		})
 	}
 }
-
-// `.ledger` is written with the rule Load reads it by, and naming this home's
-// own root removes it.
-func TestShareLedger(t *testing.T) {
-	cfg := testConfig(t)
-	codex := config.ForHome(cfg.Home).Codex
-	other := t.TempDir()
-	if _, err := ShareLedger(cfg, codex, "relative"); err == nil {
-		t.Error("a relative root was recorded")
-	}
-	if _, err := os.Stat(cfg.LedgerFile()); err == nil {
-		t.Fatal("a refused root left a file")
-	}
-	root, err := ShareLedger(cfg, codex, other+"/")
-	if err != nil || root != other {
-		t.Fatalf("share: %q %v", root, err)
-	}
-	if data, _ := os.ReadFile(cfg.LedgerFile()); string(data) != other+"\n" {
-		t.Errorf(".ledger = %q", data)
-	}
-	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if root, err := ShareLedger(cfg, codex, cfg.AccountsRoot); err != nil || root != "" {
-		t.Fatalf("own root: %q %v", root, err)
-	}
-	if _, err := os.Stat(cfg.LedgerFile()); err == nil {
-		t.Error("naming this home's own root left .ledger behind")
-	}
-	if _, err := ShareLedger(codex, cfg, other); err == nil {
-		t.Error("a Codex home was given a shared ledger")
-	}
-}
