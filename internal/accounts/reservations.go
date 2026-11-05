@@ -100,33 +100,3 @@ func writeReservations(cfg config.Scope, held Reservations) error {
 	}
 	return atomicfile.Write(cfg.ReservedFile(), ".reserved-*", []byte(b.String()))
 }
-
-// AdoptReservationRefs moves the reservations held under any of names to
-// PrimaryRef, joining any the ref already has, and says which names moved:
-// the one-time adoption of refs (state.Store.AdoptRefs, whose lock the caller
-// holds), retired with it. A `.reserved` that does not read is an error and
-// nothing is written: a reservation is a person's statement, never
-// rewritten from a guess.
-func AdoptReservationRefs(cfg config.Scope, names []string) ([]string, error) {
-	held, err := ReadReservations(cfg)
-	if err != nil {
-		return nil, err
-	}
-	var moved []string
-	for _, from := range names {
-		if from == PrimaryRef || !held.Held(from) {
-			continue
-		}
-		for _, d := range held[from] {
-			if !slices.Contains(held[PrimaryRef], d) {
-				held[PrimaryRef] = append(held[PrimaryRef], d)
-			}
-		}
-		delete(held, from)
-		moved = append(moved, from)
-	}
-	if len(moved) == 0 {
-		return nil, nil
-	}
-	return moved, writeReservations(cfg, held)
-}

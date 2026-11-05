@@ -590,18 +590,7 @@ headless runs.
   edges (`Set.RefOf`, `Set.NameOf`), and shells holding different pins read
   one set of records; a record that kept the name would strand on every
   rename and chase it on every run. The launch and usage logs keep names:
-  they are history, joined on the account key. Builds before refs wrote the
-  primary's records under its name, and the first command a home sees from
-  a newer build moves them once (`app.AdoptRefs`, at configuration load):
-  every record under a name the primary could have had — the name and
-  former names its document recorded, the pin, the login's local part,
-  `primary` — unless an extra is called that, under the store's locks, the
-  files beside the store first and the home's document recording the `refs`
-  marker last, so a run stopped partway is finished by the next. An
-  unreadable `.reserved`, token file or re-homes section stops it before
-  anything is written, and every command says why until it can run; `check`
-  notes a home still waiting. A home with nothing an older build wrote is
-  never touched. The adoption is deleted once every home has run it.
+  they are history, joined on the account key.
 - **The ledger keys on the account's own UUID**, from `.claude.json`, falling
   back to the dir name only when that file parsed and reported none. The
   budget is per account, so two config dirs logged into the same account share
@@ -1571,8 +1560,7 @@ ledger in its `.ledger`, which `config` reads and writes by one rule
   (`github.com/qiushiyan/clikit`), one declaration per command holding its
   flags, constraints and `Help()`, so the help page is generated from what
   parses. Configuration loads only when a command asks for it, so help
-  prints whatever the environment says, and loading it first adopts the
-  records of a home an older build wrote (see The one file headroom writes). A command's `Run` turns its flags
+  prints whatever the environment says. A command's `Run` turns its flags
   into one typed call into `internal/app` and maps the returned error to a
   status. How help renders, how an argv error reads and which errors are usage
   errors are clikit's: a change there is a clikit release and a `go.mod` bump,

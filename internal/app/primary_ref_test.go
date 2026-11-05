@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -42,4 +43,17 @@ func TestARenamedPrimaryKeepsItsRecords(t *testing.T) {
 	if keptFrom(t, renamed, "q2", work) || !keptFrom(t, renamed, "q2", t.TempDir()) {
 		t.Error("the reservation did not stay with the primary")
 	}
+}
+
+// keptFrom says a bare launch from dir leaves the account named name out
+// because a reservation keeps it for other work.
+func keptFrom(t *testing.T, scope config.Scope, name, dir string) bool {
+	t.Helper()
+	t.Chdir(dir)
+	for line := range strings.SplitSeq(launchOn(t, scope, quietPlace(), "--dry-run").stdout, "\n") {
+		if strings.Contains(line, name) && strings.Contains(line, "excluded: reserved for") {
+			return true
+		}
+	}
+	return false
 }
