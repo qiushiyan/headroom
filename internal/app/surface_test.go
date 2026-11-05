@@ -45,12 +45,12 @@ func call(f func(std Streams) error) ran {
 // execRecord stands in for the exec that replaces this process, and records
 // what it was asked to start.
 type execRecord struct {
-	called       bool
-	binary       string
-	args, env    []string
-	err          error // what the exec returns
-	atExec       func()
-	path, argv0s string
+	called    bool
+	binary    string
+	args, env []string
+	err       error // what the exec returns
+	atExec    func()
+	path      string
 }
 
 func (r *execRecord) exec(path, binary string, args, env []string) error {

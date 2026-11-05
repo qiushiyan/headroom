@@ -646,8 +646,7 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	// A launch that would refuse is a dry run that fails: a script asking
 	// "would this launch?" reads the exit status.
 	g := newAutoFixture(t)
-	var refused launched
-	refused = g.launch("--dry-run", "--last")
+	refused := g.launch("--dry-run", "--last")
 	table = refused.stdout
 	if refused.code != 1 || refused.called || !strings.Contains(table, "would refuse") {
 		t.Errorf("a dry run that would refuse: exit %d, called %v:\n%s", refused.code, refused.called, table)

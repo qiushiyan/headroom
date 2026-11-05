@@ -143,7 +143,7 @@ func TestAHeadlessPlacementWaitsRatherThanTakeAnAccountNearALimit(t *testing.T) 
 		t.Fatalf("code %d doc %+v", code, doc)
 	}
 	retry, err := time.Parse(time.RFC3339, deref(doc.RetryAt))
-	if err != nil || retry.Sub(time.Now()) < 110*time.Minute || retry.Sub(time.Now()) > 2*time.Hour {
+	if err != nil || time.Until(retry) < 110*time.Minute || time.Until(retry) > 2*time.Hour {
 		t.Errorf("retry at %v (%v), want a's session reset about two hours out", doc.RetryAt, err)
 	}
 	if a := doc.find("a@x.com"); !a.NearLimit || !a.Eligible || a.RoomAt == "" {
