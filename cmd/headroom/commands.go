@@ -25,13 +25,13 @@ func (b boardFlags) run(ctx *kong.Context, in io.Reader, term app.Terminal, h ho
 	std := streams(ctx, in)
 	deps := app.BoardDeps{Round: h.round(true), Place: h.place}
 	if b.JSON {
-		return outcome(app.BoardJSON(std, scopes, deps))
+		return app.BoardJSON(std, scopes, deps)
 	}
 	layout := render.LayoutBlocks
 	if b.Compact {
 		layout = render.LayoutCompact
 	}
-	return outcome(app.Board(std, term, scopes, layout, deps))
+	return app.Board(std, term, scopes, layout, deps)
 }
 
 type BoardCmd struct {
@@ -95,9 +95,9 @@ func (AddCmd) Help() string { return addHelp }
 func (c *AddCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, parent *AccountsCmd) error {
 	// The one command that works while its vendor is absent: it is how the
 	// first Codex directory comes to exist.
-	return outcome(app.AccountsAdd(streams(ctx, in), parent.one(cfg), app.AddOptions{
+	return app.AccountsAdd(streams(ctx, in), parent.one(cfg), app.AddOptions{
 		Email: c.Email, ShareConfig: c.ShareConfig.set, ShareFrom: c.ShareConfig.dir,
-	}))
+	})
 }
 
 type RemoveCmd struct {
@@ -113,7 +113,7 @@ func (c *RemoveCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cfg 
 	if err := scope.RequirePresent(); err != nil {
 		return err
 	}
-	return outcome(app.AccountsRemove(streams(ctx, in), term, scope, c.Account, c.Yes, h.place.Probe))
+	return app.AccountsRemove(streams(ctx, in), term, scope, c.Account, c.Yes, h.place.Probe)
 }
 
 type ReserveCmd struct {
@@ -126,9 +126,9 @@ type ReserveCmd struct {
 func (ReserveCmd) Help() string { return reserveHelp }
 
 func (c *ReserveCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, parent *AccountsCmd) error {
-	return outcome(app.AccountsReserve(streams(ctx, in), parent.one(cfg), app.ReserveOptions{
+	return app.AccountsReserve(streams(ctx, in), parent.one(cfg), app.ReserveOptions{
 		Account: c.Account, Dirs: c.Dirs, Clear: c.Clear,
-	}))
+	})
 }
 
 type LedgerCmd struct {
@@ -141,7 +141,7 @@ func (c *LedgerCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, pare
 	if parent.Vendor != nil && *parent.Vendor != config.Claude {
 		return clikit.Usage(fmt.Errorf("only Claude Code homes share a ledger"))
 	}
-	return outcome(app.AccountsLedger(streams(ctx, in), cfg, c.Root, time.Now()))
+	return app.AccountsLedger(streams(ctx, in), cfg, c.Root, time.Now())
 }
 
 type LaunchCmd struct {
@@ -164,10 +164,10 @@ func (c *LaunchCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, h ho
 	if err != nil {
 		return err
 	}
-	return outcome(app.Launch(streams(ctx, in), scope, app.LaunchOptions{
+	return app.Launch(streams(ctx, in), scope, app.LaunchOptions{
 		Account: string(c.Account), Last: c.Last, DryRun: c.DryRun,
 		Args: vendorArgs(c.Args),
-	}, h.place, h.exec))
+	}, h.place, h.exec)
 }
 
 type SessionsCmd struct {
@@ -183,9 +183,9 @@ func (c *SessionsCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cf
 	if c.JSON && (c.CDFile != "" || len(args) > 0) {
 		return clikit.Usage(fmt.Errorf("--json takes no other arguments"))
 	}
-	return outcome(app.Sessions(streams(ctx, in), term, cfg.Claude,
+	return app.Sessions(streams(ctx, in), term, cfg.Claude,
 		app.SessionsOptions{JSON: c.JSON, CDFile: c.CDFile, Args: args},
-		app.SessionsDeps{Place: h.place, Exec: h.exec}))
+		app.SessionsDeps{Place: h.place, Exec: h.exec})
 }
 
 type LimitsCmd struct {
@@ -201,7 +201,7 @@ func (c *LimitsCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) erro
 	if err != nil {
 		return err
 	}
-	return outcome(app.Limits(streams(ctx, in), scopes, string(c.Account)))
+	return app.Limits(streams(ctx, in), scopes, string(c.Account))
 }
 
 type LaunchesCmd struct {
@@ -229,7 +229,7 @@ func (c *LaunchesCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) er
 	}
 	std, now := streams(ctx, in), time.Now()
 	if !c.Eval {
-		return outcome(app.Launches(std, scopes, c.Count, c.JSON))
+		return app.Launches(std, scopes, c.Count, c.JSON)
 	}
 	var since time.Time
 	if c.Since != "" {
@@ -237,7 +237,7 @@ func (c *LaunchesCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) er
 			return clikit.Usage(err)
 		}
 	}
-	return outcome(app.LaunchesEval(std, scopes, since, c.JSON, now))
+	return app.LaunchesEval(std, scopes, since, c.JSON, now)
 }
 
 type LoginCmd struct {
@@ -273,9 +273,9 @@ func (c *LoginRenewCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) 
 	case c.JSON && !c.DryRun:
 		return clikit.Usage(fmt.Errorf("--json prints the plan, with --dry-run; to renew without a terminal, headroom login start and headroom login finish"))
 	}
-	return outcome(app.Login(streams(ctx, in), cfg.Claude, app.LoginOptions{
+	return app.Login(streams(ctx, in), cfg.Claude, app.LoginOptions{
 		Names: names(c.Accounts), All: c.All, Within: time.Duration(c.Within) * 24 * time.Hour, DryRun: c.DryRun, JSON: c.JSON,
-	}))
+	})
 }
 
 type LoginStartCmd struct {
@@ -285,7 +285,7 @@ type LoginStartCmd struct {
 func (LoginStartCmd) Help() string { return loginStartHelp }
 
 func (c *LoginStartCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.LoginStart(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.LoginStart(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type LoginFinishCmd struct {
@@ -301,7 +301,7 @@ func (c *LoginFinishCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config)
 	if len(c.Code) > 0 {
 		return clikit.Usage(fmt.Errorf("finish reads the code from stdin, which keeps it out of ps and shell history; nothing was sent: printf '%%s\\n' '<code#state>' | headroom login finish %s", c.Account))
 	}
-	return outcome(app.LoginFinish(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.LoginFinish(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type LoginStatusCmd struct {
@@ -316,7 +316,7 @@ reason no_reply: ask again. It exits 0, and 1 when the sign-in's record cannot b
 }
 
 func (c *LoginStatusCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.LoginStatus(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.LoginStatus(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type LoginCancelCmd struct {
@@ -333,7 +333,7 @@ headroom login start begins afresh.`
 }
 
 func (c *LoginCancelCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.LoginCancel(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.LoginCancel(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type LoginHoldCmd struct {
@@ -341,7 +341,7 @@ type LoginHoldCmd struct {
 }
 
 func (c *LoginHoldCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.LoginHold(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.LoginHold(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type HeadlessCmd struct {
@@ -362,7 +362,7 @@ type HeadlessListCmd struct {
 func (HeadlessListCmd) Help() string { return headlessHelp }
 
 func (c *HeadlessListCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.HeadlessList(streams(ctx, in), cfg.Claude, c.JSON, time.Now()))
+	return app.HeadlessList(streams(ctx, in), cfg.Claude, c.JSON, time.Now())
 }
 
 type HeadlessMintCmd struct {
@@ -377,7 +377,7 @@ the vendor asks for the approval there, and waits up to ten minutes for it.`
 }
 
 func (c *HeadlessMintCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cfg config.Config) error {
-	return outcome(app.HeadlessMint(streams(ctx, in), term, cfg.Claude, string(c.Account)))
+	return app.HeadlessMint(streams(ctx, in), term, cfg.Claude, string(c.Account))
 }
 
 type HeadlessPlaceCmd struct {
@@ -389,9 +389,9 @@ type HeadlessPlaceCmd struct {
 func (HeadlessPlaceCmd) Help() string { return placeHelp }
 
 func (c *HeadlessPlaceCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, h host) error {
-	return outcome(app.HeadlessPlace(streams(ctx, in), cfg.Claude, app.HeadlessPlaceOptions{
+	return app.HeadlessPlace(streams(ctx, in), cfg.Claude, app.HeadlessPlaceOptions{
 		Prefer: string(c.Prefer), Exclude: names(c.Exclude), DryRun: c.DryRun,
-	}, h.place))
+	}, h.place)
 }
 
 type HeadlessStartedCmd struct {
@@ -406,7 +406,7 @@ func (c *HeadlessStartedCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Con
 	case c.PID <= 0:
 		return clikit.Usage(fmt.Errorf("%d is not a process id", c.PID))
 	}
-	return outcome(app.HeadlessStarted(streams(ctx, in), cfg.Claude, c.Placement, c.PID, h.place))
+	return app.HeadlessStarted(streams(ctx, in), cfg.Claude, c.Placement, c.PID, h.place)
 }
 
 type HeadlessTokenCmd struct {
@@ -414,7 +414,7 @@ type HeadlessTokenCmd struct {
 }
 
 func (c *HeadlessTokenCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.HeadlessToken(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.HeadlessToken(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type HeadlessForgetCmd struct {
@@ -422,7 +422,7 @@ type HeadlessForgetCmd struct {
 }
 
 func (c *HeadlessForgetCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	return outcome(app.HeadlessForget(streams(ctx, in), cfg.Claude, string(c.Account)))
+	return app.HeadlessForget(streams(ctx, in), cfg.Claude, string(c.Account))
 }
 
 type ResolveCmd struct {
@@ -437,7 +437,7 @@ func (c *ResolveCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) err
 	if err != nil {
 		return err
 	}
-	return outcome(app.Resolve(streams(ctx, in), scope, string(c.Account)))
+	return app.Resolve(streams(ctx, in), scope, string(c.Account))
 }
 
 type RefreshCmd struct {
@@ -451,7 +451,7 @@ func (c *RefreshCmd) Run(cfg config.Config, h host) error {
 	if err != nil {
 		return err
 	}
-	return outcome(app.Refresh(scopes, h.round(false)))
+	return app.Refresh(scopes, h.round(false))
 }
 
 type CheckCmd struct{}
@@ -483,9 +483,15 @@ func (VersionCmd) Run(ctx *kong.Context) error {
 // so this message must speak regardless. The name must never be rebound: its
 // stdout was a decision protocol, and one name with two meanings across
 // binary generations is how a session once started on the wrong account.
-// Nothing goes to stdout.
+// Nothing goes to stdout. `headroom help resume` does reach a help page,
+// which says the same.
 type ResumeCmd struct {
 	Args []string `arg:"" optional:"" help:"Whatever the stale shell passes; ignored."`
+}
+
+func (ResumeCmd) Help() string {
+	return "Retired: it prints how to fix a stale shell integration and exits 2, whatever it is given.\n" +
+		"The session picker is headroom sessions (listing: headroom sessions --json)."
 }
 
 func (ResumeCmd) Run(ctx *kong.Context) error {
