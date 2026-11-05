@@ -12,7 +12,9 @@ package sessions
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 // TailBudget is how many bytes from the end of a transcript the metadata
@@ -22,17 +24,38 @@ import (
 // the budget is how "opens instantly" would silently become "shows untitled".
 const TailBudget = 64 << 10
 
-// Munge maps a session cwd to Claude Code's store-directory name for it:
-// every '/' and '.' becomes '-'. Lossy by construction — never invert it;
-// its one legitimate use is *verifying* a recorded cwd against the dir a
-// transcript actually sits in.
+// Munge is Claude Code's store-directory name for a session cwd, as its own
+// path helper computes it (read from 2.1.318): every UTF-16 unit outside
+// [a-zA-Z0-9] becomes '-', and a name longer than 200 is cut there and
+// suffixed with '-' and a 32-bit string hash of the whole cwd in base 36.
+// Lossy by construction — never invert it; its one legitimate use is
+// *verifying* a recorded cwd against the dir a transcript actually sits in.
 func Munge(cwd string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '/' || r == '.' {
-			return '-'
+	var b strings.Builder
+	var hash int32
+	for _, u := range utf16.Encode([]rune(cwd)) {
+		hash = hash<<5 - hash + int32(u) // the vendor's (e<<5)-e+c|0, wrapping alike
+		if 'a' <= u && u <= 'z' || 'A' <= u && u <= 'Z' || '0' <= u && u <= '9' {
+			b.WriteByte(byte(u))
+		} else {
+			b.WriteByte('-')
 		}
-		return r
-	}, cwd)
+	}
+	name := b.String()
+	if len(name) <= storeNameLimit {
+		return name
+	}
+	return name[:storeNameLimit] + "-" + strconv.FormatInt(abs(int64(hash)), 36)
+}
+
+// storeNameLimit is the longest store dir name the vendor writes in full.
+const storeNameLimit = 200
+
+func abs(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // Tail is what the metadata pass extracts from a transcript's final bytes.

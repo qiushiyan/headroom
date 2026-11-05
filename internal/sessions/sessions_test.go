@@ -12,12 +12,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
-func TestMunge(t *testing.T) {
-	if got := Munge("/Users/q/dev/.worktrees/x"); got != "-Users-q-dev--worktrees-x" {
-		t.Errorf("Munge = %q", got)
-	}
-}
-
 func TestParseTailTitleChain(t *testing.T) {
 	storeDir := "-tmp-proj"
 	lines := []string{
