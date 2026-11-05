@@ -16,7 +16,7 @@ func at(d time.Duration) int64 { return now.Add(d).Unix() }
 // both resetting in the future.
 func acct(name string, session, weekly int) Candidate {
 	return Candidate{
-		Name: name, Key: "uuid:" + name, ObservedAt: at(-time.Minute),
+		Name: name, Ref: name, Key: "uuid:" + name, ObservedAt: at(-time.Minute),
 		Limits: []Limit{
 			{Kind: "session", Label: "5h session", Percent: session, ResetAt: at(2 * time.Hour), Session: true},
 			{Kind: "weekly_all", Label: "All models (7d)", Percent: weekly, ResetAt: at(72 * time.Hour)},

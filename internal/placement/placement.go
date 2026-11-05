@@ -113,7 +113,7 @@ type Proc struct {
 // Candidate is everything the rule knows about one account.
 type Candidate struct {
 	Name string // the account's name: what a launch selects and a line prints
-	Ref  string // how records name it (accounts.Account.Ref); "" when it is Name
+	Ref  string // how records name it (accounts.Account.Ref): what --last and a re-home are kept under
 	Key  string // the quota it spends; two dirs on one account share a key
 
 	// Excluded says why an automatic choice avoids this account ("" = it may
@@ -652,7 +652,7 @@ func whyNot(c Counted, intent Intent) string {
 func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 	nowS, nowMS := now.Unix(), now.UnixMilli()
 	out := Counted{
-		Name: c.Name, Ref: cmp.Or(c.Ref, c.Name), Key: c.Key, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
+		Name: c.Name, Ref: c.Ref, Key: c.Key, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
 		ObservedAt: c.ObservedAt, Source: c.Source, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
 		Stale:  c.ObservedAt > 0 && nowS-c.ObservedAt > int64(StaleAfter/time.Second),
 		Limits: make([]CountedLimit, 0, len(c.Limits)),

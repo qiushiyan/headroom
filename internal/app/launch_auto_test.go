@@ -816,7 +816,7 @@ func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
 // launch that exists to move it.
 func rehome(st *state.Store, id, account string, at time.Time) error {
 	_, err := st.Place(state.Launch{
-		Candidates: []placement.Candidate{{Name: account, Key: "test:" + account}},
+		Candidates: []placement.Candidate{{Name: account, Ref: account, Key: "test:" + account}},
 		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
 		Session:    id, MustReHome: true, Now: at,
 	})

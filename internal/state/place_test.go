@@ -31,7 +31,7 @@ func rehome(s *Store, id, account string, at time.Time, live Enumerator) error {
 func idle(names ...string) []placement.Candidate {
 	out := make([]placement.Candidate, len(names))
 	for i, n := range names {
-		out[i] = placement.Candidate{Name: n, Key: "uuid:" + n}
+		out[i] = placement.Candidate{Name: n, Ref: n, Key: "uuid:" + n}
 	}
 	return out
 }
@@ -103,6 +103,21 @@ func TestAPlacementOutlivesItsProcess(t *testing.T) {
 	}
 	if n := len(s.Load().Placements().Recent); n != 1 {
 		t.Fatalf("%d recent placements kept, want the one just made", n)
+	}
+}
+
+// A candidate offered with no ref is refused rather than recorded: --last and
+// a re-home are kept under the ref, and one written under nothing would route
+// to nothing without a word.
+func TestAChoiceWithNoRefIsNotRecorded(t *testing.T) {
+	root := t.TempDir()
+	s := Open(rootScope(root))
+	cands := []placement.Candidate{{Name: "a", Key: "uuid:a"}}
+	if p, err := place(s, cands, placement.Intent{}, 1000, "s1", time.Now()); err == nil || p.Recorded {
+		t.Fatalf("recorded=%v err=%v", p.Recorded, err)
+	}
+	if _, ok := s.Load().Placements().Newest(root); ok {
+		t.Error("a choice with no ref was recorded as --last")
 	}
 }
 

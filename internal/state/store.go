@@ -3,6 +3,7 @@ package state
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -486,6 +487,11 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		chosen, ok := out.Decision.Find(out.Decision.Chosen)
 		if out.Decision.Chosen == "" || !ok {
 			return false, nil
+		}
+		if chosen.Ref == "" {
+			// What --last and a re-home are kept under: one recorded without it
+			// would route to nothing, and silently.
+			return false, fmt.Errorf("%s was offered with no ref, so it cannot be recorded", chosen.Name)
 		}
 		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, chosen.Ref, l.PID, s.root, now)
 		led.dirty = true

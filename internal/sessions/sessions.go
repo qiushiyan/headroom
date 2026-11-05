@@ -1,7 +1,6 @@
 package sessions
 
 import (
-	"cmp"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,7 +51,7 @@ type Session struct {
 // AccountRef names one discovered account and its real config dir.
 type AccountRef struct {
 	Name string
-	Ref  string // how a re-home names it (accounts.Account.Ref); "" when it is Name
+	Ref  string // how a re-home names it (accounts.Account.Ref)
 	Dir  string
 }
 
@@ -213,7 +212,7 @@ func readOwnerEvidence(accts []AccountRef, owners map[string]OwnerRec, history b
 	ev := ownerEvidence{names: map[string]bool{}, byRef: map[string]string{}, hists: map[string]History{}, owners: owners}
 	for _, a := range accts {
 		ev.names[a.Name] = true
-		ev.byRef[cmp.Or(a.Ref, a.Name)] = a.Name
+		ev.byRef[a.Ref] = a.Name
 		if !history {
 			continue
 		}

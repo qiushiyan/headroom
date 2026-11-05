@@ -284,6 +284,25 @@ func TestAPreferredAccountIsFollowedWhileItHasRoom(t *testing.T) {
 	}
 }
 
+// The primary's token is kept under its ref, as mint stores it, and answers
+// to whatever name the primary has: asked for by its name now, or after a
+// rename, the token is the one minted for it.
+func TestThePrimarysTokenAnswersToItsName(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	tok := headless.Token{Value: testToken + "primary", MintedMS: time.Now().UnixMilli(), EndsMS: time.Now().Add(300 * 24 * time.Hour).UnixMilli(), Key: f.key("qiushi").ID()}
+	if err := headless.Put(f.cfg.AccountsRoot, accounts.PrimaryRef, tok); err != nil {
+		t.Fatal(err)
+	}
+	renamed := f
+	renamed.cfg.PrimaryName = "q2"
+	for _, g := range []autoFixture{f, renamed} {
+		var out, errw bytes.Buffer
+		if code := g.token(&out, &errw, g.cfg.PrimaryName); code != 0 || out.String() != tok.Value+"\n" {
+			t.Errorf("token %s: %d %q %s", g.cfg.PrimaryName, code, out.String(), errw.String())
+		}
+	}
+}
+
 // The token leaves its file only on a request naming its account, and only
 // when it still works for that account.
 func TestTheTokenIsPrintedOnlyWhenAsked(t *testing.T) {

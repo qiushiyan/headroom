@@ -308,7 +308,7 @@ func TestCollectWiresEachAccountsEvidence(t *testing.T) {
 	os.WriteFile(filepath.Join(dirB, "sessions", "42.json"), []byte(`{"sessionId":"s-live","pid":42,"startedAt":5001000}`), 0o644)
 	in := Input{
 		ProjectsDir: projects, CWD: "/nowhere",
-		Accounts: []AccountRef{{Name: "a", Dir: dirA}, {Name: "b", Dir: dirB}},
+		Accounts: []AccountRef{{Name: "a", Ref: "a", Dir: dirA}, {Name: "b", Ref: "b", Dir: dirB}},
 		Owners:   map[string]OwnerRec{"s-rehome": {Account: "b", AtMS: 200}},
 		Probe: func(pid int) (int64, error) {
 			if pid == 42 {
@@ -608,7 +608,7 @@ func TestResolveWalksPastAGitHusk(t *testing.T) {
 
 func TestRegistryProblemsKeepTheirScope(t *testing.T) {
 	root := t.TempDir()
-	refs := []AccountRef{{Name: "a", Dir: root}}
+	refs := []AccountRef{{Name: "a", Ref: "a", Dir: root}}
 	dir := filepath.Join(root, "sessions")
 	os.Mkdir(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "unknown.json"), []byte(`broken`), 0644)

@@ -38,7 +38,7 @@ func limits(session, weekly int, sessionReset, weeklyReset time.Time) []placemen
 }
 
 func cand(name string, observed time.Time, l []placement.Limit) placement.Candidate {
-	return placement.Candidate{Name: name, Key: "uuid:" + name, ObservedAt: observed.Unix(), Source: "headroom_cache", Limits: l}
+	return placement.Candidate{Name: name, Ref: name, Key: "uuid:" + name, ObservedAt: observed.Unix(), Source: "headroom_cache", Limits: l}
 }
 
 // line logs a launch the way placeLaunch does: the decision the rule made and
@@ -198,6 +198,10 @@ func TestTheLineRebuildsTheRulesInput(t *testing.T) {
 				if want[i].Statuses == nil {
 					want[i].Statuses = []string{}
 				}
+				// A ref is how --last finds an account, which an automatic
+				// choice never reads; the line keeps names, and the replay
+				// names each account by its own.
+				want[i].Ref = want[i].Name
 			}
 			wantIntent := c.intent
 			wantIntent.Home = home
