@@ -62,12 +62,12 @@ var codexSharedConfig = []string{
 	"plugins",
 }
 
-// StoreSettings is what every account of a vendor must read from one file
+// storeSettings is what every account of a vendor must read from one file
 // because it governs the session store they share: each Claude Code account's
 // cleanup prunes that store by its own settings.json, so an account seeded
 // with none of its own config writes one and prunes everyone's history by the
 // vendor's default.
-func StoreSettings(v config.Vendor) []string {
+func storeSettings(v config.Vendor) []string {
 	if v == config.Claude {
 		return []string{"settings.json"}
 	}
@@ -111,6 +111,20 @@ type SeedOptions struct {
 	ShareNames []string
 }
 
+// Seeded is what Seed made: the dir, and every entry it linked by the dir it
+// points into.
+type Seeded struct {
+	Dir string
+	// Shared were linked from SeedOptions.ShareFrom.
+	Shared []string
+	// Settings govern the shared session store and were linked from the
+	// primary, because the share did not provide them.
+	Settings []string
+	// Kept are what the share source held that stays per dir
+	// (PerDirEntries), and was therefore not linked.
+	Kept []string
+}
+
 // ValidateExtraName is the naming rule for a dir under the accounts root:
 // an email (contains "@"), a single path element, never lock debris. Every
 // extra is named by its login so the board can catch a mismatched /login;
@@ -141,44 +155,44 @@ func ValidateExtraName(name string) error {
 // board shows it as never logged in, launch refuses it on topology) and
 // deleting someone's directory to tidy up is not this function's call.
 //
-// shared names what was linked; kept names what the share source held that
-// stays per dir (PerDirEntries) and was therefore not linked.
-func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared, kept []string, err error) {
+// The result says what was linked, and from where, even beside an error.
+func Seed(cfg config.Scope, name string, opt SeedOptions) (Seeded, error) {
 	if err := ValidateExtraName(name); err != nil {
-		return "", nil, nil, err
+		return Seeded{}, err
 	}
-	dir = filepath.Join(cfg.AccountsRoot, name)
+	dir := filepath.Join(cfg.AccountsRoot, name)
+	s := Seeded{Dir: dir}
 	if _, err := os.Lstat(dir); err == nil {
-		return dir, nil, nil, fmt.Errorf("%s already exists", dir)
+		return s, fmt.Errorf("%s already exists", dir)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return dir, nil, nil, fmt.Errorf("%s: %v", dir, err)
+		return s, fmt.Errorf("%s: %v", dir, err)
 	}
 	if err := ensureCanonicalStore(cfg); err != nil {
-		return dir, nil, nil, err
+		return s, err
 	}
 	if opt.ShareFrom != "" {
 		if !filepath.IsAbs(opt.ShareFrom) {
-			return dir, nil, nil, fmt.Errorf("share source %q is not absolute", opt.ShareFrom)
+			return s, fmt.Errorf("share source %q is not absolute", opt.ShareFrom)
 		}
 		if fi, err := os.Stat(opt.ShareFrom); err != nil || !fi.IsDir() {
-			return dir, nil, nil, fmt.Errorf("share source %s is not a directory", opt.ShareFrom)
+			return s, fmt.Errorf("share source %s is not a directory", opt.ShareFrom)
 		}
 	}
 	if err := os.MkdirAll(cfg.AccountsRoot, 0o755); err != nil {
-		return dir, nil, nil, err
+		return s, err
 	}
 	if err := os.Mkdir(dir, 0o755); err != nil {
-		return dir, nil, nil, err
+		return s, err
 	}
 	if err := os.Symlink(cfg.StoreDir(), filepath.Join(dir, cfg.StoreLink())); err != nil {
-		return dir, nil, nil, fmt.Errorf("linking %s: %v (partial dir left at %s)", cfg.StoreLink(), err, dir)
+		return s, fmt.Errorf("linking %s: %v (partial dir left at %s)", cfg.StoreLink(), err, dir)
 	}
 	if opt.ShareFrom != "" {
 		names := opt.ShareNames
 		if names == nil {
 			entries, err := os.ReadDir(opt.ShareFrom)
 			if err != nil {
-				return dir, nil, nil, fmt.Errorf("reading %s: %v (partial dir left at %s)", opt.ShareFrom, err, dir)
+				return s, fmt.Errorf("reading %s: %v (partial dir left at %s)", opt.ShareFrom, err, dir)
 			}
 			for _, e := range entries {
 				names = append(names, e.Name())
@@ -193,20 +207,37 @@ func Seed(cfg config.Scope, name string, opt SeedOptions) (dir string, shared, k
 				continue // a whitelist entry the source does not have: nothing to share
 			}
 			if perDir(cfg.Vendor, n) {
-				kept = append(kept, n)
+				s.Kept = append(s.Kept, n)
 				continue
 			}
 			if err := os.Symlink(src, filepath.Join(dir, n)); err != nil {
-				return dir, shared, kept, fmt.Errorf("linking %s: %v (partial dir left at %s)", n, err, dir)
+				return s, fmt.Errorf("linking %s: %v (partial dir left at %s)", n, err, dir)
 			}
-			shared = append(shared, n)
+			s.Shared = append(s.Shared, n)
 		}
+	}
+	// What governs the shared store is not the share's to leave out: a dir
+	// with no settings of its own writes one at its first session and prunes
+	// every account's history by the vendor's default. A primary with none has
+	// nothing to link — every account reads one default, and check says so.
+	for _, n := range storeSettings(cfg.Vendor) {
+		src, dst := filepath.Join(cfg.PrimaryDir(), n), filepath.Join(dir, n)
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		if _, err := os.Lstat(src); err != nil {
+			continue
+		}
+		if err := os.Symlink(src, dst); err != nil {
+			return s, fmt.Errorf("linking %s: %v (partial dir left at %s)", n, err, dir)
+		}
+		s.Settings = append(s.Settings, n)
 	}
 	a := Account{Scope: cfg, ConfigDir: dir, Name: name}
 	if err := VerifyTopology(a); err != nil {
-		return dir, shared, kept, fmt.Errorf("seeded dir failed the topology check it was built to pass: %v", err)
+		return s, fmt.Errorf("seeded dir failed the topology check it was built to pass: %v", err)
 	}
-	return dir, shared, kept, nil
+	return s, nil
 }
 
 // ensureCanonicalStore makes the vendor's canonical store exist as a real

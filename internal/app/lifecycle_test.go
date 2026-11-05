@@ -83,7 +83,8 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	cfg := lifecycleConfig(t)
 	seed := func(name string) string {
 		t.Helper()
-		dir, _, _, err := accounts.Seed(cfg, name, accounts.SeedOptions{})
+		seeded, err := accounts.Seed(cfg, name, accounts.SeedOptions{})
+		dir := seeded.Dir
 		if err != nil {
 			t.Fatal(err)
 		}

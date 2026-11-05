@@ -79,7 +79,7 @@ func seed(t *testing.T, home string, extras ...string) {
 		t.Fatal(err)
 	}
 	for _, email := range extras {
-		if _, _, _, err := accounts.Seed(scope, email, accounts.SeedOptions{}); err != nil {
+		if _, err := accounts.Seed(scope, email, accounts.SeedOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}

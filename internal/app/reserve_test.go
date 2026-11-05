@@ -108,6 +108,21 @@ func TestBareAddLinksTheSettingsThatGovernTheStore(t *testing.T) {
 		t.Errorf("bare add shared more than the store's settings: %v", err)
 	}
 
+	// A config package without settings of its own shares its entries and
+	// still leaves the account reading the primary's settings.
+	pkg := filepath.Join(t.TempDir(), "pkg")
+	if err := os.MkdirAll(filepath.Join(pkg, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(func(std Streams) error {
+		return AccountsAdd(std, cfg, AddOptions{Email: "pkg@x.com", ShareConfig: true, ShareFrom: pkg})
+	}); got.code != 0 {
+		t.Fatalf("add --share-config=<dir>: %+v", got)
+	}
+	if a, err := os.Stat(filepath.Join(cfg.AccountsRoot, "pkg@x.com", "settings.json")); err != nil || !os.SameFile(a, b) {
+		t.Errorf("an account seeded from a package without settings.json does not read the primary's (%v)", err)
+	}
+
 	// With nothing to link, the add still works: every account then reads the
 	// same default, and check says so.
 	bare := claudeScope(t.TempDir(), "qiushi")

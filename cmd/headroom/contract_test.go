@@ -220,7 +220,8 @@ func newWorld(t *testing.T) *world {
 	}
 	claudeLogin(w.claude.PrimaryDir(), "p@x.com")
 	for _, email := range []string{"a@x.com", "b@x.com"} {
-		dir, _, _, err := accounts.Seed(w.claude, email, accounts.SeedOptions{})
+		seeded, err := accounts.Seed(w.claude, email, accounts.SeedOptions{})
+		dir := seeded.Dir
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +233,8 @@ func newWorld(t *testing.T) *world {
 			Token: fmt.Sprintf("tok-%d", n), Expires: time.Now().Add(-time.Hour)}.Write(t, dir)
 	}
 	codexLogin(w.codex.PrimaryDir(), 1, "q@x.com")
-	dir, _, _, err := accounts.Seed(w.codex, "c@x.com", accounts.SeedOptions{})
+	seeded, err := accounts.Seed(w.codex, "c@x.com", accounts.SeedOptions{})
+	dir := seeded.Dir
 	if err != nil {
 		t.Fatal(err)
 	}
