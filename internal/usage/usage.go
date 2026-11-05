@@ -178,13 +178,24 @@ func parseEntry(e map[string]any) Row {
 func parsePercent(v any) (int, tag.State) {
 	switch n := v.(type) {
 	case float64:
-		return int(math.Round(n)), tag.OK
+		return percentOf(n)
 	case string:
 		if f, err := strconv.ParseFloat(n, 64); err == nil {
-			return int(math.Round(f)), tag.OK
+			return percentOf(f)
 		}
 	}
 	return 0, tag.Bad
+}
+
+// percentOf is a decoded percent as a row carries it. A value that is not a
+// finite number an int holds exactly — NaN or Inf, which strconv reads from a
+// string, or a magnitude past 2^53, whose conversion is the platform's guess —
+// is no figure, and a figure of 0 would read as the most room there is.
+func percentOf(f float64) (int, tag.State) {
+	if math.IsNaN(f) || math.Abs(f) > 1<<53 {
+		return 0, tag.Bad
+	}
+	return int(math.Round(f)), tag.OK
 }
 
 func parseReset(v any) (int64, tag.State) {

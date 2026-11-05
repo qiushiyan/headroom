@@ -86,6 +86,16 @@ func TestDriftTags(t *testing.T) {
 	if r.PercentState != tag.Bad {
 		t.Errorf("missing percent: %+v", r)
 	}
+	// A value that is not a finite number int can hold is no figure:
+	// strconv reads "NaN" and "Inf", and a conversion out of range is the
+	// platform's guess. Untagged, "NaN" draws a green 0% that placement
+	// counts as the most room on the machine.
+	for _, pct := range []string{`"NaN"`, `"Inf"`, `"-Infinity"`, `1e30`, `-1e30`} {
+		r = parseOne(t, `{"limits":[{"kind":"session","percent":`+pct+`}]}`)
+		if r.Percent != 0 || r.PercentState != tag.Bad {
+			t.Errorf("percent %s: %+v", pct, r)
+		}
+	}
 	// Timestamp present but unparseable → tagged bad, distinct from absent.
 	r = parseOne(t, `{"limits":[{"kind":"session","percent":1,"resets_at":"tomorrowish"}]}`)
 	if r.ResetAt != 0 || r.ResetState != tag.Bad || !r.Drifted() {
