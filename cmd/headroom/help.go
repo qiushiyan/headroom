@@ -214,9 +214,9 @@ const addHelp = `Seeds the dir for a new subscription: ~/.claude-accounts/<email
 account sees every session. --share-config links a whitelist of the primary's config —
 settings, skills, commands — into it; --share-config=<dir> links every entry of that dir.
 A login, its history and its session registry are never linked, whatever the source holds.
-For Claude Code, the primary's settings.json is linked even without the flag: every account
-prunes the one session store by its own settings, so an account with settings of its own can
-delete every other account's history.
+For Claude Code, the primary's settings.json is linked whenever the share does not provide
+one, flag or no flag: every account prunes the one session store by its own settings, so an
+account with settings of its own can delete every other account's history.
 
 Then log in once: for Claude Code, headroom launch --account <email> and /login in the
 session; for Codex, headroom launch --vendor codex --account <email> -- login.`

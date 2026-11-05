@@ -59,6 +59,8 @@ func LoginHold(std Streams, scope config.Scope, name string) error {
 
 type nopCloser struct{ io.Writer }
 
+func (nopCloser) Close() error { return nil }
+
 // holdSignin is a holder's whole life: it starts the vendor's login for the
 // account, publishes the sign-in once the vendor has printed its URL — on
 // ready, which it then closes, so the start that waits on it returns — and
@@ -447,6 +449,16 @@ type liveVendor struct {
 	exited chan error
 	grace  time.Duration
 }
+
+func (v *liveVendor) Lines() <-chan string { return v.lines }
+func (v *liveVendor) Exited() <-chan error { return v.exited }
+
+func (v *liveVendor) Send(code string) error {
+	_, err := io.WriteString(v.in, code+"\n")
+	return err
+}
+
+func (v *liveVendor) Stop() { v.Vendor.Stop(v.grace) }
 
 // startVendor runs `claude auth login` for acct, built as the batch builds
 // it, with headroom as a $BROWSER that records the sign-in's state at opener

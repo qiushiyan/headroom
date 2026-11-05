@@ -148,8 +148,6 @@ func LoginCancel(std Streams, scope config.Scope, name string) error {
 	return loginCancel(std, scope, name, liveHandoff(scope, std.Err))
 }
 
-func (nopCloser) Close() error { return nil }
-
 // handoffAccount is the named account and its sign-in's files.
 func handoffAccount(scope config.Scope, name string) (accounts.Set, accounts.Account, signin.Paths, error) {
 	set := accounts.Discover(scope)
@@ -473,13 +471,3 @@ func writeDocument(w io.Writer, doc any) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(doc)
 }
-
-func (v *liveVendor) Lines() <-chan string { return v.lines }
-func (v *liveVendor) Exited() <-chan error { return v.exited }
-
-func (v *liveVendor) Send(code string) error {
-	_, err := io.WriteString(v.in, code+"\n")
-	return err
-}
-
-func (v *liveVendor) Stop() { v.Vendor.Stop(v.grace) }

@@ -130,7 +130,8 @@ func Gather(req Request, deps Deps) *Plan {
 
 // resumeIntent says how a resume's account is decided: enter follows the
 // session's owner, and everything else asks the rule. A session with no
-// evidence, or whose owner is gone, is placed like a new one, and the override
+// owner is placed like a new one — the owner evidence names none for a
+// session nothing attributes, or whose owner is gone — and the override
 // moves the session to the least-loaded of the *other* accounts — moving means
 // somewhere other than where it is. An owner a reservation keeps from the
 // session's directory — or one nothing can say is not kept, `.reserved` being
@@ -138,7 +139,7 @@ func Gather(req Request, deps Deps) *Plan {
 // not naming an account, so the rule decides, as it does for a launch that
 // names the session by id.
 func resumeIntent(req Request, r Resume, res reservations) placement.Intent {
-	owned := r.Owner != "" && req.Set.Has(r.Owner)
+	owned := r.Owner != ""
 	switch {
 	case r.Move:
 		return placement.Intent{Exclude: r.Owner}
@@ -189,7 +190,7 @@ func (p *Plan) Preview(w io.Writer, binary string) (chosen bool, err error) {
 		return false, err
 	}
 	d := placement.Choose(p.facts.rule(), p.facts.snap.Placements(), p.req.Intent, p.req.Now)
-	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts.home, p.facts.labels, p.facts.standing)
+	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts)
 	return d.Chosen != "", nil
 }
 
