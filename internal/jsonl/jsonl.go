@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -235,5 +236,72 @@ func Read[T any](path string, valid func(T) bool) (records []T, skipped int, err
 		}
 		records = append(records, r)
 	}
+	return records, skipped, nil
+}
+
+// tailChunk is how much of a log ReadTail reads from its end at a time.
+const tailChunk = 64 << 10
+
+// ReadTail decodes the newest n lines valid accepts, oldest first, reading
+// the file from its end: a log far longer than n lines costs what its last n
+// cost, where Read pays for the whole file. A line that does not decode, or
+// that valid rejects, is skipped and counted, among the lines read. n <= 0
+// reads every line, as Read does. An absent file is an empty log.
+func ReadTail[T any](path string, n int, valid func(T) bool) (records []T, skipped int, err error) {
+	if n <= 0 {
+		return Read(path, valid)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	// rest is the file's bytes from pos up to the lines already decoded.
+	var rest []byte
+	pos := fi.Size()
+	for len(records) < n && (pos > 0 || len(rest) > 0) {
+		if pos > 0 {
+			step := min(tailChunk, pos)
+			pos -= step
+			chunk := make([]byte, step, step+int64(len(rest)))
+			if _, err := f.ReadAt(chunk, pos); err != nil {
+				return nil, 0, err
+			}
+			rest = append(chunk, rest...)
+		}
+		// Above pos, the first line may be cut short: only the lines after
+		// its newline are whole.
+		whole := rest
+		if pos > 0 {
+			i := bytes.IndexByte(rest, '\n')
+			if i < 0 {
+				continue
+			}
+			whole = rest[i+1:]
+		}
+		rest = rest[:len(rest)-len(whole)]
+		for len(whole) > 0 && len(records) < n {
+			i := bytes.LastIndexByte(whole, '\n')
+			line := whole[i+1:]
+			whole = whole[:max(i, 0)]
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var r T
+			if json.Unmarshal(line, &r) != nil || !valid(r) {
+				skipped++
+				continue
+			}
+			records = append(records, r)
+		}
+	}
+	slices.Reverse(records)
 	return records, skipped, nil
 }

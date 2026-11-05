@@ -228,5 +228,12 @@ func Append(accountsRoot string, r Record) error {
 // skipped and counted: a torn final line during a concurrent append is
 // ordinary. An absent file is an empty log.
 func Read(accountsRoot string) (records []Record, skipped int, err error) {
-	return jsonl.Read(Path(accountsRoot), func(r Record) bool { return r.At != "" })
+	return ReadNewest(accountsRoot, 0)
+}
+
+// ReadNewest is the newest n records, oldest first, read from the log's end:
+// what a listing shows costs what those lines cost, however long the log has
+// grown. n <= 0 is every record, as Read.
+func ReadNewest(accountsRoot string, n int) (records []Record, skipped int, err error) {
+	return jsonl.ReadTail(Path(accountsRoot), n, func(r Record) bool { return r.At != "" })
 }
