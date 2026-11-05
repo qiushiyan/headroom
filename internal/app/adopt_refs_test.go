@@ -3,9 +3,14 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -87,8 +92,8 @@ func TestARecordedPrimaryNameIsAdoptedOnce(t *testing.T) {
 
 	var out bytes.Buffer
 	AdoptRefs(cfg, &out)
-	if !strings.Contains(out.String(), "2 session re-homes") {
-		t.Errorf("the adoption said: %q", out.String())
+	if note := out.String(); !strings.Contains(note, "2 session re-homes") || !strings.Contains(note, "old-pin") || strings.Contains(note, "primary,") || strings.HasSuffix(strings.TrimSpace(note), "primary") {
+		t.Errorf("the adoption said: %q — it names what moved, and only the names it moved from", note)
 	}
 	cfg.Claude.PrimaryName = "renamed" // any name now: the records name the dir
 	for id, want := range map[string]string{"s-now": "renamed", "s-before": "renamed", "s-extra": "a@x.com"} {
@@ -103,16 +108,15 @@ func TestARecordedPrimaryNameIsAdoptedOnce(t *testing.T) {
 	if tokens, err := headless.Read(root); err != nil || tokens[accounts.PrimaryRef].Value == "" || len(tokens) != 1 {
 		t.Errorf("tokens: %v (%v)", tokens, err)
 	}
-	if led.AdoptionPending() || led.LegacyNames() != nil {
+	if done, _ := led.Adoption(); !done || led.LegacyNames() != nil {
 		t.Error("the home is not marked adopted, or still carries the legacy section")
 	}
 
 	// Once: a record a later build wrote under a display name is that build's.
-	data, _ := os.ReadFile(filepath.Join(root, "state.json"))
-	before := string(data)
+	before := homeTree(t, cfg.Claude.Home)
 	out.Reset()
 	AdoptRefs(cfg, &out)
-	if data, _ := os.ReadFile(filepath.Join(root, "state.json")); string(data) != before || out.Len() != 0 {
+	if after := homeTree(t, cfg.Claude.Home); !maps.Equal(before, after) || out.Len() != 0 {
 		t.Errorf("a second run changed the home or spoke: %q", out.String())
 	}
 }
@@ -130,8 +134,8 @@ func TestADerivedPrimaryNameIsAdopted(t *testing.T) {
 	if got := ownerOf(t, cfg.Claude, "s1"); got != "pinned-later" {
 		t.Errorf("owner = %q", got)
 	}
-	if last, ok := state.Open(cfg.Claude).Load().Placements().Newest(cfg.Claude.AccountsRoot); !ok || last.Ref != accounts.PrimaryRef {
-		t.Errorf("--last = %+v %v", last, ok)
+	if out := launchOn(t, cfg.Claude, quietPlace(), "--last", "--dry-run").stdout; !strings.Contains(out, "would start claude on pinned-later") {
+		t.Errorf("--last after adopting:\n%s", out)
 	}
 }
 
@@ -171,10 +175,190 @@ func TestAnUnreadableReservationStopsTheAdoption(t *testing.T) {
 	if !strings.Contains(out.String(), "tries again") {
 		t.Errorf("the refusal said: %q", out.String())
 	}
-	if !state.Open(cfg.Claude).AdoptionPending() {
+	if done, _ := state.Open(cfg.Claude).Adoption(); done {
 		t.Error("the home was marked adopted with its records unmoved")
 	}
 	if o, _ := state.Open(cfg.Claude).Load().Owner("s1"); o.Account != "me" {
 		t.Errorf("the re-home moved without its reservation: %+v", o)
+	}
+}
+
+// An adopted home is done, whatever sits beside its store: no later command
+// takes the store's lock for the adoption or changes the home, so one that
+// another process holds never stalls a command. A home whose only legacy
+// file is a `.reserved` is adopted once, like any other, and then left alone.
+func TestAnAdoptedHomeIsLeftAlone(t *testing.T) {
+	for name, doc := range map[string]map[string]any{
+		"adopted":         {"refs": 1},
+		"no document yet": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := legacyHome(t, "me@x.com", map[string]any{})
+			root := cfg.Claude.AccountsRoot
+			if doc == nil {
+				os.Remove(filepath.Join(root, "state.json"))
+			} else {
+				b, _ := json.Marshal(map[string]any{"version": 1, "refs": 1})
+				os.WriteFile(filepath.Join(root, "state.json"), b, 0o600)
+			}
+			if err := os.WriteFile(cfg.Claude.ReservedFile(), []byte("a@x.com\t/work/b\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if doc == nil {
+				AdoptRefs(cfg, &bytes.Buffer{}) // the one adoption: it marks the home
+			}
+			lock, err := os.OpenFile(filepath.Join(root, "state.json.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Close()
+			if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			before := homeTree(t, cfg.Claude.Home)
+			var out bytes.Buffer
+			start := time.Now()
+			AdoptRefs(cfg, &out)
+			if took := time.Since(start); took > 500*time.Millisecond {
+				t.Errorf("an adopted home waited %s for the store's lock", took)
+			}
+			if after := homeTree(t, cfg.Claude.Home); !maps.Equal(before, after) || out.Len() != 0 {
+				t.Errorf("an adopted home was changed or spoke: %q\nbefore %v\nafter  %v", out.String(), before, after)
+			}
+		})
+	}
+}
+
+// homeTree is every path under root with a file's bytes, a link's target or
+// "dir": what a command must leave as it was.
+func homeTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			target, _ := os.Readlink(p)
+			out[rel] = "-> " + target
+		case d.IsDir():
+			out[rel] = "dir"
+		default:
+			b, err := os.ReadFile(p)
+			out[rel] = string(b)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Every command adopts before it runs: through the built binary, the first
+// command a legacy home sees — here the shell preflight's resolve — moves its
+// records and says so, and its own answer is unchanged. Losing the adoption
+// from the command line's configuration load must fail this.
+func TestTheFirstCommandAdoptsTheHome(t *testing.T) {
+	bin := headroomBinary(t)
+	cfg := legacyHome(t, "me@gmail.com", map[string]any{
+		"primary":  map[string]any{"name": "me@gmail.com"},
+		"sessions": map[string]any{"s1": legacyRehome("me@gmail.com")},
+	})
+	if err := os.WriteFile(cfg.Claude.ReservedFile(), []byte("me@gmail.com\t/work/a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "resolve", "me@gmail.com")
+	cmd.Env = append(os.Environ(), "HEADROOM_HOME="+cfg.Claude.Home, "HEADROOM_PRIMARY_NAME=me@gmail.com")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("resolve: %v\n%s%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "me@gmail.com\t") || !strings.HasSuffix(strings.TrimSpace(stdout.String()), "primary") {
+		t.Errorf("resolve's answer: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "now name its dir") {
+		t.Errorf("the adoption said nothing: %q", stderr.String())
+	}
+	if o, _ := state.Open(cfg.Claude).Load().Owner("s1"); o.Account != accounts.PrimaryRef {
+		t.Errorf("the re-home after the command: %+v", o)
+	}
+	if held, _ := accounts.ReadReservations(cfg.Claude); !held.Admits(accounts.PrimaryRef, "/work/a") {
+		t.Errorf("reservations after the command: %v", held)
+	}
+}
+
+// A home that spends against another's ledger — steward's shape: its primary
+// unpinned, its re-homes under its login's local part in its own document,
+// its --last in the owner's ledger — adopts its records in both files, marks
+// only its own document, and leaves the owner's entry, which is the owner's
+// to name, as it was.
+func TestASecondHomeAdoptsItsRecordsInBothFiles(t *testing.T) {
+	f := newTwoHomes(t)
+	write := func(root string, doc map[string]any) {
+		doc["version"] = 1
+		b, _ := json.Marshal(doc)
+		if err := os.WriteFile(filepath.Join(root, "state.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UnixMilli()
+	write(f.steward.AccountsRoot, map[string]any{"sessions": map[string]any{"s1": legacyRehome("yan")}})
+	write(f.owner.AccountsRoot, map[string]any{"placements": map[string]any{"by_home": map[string]any{
+		f.steward.AccountsRoot: map[string]any{"name": "yan", "at_ms": now},
+		f.owner.AccountsRoot:   map[string]any{"name": "qiushi", "at_ms": now},
+	}}})
+
+	AdoptRefs(config.Config{Claude: f.steward, Codex: config.ForHome(f.steward.Home).Codex}, &bytes.Buffer{})
+	if o, _ := state.Open(f.steward).Load().Owner("s1"); o.Account != accounts.PrimaryRef {
+		t.Errorf("the second home's re-home: %+v", o)
+	}
+	if out := launchOn(t, f.steward, f.edges, "--last", "--dry-run").stdout; !strings.Contains(out, "would start claude on yan") {
+		t.Errorf("the second home's --last after adopting:\n%s", out)
+	}
+	if last, _ := state.Open(f.owner).Load().Placements().Newest(f.owner.AccountsRoot); last.Ref != "qiushi" {
+		t.Errorf("the owner's --last was moved by the second home: %+v", last)
+	}
+	if done, _ := state.Open(f.steward).Adoption(); !done {
+		t.Error("the second home is not marked adopted")
+	}
+	if done, _ := state.Open(f.owner).Adoption(); done {
+		t.Error("the owner was marked adopted by the second home's adoption")
+	}
+}
+
+// Two commands that both find the home unadopted move it once: the second
+// waits for the first's lock, finds the marker and moves nothing, so one of
+// them says what moved and the other says nothing.
+func TestCommandsAdoptingTogetherMoveTheHomeOnce(t *testing.T) {
+	cfg := legacyHome(t, "me@x.com", map[string]any{
+		"primary":  map[string]any{"name": "me"},
+		"sessions": map[string]any{"s1": legacyRehome("me"), "s2": legacyRehome("me")},
+	})
+	var outs [2]bytes.Buffer
+	var wg sync.WaitGroup
+	for i := range outs {
+		wg.Go(func() { AdoptRefs(cfg, &outs[i]) })
+	}
+	wg.Wait()
+	said := 0
+	for i := range outs {
+		if strings.Contains(outs[i].String(), "2 session re-homes") {
+			said++
+		} else if outs[i].Len() != 0 {
+			t.Errorf("a command said: %q", outs[i].String())
+		}
+	}
+	if said != 1 {
+		t.Errorf("%d commands said they moved the records, want one: %q / %q", said, outs[0].String(), outs[1].String())
+	}
+	for _, id := range []string{"s1", "s2"} {
+		if o, _ := state.Open(cfg.Claude).Load().Owner(id); o.Account != accounts.PrimaryRef {
+			t.Errorf("%s: %+v", id, o)
+		}
 	}
 }

@@ -102,17 +102,17 @@ func writeReservations(cfg config.Scope, held Reservations) error {
 }
 
 // AdoptReservationRefs moves the reservations held under any of names to
-// PrimaryRef, joining any the ref already has, and says whether one moved:
+// PrimaryRef, joining any the ref already has, and says which names moved:
 // the one-time adoption of refs (state.Store.AdoptRefs, whose lock the caller
 // holds), retired with it. A `.reserved` that does not read is an error and
 // nothing is written: a reservation is a person's statement, never
 // rewritten from a guess.
-func AdoptReservationRefs(cfg config.Scope, names []string) (bool, error) {
+func AdoptReservationRefs(cfg config.Scope, names []string) ([]string, error) {
 	held, err := ReadReservations(cfg)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	moved := false
+	var moved []string
 	for _, from := range names {
 		if from == PrimaryRef || !held.Held(from) {
 			continue
@@ -123,10 +123,10 @@ func AdoptReservationRefs(cfg config.Scope, names []string) (bool, error) {
 			}
 		}
 		delete(held, from)
-		moved = true
+		moved = append(moved, from)
 	}
-	if !moved {
-		return false, nil
+	if len(moved) == 0 {
+		return nil, nil
 	}
-	return true, writeReservations(cfg, held)
+	return moved, writeReservations(cfg, held)
 }

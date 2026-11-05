@@ -25,40 +25,40 @@ func AdoptRefs(cfg config.Config, w io.Writer) {
 }
 
 func adoptRefs(scope config.Scope, w io.Writer) {
-	// Only a home holding something a build before refs wrote takes the lock:
-	// a fresh or absent home is left exactly as it is.
+	// An adopted home is done, and a home with nothing a build before refs
+	// could have written — no document, nothing beside the store — has nothing
+	// to adopt: either is left exactly as it is, without taking a lock.
 	st := state.Open(scope)
-	if !st.AdoptionPending() && !exists(scope.ReservedFile()) && !exists(headless.Path(scope.AccountsRoot)) {
+	done, document := st.Adoption()
+	if done || !document && !exists(scope.ReservedFile()) && !exists(headless.Path(scope.AccountsRoot)) {
 		return
 	}
 	names := legacyPrimaryNames(scope, st)
-	ad, err := st.AdoptRefs(names, func() (int, error) {
+	ad, err := st.AdoptRefs(names, func() (int, []string, error) {
 		// The token file is read first: one that refuses (others can read it)
 		// stops the move before anything is written.
 		tokens := exists(headless.Path(scope.AccountsRoot))
 		if tokens {
 			if _, err := headless.Read(scope.AccountsRoot); err != nil {
-				return 0, err
+				return 0, nil, err
 			}
 		}
-		n := 0
-		moved, err := accounts.AdoptReservationRefs(scope, names)
+		from, err := accounts.AdoptReservationRefs(scope, names)
 		if err != nil {
-			return n, err
+			return 0, nil, err
 		}
-		if moved {
-			n++
-		}
+		n := min(len(from), 1)
 		if tokens {
 			moved, err := headless.AdoptRefs(scope.AccountsRoot, names, accounts.PrimaryRef)
 			if err != nil {
-				return n, err
+				return n, from, err
 			}
-			if moved {
+			if len(moved) > 0 {
 				n++
 			}
+			from = append(from, moved...)
 		}
-		return n, nil
+		return n, from, nil
 	})
 	label := vendorLabel(scope.Vendor)
 	switch {
@@ -69,7 +69,7 @@ func adoptRefs(scope config.Scope, w io.Writer) {
 		fmt.Fprintf(w, "headroom: %s's primary's records could not be moved to its dir's name (%v); the next headroom command tries again\n", label, err)
 	case ad.Moved():
 		fmt.Fprintf(w, "headroom: %s's primary's records now name its dir, whatever it is called; moved %s from %s\n",
-			label, adoptedSummary(ad), strings.Join(names, ", "))
+			label, adoptedSummary(ad), strings.Join(ad.From, ", "))
 	}
 }
 
