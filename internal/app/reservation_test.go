@@ -180,6 +180,20 @@ func TestADamagedReservationRefusesOnlyAutomaticChoices(t *testing.T) {
 	if doc, code, _ := f.place(); code != 1 || doc.Placed || !strings.Contains(doc.Refusal, ".reserved") {
 		t.Errorf("headless place on a damaged file: exit %d %+v", code, doc)
 	}
+	// Choosing a session is not naming its account: nothing can say the
+	// owner is not kept from here, so the picker's enter refuses with the
+	// automatic choices rather than follow it. Reading the damage as "not
+	// held" in the picker must fail this.
+	ui, rec, _ := f.picker(accounts.Discover(f.cfg))
+	ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: outside, DirOK: true, Owner: "free@x.com", OwnerState: sessions.OwnerHistory}}
+	ui.rows = ui.listing.Sessions
+	keepWorkingDir(t)
+	if done, _ := ui.commitResume(false); done || rec.called || !strings.Contains(ui.message, ".reserved") {
+		t.Errorf("a picker resume on a damaged file: done %v, exec called %v — %q", done, rec.called, ui.message)
+	}
+	if len(f.log()) != before {
+		t.Error("a refused resume left a line in the log")
+	}
 	if l := f.launch("--account", "free@x.com"); l.code != 0 || !l.called {
 		t.Errorf("named launch on a damaged file: %s", l)
 	}
@@ -246,23 +260,5 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	}
 	if last := f.log()[len(f.log())-1]; last.Reason != placement.ReasonMoved {
 		t.Errorf("the picker's move logged as %q", last.Reason)
-	}
-}
-
-// The override never lands on an account a reservation keeps from the
-// session's directory.
-func TestTheOverrideCannotLandOnAHeldAccount(t *testing.T) {
-	f, _, _, outside := reservedFixture(t)
-	set := accounts.Discover(f.cfg)
-	ui, _, _ := f.picker(set)
-	ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: outside, DirOK: true, Owner: "free@x.com", OwnerState: sessions.OwnerHistory}}
-	ui.rows = ui.listing.Sessions
-	keepWorkingDir(t)
-	rec := rearm(ui)
-	if done, code := ui.commitResume(true); !done || code != 0 {
-		t.Fatalf("x: (%v, %d) — %s", done, code, ui.message)
-	}
-	if dir, ok := envValue(rec.env, "CLAUDE_CONFIG_DIR"); ok && filepath.Base(dir) == "held@x.com" {
-		t.Error("x moved the session onto the held account")
 	}
 }

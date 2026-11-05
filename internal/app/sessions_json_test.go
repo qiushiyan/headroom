@@ -3,7 +3,6 @@ package app
 // sessionsDoc is the --json wire contract, and these are its pins.
 
 import (
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -113,24 +112,6 @@ func TestSessionsDocSpellsEveryState(t *testing.T) {
 	for i, c := range titles {
 		if got := by[fmt.Sprintf("title-%d", i)]; got.Title != c.title || got.TitleSource != c.source {
 			t.Errorf("title chain %+v: (%q, %q), want (%q, %q)", c.tail, got.Title, got.TitleSource, c.title, c.source)
-		}
-	}
-}
-
-// Nothing in the document says where a new session goes: the rule places
-// every one.
-func TestSessionsDocCarriesNoRouting(t *testing.T) {
-	data, err := json.Marshal(sessionsDoc(sessions.Listing{}, time.Now()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"current", "mode"} {
-		if _, ok := doc[field]; ok {
-			t.Errorf("the document carries %q", field)
 		}
 	}
 }

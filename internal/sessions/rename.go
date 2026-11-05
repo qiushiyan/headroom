@@ -21,13 +21,22 @@ func AppendCustomTitle(path, id, title string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
 	if err != nil {
 		return err
 	}
+	// A transcript whose last write was torn (its writer died mid-append)
+	// would swallow the record into that line; a newline first closes it.
+	line = append(line, '\n')
+	if fi, err := f.Stat(); err == nil && fi.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, fi.Size()-1); err == nil && last[0] != '\n' {
+			line = append([]byte{'\n'}, line...)
+		}
+	}
 	// One Write for the whole line: an append either lands whole or not at
 	// all from any reader's point of view.
-	_, werr := f.Write(append(line, '\n'))
+	_, werr := f.Write(line)
 	cerr := f.Close()
 	if werr != nil {
 		return werr

@@ -12,12 +12,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
-func TestMunge(t *testing.T) {
-	if got := Munge("/Users/q/dev/.worktrees/x"); got != "-Users-q-dev--worktrees-x" {
-		t.Errorf("Munge = %q", got)
-	}
-}
-
 func TestParseTailTitleChain(t *testing.T) {
 	storeDir := "-tmp-proj"
 	lines := []string{
@@ -28,7 +22,7 @@ func TestParseTailTitleChain(t *testing.T) {
 		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"done"},{"type":"tool_use"}]}}`,
 	}
 	tail := ParseTail([]byte(strings.Join(lines, "\n")+"\n"), storeDir, true)
-	if tail.ID != "s1" || tail.AITitle != "new title" || tail.Title() != "new title" {
+	if tail.AITitle != "new title" || tail.Title() != "new title" {
 		t.Errorf("ai-title chain: %+v", tail)
 	}
 	if tail.CWD != "/tmp/proj" || tail.Branch != "main" {
@@ -131,8 +125,9 @@ func TestParseHistory(t *testing.T) {
 	// The decoded sessionId field decides — a different session's UUID inside
 	// a prompt body (the live store has these, one cross-account) must not
 	// attribute, and a torn final line during a concurrent write is skipped.
-	input := `{"display":"look at 11111111-aaaa-bbbb-cccc-dddddddddddd please","sessionId":"22222222-aaaa-bbbb-cccc-dddddddddddd","timestamp":100}
-{"display":"x","sessionId":"22222222-aaaa-bbbb-cccc-dddddddddddd","timestamp":300}
+	// The newer prompt comes first: the newest claim wins, not the last line.
+	input := `{"display":"x","sessionId":"22222222-aaaa-bbbb-cccc-dddddddddddd","timestamp":300}
+{"display":"look at 11111111-aaaa-bbbb-cccc-dddddddddddd please","sessionId":"22222222-aaaa-bbbb-cccc-dddddddddddd","timestamp":100}
 {"display":"y","sessionId":"33333333-aaaa-bbbb-cccc-dddddddddddd","timestamp":200}
 not json at all
 {"display":"torn","sessionId":"44444444-aaaa-bbbb-cccc-dddd`
@@ -198,67 +193,14 @@ func TestResolveOwner(t *testing.T) {
 	}
 	for _, c := range cases {
 		evidence, _ := InspectClaims(c.registry, probe)
-		acct, st := ownerEvidence{names: names, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
+		byRef := map[string]string{}
+		for n := range names {
+			byRef[n] = n
+		}
+		acct, st := ownerEvidence{names: names, byRef: byRef, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
 		if acct != c.wantAcct || st != c.wantState {
 			t.Errorf("%s: = (%q, %v), want (%q, %v)", c.name, acct, st, c.wantAcct, c.wantState)
 		}
-	}
-}
-
-func TestLiveness(t *testing.T) {
-	const startMS = 1_785_700_000_000
-	entries := []RegistryEntry{
-		{Account: "a", SessionID: "live", PID: 10, StartedAtMS: startMS, OK: true},
-		{Account: "a", SessionID: "recycled", PID: 11, StartedAtMS: startMS, OK: true},
-		{Account: "a", SessionID: "dead", PID: 12, StartedAtMS: startMS, OK: true},
-		{Account: "a", SessionID: "mystery", PID: 13, OK: false},
-	}
-	probe := func(pid int) (int64, error) {
-		switch pid {
-		case 10:
-			return startMS/1000 + 2, nil // within tolerance: vendor stamp vs kernel
-		case 11:
-			return startMS/1000 + 86_400, nil // pid reused a day later
-		default:
-			return 0, os.ErrNotExist
-		}
-	}
-	m, _ := InspectClaims(entries, probe)
-	if m["live"].State != Live {
-		t.Errorf("live = %v", m["live"].State)
-	}
-	// A verified-live claim beside an unverifiable one for the same session:
-	// proof outranks uncertainty — Live, never LiveUnknown, or the resume
-	// guard (which refuses only Live) would resume a session proven open.
-	both := append(entries[:1:1], RegistryEntry{Account: "b", SessionID: "live", PID: 99, OK: false})
-	if got, _ := InspectClaims(both, probe); got["live"].State != Live {
-		t.Errorf("verified live + unverifiable claim = %v, want Live", got["live"].State)
-	}
-	if m["recycled"].State != NotLive {
-		t.Errorf("recycled pid must not read live: %v", m["recycled"].State)
-	}
-	if m["dead"].State != NotLive {
-		t.Errorf("dead = %v", m["dead"].State)
-	}
-	if m["mystery"].State != LiveUnknown {
-		t.Errorf("unverifiable claim must stay unknown: %v", m["mystery"].State)
-	}
-}
-
-// Mutations must not trust the listing's liveness snapshot: a registry claim
-// that appears after collection is exactly the session dd must refuse.
-func TestLiveNowSeesClaimsAfterCollect(t *testing.T) {
-	home := t.TempDir()
-	refs := []AccountRef{{Name: "a", Dir: home}}
-	probe := func(pid int) (int64, error) { return 5_000, nil }
-	if got := LiveNow("s-late", refs, probe); got != NotLive {
-		t.Fatalf("empty registry = %v, want NotLive", got)
-	}
-	os.MkdirAll(filepath.Join(home, "sessions"), 0o755)
-	os.WriteFile(filepath.Join(home, "sessions", "77.json"),
-		[]byte(`{"sessionId":"s-late","pid":77,"startedAt":5001000}`), 0o644)
-	if got := LiveNow("s-late", refs, probe); got != Live {
-		t.Errorf("claim appearing after an earlier check = %v, want Live", got)
 	}
 }
 
@@ -366,7 +308,7 @@ func TestCollectWiresEachAccountsEvidence(t *testing.T) {
 	os.WriteFile(filepath.Join(dirB, "sessions", "42.json"), []byte(`{"sessionId":"s-live","pid":42,"startedAt":5001000}`), 0o644)
 	in := Input{
 		ProjectsDir: projects, CWD: "/nowhere",
-		Accounts: []AccountRef{{Name: "a", Dir: dirA}, {Name: "b", Dir: dirB}},
+		Accounts: []AccountRef{{Name: "a", Ref: "a", Dir: dirA}, {Name: "b", Ref: "b", Dir: dirB}},
 		Owners:   map[string]OwnerRec{"s-rehome": {Account: "b", AtMS: 200}},
 		Probe: func(pid int) (int64, error) {
 			if pid == 42 {
@@ -506,6 +448,32 @@ func TestCollectWidensPastModellessTail(t *testing.T) {
 	}
 }
 
+// The first window is the budget from EOF, and a transcript whose title, cwd
+// and model sit inside it is read no further: each transcript costs its tail,
+// which is what keeps the picker and --json fast over a store of gigabytes.
+// Nothing before the window reaches the parser, so damage there is not
+// counted in bad_lines.
+func TestCollectReadsOnlyATranscriptsTail(t *testing.T) {
+	projects, write := storeFixture(t)
+	dir := t.TempDir()
+	damaged := strings.Repeat("not a record\n", TailBudget/len("not a record\n"))
+	filler := `{"type":"assistant","sessionId":"s-tail","message":{"role":"assistant","content":[{"type":"text","text":"` + strings.Repeat("x", TailBudget) + `"}]}}` + "\n"
+	model := `{"type":"assistant","sessionId":"s-tail","message":{"role":"assistant","model":"claude-fable-5","content":[]}}` + "\n"
+	write(Munge(dir), "s-tail.jsonl", damaged+filler+rec("s-tail", dir, "tail only")+model, time.Now())
+
+	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
+	if len(l.Sessions) != 1 {
+		t.Fatalf("sessions = %d", len(l.Sessions))
+	}
+	s := l.Sessions[0]
+	if s.CWD != dir || s.Tail.Model != "claude-fable-5" || s.Tail.Title() != "tail only" {
+		t.Fatalf("tail unresolved: cwd %q model %q title %q", s.CWD, s.Tail.Model, s.Tail.Title())
+	}
+	if s.Tail.Bad != 0 {
+		t.Errorf("parsed %d damaged lines from before the tail window — the reader went past it", s.Tail.Bad)
+	}
+}
+
 // The live half of a row's branch label. Every case here is a shape seen in
 // the real store: a main checkout, a linked worktree, a submodule spelling
 // its gitdir relative, a rebase in flight, and the several ways HEAD gives no
@@ -560,6 +528,9 @@ func TestResolveReadsLiveHead(t *testing.T) {
 	write("junk/.git/HEAD", "not a sha and not a ref\n")
 	write("dangling/.git", "gitdir: "+filepath.Join(root, "nowhere")+"\n")
 
+	// And a dir with no checkout above it at all.
+	mkdir("plain")
+
 	cases := []struct {
 		name   string
 		dir    string
@@ -577,6 +548,7 @@ func TestResolveReadsLiveHead(t *testing.T) {
 		{"symref outside refs/heads is a checkout we cannot name", "symref", HeadUnreadable, "", ""},
 		{"unparseable HEAD is a checkout, degraded", "junk", HeadUnreadable, "", ""},
 		{"gitdir that isn't there holds no HEAD at all", "dangling", HeadNone, "", ""},
+		{"no checkout above has none", "plain", HeadNone, "", ""},
 	}
 	for _, c := range cases {
 		got := repoCache{}.resolve(filepath.Join(root, c.dir))
@@ -586,25 +558,16 @@ func TestResolveReadsLiveHead(t *testing.T) {
 	}
 
 	// Identity must survive the addition: a worktree still keys on its main
-	// checkout, a submodule still keys on itself.
+	// checkout, a submodule still keys on itself, and a dir in no checkout
+	// keys on nothing.
+	if got := (repoCache{}).resolve(filepath.Join(root, "plain")); got.Key != "" || got.Root != "" {
+		t.Errorf("a dir in no checkout resolved to %+v", got)
+	}
 	if got := (repoCache{}).resolve(filepath.Join(root, "wt")); got.Key != canon(filepath.Join(root, "main")) {
 		t.Errorf("worktree key = %q, want the main checkout", got.Key)
 	}
 	if got := (repoCache{}).resolve(filepath.Join(root, "super/sub")); got.Key != canon(filepath.Join(root, "super/sub")) {
 		t.Errorf("submodule key = %q, want itself", got.Key)
-	}
-}
-
-// A dir with no repo above it has no HEAD to read and must not acquire one
-// from an ancestor that happens to be a checkout of something else.
-func TestResolveOutsideARepo(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "plain"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got := repoCache{}.resolve(filepath.Join(root, "plain"))
-	if got.Key != "" || got.Head.Kind != HeadNone {
-		t.Errorf("non-repo resolved to %+v", got)
 	}
 }
 
@@ -643,34 +606,9 @@ func TestResolveWalksPastAGitHusk(t *testing.T) {
 	}
 }
 
-func TestProcessEvidenceSamplesOnceAndPreservesUnknown(t *testing.T) {
-	entries := []RegistryEntry{
-		{Account: "owner", SessionID: "s", PID: 7, StartedAtMS: 100_000, OK: true},
-		{Account: "owner", SessionID: "s", PID: 7, StartedAtMS: 100_000, OK: true},
-		{Account: "other", SessionID: "unknown", PID: 8, StartedAtMS: 100_000, OK: true},
-	}
-	calls := map[int]int{}
-	evidence, _ := InspectClaims(entries, func(pid int) (int64, error) {
-		calls[pid]++
-		if pid == 8 {
-			return 0, os.ErrPermission
-		}
-		return 100, nil
-	})
-	if calls[7] != 1 || calls[8] != 1 {
-		t.Fatalf("PID samples: %v", calls)
-	}
-	if evidence["s"].State != Live || evidence["s"].Account != "owner" {
-		t.Fatalf("inconsistent live evidence: %+v", evidence)
-	}
-	if evidence["unknown"].State != LiveUnknown {
-		t.Fatal("inspection failure became absent")
-	}
-}
-
 func TestRegistryProblemsKeepTheirScope(t *testing.T) {
 	root := t.TempDir()
-	refs := []AccountRef{{Name: "a", Dir: root}}
+	refs := []AccountRef{{Name: "a", Ref: "a", Dir: root}}
 	dir := filepath.Join(root, "sessions")
 	os.Mkdir(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "unknown.json"), []byte(`broken`), 0644)
@@ -737,30 +675,96 @@ func TestRegistryCarriesTheVendorsStatus(t *testing.T) {
 	}
 }
 
+// One sample per pid decides every claim: a claim counts only when its pid
+// runs and started when the claim says, a pid proven absent or since recycled
+// clears it, and a failed inspection or a damaged record leaves it unknown.
+// Proof outranks doubt for a session with several claims — the resume guard
+// refuses only Live — and only verified claims are returned as running.
 func TestInspectClaimsVerifiesEachClaimByItsOwnProcess(t *testing.T) {
+	const startMS = 1_785_700_003_000
 	entries := []RegistryEntry{
-		{Account: "a", SessionID: "live", PID: 1, StartedAtMS: 1_785_700_003_000, OK: true, Status: "busy"},
-		// The same session under a pid that has since been recycled.
-		{Account: "a", SessionID: "live", PID: 2, StartedAtMS: 1_785_700_003_000, OK: true, Status: "busy"},
-		{Account: "b", SessionID: "gone", PID: 3, StartedAtMS: 1_785_700_003_000, OK: true, Status: "busy"},
-		{Account: "b", SessionID: "torn", PID: 4, OK: false},
+		{Account: "a", SessionID: "live", PID: 1, StartedAtMS: startMS, OK: true},
+		// The same session under a pid another process has since taken.
+		{Account: "a", SessionID: "live", PID: 2, StartedAtMS: startMS, OK: true},
+		{Account: "b", SessionID: "recycled", PID: 2, StartedAtMS: startMS, OK: true},
+		{Account: "b", SessionID: "registered-late", PID: 3, StartedAtMS: startMS, OK: true},
+		{Account: "b", SessionID: "gone", PID: 4, StartedAtMS: startMS, OK: true},
+		{Account: "b", SessionID: "uninspectable", PID: 5, StartedAtMS: startMS, OK: true},
+		{Account: "b", SessionID: "torn", PID: 6, OK: false},
+		{Account: "c", SessionID: "doubted", PID: 1, StartedAtMS: startMS, OK: true},
+		{Account: "c", SessionID: "doubted", PID: 7, OK: false},
 	}
+	calls := map[int]int{}
 	probe := func(pid int) (int64, error) {
+		calls[pid]++
 		switch pid {
 		case 1:
-			return 1_785_700_000, nil
+			return startMS/1000 + 2, nil // kernel and vendor stamps a moment apart
 		case 2:
-			return 1_785_900_000, nil // another process now holds this pid
+			return startMS/1000 + 86_400, nil // a day later: another process
 		case 3:
+			return startMS/1000 - 3, nil
+		case 4:
 			return 0, os.ErrNotExist
+		case 5:
+			return 0, os.ErrPermission
 		}
-		return 0, errors.New("unexpected probe")
+		return 0, errors.New("a damaged claim was probed")
 	}
 	evidence, live := InspectClaims(entries, probe)
-	if len(live) != 1 || live[0].PID != 1 {
-		t.Fatalf("live claims = %+v, want pid 1 alone", live)
+	want := map[string]ProcessEvidence{
+		"live":            {Live, "a"},
+		"recycled":        {State: NotLive},
+		"registered-late": {Live, "b"},
+		"gone":            {State: NotLive},
+		"uninspectable":   {State: LiveUnknown},
+		"torn":            {State: LiveUnknown},
+		"doubted":         {Live, "c"},
 	}
-	if evidence["live"].State != Live || evidence["gone"].State != NotLive || evidence["torn"].State != LiveUnknown {
-		t.Fatalf("evidence = %+v", evidence)
+	for id, w := range want {
+		if evidence[id] != w {
+			t.Errorf("%s: %+v, want %+v", id, evidence[id], w)
+		}
+	}
+	for pid, n := range calls {
+		if n != 1 || pid > 5 {
+			t.Errorf("pid %d sampled %d time(s), want once and never for a damaged claim", pid, n)
+		}
+	}
+	var running []string
+	for _, e := range live {
+		running = append(running, fmt.Sprintf("%s/%d", e.SessionID, e.PID))
+	}
+	if got := strings.Join(running, " "); got != "live/1 registered-late/3 doubted/1" {
+		t.Errorf("running claims = %s", got)
+	}
+}
+
+// `claude --resume <id>` opens <id>.jsonl, so a session is the file it is
+// listed from: its id is the file's, and dd removes that file, whatever id the
+// records inside it carry.
+func TestASessionIsTheFileItIsListedFrom(t *testing.T) {
+	projects, write := storeFixture(t)
+	write("-tmp-p", "aaaa-1.jsonl", rec("bbbb-2", "/tmp/p", "carried over"), time.Now())
+	write("-tmp-p", "bbbb-2.jsonl", rec("bbbb-2", "/tmp/p", "the other one"), time.Now().Add(-time.Hour))
+
+	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
+	var listed *Session
+	for _, s := range l.Sessions {
+		if s.Path == filepath.Join(projects, "-tmp-p", "aaaa-1.jsonl") {
+			listed = s
+		}
+	}
+	if listed == nil || listed.ID != "aaaa-1" || len(l.Sessions) != 2 {
+		t.Fatalf("listed %d session(s); aaaa-1.jsonl as %+v", len(l.Sessions), listed)
+	}
+	if err := DeleteTranscript(listed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(listed.Path); !os.IsNotExist(err) {
+		t.Error("dd left the transcript it was pointed at")
+	}
+	if _, err := os.Stat(filepath.Join(projects, "-tmp-p", "bbbb-2.jsonl")); err != nil {
+		t.Errorf("dd removed another session's transcript: %v", err)
 	}
 }

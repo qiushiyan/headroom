@@ -51,6 +51,7 @@ type Session struct {
 // AccountRef names one discovered account and its real config dir.
 type AccountRef struct {
 	Name string
+	Ref  string // how a re-home names it (accounts.Account.Ref)
 	Dir  string
 }
 
@@ -145,6 +146,13 @@ func Collect(in Input) Listing {
 // geometrically until a cwd verifies or the whole file has been read (rare:
 // 5 of 178 in the live store, and only ever on multi-MB files).
 func readSession(storeDir, storeDirName, name string) *Session {
+	// The file's name is the session's identity — the uuid before any suffix
+	// (".jsonl", ".orphaned-<ts>-<hash>.jsonl") — because it is what
+	// `claude --resume <id>` opens, whatever id the records inside carry.
+	id, _, _ := strings.Cut(name, ".")
+	if id == "" {
+		return nil
+	}
 	path := filepath.Join(storeDir, name)
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -171,15 +179,6 @@ func readSession(storeDir, storeDirName, name string) *Session {
 		}
 	}
 
-	id := tail.ID
-	if id == "" {
-		// The filename is the fallback identity: the uuid before any suffix
-		// (".jsonl", ".orphaned-<ts>-<hash>.jsonl").
-		id, _, _ = strings.Cut(name, ".")
-	}
-	if id == "" {
-		return nil
-	}
 	return &Session{
 		ID: id, Path: path, StoreDir: storeDir,
 		MTime: fi.ModTime(), Size: size, Tail: tail, CWD: tail.CWD,
@@ -200,6 +199,7 @@ func OwnerOf(id string, accts []AccountRef, evidence ProcessEvidence, owners map
 // which accounts exist, each one's prompt history, and the explicit re-homes.
 type ownerEvidence struct {
 	names  map[string]bool
+	byRef  map[string]string // a re-home's account, as the account is called now
 	hists  map[string]History
 	owners map[string]OwnerRec
 }
@@ -209,9 +209,10 @@ type ownerEvidence struct {
 // owner from the same files. history is false only when the answer is
 // already decided without it.
 func readOwnerEvidence(accts []AccountRef, owners map[string]OwnerRec, history bool) ownerEvidence {
-	ev := ownerEvidence{names: map[string]bool{}, hists: map[string]History{}, owners: owners}
+	ev := ownerEvidence{names: map[string]bool{}, byRef: map[string]string{}, hists: map[string]History{}, owners: owners}
 	for _, a := range accts {
 		ev.names[a.Name] = true
+		ev.byRef[a.Ref] = a.Name
 		if !history {
 			continue
 		}
@@ -250,8 +251,8 @@ func (ev ownerEvidence) resolve(id string, process ProcessEvidence) (string, Own
 		}
 	}
 	if rec, ok := ev.owners[id]; ok {
-		if ev.names[rec.Account] {
-			consider(rec.Account, rec.AtMS, OwnerRehome)
+		if name, ok := ev.byRef[rec.Account]; ok {
+			consider(name, rec.AtMS, OwnerRehome)
 		} else {
 			// The re-homed-to account is gone. Surfacing that beats silently
 			// falling through to older history evidence that would resurrect

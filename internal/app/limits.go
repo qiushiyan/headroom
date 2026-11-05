@@ -5,8 +5,8 @@ package app
 // times a minute — cannot afford the board's `--json`, which probes health
 // for every account (~170ms per `claude auth status`, the dominant term) and
 // may spend every account's request budget to answer about one. This surface
-// reads only what is already on disk: discovery, the current marker, and the
-// newest stored observation. No health probe, no Keychain read, no claim, no
+// reads only what is already on disk: discovery and the newest stored
+// observation. No health probe, no Keychain read, no claim, no
 // request — it is not a second door onto the endpoint because it never
 // touches the door at all. Refreshing what is known remains the fetching
 // surfaces' job (`headroom --json`, the board, `check`), all behind the same
@@ -37,8 +37,8 @@ func Limits(std Streams, scopes []config.Scope, account string) error {
 		r := round.FromDisk(scope, now)
 		if accountSet {
 			if err := r.Narrow(account); err != nil {
-				// The vendor stays in the document — its `current` is still a
-				// fact — with no account of that name under it.
+				// The vendor stays in the document, with no account of that
+				// name under it.
 				if selectErr == nil {
 					selectErr = err
 				}

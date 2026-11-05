@@ -181,7 +181,7 @@ func codexWindows(limit map[string]any, group, feature, suffix string) []Row {
 // only ever been a number, and a string there is drift.
 func codexPercent(v any) (int, tag.State) {
 	if n, ok := v.(float64); ok {
-		return int(math.Round(n)), tag.OK
+		return percentOf(n)
 	}
 	return 0, tag.Bad
 }

@@ -8,6 +8,9 @@ import (
 	"testing"
 )
 
+// clearOverrides leaves Load nothing but defaults, under a HOME of the test's
+// own: unset, HEADROOM_HOME is HOME, and Load would read the user's own
+// accounts root's .ledger and ~/.codex.
 func clearOverrides(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
@@ -16,6 +19,7 @@ func clearOverrides(t *testing.T) {
 	} {
 		t.Setenv(v, "")
 	}
+	t.Setenv("HOME", t.TempDir())
 }
 
 // Relative overrides refuse outright: verified against the 2.1.220 binary, a
@@ -142,17 +146,10 @@ func TestLoadResolvesBothScopes(t *testing.T) {
 	if got := c.Present(); len(got) != 1 || got[0].Vendor != Claude {
 		t.Errorf("Present() = %v, want Claude Code alone", got)
 	}
-	x := c.Scope(Codex)
-	if x.Vendor != Codex || x.AccountsRoot != filepath.Join(home, ".codex-accounts") ||
-		x.PrimaryDir() != filepath.Join(home, ".codex") || x.StoreDir() != filepath.Join(home, ".codex", "sessions") ||
-		x.StoreLink() != "sessions" || x.Binary() != "codex" || x.Spacing != DefaultSpacing || !x.PrimaryRelocated {
+	// Where the absent vendor's dirs would be is cmd/headroom's
+	// TestCommandsOnAnAbsentVendor, through the add that creates them.
+	if x := c.Scope(Codex); x.Vendor != Codex || !x.PrimaryRelocated {
 		t.Errorf("Codex scope = %+v", x)
-	}
-	if x.LauncherFormat != "headroom launch --vendor codex --account %s" {
-		t.Errorf("Codex LauncherFormat = %q", x.LauncherFormat)
-	}
-	if cl := c.Scope(Claude); cl.StoreDir() != filepath.Join(home, ".claude", "projects") || cl.Binary() != "claude" {
-		t.Errorf("Claude scope = %+v", cl)
 	}
 
 	for _, dir := range []string{".codex", ".codex-accounts"} {
@@ -294,9 +291,13 @@ func TestTheLedgerFileIsReadStrictly(t *testing.T) {
 		t.Error("Codex was given the Claude Code ledger")
 	}
 
+	// The relative spelling names a directory that exists from the cwd, so
+	// only absoluteness refuses it: a cwd-relative ledger would move with
+	// every shell.
+	t.Chdir(filepath.Dir(other))
 	for name, content := range map[string]string{
 		"empty":      "\n",
-		"relative":   "accounts\n",
+		"relative":   filepath.Base(other) + "\n",
 		"missing":    filepath.Join(other, "gone") + "\n",
 		"codex root": filepath.Join(home, ".codex-accounts") + "\n",
 		"two lines":  other + "\n" + other + "\n",
@@ -352,5 +353,31 @@ func TestALedgerRootMustNotDelegate(t *testing.T) {
 	}
 	if c, err := Load(); err != nil || c.Claude.LedgerRoot != rootB {
 		t.Errorf("a self-naming target: %q %v", c.Claude.LedgerRoot, err)
+	}
+}
+
+// `.ledger` is written with the rule Load reads it by, and naming this home's
+// own root removes it.
+func TestShareLedger(t *testing.T) {
+	c := ForHome(t.TempDir())
+	other := t.TempDir()
+	if _, err := c.ShareLedger("relative"); err == nil {
+		t.Error("a relative root was recorded")
+	}
+	if _, err := os.Stat(c.Claude.LedgerFile()); err == nil {
+		t.Fatal("a refused root left a file")
+	}
+	root, err := c.ShareLedger(other + "/")
+	if err != nil || root != other {
+		t.Fatalf("share: %q %v", root, err)
+	}
+	if data, _ := os.ReadFile(c.Claude.LedgerFile()); string(data) != other+"\n" {
+		t.Errorf(".ledger = %q", data)
+	}
+	if root, err := c.ShareLedger(c.Claude.AccountsRoot); err != nil || root != "" {
+		t.Fatalf("own root: %q %v", root, err)
+	}
+	if _, err := os.Stat(c.Claude.LedgerFile()); err == nil {
+		t.Error("naming this home's own root left .ledger behind")
 	}
 }

@@ -115,9 +115,9 @@ account shares the store, `headroom check` fails its `settings:` line unless
 every sharing account (the primary included) reads one `settings.json`, and
 its `retention:` line when they disagree or when `cleanupPeriodDays` is
 unset — the default is Claude Code's to change. `accounts add` links the
-primary's `settings.json` into the account; set `cleanupPeriodDays` there to
-the period the user wants kept. A dir that predates that link, or was seeded
-from a config package without one, is linked by hand.
+primary's `settings.json` into the account whenever the share does not
+provide one; set `cleanupPeriodDays` there to the period the user wants
+kept. A dir that predates that link is linked by hand.
 
 Codex is the same topology with its own store: each extra home's `sessions/`
 links to `~/.codex/sessions`, so Codex's own `resume` reaches any session

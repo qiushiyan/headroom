@@ -8,6 +8,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -36,7 +38,7 @@ func limits(session, weekly int, sessionReset, weeklyReset time.Time) []placemen
 }
 
 func cand(name string, observed time.Time, l []placement.Limit) placement.Candidate {
-	return placement.Candidate{Name: name, Key: "uuid:" + name, ObservedAt: observed.Unix(), Source: "headroom_cache", Limits: l}
+	return placement.Candidate{Name: name, Ref: name, Key: "uuid:" + name, ObservedAt: observed.Unix(), Source: "headroom_cache", Limits: l}
 }
 
 // line logs a launch the way placeLaunch does: the decision the rule made and
@@ -150,6 +152,12 @@ func scenarios() []struct {
 		{"the picker moves a session off its account", placement.Intent{Exclude: "a"}, placement.Ledger{}, []placement.Candidate{
 			cand("a", now, limits(0, 10, soon, week)), cand("b", now, limits(30, 10, soon, week)), cand("c", now, limits(40, 10, soon, week)),
 		}},
+		// The idle account sits at the near-limit threshold: a rule that moved
+		// the threshold, or let a row at it count as room, decides this
+		// differently under its old name.
+		{"a weekly row at the threshold is near the limit", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
+			cand("a", now, limits(0, 80, soon, week)), cand("b", now, limits(30, 20, soon, week)),
+		}},
 	}
 }
 
@@ -170,6 +178,37 @@ func TestEveryInputTheRuleReadsReachesTheLine(t *testing.T) {
 			}
 			if s := summary(t, rep, placement.Rule); !s.Replay.SameRule || s.Replay.Agreed != 1 {
 				t.Errorf("replay stats = %+v", s.Replay)
+			}
+		})
+	}
+}
+
+// The line rebuilds the rule's input field for field, whether or not the
+// scenario makes that field decide the choice: comparing choices alone, as
+// above, misses an input the replay drops wherever the choice survives it.
+// Below Build because no report can show a non-deciding input went missing.
+func TestTheLineRebuildsTheRulesInput(t *testing.T) {
+	for _, c := range scenarios() {
+		t.Run(c.name, func(t *testing.T) {
+			l := line(at(0), "auto", c.intent, c.ledger, c.cands...)
+			e := newEvaluator(Input{Vendor: config.Claude, Home: home, Launches: []Launch{l}, Now: at(time.Hour)})
+			cands, ledger, intent, now, exact := e.input(e.launches[0])
+			want := slices.Clone(c.cands)
+			for i := range want {
+				if want[i].Statuses == nil {
+					want[i].Statuses = []string{}
+				}
+				// A ref is how --last finds an account, which an automatic
+				// choice never reads; the line keeps names, and the replay
+				// names each account by its own.
+				want[i].Ref = want[i].Name
+			}
+			wantIntent := c.intent
+			wantIntent.Home = home
+			if !exact || !now.Equal(at(0)) || !reflect.DeepEqual(cands, want) || !reflect.DeepEqual(intent, wantIntent) ||
+				len(ledger.Recent)+len(c.ledger.Recent) > 0 && !reflect.DeepEqual(ledger.Recent, c.ledger.Recent) ||
+				len(ledger.Last)+len(c.ledger.Last) > 0 && !reflect.DeepEqual(ledger.Last, c.ledger.Last) {
+				t.Errorf("rebuilt exact %v at %v\n cands  %+v\n want   %+v\n intent %+v\n ledger %+v\n want   %+v", exact, now, cands, want, intent, ledger, c.ledger)
 			}
 		})
 	}
@@ -723,12 +762,13 @@ func TestNothingRecordedIsAnEmptyReport(t *testing.T) {
 func TestAReservedAccountIsNoOtherWorksRoom(t *testing.T) {
 	soon, week := at(2*time.Hour), at(3*24*time.Hour)
 	held := cand("b", at(0), limits(10, 10, soon, week))
-	held.Reservation = placement.ReservedHere
 	readings := []usagelog.Record{
 		logged(at(30*time.Minute), "a", 85, 10, soon, week),
 		logged(at(30*time.Minute), "b", 10, 10, soon, week),
 	}
-	rep := build([]Launch{auto(at(0), cand("a", at(0), limits(10, 10, soon, week)), held)}, readings, at(time.Hour))
+	l := auto(at(0), cand("a", at(0), limits(10, 10, soon, week)), held)
+	l.Candidates[1].Reservation = "here"
+	rep := build([]Launch{l}, readings, at(time.Hour))
 	if len(rep.Episodes) != 1 || rep.Episodes[0].Elsewhere != nil {
 		t.Errorf("episodes = %+v", rep.Episodes)
 	}

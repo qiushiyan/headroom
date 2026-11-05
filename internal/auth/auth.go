@@ -51,10 +51,9 @@ const (
 
 // Status is the contract headroom needs from the auth command.
 type Status struct {
-	LoggedIn         bool
-	Email            string
-	SubscriptionType string
-	Outcome          Outcome
+	LoggedIn bool
+	Email    string
+	Outcome  Outcome
 }
 
 // Answered reports whether this is a verdict rather than a lack of one.
@@ -64,18 +63,16 @@ func (s Status) Answered() bool { return s.Outcome == OutcomeOK }
 // without it there is no answer, only noise.
 func Parse(raw []byte) (Status, bool) {
 	var doc struct {
-		LoggedIn         *bool  `json:"loggedIn"`
-		Email            string `json:"email"`
-		SubscriptionType string `json:"subscriptionType"`
+		LoggedIn *bool  `json:"loggedIn"`
+		Email    string `json:"email"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil || doc.LoggedIn == nil {
 		return Status{Outcome: OutcomeUnparseable}, false
 	}
 	return Status{
-		LoggedIn:         *doc.LoggedIn,
-		Email:            doc.Email,
-		SubscriptionType: doc.SubscriptionType,
-		Outcome:          OutcomeOK,
+		LoggedIn: *doc.LoggedIn,
+		Email:    doc.Email,
+		Outcome:  OutcomeOK,
 	}, true
 }
 

@@ -36,6 +36,9 @@ type handoffWorld struct {
 
 	mu      sync.Mutex
 	vendors []*fakeVendor
+	// signal is the newest holder's signal channel, as a session ending or a
+	// person stopping the holder would send to it.
+	signal chan<- os.Signal
 	// screen is what each new vendor prints; "" lines are left out. The
 	// default is 2.1.311's, with the state the vendor is given.
 	screen func(state string) []string
@@ -87,7 +90,13 @@ func newHandoffWorld(t *testing.T) *handoffWorld {
 			h.vendors = append(h.vendors, v)
 			return v, nil
 		},
-		ps:  sessions.PS,
+		ps: sessions.PS,
+		signals: func(c chan<- os.Signal) func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.signal = c
+			return func() {}
+		},
 		now: time.Now,
 		bounds: handoffBounds{url: time.Second, opener: 200 * time.Millisecond, awaiting: 5 * time.Second,
 			exchange: 2 * time.Second, stop: 100 * time.Millisecond, reply: 5 * time.Second, status: 5 * time.Second, start: 5 * time.Second},
@@ -379,7 +388,7 @@ func TestHandoffQuietVendorAndLostReply(t *testing.T) {
 // a code is sent. (test plans 10, 11)
 func TestHandoffDeadline(t *testing.T) {
 	h := newHandoffWorld(t)
-	h.deps.bounds.awaiting = 300 * time.Millisecond
+	h.deps.bounds.awaiting = 150 * time.Millisecond
 	h.run(loginStart, "a@x.com", "")
 	h.holders.Wait()
 	if doc, code := h.run(loginFinish, "a@x.com", "the-code#state-1\n"); code != 1 || doc.State != signin.Failed || doc.reason() != reasonExpired {
@@ -393,59 +402,102 @@ func TestHandoffDeadline(t *testing.T) {
 	}
 
 	h2 := newHandoffWorld(t)
-	h2.deps.bounds.awaiting = 400 * time.Millisecond
+	h2.deps.bounds.awaiting = 200 * time.Millisecond
 	h2.onCode = func(w *loginWorld, a, _ string) (error, bool) {
-		time.Sleep(600 * time.Millisecond) // past the deadline
+		time.Sleep(350 * time.Millisecond) // past the deadline
 		w.set(func() { w.raw[a] = blobEnding("new-"+a, w.now.Add(30*24*time.Hour)) })
 		return nil, false
 	}
 	h2.run(loginStart, "a@x.com", "")
-	time.Sleep(200 * time.Millisecond)
 	if doc, code := h2.run(loginFinish, "a@x.com", "the-code#state-1\n"); code != 0 || doc.State != signin.Renewed {
 		t.Errorf("a code sent before the deadline: exit %d, %+v", code, doc)
 	}
 }
 
-// A holder that died leaves its vendor running (measured, 2.1.311): finish
-// reports the sign-in over before any code was sent, and the next start
-// ends the vendor its record names — verified by pid and start — and begins
-// afresh. (test plan 13)
-func TestHandoffAfterTheHolderDied(t *testing.T) {
-	h := newHandoffWorld(t)
-	orphan := exec.Command("sleep", "60")
-	if err := orphan.Start(); err != nil {
-		t.Fatal(err)
+// leaveBehind writes what a holder that died leaves for a@x.com: its record,
+// in state, and its vendor — `sleep secs` — registered and still running.
+// The channel delivers the vendor's exit once it is reaped, the moment it
+// exits, as an orphan's new parent would reap it.
+func (h *handoffWorld) leaveBehind(state, secs string) <-chan error {
+	h.t.Helper()
+	vendor := exec.Command("sleep", secs)
+	if err := vendor.Start(); err != nil {
+		h.t.Fatal(err)
 	}
-	t.Cleanup(func() { orphan.Process.Kill() })
-	exited := make(chan struct{})
-	go func() { orphan.Wait(); close(exited) }()
-	started, err := sessions.PS(orphan.Process.Pid)
+	h.t.Cleanup(func() { vendor.Process.Kill() })
+	exited := make(chan error, 1)
+	go func() { exited <- vendor.Wait() }()
+	started, err := sessions.PS(vendor.Process.Pid)
 	if err != nil {
-		t.Fatal(err)
+		h.t.Fatal(err)
 	}
-	acct, _ := accounts.Discover(h.cfg).Select("a@x.com")
-	paths := signin.For(h.cfg.AccountsRoot, acct.Dir())
+	rec := signin.Record{Account: "a@x.com", Email: "a@x.com", State: state, SigninState: "old", StartedMS: time.Now().UnixMilli()}
+	if state == signin.Awaiting {
+		rec.URL = signinURL("old")
+	}
+	paths := h.paths("a@x.com")
 	paths.Ensure()
-	signin.Write(paths.Record(), signin.Record{Account: "a@x.com", Email: "a@x.com", State: signin.Awaiting, URL: signinURL("old"),
-		SigninState: "old", StartedMS: time.Now().UnixMilli()})
-	signin.WriteVendor(paths.Vendor(), signin.Proc{PID: orphan.Process.Pid, Start: started})
+	signin.Write(paths.Record(), rec)
+	signin.WriteVendor(paths.Vendor(), signin.Proc{PID: vendor.Process.Pid, Start: started})
+	return exited
+}
 
-	if doc, code := h.run(loginFinish, "a@x.com", "the-code#old\n"); code != 1 || doc.State != signin.Failed || doc.reason() != reasonHolderGone {
-		t.Errorf("finish: exit %d, %+v", code, doc)
-	}
-	select {
-	case <-exited:
-		t.Fatal("finish must not end the vendor; only a start or cancel, under the lock, does")
-	default:
-	}
-	doc, code := h.run(loginStart, "a@x.com", "")
-	if code != 0 || doc.State != signin.Awaiting || doc.URL != signinURL("state-1") {
-		t.Errorf("start: exit %d, %+v", code, doc)
-	}
-	select {
-	case <-exited:
-	case <-time.After(2 * time.Second):
-		t.Error("the orphaned vendor was left running")
+func (h *handoffWorld) paths(name string) signin.Paths {
+	acct, _ := accounts.Discover(h.cfg).Select(name)
+	return signin.For(h.cfg.AccountsRoot, acct.Dir())
+}
+
+// A holder that died leaves its vendor running (measured, 2.1.311): finish
+// reports the sign-in over before any code was sent and ends nothing;
+// whoever next holds the account's login lock — a start, a cancel or the
+// batch — ends the vendor its record names, verified by pid and start, and
+// settles the record. Deleting settleStale from any of the three must fail
+// its row. (test plan 13)
+func TestHandoffAfterTheHolderDied(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		next func(t *testing.T, h *handoffWorld)
+	}{
+		{"start", func(t *testing.T, h *handoffWorld) {
+			if doc, code := h.run(loginStart, "a@x.com", ""); code != 0 || doc.State != signin.Awaiting || doc.URL != signinURL("state-1") {
+				t.Errorf("start: exit %d, %+v", code, doc)
+			}
+		}},
+		{"cancel", func(t *testing.T, h *handoffWorld) {
+			if doc, code := h.run(loginCancel, "a@x.com", ""); code != 0 || doc.State != signin.Failed || doc.reason() != reasonHolderGone {
+				t.Errorf("cancel: exit %d, %+v", code, doc)
+			}
+		}},
+		{"the batch", func(t *testing.T, h *handoffWorld) {
+			batch := h.w.deps()
+			batch.signin, batch.acquire = liveSignin(h.cfg), liveAcquire(h.cfg)
+			var out bytes.Buffer
+			if code := loginTo(&out, io.Discard, h.cfg, []string{"a@x.com"}, batch); code != 0 || len(h.w.logins) != 1 {
+				t.Errorf("batch: exit %d, logins %q\n%s", code, h.w.logins, out.String())
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHandoffWorld(t)
+			exited := h.leaveBehind(signin.Awaiting, "60")
+			if doc, code := h.run(loginFinish, "a@x.com", "the-code#old\n"); code != 1 || doc.State != signin.Failed || doc.reason() != reasonHolderGone {
+				t.Errorf("finish: exit %d, %+v", code, doc)
+			}
+			select {
+			case <-exited:
+				t.Fatal("finish must not end the vendor; only whoever holds the lock does")
+			default:
+			}
+			c.next(t, h)
+			select {
+			case <-exited:
+			case <-time.After(2 * time.Second):
+				t.Error("the orphaned vendor was left running")
+			}
+			if rec, _, _ := signin.Read(h.paths("a@x.com").Record()); rec.State == signin.Awaiting && rec.SigninState == "old" {
+				t.Errorf("the dead holder's record was left live: %+v", rec)
+			}
+		})
 	}
 }
 
@@ -461,7 +513,7 @@ func TestHandoffAndTheBatchExcludeEachOther(t *testing.T) {
 	if code := loginTo(&out, io.Discard, h.cfg, []string{"a@x.com"}, batch); code != 1 || len(h.w.logins) != 0 {
 		t.Errorf("batch over a live sign-in: exit %d, logins %q\n%s", code, h.w.logins, out.String())
 	}
-	if line := planLine(out.String(), "a@x.com"); !strings.Contains(line, "a sign-in from headroom login start is in progress") {
+	if line := planLine(out.String(), "a@x.com"); !strings.Contains(line, "headroom login status a@x.com") {
 		t.Errorf("plan line %q", line)
 	}
 
@@ -479,27 +531,19 @@ func TestHandoffAndTheBatchExcludeEachOther(t *testing.T) {
 	}
 }
 
-// A holder that died mid-exchange may have left a vendor storing the login:
-// the next start waits for it to finish, within the exchange bound, rather
-// than end it. (review r1 F11)
+// A holder that died mid-exchange may have left a vendor storing the login.
+// Its sign-in reads outcome_unknown, never that no code was sent, and finish
+// sends nothing; the next start waits for that vendor to finish, within the
+// exchange bound, rather than end it. (review r1 F11)
 func TestHandoffWaitsOutAnExchangeLeftBehind(t *testing.T) {
 	h := newHandoffWorld(t)
-	vendor := exec.Command("sleep", "1")
-	if err := vendor.Start(); err != nil {
-		t.Fatal(err)
+	exited := h.leaveBehind(signin.Exchanging, "0.5")
+	if doc, code := h.run(loginStatus, "a@x.com", ""); code != 0 || doc.State != signin.Unknown || doc.reason() != reasonUnknown {
+		t.Errorf("status: exit %d, %+v", code, doc)
 	}
-	started, err := sessions.PS(vendor.Process.Pid)
-	if err != nil {
-		t.Fatal(err)
+	if doc, code := h.run(loginFinish, "a@x.com", "the-code#old\n"); code != 1 || doc.State != signin.Unknown || doc.reason() != reasonUnknown {
+		t.Errorf("finish: exit %d, %+v", code, doc)
 	}
-	acct, _ := accounts.Discover(h.cfg).Select("a@x.com")
-	paths := signin.For(h.cfg.AccountsRoot, acct.Dir())
-	paths.Ensure()
-	signin.Write(paths.Record(), signin.Record{Account: "a@x.com", Email: "a@x.com", State: signin.Exchanging, SigninState: "old", StartedMS: time.Now().UnixMilli()})
-	signin.WriteVendor(paths.Vendor(), signin.Proc{PID: vendor.Process.Pid, Start: started})
-	// Reaped the moment it exits, as an orphan's new parent would reap it.
-	exited := make(chan error, 1)
-	go func() { exited <- vendor.Wait() }()
 	began := time.Now()
 	h.run(loginStart, "a@x.com", "")
 	if took := time.Since(began); took > 1800*time.Millisecond {
@@ -531,14 +575,23 @@ func TestHandoffRefusesAnotherProtocol(t *testing.T) {
 	}
 }
 
-// The Keychain decides before any approval and again before the code goes
-// out: an account whose login it holds and will not give is refused at
-// start, and one it stops giving since is refused at finish, nothing sent.
+// The Keychain decides before any approval, again before the code goes out
+// and again on the read-back: an account whose login it holds and will not
+// give is refused at start, one it stops giving since is refused at finish,
+// nothing sent, and a login the vendor stored in the file because the
+// Keychain closed during the exchange did not take: stored_elsewhere.
 func TestHandoffKeychain(t *testing.T) {
 	h := newHandoffWorld(t)
 	h.w.set(func() { h.w.keychain["a@x.com"], h.w.locked = true, true })
 	if doc, code := h.run(loginStart, "a@x.com", ""); code != 3 || doc.reason() != heldKeychain || h.vendorCount() != 0 {
 		t.Errorf("start: exit %d, %+v", code, doc)
+	}
+	h.holders.Wait() // the refusing holder lets go of the lock as it ends
+	// The vendor stores the login it is given while the Keychain closes: it
+	// falls back to the file.
+	h.onCode = func(w *loginWorld, a, _ string) (error, bool) {
+		w.set(func() { w.locked, w.stray[a] = true, blobEnding("new-"+a, w.now.Add(30*24*time.Hour)) })
+		return nil, false
 	}
 	h.w.set(func() { h.w.locked = false })
 	if doc, code := h.run(loginStart, "a@x.com", ""); code != 0 || doc.State != signin.Awaiting {
@@ -547,6 +600,10 @@ func TestHandoffKeychain(t *testing.T) {
 	h.w.set(func() { h.w.locked = true })
 	if doc, code := h.run(loginFinish, "a@x.com", "the-code#state-1\n"); code != 3 || doc.reason() != reasonKeychainShut || doc.State != signin.Awaiting || len(h.sent()) != 0 {
 		t.Errorf("finish, relocked: exit %d, %+v, codes %q", code, doc, h.sent())
+	}
+	h.w.set(func() { h.w.locked = false })
+	if doc, code := h.run(loginFinish, "a@x.com", "the-code#state-1\n"); code != 1 || doc.State != signin.Failed || doc.reason() != storedElsewhere {
+		t.Errorf("a login stored beside the Keychain: exit %d, %+v", code, doc)
 	}
 }
 
@@ -659,7 +716,7 @@ func TestHandoffStatusOfABusyHolder(t *testing.T) {
 	h := newHandoffWorld(t)
 	h.deps.bounds.status = 200 * time.Millisecond
 	h.run(loginStart, "a@x.com", "")
-	h.w.set(func() { h.w.slowItem = 700 * time.Millisecond })
+	h.w.set(func() { h.w.slowItem = 500 * time.Millisecond })
 	done := make(chan signinDoc, 1)
 	go func() {
 		doc, _ := h.run(loginFinish, "a@x.com", "the-code#state-1\n")
@@ -670,6 +727,7 @@ func TestHandoffStatusOfABusyHolder(t *testing.T) {
 	if code != 0 || doc.State != signin.Awaiting || doc.reason() != reasonNoReply {
 		t.Errorf("status of a busy holder: exit %d, %+v", code, doc)
 	}
+	h.w.set(func() { h.w.slowItem = 0 }) // the read-back need not stall too
 	if got := <-done; got.State != signin.Renewed {
 		t.Errorf("the finish it was busy with: %+v", got)
 	}
@@ -693,7 +751,7 @@ func TestHandoffNamesTheAccountsOwnEmail(t *testing.T) {
 // its own verdict, one code sent in all. (review r1 F8, F11)
 func TestHandoffDuringAnExchange(t *testing.T) {
 	h := newHandoffWorld(t)
-	h.deps.bounds.exchange = 800 * time.Millisecond
+	h.deps.bounds.exchange = 400 * time.Millisecond
 	h.onCode = func(w *loginWorld, a, _ string) (error, bool) {
 		w.set(func() { w.raw[a] = blobEnding("new-"+a, w.now.Add(30*24*time.Hour)) })
 		return nil, true
@@ -715,6 +773,11 @@ func TestHandoffDuringAnExchange(t *testing.T) {
 	if doc, code := h.run(loginStart, "a@x.com", ""); code != 3 || doc.reason() != reasonExchanging {
 		t.Errorf("start: exit %d, %+v", code, doc)
 	}
+	// Stopped mid-exchange, the holder still owes the exchange's answer: a
+	// record ending here would say no code was sent when one was.
+	h.mu.Lock()
+	h.signal <- syscall.SIGTERM
+	h.mu.Unlock()
 	if got := <-done; got.State != signin.Renewed || len(h.sent()) != 1 {
 		t.Errorf("the exchange: %+v, codes %q", got, h.sent())
 	}
@@ -733,7 +796,7 @@ func TestHandoffEndsInItsOwnWords(t *testing.T) {
 	h.vendors[0].end(errors.New("exit status 1"))
 	h.mu.Unlock()
 	h.holders.Wait()
-	if doc, _ := h.run(loginStatus, "a@x.com", ""); doc.reason() != reasonVendorEnded || !strings.Contains(*doc.Problem, "before any code was sent") {
+	if doc, _ := h.run(loginStatus, "a@x.com", ""); doc.reason() != reasonVendorEnded {
 		t.Errorf("vendor ended early: %+v", doc)
 	}
 

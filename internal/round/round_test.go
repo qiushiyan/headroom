@@ -85,30 +85,6 @@ func candidate(url, name, token string) *refresh.Candidate {
 	return c
 }
 
-// A fetch that lands is an answer: a 200 with limit windows and a 200 with
-// none both leave the account current.
-func TestASuccessfulFetchIsAnAnswer(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		want       accountstate.AttemptState
-	}{
-		{"rows", `{"limits":[{"kind":"session","percent":42}]}`, accountstate.AttemptOK},
-		{"empty", `{"limits":[]}`, accountstate.AttemptNoLimits},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(tc.body))
-			}))
-			defer srv.Close()
-			r := &Round{Store: state.Open(config.Scope{AccountsRoot: t.TempDir()}), rows: []*row{{request: candidate(srv.URL, "a", "token")}}}
-			r.Complete(context.Background())
-			if got := r.Accounts()[0].View.Attempt; got.State != tc.want {
-				t.Errorf("attempt %+v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 // Apply writes one view and nothing else — the store has already been told,
 // by the goroutine that fetched — and it writes each axis on its own. The
 // headline regression: a request that failed says nothing about the account,

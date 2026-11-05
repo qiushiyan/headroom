@@ -221,6 +221,20 @@ func TestCaptionKeepsEveryClause(t *testing.T) {
 			want: []string{"stale", "observed 22h ago", "live check deferred"},
 		},
 		{
+			// Before the three-axis model a 429 was the whole block and the
+			// bars vanished. The retry rounds up: 150s is 3m, never 2m.
+			name: "a refused refresh keeps the figures and says when it retries",
+			view: accountstate.Facts{Label: "a@x.com", Obs: obs(20*time.Second, accountstate.SourceLive, row),
+				Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, NextEligibleAt: now + 150}},
+			want: []string{"12%", "rate limited", "next attempt in 3m"},
+		},
+		{
+			name: "a bookkeeping failure is said beside the endpoint's verdict, never instead of it",
+			view: accountstate.Facts{Label: "a@x.com", Obs: obs(5*time.Second, accountstate.SourceLive, row),
+				Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, StoreError: "read-only"}},
+			want: []string{"12%", "rate limited", "state file unavailable"},
+		},
+		{
 			name: "headroom's own state failing is said alone over good figures",
 			view: accountstate.Facts{Label: "a@x.com", Obs: obs(5*time.Second, accountstate.SourceLive, row),
 				Attempt: accountstate.Attempt{State: accountstate.AttemptOK, StoreError: "disk full"}},
@@ -491,12 +505,12 @@ func TestCompactHeadingsGiveWayBeforeNames(t *testing.T) {
 			Attempt: accountstate.Attempt{State: accountstate.AttemptNone}},
 		{Label: "b@x.com", Obs: fresh(now, scoped("Opus", 1, now+3600), session(1, now+3600)), Attempt: accountstate.Attempt{State: accountstate.AttemptOK}},
 	}
-	wide := bare(p.Board(views, now, LayoutCompact, 200).Header[0])
+	wide := bare(p.Board(views, now, LayoutCompact, 200).Header[1]) // the column headings, under the legend
 	if !strings.Contains(wide, "All models (7d)") {
 		t.Fatalf("headings shortened with room to spare: %q", wide)
 	}
 	b := p.Board(views, now, LayoutCompact, 80)
-	if h := bare(b.Header[0]); !strings.Contains(h, "…") || strings.Contains(h, "All models (7d)") {
+	if h := bare(b.Header[1]); !strings.Contains(h, "…") || strings.Contains(h, "All models (7d)") {
 		t.Errorf("headings kept their surplus under pressure: %q", h)
 	}
 	row := bare(b.Groups[0][0])

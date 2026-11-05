@@ -214,3 +214,58 @@ func TestTheHeadDecidesWhetherARewriteIsDue(t *testing.T) {
 		t.Fatalf("after the rewrite: %d lines from %d to %d, want both old lines gone", len(got), got[0].N, got[len(got)-1].N)
 	}
 }
+
+// Reading from the end is reading the whole file and keeping its last n:
+// across lines longer than one read from the end, a torn last line, lines
+// that do not decode and blank ones, the newest n records are Read's newest
+// n, in the same order.
+func TestTheTailIsTheNewestOfTheWhole(t *testing.T) {
+	type pad struct {
+		At  string `json:"at"`
+		N   int    `json:"n"`
+		Pad string `json:"pad,omitempty"`
+	}
+	now := at(time.Now())
+	valid := func(p pad) bool { return p.At != "" }
+	var b strings.Builder
+	for i := range 40 {
+		size := 10
+		if i%7 == 3 {
+			size = tailChunk + 100 // one line spans two reads from the end
+		}
+		fmt.Fprintf(&b, `{"at":%q,"n":%d,"pad":%q}`+"\n", now, i, strings.Repeat("x", size))
+		switch i {
+		case 10:
+			b.WriteString("not json\n\n")
+		case 20:
+			b.WriteString(`{"n":-1}` + "\n") // no time: valid rejects it
+		}
+	}
+	b.WriteString(`{"at":"` + now + `","n":99,"pad":"torn`)
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	whole, _, err := Read(path, valid)
+	if err != nil || len(whole) != 40 {
+		t.Fatalf("whole: %d records, %v", len(whole), err)
+	}
+	for _, n := range []int{1, 3, 19, 30, 40, 45} {
+		got, _, err := ReadTail(path, n, valid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := whole[max(len(whole)-n, 0):]
+		if len(got) != len(want) {
+			t.Fatalf("n=%d: %d records, want %d", n, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].N != want[i].N {
+				t.Fatalf("n=%d: record %d is line %d, want line %d", n, i, got[i].N, want[i].N)
+			}
+		}
+	}
+	if _, skipped, _ := ReadTail(path, 1, valid); skipped != 1 {
+		t.Errorf("the torn last line: %d skipped, want 1", skipped)
+	}
+}

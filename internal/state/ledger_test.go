@@ -99,12 +99,14 @@ func TestALaunchsLoadIsSharedAndItsReHomeIsNot(t *testing.T) {
 		t.Errorf("counted = %+v", c)
 	}
 
-	// --last is per home.
-	if d := placement.Choose(idle("a", "b", "c"), h.second.Load().Placements(), placement.Intent{Kind: placement.LastUsed, Home: h.secondRoot}, now); d.Chosen != p.Decision.Chosen {
-		t.Errorf("the second home's last = %q, want its own %q", d.Chosen, p.Decision.Chosen)
+	// --last is per home: each store answers it from its own home's last
+	// launch, never the ledger's newest.
+	last := placement.Intent{Kind: placement.LastUsed}
+	if r, err := place(h.second, idle("a", "b", "c"), last, 44, "", now.Add(2*time.Second)); err != nil || r.Decision.Chosen != p.Decision.Chosen {
+		t.Errorf("the second home's last = %q (%v), want its own %q", r.Decision.Chosen, err, p.Decision.Chosen)
 	}
-	if d := placement.Choose(idle("a", "b", "c"), h.owner.Load().Placements(), placement.Intent{Kind: placement.LastUsed, Home: h.ownerRoot}, now); d.Chosen != "c" {
-		t.Errorf("the owner's last = %q, want c", d.Chosen)
+	if r, err := place(h.owner, idle("a", "b", "c"), last, 45, "", now.Add(3*time.Second)); err != nil || r.Decision.Chosen != "c" {
+		t.Errorf("the owner's last = %q (%v), want c", r.Decision.Chosen, err)
 	}
 }
 
@@ -231,7 +233,7 @@ func TestLaunchesFromBeforeHomesBelongToTheLedgersHome(t *testing.T) {
 		if len(led.Recent) != 1 || led.Recent[0].Home != h.ownerRoot {
 			t.Errorf("recent = %+v", led.Recent)
 		}
-		if last, ok := led.Newest(h.ownerRoot); !ok || last.Name != "a" {
+		if last, ok := led.Newest(h.ownerRoot); !ok || last.Ref != "a" {
 			t.Errorf("the owner's last = %+v %v", last, ok)
 		}
 		if _, ok := led.Newest(h.secondRoot); ok {
@@ -319,8 +321,10 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		if err := h.second.Register(time.Now()); err != nil { // creates both lock files
 			t.Fatal(err)
 		}
-		if err := h.second.Forget("nothing"); err != nil {
+		if f, err := os.OpenFile(statePath(h.secondRoot)+".lock", os.O_CREATE|os.O_RDWR, 0o600); err != nil {
 			t.Fatal(err)
+		} else {
+			f.Close()
 		}
 		readOnly(t, h.secondRoot)
 		p, err := place(h.second, idle("a"), placement.Intent{}, 9, sid, time.Now())
@@ -340,8 +344,10 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		if err := h.second.Register(time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.second.Forget("nothing"); err != nil {
+		if f, err := os.OpenFile(statePath(h.secondRoot)+".lock", os.O_CREATE|os.O_RDWR, 0o600); err != nil {
 			t.Fatal(err)
+		} else {
+			f.Close()
 		}
 		readOnly(t, h.ownerRoot)
 		p, err := h.second.Place(Launch{

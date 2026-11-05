@@ -143,7 +143,22 @@ func (e *evaluator) after(key string, at int64, c launchlog.Candidate) *After {
 // which reproduces a rule that counts alike and nothing more, and is inexact
 // wherever such counts, a tie inside one second, or the intent decided.
 func (e *evaluator) replay(l launch) Replay {
-	now := time.Unix(l.at, 0)
+	cands, ledger, intent, now, exact := e.input(l)
+	d := placement.Choose(cands, ledger, intent, now)
+	out := Replay{Chosen: d.Chosen, Reason: d.Reason, Agrees: d.Chosen == l.Chosen, Exact: exact}
+	out.Fault = !out.Agrees && out.Exact && l.Rule == placement.Rule
+	if !out.Agrees && d.Chosen != "" {
+		if c, ok := find(l.Record, d.Chosen); ok {
+			out.After = e.after(e.keyOrName(l.Home, c), l.at, c)
+		}
+	}
+	return out
+}
+
+// input is what the rule was handed, rebuilt from a launch line, and whether
+// the line carried all of it.
+func (e *evaluator) input(l launch) (cands []placement.Candidate, ledger placement.Ledger, intent placement.Intent, now time.Time, exact bool) {
+	now = time.Unix(l.at, 0)
 	if l.AtMS > 0 {
 		now = time.UnixMilli(l.AtMS)
 	}
@@ -151,15 +166,14 @@ func (e *evaluator) replay(l launch) Replay {
 	for _, c := range l.Candidates {
 		whole = whole && c.BusyProcs != nil
 	}
-	exact := true
-	var cands []placement.Candidate
-	ledger := placement.Ledger{Last: map[string]placement.Last{}}
+	exact = true
+	ledger = placement.Ledger{Last: map[string]placement.Last{}}
 	pending := map[string]int{} // older lines: the recent launches each subscription counted
 	seconds := map[int64]int{}  // older lines: last placements that fall in one second
 	pid := 0
 	for _, c := range l.Candidates {
 		key := e.keyOrName(l.Home, c)
-		pc := placement.Candidate{Name: c.Name, Key: key, Reservation: placement.Reservation(c.Reservation), Excluded: c.Excluded, Source: c.Source, Statuses: c.Statuses}
+		pc := placement.Candidate{Name: c.Name, Ref: c.Name, Key: key, Excluded: c.Excluded, Source: c.Source, Statuses: c.Statuses}
 		if !c.Eligible && pc.Excluded == "" {
 			pc.Excluded = "excluded"
 		}
@@ -213,7 +227,7 @@ func (e *evaluator) replay(l launch) Replay {
 	for _, n := range seconds {
 		exact = exact && n < 2
 	}
-	intent := placement.Intent{Kind: placement.Auto, Home: l.Home, Owner: l.Owner, Exclude: l.Exclude}
+	intent = placement.Intent{Kind: placement.Auto, Home: l.Home, Owner: l.Owner, Exclude: l.Exclude}
 	if l.V < 2 {
 		// Version 1 kept no intent: an owner is known only when it was
 		// followed, and an account the picker moved a session off not at all.
@@ -222,13 +236,5 @@ func (e *evaluator) replay(l launch) Replay {
 		}
 		exact = exact && l.Mode == "auto" && l.Reason != placement.ReasonMoved
 	}
-	d := placement.Choose(cands, ledger, intent, now)
-	out := Replay{Chosen: d.Chosen, Reason: d.Reason, Agrees: d.Chosen == l.Chosen, Exact: exact}
-	out.Fault = !out.Agrees && out.Exact && l.Rule == placement.Rule
-	if !out.Agrees && d.Chosen != "" {
-		if c, ok := find(l.Record, d.Chosen); ok {
-			out.After = e.after(e.keyOrName(l.Home, c), l.at, c)
-		}
-	}
-	return out
+	return cands, ledger, intent, now, exact
 }

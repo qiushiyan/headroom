@@ -297,8 +297,9 @@ func TestASecondRunInsideTheQuietPeriodIsStillCurrent(t *testing.T) {
 	if !d.View.Actionable(now.Unix()) {
 		t.Error("the picker would warn against choosing on five-second-old figures")
 	}
-	if p := render.NewPalette(false).ProvenanceLine(d.View, now.Unix()); p != "" {
-		t.Errorf("a nag was printed over current figures: %q", p)
+	block := render.NewPalette(false).Board([]accountstate.Facts{d.View}, now.Unix(), render.LayoutBlocks, 0).Groups[0]
+	if len(block) != 1+len(d.View.Obs.Rows) {
+		t.Errorf("a nag was printed over current figures: %q", block)
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -27,7 +26,7 @@ func AccountsLedger(std Streams, cfg config.Config, root string, now time.Time) 
 	out := std.Out
 	scope := cfg.Claude
 	if root != "" {
-		joined, err := accounts.ShareLedger(cfg.Claude, cfg.Codex, root)
+		joined, err := cfg.ShareLedger(root)
 		if err != nil {
 			return err
 		}

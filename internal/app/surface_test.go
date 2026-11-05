@@ -45,12 +45,12 @@ func call(f func(std Streams) error) ran {
 // execRecord stands in for the exec that replaces this process, and records
 // what it was asked to start.
 type execRecord struct {
-	called       bool
-	binary       string
-	args, env    []string
-	err          error // what the exec returns
-	atExec       func()
-	path, argv0s string
+	called    bool
+	binary    string
+	args, env []string
+	err       error // what the exec returns
+	atExec    func()
+	path      string
 }
 
 func (r *execRecord) exec(path, binary string, args, env []string) error {
@@ -128,7 +128,19 @@ func rearm(ui *resumeUI) *execRecord {
 // does not let it start.
 func TestEachSurfaceReadsTheTerminalFactsItNeeds(t *testing.T) {
 	f := boardFixture(t, "a@x.com")
-	for _, term := range []Terminal{{In: true}, {Out: true, Size: func() (int, int, error) { return 100, 40, nil }}} {
+	// A terminal on both streams that reports no size cannot host the
+	// in-place redraw, so it prints the board once too. Stdin is a pipe here
+	// so a picker opened by mistake fails at once instead of taking the
+	// runner's terminal; deleting the size check in Board fails this.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = stdin; r.Close(); w.Close() })
+	noSize := Terminal{In: true, Out: true, Size: func() (int, int, error) { return 0, 0, nil }}
+	for _, term := range []Terminal{{In: true}, {Out: true, Size: func() (int, int, error) { return 100, 40, nil }}, noSize} {
 		got := call(func(std Streams) error {
 			return Board(std, term, []config.Scope{f.cfg}, render.LayoutBlocks, f.boardDeps())
 		})

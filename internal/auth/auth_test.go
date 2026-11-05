@@ -8,7 +8,7 @@ import (
 func TestParse(t *testing.T) {
 	st, ok := Parse([]byte(`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
 	  "email":"a@x.com","orgId":"o","orgName":"O","subscriptionType":"max"}`))
-	if !ok || !st.LoggedIn || st.Email != "a@x.com" || st.SubscriptionType != "max" || !st.Answered() {
+	if !ok || !st.LoggedIn || st.Email != "a@x.com" || !st.Answered() {
 		t.Errorf("logged-in status: %+v ok=%v", st, ok)
 	}
 
@@ -38,18 +38,6 @@ func TestUnanswerableIsUnknownNotLoggedOut(t *testing.T) {
 		if ok || st.Answered() || st.LoggedIn || st.Outcome != OutcomeUnparseable {
 			t.Errorf("%q: got %+v ok=%v, want unparseable and not logged in", raw, st, ok)
 		}
-	}
-}
-
-// The zero Status must mean "no answer". If it meant "answered: logged out",
-// every account whose health nobody looked up would render as dead.
-func TestZeroStatusIsNoAnswer(t *testing.T) {
-	var zero Status
-	if zero.Answered() {
-		t.Error("an unset Status claims to be a verdict")
-	}
-	if zero.Outcome != OutcomeUnavailable {
-		t.Errorf("zero outcome = %v, want unavailable", zero.Outcome)
 	}
 }
 

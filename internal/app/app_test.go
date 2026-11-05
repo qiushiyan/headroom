@@ -14,10 +14,8 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
-	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 // oneRound is what every surface does: prepare, claim, fetch, resolve. A fresh
@@ -135,41 +133,14 @@ func TestATornAccountFileDoesNotCostTheStoredObservation(t *testing.T) {
 	}
 }
 
-// The board says a bookkeeping failure beside the endpoint's verdict, in both
-// layouts, never instead of it: "rate limited" and "state file unavailable"
-// can both apply. This is the only guard of render's state-file clause; it
-// belongs beside render's TestProvenanceKeepsTheAxesApart and stays here until
-// that suite takes it. (A round keeping the two apart is round's
-// TestApplyWritesEachAxisOnItsOwn's; the document's problem entry is
-// TestJSONDocument's.)
-func TestPersistenceFailureKeepsEndpointVerdict(t *testing.T) {
-	now := time.Now()
-	for _, tc := range []struct {
-		state  accountstate.AttemptState
-		phrase string
-	}{
-		{accountstate.AttemptOK, ""}, {accountstate.AttemptRefused, "rate limited"},
-	} {
-		v := accountstate.Facts{
-			Obs:     &accountstate.Observation{Rows: []usage.Row{{Percent: 42}}, ObservedAt: now.Unix(), Source: accountstate.SourceLive},
-			Attempt: accountstate.Attempt{State: tc.state, StoreError: state.ErrReadOnly.Error()},
-		}
-		for _, layout := range []render.Layout{render.LayoutBlocks, render.LayoutCompact} {
-			text := strings.Join(render.NewPalette(false).Board([]accountstate.Facts{v}, now.Unix(), layout, 0).Groups[0], "\n")
-			if !strings.Contains(text, "state file unavailable") || !strings.Contains(text, tc.phrase) {
-				t.Errorf("missing independent evidence: %s", text)
-			}
-		}
-	}
-}
-
 // A refresh that landed answers the manual `r` with "all current" — a 200
-// with no limit windows is as much an answer as one with — and the document
-// carries no error status for it. (What a 200 lands as is round's
-// TestASuccessfulFetchIsAnAnswer.)
+// with no limit windows is as much an answer as one with — though the answer
+// starts the account's next spacing, and the document carries no error
+// status for it. (What a 200 lands as is refresh's TestRequestLifecycle.)
 func TestSuccessfulRefreshPresentation(t *testing.T) {
 	for _, state := range []accountstate.AttemptState{accountstate.AttemptOK, accountstate.AttemptNoLimits} {
-		accts := []accountstate.Account{{Acct: accounts.Account{Name: "a"}, View: accountstate.Facts{Attempt: accountstate.Attempt{State: state, HTTPCode: 200}}}}
+		accts := []accountstate.Account{{Acct: accounts.Account{Name: "a"}, View: accountstate.Facts{
+			Attempt: accountstate.Attempt{State: state, HTTPCode: 200, NextEligibleAt: time.Now().Add(90 * time.Second).Unix()}}}}
 		ui := page{round: round.Of(accounts.Set{}, nil, accts)}
 		if got := ui.ackString(time.Now()); !strings.Contains(got, "all current") {
 			t.Errorf("%v: ack=%q", state, got)

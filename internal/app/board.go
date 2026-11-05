@@ -1,7 +1,7 @@
 package app
 
-// The account board: which account has headroom left, and which one bare `x`
-// should target from now on. One surface, because there was only ever one
+// The account board: which account has headroom left, and which one the next
+// launch takes. One surface, because there was only ever one
 // board — a one-shot print, a picker and a watch loop were three renderings of
 // it, and the two interactive ones had grown near-identical draw loops.
 
@@ -80,19 +80,8 @@ func writeBoards(out io.Writer, p render.Palette, boards []round.View, now int64
 			}
 		}
 		b := p.Board(views(vb.Accounts), now, layout, width)
-		for _, line := range p.Legend(layout) {
+		for _, line := range append(b.Header, b.Body()...) {
 			fmt.Fprintln(out, line)
-		}
-		for _, line := range b.Header {
-			fmt.Fprintln(out, line)
-		}
-		for i, g := range b.Groups {
-			if i > 0 && layout == render.LayoutBlocks {
-				fmt.Fprintln(out)
-			}
-			for _, line := range g {
-				fmt.Fprintln(out, line)
-			}
 		}
 	}
 }

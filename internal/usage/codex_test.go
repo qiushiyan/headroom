@@ -157,6 +157,7 @@ func TestCodexEnvelopeAndDegradation(t *testing.T) {
 		percent, reset, identity tag.State
 	}{
 		{"a percent under a wrong type", window(`"93"`, 604800, 1, 1790000000), tag.Bad, tag.OK, tag.OK},
+		{"a percent int cannot hold", window(`1e30`, 604800, 1, 1790000000), tag.Bad, tag.OK, tag.OK},
 		{"a missing percent", `{"limit_window_seconds":604800,"reset_at":1790000000}`, tag.Bad, tag.OK, tag.OK},
 		{"a non-positive duration", window(10, 0, 1, 1790000000), tag.OK, tag.OK, tag.Bad},
 		{"a duration under a wrong type", window(10, `"604800"`, 1, 1790000000), tag.OK, tag.OK, tag.Bad},

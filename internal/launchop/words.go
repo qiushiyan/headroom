@@ -140,7 +140,7 @@ func shortLabel(label string) string {
 // account, with what was counted and why an account was left out. busy and
 // pending count every home sharing the ledger; a note says whose were not
 // this home's.
-func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, home string, labels state.HomeLabels) {
+func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, f facts) {
 	if d.Chosen == "" {
 		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
 	} else {
@@ -173,7 +173,7 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 			week = Cell(c.Week.Counted, c.Week.Basis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, home, labels))
+			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, f.home, f.labels, f.standing(c.Name)))
 	}
 }
 
@@ -200,12 +200,12 @@ func Cell(counted int, basis placement.Basis) string {
 	return figure(counted, basis)
 }
 
-func dryRunNote(c placement.Counted, now time.Time, home string, labels state.HomeLabels) string {
+func dryRunNote(c placement.Counted, now time.Time, home string, labels state.HomeLabels, standing string) string {
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
 	}
-	if c.Reservation == placement.ReservedHere {
+	if standing == reservedHere {
 		notes = append(notes, "reserved here")
 	}
 	for _, sh := range c.Elsewhere(home) {

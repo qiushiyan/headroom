@@ -33,11 +33,26 @@ const (
 )
 
 // Board is a rendered board before selection and windowing: Header is chrome
-// the picker keeps above the scrolled body (nil in the block layout), Groups
-// holds one line group per account in the views' order.
+// the picker keeps above the scrolled body — the legend, and the compact
+// layout's column headings — and Groups holds one line group per account in
+// the views' order. The one-shot print and the picker both draw Header, then
+// Body.
 type Board struct {
 	Header []string
 	Groups [][]string
+	blocks bool
+}
+
+// Body is the accounts' lines in order, a blank line between two blocks.
+func (b Board) Body() []string {
+	var lines []string
+	for i, g := range b.Groups {
+		if i > 0 && b.blocks {
+			lines = append(lines, "")
+		}
+		lines = append(lines, g...)
+	}
+	return lines
 }
 
 // Board renders every account in one layout. width is the terminal's cell
@@ -47,25 +62,18 @@ type Board struct {
 // sanitized text, which is what the in-place redraw needs.
 func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, width int) Board {
 	if layout == LayoutCompact {
-		return p.compactBoard(views, now, width)
+		b := p.compactBoard(views, now, width)
+		// The compact row's bare → needs saying; the block's "← next" says
+		// itself.
+		b.Header = append([]string{p.Dim + "→ marks the account the next launch takes" + p.Rst}, b.Header...)
+		return b
 	}
 	lw := labelWidth(views)
-	b := Board{Groups: make([][]string, len(views))}
+	b := Board{Groups: make([][]string, len(views)), blocks: true}
 	for i, v := range views {
 		b.Groups[i] = p.accountBlock(v, now, lw)
 	}
 	return b
-}
-
-// Legend is what a board puts above its accounts to say what its mark means:
-// the compact row's bare → needs saying, the block's "← next" says itself.
-// The one-shot print and the picker both put it there; this is its one
-// spelling.
-func (p Palette) Legend(layout Layout) []string {
-	if layout == LayoutCompact {
-		return []string{p.Dim + "→ marks the account the next launch takes" + p.Rst}
-	}
-	return nil
 }
 
 const (
@@ -174,66 +182,19 @@ func (p Palette) cellFor(r usage.Row, now int64) cell {
 	return c
 }
 
-// caption is every clause the block would have said about this account,
-// joined on one line. Never one winner — a logged-out account holding a
-// fresh cache is both of those things, and a row that picked one would be
-// the axis collapse this model exists to prevent.
-//
-// The order is clip order. The caption is what a narrow terminal cuts from
-// the right, so the clauses that change what the user does come first —
-// health, the mismatched dir, why there are no figures, drift, staleness,
-// how the refresh went — and the explanatory ones last: how old the figures
-// are, where they came from, and the sessions and launches on the account.
-// The block orders the same words by narrative; the row orders them by what
-// must survive.
+// caption is every clause the block says about this account, joined on one
+// line in clip order — the clauses' own. Never one winner: a logged-out
+// account holding a fresh cache is both of those things, and a row that
+// picked one would be the axis collapse this model exists to prevent. The
+// mismatched dir is named here as well as marked, since the mark alone would
+// send the user to the block to learn which dir to fix.
 func (p Palette) caption(v accountstate.Facts, now int64, drift bool) string {
-	var parts []string
-	if t := healthText(v); t != "" {
-		parts = append(parts, p.Red+t+p.Rst)
+	c := p.clauses(v, now, drift)
+	var all [clauseKinds]clauseKind
+	for k := range all {
+		all[k] = clauseKind(k)
 	}
-	if t := allowanceText(v); t != "" {
-		// Beside health, because it decides the choice the same way: green
-		// figures on an account the vendor refuses must not survive a clip
-		// that the block does not.
-		parts = append(parts, p.Red+t+p.Rst)
-	}
-	if v.DirMismatch != "" {
-		// The mark says something is wrong; the caption says which dir,
-		// which is what the user needs to go and fix it.
-		parts = append(parts, p.Red+"dir says "+Sanitize(v.DirMismatch)+p.Rst)
-	}
-	switch {
-	case v.Obs == nil && v.Health == accountstate.HealthOK:
-		parts = append(parts, p.Dim+unknownText(v, now)+p.Rst)
-	case v.Obs != nil && len(v.Obs.Rows) == 0:
-		parts = append(parts, p.Dim+"no limits reported"+p.Rst)
-	}
-	if drift || allowanceDrifted(v) {
-		parts = append(parts, p.Red+"⚠ drift — run headroom check"+p.Rst)
-	}
-	if t := featureText(v); t != "" {
-		parts = append(parts, p.Yel+t+p.Rst)
-	}
-	if v.Reserved != "" {
-		parts = append(parts, p.Dim+Sanitize(v.Reserved)+p.Rst)
-	}
-	pr := provenance(v, now)
-	if pr.stale {
-		parts = append(parts, p.Yel+"stale"+p.Rst)
-	}
-	if pr.attempt != "" {
-		parts = append(parts, p.Dim+pr.attempt+p.Rst)
-	}
-	if pr.age != "" {
-		parts = append(parts, p.Dim+pr.age+p.Rst)
-	}
-	if pr.source != "" {
-		parts = append(parts, p.Dim+pr.source+p.Rst)
-	}
-	if t := loadText(v.Load); t != "" {
-		parts = append(parts, p.Dim+t+p.Rst)
-	}
-	return strings.Join(parts, p.Dim+" · "+p.Rst)
+	return p.join(c, all[:]...)
 }
 
 // compactRow is one account's row before styling: its cells in column order

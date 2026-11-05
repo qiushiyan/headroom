@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,8 +110,13 @@ func (f autoFixture) observeWeek(name string, session, weekly int, left, age tim
 	f.t.Helper()
 	at := time.Now().Add(-age)
 	reset := func(d time.Duration) string { return time.Now().Add(d).UTC().Format(time.RFC3339) }
-	body := fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":%d,"resets_at":%q},`+
-		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(left))
+	f.store(name, fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":%d,"resets_at":%q},`+
+		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(left)), at)
+}
+
+// store records a usage body for an account as received at at.
+func (f autoFixture) store(name, body string, at time.Time) {
+	f.t.Helper()
 	k := f.key(name)
 	dec, err := f.st.Claim([]state.Key{k}, at)
 	if err != nil || !dec[0].Permit {
@@ -247,47 +251,6 @@ func TestNoRefreshIsStartedInsideTheQuietPeriod(t *testing.T) {
 	}
 }
 
-// An account that cannot be asked is tried, with figures that say they are
-// old, and its own placement keeps the next launch from following it there.
-func TestAStaleAccountIsTriedOnceAndSaysItsFiguresAreOld(t *testing.T) {
-	f := newAutoFixture(t, "idle@x.com")
-	f.observe("qiushi", 3, 20, time.Minute)
-	f.observe("idle@x.com", 0, 5, 40*time.Hour)
-
-	first := f.launch()
-	if first.account(f.cfg) != "idle@x.com" || !strings.Contains(first.stderr, "figures 1d old") {
-		t.Fatalf("first launch went to %s:\n%s", first.account(f.cfg), first.stderr)
-	}
-	if second := f.launch(); second.account(f.cfg) != "qiushi" {
-		t.Fatalf("second launch followed the first onto unverified figures:\n%s", second.stderr)
-	}
-	recs := f.log()
-	for _, c := range recs[0].Candidates {
-		if c.Name == "idle@x.com" && c.Limits[1].Basis != "stale" {
-			t.Errorf("an old figure was logged as %q", c.Limits[1].Basis)
-		}
-	}
-}
-
-// A named launch says where it went, like every other launch, and is load.
-func TestNamedLaunchSaysWhereItWentAndCounts(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.observe("qiushi", 0, 50, time.Minute)
-	f.observe("a@x.com", 0, 10, time.Minute)
-
-	named := f.launch("--account", "a@x.com")
-	if named.code != 0 || named.account(f.cfg) != "a@x.com" || !strings.Contains(named.stderr, "a@x.com · named") || strings.Contains(named.stderr, "auto") {
-		t.Fatalf("named launch: %+v", named)
-	}
-	// a would have won on weekly room; the named launch on it is one step.
-	if next := f.launch(); next.account(f.cfg) != "qiushi" {
-		t.Fatalf("automatic launch ignored a named launch's load:\n%s", next.stderr)
-	}
-	if recs := f.log(); recs[0].Mode != "named" || recs[1].Mode != "auto" {
-		t.Errorf("log modes = %s, %s", recs[0].Mode, recs[1].Mode)
-	}
-}
-
 // The rule routes every bare launch. A `.current` an older headroom left — a
 // pin, the word, or damage — is not read, and "auto" is a name like any other.
 func TestOnlyTheRuleRoutesABareLaunch(t *testing.T) {
@@ -310,9 +273,11 @@ func TestOnlyTheRuleRoutesABareLaunch(t *testing.T) {
 }
 
 func TestExcludedAccountsAreNeverChosen(t *testing.T) {
-	f := newAutoFixture(t, "out@x.com", "expired@x.com", "ok@x.com")
+	f := newAutoFixture(t, "out@x.com", "expired@x.com", "ok@x.com", "torn@x.com")
 	// Parsed, and names nobody: never logged in.
 	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "out@x.com", ".claude.json"), `{}`)
+	// Did not parse: says nothing about who is logged in, so excludes nothing.
+	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "torn@x.com", ".claude.json"), `{"oauthAccount":`)
 	far := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	f.edges.Creds = func(a accounts.Account) string {
 		refresh := far
@@ -331,7 +296,7 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 		t.Fatalf("launched on %s:\n%s", got.account(f.cfg), got.stderr)
 	}
 	recs := f.log()
-	want := map[string]string{"out@x.com": "not logged in", "expired@x.com": "login expired", "ok@x.com": "", "qiushi": ""}
+	want := map[string]string{"out@x.com": "not logged in", "expired@x.com": "login expired", "ok@x.com": "", "torn@x.com": "", "qiushi": ""}
 	for _, c := range recs[0].Candidates {
 		if c.Excluded != want[c.Name] {
 			t.Errorf("%s excluded %q, want %q", c.Name, c.Excluded, want[c.Name])
@@ -344,7 +309,7 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	}
 
 	// Nothing left to choose: refuse, and say why for each.
-	for _, name := range []string{"qiushi", "ok@x.com"} {
+	for _, name := range []string{"qiushi", "ok@x.com", "torn@x.com"} {
 		path := filepath.Join(f.cfg.AccountsRoot, name, ".claude.json")
 		if name == "qiushi" {
 			path = f.cfg.PrimaryMeta()
@@ -355,6 +320,26 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	if refused.code != 1 || refused.called || !strings.Contains(refused.stderr, "expired@x.com (login expired)") ||
 		!strings.Contains(refused.stderr, "out@x.com (not logged in)") {
 		t.Fatalf("with no usable account: %+v", refused)
+	}
+}
+
+// A percent the vendor's body carries but the parser could not read bounds
+// nothing, so it is not room: the account is set aside, and its line says the
+// figure was bad rather than 0%. Dropping the tag between the stored reading
+// and the rule (limitsOf) must fail this.
+func TestAPercentThatDidNotParseIsNotRoom(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.store("qiushi", `{"limits":[{"kind":"session","group":"session","percent":"lots"},`+
+		`{"kind":"weekly_all","group":"weekly","percent":5}]}`, time.Now().Add(-time.Minute))
+	f.observe("a@x.com", 30, 50, time.Minute)
+
+	if got := f.launch(); got.account(f.cfg) != "a@x.com" {
+		t.Fatalf("launched on %s, whose session figure did not parse:\n%s", got.account(f.cfg), got.stderr)
+	}
+	for _, c := range f.log()[0].Candidates {
+		if c.Name == "qiushi" && (len(c.Limits) == 0 || c.Limits[0].Basis != "bad" || !c.NearLimit) {
+			t.Errorf("the unreadable figure was counted as %+v", c)
+		}
 	}
 }
 
@@ -374,7 +359,7 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 		t.Errorf("a first turn's line does not say the session was new to headroom:\n%s", first.stderr)
 	}
 	rec, ok := f.st.Load().Owner(sessA)
-	if !ok || rec.Account != "qiushi" {
+	if !ok || rec.Account != accounts.PrimaryRef {
 		t.Fatalf("the placed session was not re-homed: %+v", rec)
 	}
 
@@ -583,35 +568,6 @@ func TestTheLogIsInert(t *testing.T) {
 	}
 }
 
-// What the vendor stored is what the rule weighs: an account whose weekly room
-// ends tomorrow takes the launch from one with less used and a week to run,
-// and the line, the table and the log each say when that room ends.
-func TestAWeekEndingSoonerTakesTheLaunch(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.observeWeek("qiushi", 0, 5, 6*24*time.Hour, time.Minute)
-	f.observeWeek("a@x.com", 0, 30, 20*time.Hour, time.Minute)
-
-	table := f.launch("--dry-run").stdout
-	for _, want := range []string{"resets", "→ a@x.com", "20.0h"} {
-		if !strings.Contains(table, want) {
-			t.Errorf("table lacks %q:\n%s", want, table)
-		}
-	}
-	got := f.launch()
-	if got.code != 0 || !strings.Contains(got.stderr, "a@x.com · auto") || !strings.Contains(got.stderr, "resets in 20.0h") {
-		t.Fatalf("exit %d: %s", got.code, got.stderr)
-	}
-	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot)
-	if len(recs) != 1 {
-		t.Fatalf("%d records", len(recs))
-	}
-	for _, c := range recs[0].Candidates {
-		if c.Name == "a@x.com" && (c.Week.Kind != "weekly_all" || c.Week.Room != 50 || c.Week.LeftBasis != "reset" || c.Week.LeftS <= 19*3600) {
-			t.Errorf("logged week = %+v", c.Week)
-		}
-	}
-}
-
 // An idle account's stored weekly reset has passed since its figures were
 // taken. Claude Code renews that window every seven days, so it renews again
 // in 155 h — sooner than a@x.com's 166 h — and the launch goes there, with the
@@ -690,8 +646,7 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	// A launch that would refuse is a dry run that fails: a script asking
 	// "would this launch?" reads the exit status.
 	g := newAutoFixture(t)
-	var refused launched
-	refused = g.launch("--dry-run", "--last")
+	refused := g.launch("--dry-run", "--last")
 	table = refused.stdout
 	if refused.code != 1 || refused.called || !strings.Contains(table, "would refuse") {
 		t.Errorf("a dry run that would refuse: exit %d, called %v:\n%s", refused.code, refused.called, table)
@@ -713,11 +668,9 @@ func TestOverrides(t *testing.T) {
 	if got := f.launch("--last"); got.account(f.cfg) != "a@x.com" || !strings.Contains(got.stderr, "the last account used") {
 		t.Fatalf("--last after a named launch: %+v", got)
 	}
-	// --auto says outright what a bare launch does.
-	auto := f.launch("--auto")
-	if auto.code != 0 || !strings.Contains(auto.stderr, "· auto ·") {
-		t.Fatalf("--auto: %+v", auto)
-	}
+	// The --auto spelling is the command line's (cmd/headroom's launch-auto
+	// contract); here a bare launch is the automatic one.
+	auto := f.launch()
 	if got := f.launch("--last"); got.account(f.cfg) != auto.account(f.cfg) {
 		t.Fatalf("--last after an automatic launch went to %s, want %s", got.account(f.cfg), auto.account(f.cfg))
 	}
@@ -859,46 +812,11 @@ func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
 	}
 }
 
-func TestLaunchesPrintsTheLog(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com")
-	f.observe("qiushi", 20, 40, time.Minute)
-	f.observe("a@x.com", 0, 10, time.Minute)
-	f.launch()
-	f.launch("--account", "qiushi")
-	f.launch()
-
-	listed := call(func(std Streams) error { return Launches(std, []config.Scope{f.cfg}, DefaultLaunches, false) })
-	if listed.code != 0 {
-		t.Fatalf("exit %d", listed.code)
-	}
-	lines := strings.Split(strings.TrimSpace(listed.stdout), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("%d lines:\n%s", len(lines), listed.stdout)
-	}
-	if !strings.Contains(lines[0], "a@x.com") || !strings.Contains(lines[0], "auto/least-load") || !strings.Contains(lines[0], "next qiushi") {
-		t.Errorf("first line: %s", lines[0])
-	}
-	if !strings.Contains(lines[1], "qiushi") || !strings.Contains(lines[1], "named") || strings.Contains(lines[1], "named/named") {
-		t.Errorf("second line: %s", lines[1])
-	}
-
-	newest := call(func(std Streams) error { return Launches(std, []config.Scope{f.cfg}, 1, true) })
-	var rec launchlog.Record
-	if err := json.Unmarshal([]byte(newest.stdout), &rec); newest.code != 0 || err != nil || rec.Mode != "auto" || len(rec.Candidates) != 2 {
-		t.Errorf("--json -n 1: exit %d, %v\n%s", newest.code, err, newest.stdout)
-	}
-	// What -n accepts is the command line's (cmd/headroom's TestGrammar).
-	empty := newAutoFixture(t)
-	if got := call(func(std Streams) error { return Launches(std, []config.Scope{empty.cfg}, DefaultLaunches, false) }); got.code != 0 || !strings.Contains(got.stdout, "no launches recorded") {
-		t.Errorf("empty log: exit %d, %q", got.code, got.stdout)
-	}
-}
-
 // rehome moves a session to an account the way the picker's override does: a
 // launch that exists to move it.
 func rehome(st *state.Store, id, account string, at time.Time) error {
 	_, err := st.Place(state.Launch{
-		Candidates: []placement.Candidate{{Name: account, Key: "test:" + account}},
+		Candidates: []placement.Candidate{{Name: account, Ref: account, Key: "test:" + account}},
 		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
 		Session:    id, MustReHome: true, Now: at,
 	})

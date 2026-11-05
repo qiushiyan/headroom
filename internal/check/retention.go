@@ -69,9 +69,7 @@ func checkRetention(set accounts.Set, r *report) {
 		for _, g := range files {
 			who = append(who, fmt.Sprintf("%s reads %s", strings.Join(g.names, ", "), g.path))
 		}
-		for _, m := range missing {
-			who = append(who, m)
-		}
+		who = append(who, missing...)
 		r.own(len(files) == 1 && len(missing) == 0,
 			"settings: every account sharing the session store reads one settings.json",
 			strings.Join(who, "; ")+" — each account's cleanup sweep prunes the shared store with its own file's cleanupPeriodDays, and separate files drift apart; "+

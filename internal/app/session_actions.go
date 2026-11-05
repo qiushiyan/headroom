@@ -10,7 +10,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/launchop"
-	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -50,27 +49,15 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 	if fi, err := os.Stat(s.CWD); err != nil || !fi.IsDir() {
 		return false, fmt.Errorf("project directory is gone — dd deletes the session")
 	}
-	intent := actions.resumeIntent(s, override)
-
 	// From here the resume is a launch like any other: one operation decides
-	// the account, records the launch as load and — for the override — the
-	// re-home with it, and logs it. A refusal there has recorded nothing.
-	req := launchop.Request{
-		Set: actions.set, Store: actions.st, Intent: intent, Mode: "picker",
-		Session: launchop.Session{Route: s.ID}, Owner: s.Owner,
-		CWD: s.CWD, Environ: os.Environ(), Now: time.Now(),
-	}
-	switch {
-	case override:
-		// The override moves the session, so its routing is part of the
-		// launch: written with it, or the launch does not happen.
-		req.Session.Record, req.MustReHome = s.ID, true
-	case intent.Kind == placement.Auto && intent.Owner != "":
-		// The rule may take the session off its owner, and then the next
-		// resume has to find it there.
-		req.Session.Record = s.ID
-	}
-	out, err := launchop.Gather(req, actions.place).Commit()
+	// the account — enter following the owner, x moving the session off it —
+	// records the launch as load and the re-home with it, and logs it. A
+	// refusal there has recorded nothing.
+	out, err := launchop.Gather(launchop.Request{
+		Set: actions.set, Store: actions.st, Mode: "picker",
+		Resume: &launchop.Resume{ID: s.ID, Owner: s.Owner, Move: override},
+		CWD:    s.CWD, Environ: os.Environ(), Now: time.Now(),
+	}, actions.place).Commit()
 	if err != nil {
 		return false, err
 	}
@@ -98,27 +85,6 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 		return true, fmt.Errorf("exec claude: %v%s", err, recorded)
 	}
 	return true, nil
-}
-
-// resumeIntent says how a resume's account is decided: enter follows the
-// session's owner, and everything else asks the rule. A session with no
-// evidence, or whose owner is gone, is placed like a new one, and the override
-// moves the session to the least-loaded of the *other* accounts — moving means
-// somewhere other than where it is. An owner a reservation keeps from the
-// session's directory is the one owner enter does not follow: choosing a
-// session is not naming an account, so the rule decides, as it does for a
-// launch that names the session by id.
-func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) placement.Intent {
-	owned := s.Owner != "" && actions.set.Has(s.Owner)
-	switch {
-	case override:
-		return placement.Intent{Exclude: s.Owner}
-	case owned && launchop.HeldAway(actions.set.Scope, s.Owner, s.CWD):
-		return placement.Intent{Owner: s.Owner}
-	case owned:
-		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}
-	}
-	return placement.Intent{}
 }
 
 // liveNow re-establishes the selected session's liveness at action time —
@@ -191,15 +157,15 @@ func (actions *sessionActions) rename(s *sessions.Session, title string) error {
 	return nil
 }
 
-func (actions *sessionActions) delete(s *sessions.Session) (bool, error) {
+// delete removes the transcript and nothing of headroom's own: a re-home of
+// a session that no longer exists routes nothing, and the next launch that
+// records a session sweeps it.
+func (actions *sessionActions) delete(s *sessions.Session) error {
 	if err := actions.mutable(s, errOpenDelete); err != nil {
-		return false, err
+		return err
 	}
 	if err := sessions.DeleteTranscript(s); err != nil {
-		return false, fmt.Errorf("delete failed: %w", err)
+		return fmt.Errorf("delete failed: %w", err)
 	}
-	if err := actions.st.Forget(s.ID); err != nil {
-		return true, fmt.Errorf("re-home cleanup failed: %w", err)
-	}
-	return true, nil
+	return nil
 }

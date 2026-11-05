@@ -28,7 +28,8 @@ func Launches(std Streams, scopes []config.Scope, n int, asJSON bool) error {
 	var all []launchlog.Record
 	skipped := 0
 	for _, scope := range scopes {
-		recs, bad, err := launchlog.Read(scope.AccountsRoot)
+		// Each log's newest n hold the newest n of all of them.
+		recs, bad, err := launchlog.ReadNewest(scope.AccountsRoot, n)
 		if err != nil {
 			return err
 		}

@@ -68,7 +68,7 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	st, now := req.Store, req.Now
 	intent := placement.Intent{Kind: placement.Auto, CanWait: true, Owner: req.Prefer, Home: st.Home()}
 	snap := st.Load()
-	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), req.CWD, true, deps)
+	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), readReservations(req.Set.Scope), req.CWD, true, deps)
 	for i := range f.cands {
 		c := &f.cands[i]
 		if req.Exclude[c.Name] {
@@ -99,8 +99,8 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 		out.ID = id
 		// The placement's line in the launch log, as a launch's: `launches
 		// --eval` judges the rule by every decision it made.
-		rec := launchlog.New(placed.Decision, f.rule(), placed.Ledger, intent, now)
-		rec.Vendor, rec.Mode, rec.Recorded, rec.CWD = string(req.Set.Scope.Vendor), "headless", placed.Recorded, req.CWD
+		rec := f.record(placed.Decision, placed.Ledger, intent, now)
+		rec.Mode, rec.Recorded, rec.CWD = "headless", placed.Recorded, req.CWD
 		if err := launchlog.Append(req.Set.Scope.AccountsRoot, rec); err != nil {
 			out.Notes = append(out.Notes, fmt.Sprintf("launch log not written (%v)", err))
 		}

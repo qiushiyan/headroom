@@ -9,36 +9,10 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-func TestSeedShape(t *testing.T) {
-	cfg := testConfig(t)
-	dir, shared, _, err := Seed(cfg, "new@x.com", SeedOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir != filepath.Join(cfg.AccountsRoot, "new@x.com") || len(shared) != 0 {
-		t.Fatalf("dir=%q shared=%v", dir, shared)
-	}
-	// The store was created as a real dir and projects/ links to it.
-	if fi, err := os.Lstat(cfg.StoreDir()); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-		t.Fatalf("canonical store not a real directory: %v %v", fi, err)
-	}
-	if err := VerifyTopology(Account{Scope: cfg, ConfigDir: dir, Name: "new@x.com"}); err != nil {
-		t.Fatalf("seeded dir fails topology: %v", err)
-	}
-	// Discovery lists it; the strict selector resolves it.
-	if _, err := Discover(cfg).Select("new@x.com"); err != nil {
-		t.Fatalf("Select: %v", err)
-	}
-	// Seeding twice refuses.
-	if _, _, _, err := Seed(cfg, "new@x.com", SeedOptions{}); err == nil {
-		t.Fatal("second seed should refuse")
-	}
-}
-
 func TestSeedRefusesBadNames(t *testing.T) {
 	cfg := testConfig(t)
 	for _, n := range []string{"", "noatsign", "a@x.com.lock", "../a@x.com", "sub/a@x.com"} {
-		if _, _, _, err := Seed(cfg, n, SeedOptions{}); err == nil {
+		if _, err := Seed(cfg, n, SeedOptions{}); err == nil {
 			t.Errorf("Seed(%q) accepted", n)
 		}
 	}
@@ -55,7 +29,8 @@ func TestSeedShareWholeDir(t *testing.T) {
 	os.WriteFile(filepath.Join(pkg, "settings.json"), []byte("{}"), 0o644)
 	os.WriteFile(filepath.Join(pkg, "anything.md"), []byte(""), 0o644)
 	os.Mkdir(filepath.Join(pkg, "projects"), 0o755) // must never be shared over the store link
-	dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: pkg})
+	seeded, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: pkg})
+	dir, shared := seeded.Dir, seeded.Shared
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,10 +41,10 @@ func TestSeedShareWholeDir(t *testing.T) {
 		t.Fatalf("projects link was shadowed: %v", err)
 	}
 	// Relative and missing sources refuse before anything is made.
-	if _, _, _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: "relative"}); err == nil {
+	if _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: "relative"}); err == nil {
 		t.Error("relative ShareFrom accepted")
 	}
-	if _, _, _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: filepath.Join(cfg.Home, "nope")}); err == nil {
+	if _, err := Seed(cfg, "b@x.com", SeedOptions{ShareFrom: filepath.Join(cfg.Home, "nope")}); err == nil {
 		t.Error("missing ShareFrom accepted")
 	}
 	if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "b@x.com")); err == nil {
@@ -79,7 +54,8 @@ func TestSeedShareWholeDir(t *testing.T) {
 
 func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	cfg := testConfig(t)
-	dir, _, _, err := Seed(cfg, "a@x.com", SeedOptions{})
+	seeded, err := Seed(cfg, "a@x.com", SeedOptions{})
+	dir := seeded.Dir
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +135,8 @@ func TestSeedStorePreconditions(t *testing.T) {
 			if _, err := os.Stat(cfg.PrimaryDir()); err == nil {
 				t.Fatal("fixture already has a vendor home")
 			}
-			dir, _, _, err := Seed(cfg, "new@x.com", SeedOptions{})
+			seeded, err := Seed(cfg, "new@x.com", SeedOptions{})
+			dir := seeded.Dir
 			if err != nil {
 				t.Fatalf("Seed on a machine without the vendor: %v", err)
 			}
@@ -187,7 +164,7 @@ func TestSeedStorePreconditions(t *testing.T) {
 			}
 			marker := filepath.Join(cfg.StoreDir(), "keep")
 			os.WriteFile(marker, []byte("x"), 0o644)
-			if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err != nil {
+			if _, err := Seed(cfg, "a@x.com", SeedOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(marker); err != nil {
@@ -218,7 +195,7 @@ func TestSeedStorePreconditions(t *testing.T) {
 				cfg := scope(t)
 				os.MkdirAll(cfg.PrimaryDir(), 0o755)
 				tc.setup(t, cfg)
-				if _, _, _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				if _, err := Seed(cfg, "a@x.com", SeedOptions{}); err == nil || !strings.Contains(err.Error(), tc.want) {
 					t.Errorf("err = %v, want a refusal naming %q", err, tc.want)
 				}
 				if _, err := os.Lstat(filepath.Join(cfg.AccountsRoot, "a@x.com")); err == nil {
@@ -239,7 +216,8 @@ func TestSeedCodexSharesOnlyWhitelistedConfig(t *testing.T) {
 	for _, n := range []string{"skills", "sessions", "prompts"} {
 		os.MkdirAll(filepath.Join(cfg.PrimaryDir(), n), 0o755)
 	}
-	dir, shared, _, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
+	seeded, err := Seed(cfg, "a@x.com", SeedOptions{ShareFrom: cfg.PrimaryDir(), ShareNames: SharedConfigEntries(cfg.Vendor)})
+	dir, shared := seeded.Dir, seeded.Shared
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/qiushiyan/headroom/internal/atomicfile"
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
@@ -328,9 +327,9 @@ func MetaEmail(metaPath string) (string, bool) {
 // with an extra (dir names contain "@"; local parts do not). A primary that
 // has never logged in has no email to be named by and is called "primary".
 //
-// The derived name is only as stable as the login behind it: the records
-// beside the store keep the *name*, so a host file pins it with the variable
-// when it must outlive a primary logout.
+// It is a display name: records name the primary by PrimaryRef, so a pin, a
+// changed pin or a new login changes what a person types and reads, never
+// what was recorded.
 func PrimaryName(cfg config.Scope, email string) string {
 	if cfg.PrimaryName != "" {
 		return cfg.PrimaryName
@@ -399,13 +398,6 @@ func (s Set) Select(name string) (Account, error) {
 			matches = append(matches, a)
 		}
 	}
-	if len(matches) == 0 && slices.Contains(s.Scope.PrimaryAliases, name) {
-		// A name the primary had before a rename (config.Scope.PrimaryAliases):
-		// no account answers to it any more, so it is unambiguous.
-		if p, err := primaryOf(s.Accounts); err == nil {
-			return p, nil
-		}
-	}
 	switch len(matches) {
 	case 1:
 		return matches[0], nil
@@ -418,44 +410,38 @@ func (s Set) Select(name string) (Account, error) {
 	return Account{}, fmt.Errorf("%q names %d accounts (an extra dir shares the primary's name) — rename %s", name, len(matches), matches[1].ConfigDir)
 }
 
-func primaryOf(accts []Account) (Account, error) {
-	for _, a := range accts {
-		if a.IsPrimary() {
-			return a, nil
-		}
+// PrimaryRef is how the records headroom keeps — re-homes, --last,
+// `.reserved`, headless tokens — name the primary. An extra is recorded by
+// its dir's name, which never changes; the primary's name can (a pin, a new
+// login), so it is recorded by a token no extra can have: discovery skips
+// every name that starts with a dot.
+const PrimaryRef = ".primary"
+
+// Ref is how records name a: PrimaryRef for the primary, its name otherwise.
+func (a Account) Ref() string {
+	if a.IsPrimary() {
+		return PrimaryRef
 	}
-	// Discover always lists the primary; an account slice without one was not
-	// built by discovery and cannot be resolved against.
-	return Account{}, errors.New("no primary account in the discovered set")
+	return a.Name
 }
 
-// writeLine replaces a one-line file beside the accounts atomically (temp file
-// + rename), so a concurrent reader never observes it truncated or empty.
-func writeLine(root, path, content string) error {
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return err
+// RefOf is how records name the account a person or a surface calls name.
+func (s Set) RefOf(name string) string {
+	for _, a := range s.Accounts {
+		if a.Name == name {
+			return a.Ref()
+		}
 	}
-	return atomicfile.Write(path, "."+filepath.Base(path)+"-*", []byte(content+"\n"))
+	return name
 }
 
-// ShareLedger records which accounts root's ledger this Claude Code home
-// spends against: the `.ledger` file in the accounts root, validated by the rule
-// Load reads it with, so the two cannot disagree. Naming this home's own root
-// removes the file — the home keeps its own ledger again. It returns the
-// root recorded, "" for this home's own.
-func ShareLedger(claude, codex config.Scope, v string) (string, error) {
-	if claude.Vendor != config.Claude {
-		return "", fmt.Errorf("only Claude Code homes share a ledger")
-	}
-	root, err := config.LedgerRoot(claude, codex, v)
-	if err != nil {
-		return "", err
-	}
-	if root == "" {
-		if err := os.Remove(claude.LedgerFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return "", err
+// NameOf is what the account a record names is called today; a ref no
+// account has is returned as it is, which names a removed extra.
+func (s Set) NameOf(ref string) string {
+	for _, a := range s.Accounts {
+		if a.Ref() == ref {
+			return a.Name
 		}
-		return "", nil
 	}
-	return root, writeLine(claude.AccountsRoot, claude.LedgerFile(), root)
+	return ref
 }

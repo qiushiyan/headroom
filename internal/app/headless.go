@@ -173,11 +173,11 @@ type HeadlessPlaceOptions struct {
 // recorded — when every account it could take is near a limit or excluded,
 // and says when room returns.
 func HeadlessPlace(std Streams, scope config.Scope, opts HeadlessPlaceOptions, place launchop.Deps) error {
-	tokens, err := headless.Read(scope.AccountsRoot)
+	set := accounts.Discover(scope)
+	tokens, err := readTokens(set)
 	if err != nil {
 		return err
 	}
-	set := accounts.Discover(scope)
 	preferred := ""
 	if opts.Prefer != "" {
 		// The account a session ran on last: followed while it has room, so
@@ -268,7 +268,7 @@ func HeadlessToken(std Streams, scope config.Scope, name string) error {
 	if err != nil {
 		return err
 	}
-	tok, ok := tokens[a.Name]
+	tok, ok := tokens[a.Ref()]
 	if why := tokenProblem(a, state.KeyFor(a), tok, ok, time.Now()); why != "" {
 		return fmt.Errorf("%s: %s", a.Name, why)
 	}
@@ -280,10 +280,11 @@ func HeadlessToken(std Streams, scope config.Scope, name string) error {
 // revoke it with the vendor.
 func HeadlessForget(std Streams, scope config.Scope, name string) error {
 	// A name with a stored token is forgotten even if its dir has gone.
+	ref := name
 	if a, err := accounts.Discover(scope).Select(name); err == nil {
-		name = a.Name
+		name, ref = a.Name, a.Ref()
 	}
-	removed, err := headless.Remove(scope.AccountsRoot, name)
+	removed, err := headless.Remove(scope.AccountsRoot, ref)
 	if err != nil {
 		return err
 	}
@@ -313,12 +314,13 @@ type headlessListAcct struct {
 // when each token ends. Values are never shown.
 func HeadlessList(std Streams, scope config.Scope, asJSON bool, now time.Time) error {
 	out := std.Out
-	tokens, err := headless.Read(scope.AccountsRoot)
+	set := accounts.Discover(scope)
+	tokens, err := readTokens(set)
 	if err != nil {
 		return err
 	}
 	st := state.Open(scope)
-	facts := accountstate.Assemble(accounts.Discover(scope), st.Load(), now)
+	facts := accountstate.Assemble(set, st.Load(), now)
 	doc := headlessListDoc{Schema: headlessSchema}
 	for _, fa := range facts {
 		tok, ok := tokens[fa.Acct.Name]
@@ -356,4 +358,18 @@ func HeadlessList(std Streams, scope config.Scope, asJSON bool, now time.Time) e
 		fmt.Fprintf(out, "  %s  %s\n", render.PadCell(render.Sanitize(r.Account), nameW), strings.Join(says, " · "))
 	}
 	return nil
+}
+
+// readTokens is the token file keyed by what each account is called today;
+// the file keys a token by the account's ref (accounts.Account.Ref).
+func readTokens(set accounts.Set) (map[string]headless.Token, error) {
+	byRef, err := headless.Read(set.Scope.AccountsRoot)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]headless.Token, len(byRef))
+	for ref, t := range byRef {
+		out[set.NameOf(ref)] = t
+	}
+	return out, nil
 }

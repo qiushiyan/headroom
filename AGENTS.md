@@ -99,6 +99,12 @@ command's own reference.
   `TestAMissingRepositoryKeepsItsAccountHeld` and
   `TestADamagedReservationRefusesOnlyAutomaticChoices`; DESIGN.md § Automatic
   placement.
+- **A record names an account by its dir, never by what it is called.** The
+  primary is `.primary`, a name is translated at the edges, so a pin or a new
+  login renames nothing on disk, and `state.Place` refuses a candidate with
+  no ref. Held by `TestARenamedPrimaryKeepsItsRecords` and
+  `TestAChoiceWithNoRefIsNotRecorded`; DESIGN.md § The one file headroom
+  writes.
 - **A session's owner is evidence, newest wins, never re-stamped.** A session
   named by explicit id follows its owner, with any move recorded. Held by
   `TestResolveOwner` and `TestANamedSessionFollowsItsOwner`; DESIGN.md § The

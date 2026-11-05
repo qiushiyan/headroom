@@ -58,6 +58,16 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	if wait := next(state.Open(config.Scope{AccountsRoot: t.TempDir()}), true, keys[0]).Sub(now); wait < refreshFloor-2*time.Second {
 		t.Errorf("next round in %v; the floor must hold when nothing is scheduled", wait)
 	}
+	// Nor may an account coming eligible inside the floor: accounts claimed a
+	// few seconds apart would each start a round, and every round spawns a
+	// health probe per account. Deleting `|| next.Before(floor)` fails here.
+	st = state.Open(config.Scope{AccountsRoot: t.TempDir()})
+	if _, err := st.Claim(keys[:1], now.Add(-config.DefaultSpacing+5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if wait := next(st, true, keys[0]).Sub(now); wait < refreshFloor-2*time.Second {
+		t.Errorf("next round in %v for an account eligible in 5s; the floor must hold", wait)
+	}
 
 	// A board with nothing to ask about must not treat the floor as a cadence
 	// either — each round costs a `claude auth status` spawn per account to

@@ -65,17 +65,6 @@ func (p Palette) headerLine(v accountstate.Facts) string {
 	return fmt.Sprintf("%s%s%s  %s%s%s%s", p.Bold, label, p.Rst, p.Dim, v.Launcher, p.Rst, mark)
 }
 
-// healthLine states what is wrong with the account itself, or "" when nothing
-// is. It is rendered independently of any figures: an account needing /login
-// can still hold a recent cache, and showing those bars without the warning
-// would invite the user to pick an account they cannot use.
-func (p Palette) healthLine(v accountstate.Facts) string {
-	if t := healthText(v); t != "" {
-		return "  " + p.Red + t + p.Rst
-	}
-	return ""
-}
-
 // healthText is the health clause's words, unstyled and unindented: the
 // block wraps them in a red line of their own, the compact row folds them
 // into its caption. One spelling, so the two presentations cannot drift.
@@ -241,68 +230,110 @@ func retryPhrase(nextAt, now int64) string {
 	return fmt.Sprintf("; next attempt in %dm", (rem+59)/60)
 }
 
-// ProvenanceLine annotates rows with their age, their source, and whatever
-// went wrong refreshing them. It returns "" for the ordinary case — fresh
-// numbers straight from the endpoint need no caption.
-func (p Palette) ProvenanceLine(v accountstate.Facts, now int64) string {
-	pr := provenance(v, now)
-	if pr.empty() {
-		return ""
-	}
-	parts := []string{pr.age}
-	if pr.source != "" {
-		parts = append(parts, pr.source)
-	}
-	if pr.attempt != "" {
-		parts = append(parts, pr.attempt)
-	}
-	line := "  " + p.Dim + strings.Join(parts, " · ") + p.Rst
-	if pr.stale {
-		// Old numbers are context, not an answer — say so where the eye lands.
-		line = "  " + p.Yel + "stale" + p.Rst + p.Dim + " · " + strings.Join(parts, " · ") + p.Rst
-	}
-	return line
-}
-
-// provenanceParts is the caption's clauses before layout: the age of the
-// figures, their source when it is Claude Code's cache, the newest attempt
-// when it went wrong, and whether the figures are stale. Each layout orders
-// and styles them its own way; the words are shared so the two cannot drift.
+// A clause is one thing a layout says about an account beside its figures,
+// styled. Both layouts say the same clauses, decided here once; the compact
+// row joins them in their kinds' order, which is clip order, and the block
+// places them on its lines by narrative. Two layouts deciding them apart is
+// how a row comes to collapse what the block keeps apart.
 //
-// Three independent clauses, never one verdict: how old the figures are,
-// where they came from, and how the newest refresh went. All three can be
-// true at once — twenty seconds old, from Claude Code's cache, refresh
-// refused — and collapsing them is how a failed refresh used to vanish
-// behind figures that looked current.
-type provenanceParts struct {
-	age, source, attempt string
-	stale                bool
-}
+// Every applicable clause, never one verdict: figures twenty seconds old,
+// from Claude Code's cache, whose refresh was refused, are all three at once,
+// and collapsing them is how a failed refresh used to vanish behind figures
+// that looked current.
+type clauseKind uint8
 
-func (pr provenanceParts) empty() bool { return pr.age == "" }
+const (
+	// What changes what the user does comes first: a narrow terminal cuts
+	// the compact caption from the right.
+	clauseHealth    clauseKind = iota // what is wrong with the account itself
+	clauseAllowance                   // the vendor refuses work on it, whatever the figures say
+	clauseMismatch                    // the dir holds another login
+	clauseEmpty                       // why there are no figures, or that the vendor reports none
+	clauseDrift                       // something no longer parses
+	clauseFeature                     // limits blocked on their own; the account stays usable
+	clauseReserved                    // what the account is kept for
+	clauseStale                       // the figures are too old to choose on
+	clauseAttempt                     // how the newest refresh went
+	// Then what explains.
+	clauseAge    // how old the figures are
+	clauseSource // where they came from, when not headroom's own fetch
+	clauseLoad   // the sessions and launches on the account
+	clauseKinds
+)
 
-// provenance is empty for the ordinary case — fresh figures headroom fetched
-// itself, with nothing to report about the refresh.
-func provenance(v accountstate.Facts, now int64) provenanceParts {
+type clauses [clauseKinds]string
+
+// clauses decides every clause for one account. rowDrift is drift in its
+// rows: the compact row says it in its one drift clause beside the
+// allowance's, while the block marks each drifted row where it stands.
+func (p Palette) clauses(v accountstate.Facts, now int64, rowDrift bool) clauses {
+	var c clauses
+	if t := healthText(v); t != "" {
+		c[clauseHealth] = p.Red + t + p.Rst
+	}
+	if t := allowanceText(v); t != "" {
+		c[clauseAllowance] = p.Red + t + p.Rst
+	}
+	if v.DirMismatch != "" {
+		c[clauseMismatch] = p.Red + "dir says " + Sanitize(v.DirMismatch) + p.Rst
+	}
+	switch {
+	case v.Obs == nil && v.Health == accountstate.HealthOK:
+		// An unhealthy account says nothing more: its health names the problem.
+		c[clauseEmpty] = p.Dim + unknownText(v, now) + p.Rst
+	case v.Obs != nil && len(v.Obs.Rows) == 0:
+		// A contractual answer, not a failure.
+		c[clauseEmpty] = p.Dim + "no limits reported" + p.Rst
+	}
+	if rowDrift || allowanceDrifted(v) {
+		c[clauseDrift] = p.Red + "⚠ drift — run headroom check" + p.Rst
+	}
+	if t := featureText(v); t != "" {
+		c[clauseFeature] = p.Yel + t + p.Rst
+	}
+	if v.Reserved != "" {
+		c[clauseReserved] = p.Dim + Sanitize(v.Reserved) + p.Rst
+	}
+	if t := loadText(v.Load); t != "" {
+		c[clauseLoad] = p.Dim + t + p.Rst
+	}
 	if v.Obs == nil {
-		return provenanceParts{}
+		return c
 	}
 	fresh := v.Fresh(now)
 	if fresh && v.Obs.Source.Ours() && expected(v.Attempt.State) && v.Attempt.StoreError == "" {
-		return provenanceParts{}
+		// The ordinary case — fresh figures headroom fetched itself, nothing
+		// to report about the refresh — says nothing about where they came from.
+		return c
 	}
-	pr := provenanceParts{age: "observed " + Age(now-v.Obs.ObservedAt) + " ago", stale: !fresh}
+	if !fresh {
+		// Old numbers are context, not an answer — say so where the eye lands.
+		c[clauseStale] = p.Yel + "stale" + p.Rst
+	}
+	c[clauseAge] = p.Dim + "observed " + Age(now-v.Obs.ObservedAt) + " ago" + p.Rst
 	if v.Obs.Source == accountstate.SourceCache {
-		pr.source = "via Claude Code's cache"
+		c[clauseSource] = p.Dim + "via Claude Code's cache" + p.Rst
 	}
-	// No limits is already the body of an empty observation; repeating
-	// it as a caption would say the same thing twice.
+	// No limits is already the body of an empty observation; repeating it as
+	// a caption would say the same thing twice.
 	sayAttempt := v.Attempt.State != accountstate.AttemptOK && v.Attempt.State != accountstate.AttemptNone &&
 		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0)
 	if sayAttempt || v.Attempt.StoreError != "" {
-		pr.attempt = attemptReason(v, now)
+		c[clauseAttempt] = p.Dim + attemptReason(v, now) + p.Rst
 	}
-	return pr
+	return c
+}
+
+// join is the clauses of the given kinds that apply, in that order, as one
+// line's text.
+func (p Palette) join(c clauses, kinds ...clauseKind) string {
+	var parts []string
+	for _, k := range kinds {
+		if c[k] != "" {
+			parts = append(parts, c[k])
+		}
+	}
+	return strings.Join(parts, p.Dim+" · "+p.Rst)
 }
 
 // Age is the one relative-time vocabulary: the board's "observed … ago", the
@@ -345,48 +376,29 @@ func labelWidth(views []accountstate.Facts) int {
 // facts: what is wrong with the account (if anything), what is known about its
 // quota, and how the last refresh went. A failed attempt annotates figures
 // rather than deleting them, and a health problem is stated whether or not
-// figures exist.
+// figures exist. The clauses are the compact row's; the block places them by
+// narrative — the provenance on one line, the load on its own.
 func (p Palette) accountBlock(v accountstate.Facts, now int64, width int) []string {
+	c := p.clauses(v, now, false)
 	lines := []string{p.headerLine(v)}
-	if h := p.healthLine(v); h != "" {
-		lines = append(lines, h)
-	}
-	if v.Obs == nil {
-		if v.Health == accountstate.HealthOK {
-			lines = append(lines, "  "+p.Dim+unknownText(v, now)+p.Rst)
+	line := func(prefix string, kinds ...clauseKind) {
+		if s := p.join(c, kinds...); s != "" {
+			lines = append(lines, "  "+prefix+s)
 		}
-		return append(lines, p.loadLine(v)...)
 	}
-	if len(v.Obs.Rows) == 0 {
-		// A contractual answer, not a failure: this account reports no limit
-		// windows at all.
-		lines = append(lines, "  "+p.Dim+"no limits reported"+p.Rst)
+	line("", clauseHealth)
+	line("", clauseEmpty)
+	if v.Obs != nil {
+		for _, r := range v.Obs.Rows {
+			lines = append(lines, p.limitRow(r, now, width))
+		}
 	}
-	for _, r := range v.Obs.Rows {
-		lines = append(lines, p.limitRow(r, now, width))
-	}
-	if t := allowanceText(v); t != "" {
-		lines = append(lines, "  "+p.Red+t+p.Rst)
-	}
-	if t := featureText(v); t != "" {
-		lines = append(lines, "  "+p.Yel+t+p.Rst)
-	}
-	if allowanceDrifted(v) {
-		lines = append(lines, "  "+p.Red+"⚠ drift — run headroom check"+p.Rst)
-	}
-	if prov := p.ProvenanceLine(v, now); prov != "" {
-		lines = append(lines, prov)
-	}
-	return append(lines, p.loadLine(v)...)
-}
-
-// loadLine is the block's load line, or nothing: an account's sessions and
-// launches are worth a line whether or not its figures are known.
-func (p Palette) loadLine(v accountstate.Facts) []string {
-	if t := loadText(v.Load); t != "" {
-		return []string{"  " + p.Dim + "sessions: " + t + p.Rst}
-	}
-	return nil
+	line("", clauseAllowance)
+	line("", clauseFeature)
+	line("", clauseDrift)
+	line("", clauseStale, clauseAge, clauseSource, clauseAttempt)
+	line(p.Dim+"sessions: "+p.Rst, clauseLoad)
+	return lines
 }
 
 // loadText is the load clause: the account's busy sessions and recent

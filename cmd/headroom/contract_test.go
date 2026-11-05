@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/check"
 	"github.com/qiushiyan/headroom/internal/codexauth/codexauthtest"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/headless"
@@ -141,17 +142,40 @@ func TestContracts(t *testing.T) {
 		pinFile(t, c.name, got)
 		if c.name == "headless-place" {
 			// The runner reports the session it started under the placement's
-			// id, read from the document place printed.
+			// id, read from the document place printed. The session is a
+			// process started after the placement, as a runner's is: the rule
+			// counts a placement and its session once only when the session
+			// began no earlier than the placement, so this test's own process,
+			// started before the binary was built, counted the placement twice
+			// whenever the build and the cases before took over ten seconds.
 			id := placementID.FindStringSubmatch(w.lastStdout)
 			if id == nil {
 				t.Fatalf("headless place printed no placement id:\n%s", w.lastStdout)
 			}
-			pinFile(t, "headless-started", w.run(t, "headless", "started", id[1], fmt.Sprint(os.Getpid())))
+			session := exec.Command("sleep", "600")
+			if err := session.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { session.Process.Kill(); session.Wait() })
+			pinFile(t, "headless-started", w.run(t, "headless", "started", id[1], fmt.Sprint(session.Process.Pid)))
 		}
 	}
 }
 
 var placementID = regexp.MustCompile(`"placement": "([^"]+)"`)
+
+// check's verdict is an exit status steward reads by number — 0 passed, 2
+// could not test, anything else failed — and the fixture home above can only
+// fail. The statuses check returns are the ones the help documents
+// (TestHelpPages pins those words), so a renumbered verdict fails here, not
+// in steward.
+func TestCheckExitsAsDocumented(t *testing.T) {
+	if check.ExitPass != 0 || check.ExitFail == check.ExitPass || check.ExitFail == check.ExitInconclusive ||
+		!strings.Contains(cli.ExitCodes[check.ExitInconclusive], "INCONCLUSIVE") {
+		t.Errorf("check exits pass %d, fail %d, inconclusive %d; the help documents %v",
+			check.ExitPass, check.ExitFail, check.ExitInconclusive, cli.ExitCodes)
+	}
+}
 
 // world is one home holding three Claude Code accounts and two Codex ones,
 // each logged in with an access token that has aged out — so no surface asks
@@ -196,7 +220,8 @@ func newWorld(t *testing.T) *world {
 	}
 	claudeLogin(w.claude.PrimaryDir(), "p@x.com")
 	for _, email := range []string{"a@x.com", "b@x.com"} {
-		dir, _, _, err := accounts.Seed(w.claude, email, accounts.SeedOptions{})
+		seeded, err := accounts.Seed(w.claude, email, accounts.SeedOptions{})
+		dir := seeded.Dir
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +233,8 @@ func newWorld(t *testing.T) *world {
 			Token: fmt.Sprintf("tok-%d", n), Expires: time.Now().Add(-time.Hour)}.Write(t, dir)
 	}
 	codexLogin(w.codex.PrimaryDir(), 1, "q@x.com")
-	dir, _, _, err := accounts.Seed(w.codex, "c@x.com", accounts.SeedOptions{})
+	seeded, err := accounts.Seed(w.codex, "c@x.com", accounts.SeedOptions{})
+	dir := seeded.Dir
 	if err != nil {
 		t.Fatal(err)
 	}

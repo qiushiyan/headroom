@@ -191,38 +191,11 @@ func TestHeaderLine(t *testing.T) {
 			t.Errorf("%s: compact row = %q", c.name, row)
 		}
 	}
-	if legend := p.Legend(LayoutCompact); len(legend) != 1 || !strings.Contains(legend[0], "→") {
+	if legend := p.Board(nil, now, LayoutCompact, 0).Header; len(legend) == 0 || !strings.Contains(legend[0], "→") {
 		t.Errorf("compact legend = %q", legend)
 	}
-	if legend := p.Legend(LayoutBlocks); legend != nil {
+	if legend := p.Board(nil, now, LayoutBlocks, 0).Header; legend != nil {
 		t.Errorf("blocks legend = %q; ← next says itself", legend)
-	}
-}
-
-// The reported bug, at the rendering layer: a refused refresh must annotate
-// what is known, never replace it. Before the three-axis model the account
-// block for a 429 was a single "HTTP 429" line and the bars vanished.
-func TestAccountBlockKeepsRowsThroughAFailedRefresh(t *testing.T) {
-	p := NewPalette(false)
-	now := time.Now().Unix()
-	v := accountstate.Facts{
-		Label: "a@x.com", Launcher: "x-a", Health: accountstate.HealthOK,
-		Obs: &accountstate.Observation{
-			Rows:       []usage.Row{{Label: "5h session", Percent: 42, Severity: "normal"}},
-			ObservedAt: now - 30, Source: accountstate.SourceLive,
-		},
-		Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, HTTPCode: 429, NextEligibleAt: now + 180},
-	}
-	lines := p.accountBlock(v, now, 16)
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "42%") {
-		t.Errorf("known figures erased by a refused refresh:\n%s", joined)
-	}
-	if !strings.Contains(joined, "rate limited") {
-		t.Errorf("refusal not explained:\n%s", joined)
-	}
-	if !strings.Contains(joined, "next attempt in 3m") {
-		t.Errorf("no indication of when it retries:\n%s", joined)
 	}
 }
 

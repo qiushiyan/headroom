@@ -143,7 +143,7 @@ func TestAHeadlessPlacementWaitsRatherThanTakeAnAccountNearALimit(t *testing.T) 
 		t.Fatalf("code %d doc %+v", code, doc)
 	}
 	retry, err := time.Parse(time.RFC3339, deref(doc.RetryAt))
-	if err != nil || retry.Sub(time.Now()) < 110*time.Minute || retry.Sub(time.Now()) > 2*time.Hour {
+	if err != nil || time.Until(retry) < 110*time.Minute || time.Until(retry) > 2*time.Hour {
 		t.Errorf("retry at %v (%v), want a's session reset about two hours out", doc.RetryAt, err)
 	}
 	if a := doc.find("a@x.com"); !a.NearLimit || !a.Eligible || a.RoomAt == "" {
@@ -284,6 +284,25 @@ func TestAPreferredAccountIsFollowedWhileItHasRoom(t *testing.T) {
 	}
 }
 
+// The primary's token is kept under its ref, as mint stores it, and answers
+// to whatever name the primary has: asked for by its name now, or after a
+// rename, the token is the one minted for it.
+func TestThePrimarysTokenAnswersToItsName(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	tok := headless.Token{Value: testToken + "primary", MintedMS: time.Now().UnixMilli(), EndsMS: time.Now().Add(300 * 24 * time.Hour).UnixMilli(), Key: f.key("qiushi").ID()}
+	if err := headless.Put(f.cfg.AccountsRoot, accounts.PrimaryRef, tok); err != nil {
+		t.Fatal(err)
+	}
+	renamed := f
+	renamed.cfg.PrimaryName = "q2"
+	for _, g := range []autoFixture{f, renamed} {
+		var out, errw bytes.Buffer
+		if code := g.token(&out, &errw, g.cfg.PrimaryName); code != 0 || out.String() != tok.Value+"\n" {
+			t.Errorf("token %s: %d %q %s", g.cfg.PrimaryName, code, out.String(), errw.String())
+		}
+	}
+}
+
 // The token leaves its file only on a request naming its account, and only
 // when it still works for that account.
 func TestTheTokenIsPrintedOnlyWhenAsked(t *testing.T) {
@@ -397,8 +416,8 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	if code := mintTo(io.Discard, &errw, f.cfg, "qiushi", wp.deps(now)); code != 0 {
 		t.Fatalf("mint for the primary: %d %s", code, errw.String())
 	}
-	if tokens, err := headless.Read(f.cfg.AccountsRoot); err != nil || tokens["qiushi"].Key != f.key("qiushi").ID() || tokens["qiushi"].Email != "qiushi@x.com" {
-		t.Fatalf("the primary's token: %+v %v", tokens["qiushi"], err)
+	if tokens, err := headless.Read(f.cfg.AccountsRoot); err != nil || tokens[accounts.PrimaryRef].Key != f.key("qiushi").ID() || tokens[accounts.PrimaryRef].Email != "qiushi@x.com" {
+		t.Fatalf("the primary's token: %+v %v", tokens[accounts.PrimaryRef], err)
 	}
 
 	// A run that printed no token stores nothing and replaces nothing.

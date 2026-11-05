@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -52,7 +53,6 @@ type loginWorld struct {
 	// slowItem delays every Keychain item lookup, as a Keychain that
 	// stalls would.
 	slowItem time.Duration
-	remote   bool
 	// renewEnd is when an account's new login ends; absent = 30 days out.
 	renewEnd map[string]time.Time
 }
@@ -89,7 +89,7 @@ func (w *loginWorld) deps() loginDeps {
 			}
 			return creds.ItemAbsent, ""
 		},
-		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}, remote: w.remote},
+		approver: approver{profiles: []browser.Profile{{Dir: "Profile 2", Name: "a"}}},
 		now:      func() time.Time { return w.now },
 		tokens:   func() (map[string]headless.Token, error) { return map[string]headless.Token{}, nil },
 		signin: func(a accounts.Account) signin.Record {
@@ -105,11 +105,7 @@ func (w *loginWorld) deps() loginDeps {
 			return func() {}, ""
 		},
 		login: func(a accounts.Account, _ accounts.Set, page approvalPage) error {
-			where := page.profile.Dir
-			if page.remote {
-				where = "remote"
-			}
-			w.logins = append(w.logins, a.Name+" "+page.email+" "+where)
+			w.logins = append(w.logins, a.Name+" "+page.email+" "+page.profile.Dir)
 			who := page.email
 			if as := w.approveAs[a.Name]; as != "" {
 				who = as
@@ -296,12 +292,14 @@ func TestLoginSummaryNamesTheEarliestEndAndTheRetry(t *testing.T) {
 	}
 }
 
-// What the flags accept — --within's value, --all beside names, an empty
-// name — is the command line's: cmd/headroom's TestGrammar.
+// A name nothing answers to refuses the whole command before any login, the
+// names beside it included. What the flags accept — --within's value, --all
+// beside names, an empty name — is the command line's: cmd/headroom's
+// TestGrammar.
 func TestLoginFlags(t *testing.T) {
 	cfg, w := renewFixture(t)
 	var errw bytes.Buffer
-	if code := loginTo(io.Discard, &errw, cfg, []string{"nobody@x.com"}, w.deps()); code != 1 || !strings.Contains(errw.String(), "not a discovered account") {
+	if code := loginTo(io.Discard, &errw, cfg, []string{"a@x.com", "nobody@x.com"}, w.deps()); code != 1 || !strings.Contains(errw.String(), "nobody@x.com") {
 		t.Errorf("unknown name: exit %d, %s", code, errw.String())
 	}
 	if len(w.logins) != 0 {
@@ -309,66 +307,74 @@ func TestLoginFlags(t *testing.T) {
 	}
 }
 
-// Over ssh the login Keychain is sealed: an account whose login lives there
-// reads as logged out to the vendor's own probe, and a login made here would
-// land in a file the Keychain item outranks. Such an account is never renewed
-// from here — not even by name — and the plan says how to open the Keychain.
-func TestLoginRefusesAccountsInASealedKeychain(t *testing.T) {
-	cfg, w := renewFixture(t)
-	w.sealed = true
-	w.keychain["a@x.com"] = true
-	delete(w.raw, "a@x.com") // what a sealed read returns
+// planHolds is each account's held_reason in the plan document, "" for one
+// not held: the token an agent reads before it spends an approval.
+func planHolds(t *testing.T, cfg config.Scope, deps loginDeps) map[string]string {
+	t.Helper()
 	var out bytes.Buffer
-	if code := loginTo(&out, io.Discard, cfg, nil, w.deps()); code != 0 {
-		t.Fatalf("exit %d:\n%s", code, out.String())
+	r := call(func(std Streams) error {
+		std.Out = &out
+		return renewLogins(std, cfg, LoginOptions{Within: DefaultLoginWithin, DryRun: true, JSON: true}, deps)
+	})
+	var doc struct {
+		Accounts []struct {
+			Account    string  `json:"account"`
+			HeldReason *string `json:"held_reason"`
+		} `json:"accounts"`
 	}
-	for _, l := range w.logins {
-		if strings.HasPrefix(l, "a@x.com") {
-			t.Errorf("renewed a sealed account: %q", w.logins)
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || r.code != 0 {
+		t.Fatalf("plan document: exit %d, %v: %s", r.code, err, out.String())
+	}
+	holds := map[string]string{}
+	for _, a := range doc.Accounts {
+		if a.HeldReason != nil {
+			holds[a.Account] = *a.HeldReason
 		}
 	}
-	if a := planLine(out.String(), "a@x.com"); !strings.Contains(a, "Keychain") {
-		t.Errorf("a's plan line does not say its login is in the Keychain: %q", a)
-	}
-	if !strings.Contains(out.String(), "security unlock-keychain") {
-		t.Errorf("output does not say how to open the Keychain:\n%s", out.String())
-	}
-
-	_, w2 := renewFixture(t)
-	w2.sealed, w2.keychain["a@x.com"] = true, true
-	out.Reset()
-	if code := loginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w2.deps()); code != 1 || len(w2.logins) != 0 {
-		t.Errorf("named sealed account: exit %d, logins %q, want 1 and none", code, w2.logins)
-	}
-	// An unsealed Keychain reads normally: the item alone refuses nothing.
-	_, w3 := renewFixture(t)
-	w3.keychain["a@x.com"] = true
-	if code := loginTo(io.Discard, io.Discard, cfg, []string{"a@x.com"}, w3.deps()); code != 0 || len(w3.logins) != 1 {
-		t.Errorf("unsealed: exit %d, logins %q", code, w3.logins)
-	}
+	return holds
 }
 
 // The Keychain is judged on what it gave, not on how macOS words a refusal:
-// an item that exists and did not hand back its login holds the account
-// with no sealed Keychain in sight (locked), and an item `security` cannot
-// answer for holds it too, as unknown.
+// an item that exists and did not hand back its login holds the account —
+// sealed over ssh or merely locked — and so does an item `security` cannot
+// answer for. A held account is renewed neither on evidence nor by name, the
+// plan document names the hold by its token, and the plan explains a
+// Keychain that withheld a login as ssh's only when it is sealed.
+// (login-handoff spec, test plan 2)
 func TestLoginHoldsWhatTheKeychainDidNotGive(t *testing.T) {
-	cfg, w := renewFixture(t)
-	w.locked = true
-	w.keychain["a@x.com"] = true
-	w.unknown["c@x.com"] = true
-	var out bytes.Buffer
-	if code := loginTo(&out, io.Discard, cfg, []string{"a@x.com", "c@x.com"}, w.deps()); code != 1 || len(w.logins) != 0 {
-		t.Fatalf("exit %d, logins %q; want 1 and none\n%s", code, w.logins, out.String())
-	}
-	if line := planLine(out.String(), "a@x.com"); !strings.Contains(line, "login kept in the Keychain, which this session cannot read") {
-		t.Errorf("locked: %q", line)
-	}
-	if line := planLine(out.String(), "c@x.com"); !strings.Contains(line, "could not tell whether its login is in the Keychain (security: ") {
-		t.Errorf("unknown: %q", line)
-	}
-	if !strings.Contains(out.String(), "did not give this session the login of the 1 accounts") || strings.Contains(out.String(), "ssh session") {
-		t.Errorf("an unsealed Keychain is not explained as ssh's:\n%s", out.String())
+	for _, c := range []struct {
+		name    string
+		names   []string // none: a bare run, which would renew the account on its evidence
+		world   func(w *loginWorld)
+		account string
+		reason  string
+		code    int
+	}{
+		{"sealed over ssh", nil, func(w *loginWorld) {
+			w.sealed, w.keychain["a@x.com"] = true, true
+			delete(w.raw, "a@x.com") // what a sealed read returns: no login, so due
+		}, "a@x.com", heldKeychain, 0},
+		{"locked", []string{"a@x.com"}, func(w *loginWorld) { w.locked, w.keychain["a@x.com"] = true, true }, "a@x.com", heldKeychain, 1},
+		{"security cannot say", []string{"c@x.com"}, func(w *loginWorld) { w.unknown["c@x.com"] = true }, "c@x.com", heldKeychainUnknown, 1},
+	} {
+		cfg, w := renewFixture(t)
+		c.world(w)
+		var out bytes.Buffer
+		code := loginTo(&out, io.Discard, cfg, c.names, w.deps())
+		for _, l := range w.logins {
+			if strings.HasPrefix(l, c.account+" ") {
+				t.Errorf("%s: renewed %s: %q", c.name, c.account, w.logins)
+			}
+		}
+		if code != c.code {
+			t.Errorf("%s: exit %d, want %d\n%s", c.name, code, c.code, out.String())
+		}
+		if got := planHolds(t, cfg, w.deps())[c.account]; got != c.reason {
+			t.Errorf("%s: held_reason %q, want %q", c.name, got, c.reason)
+		}
+		if c.reason == heldKeychain && (!strings.Contains(out.String(), "security unlock-keychain") || strings.Contains(out.String(), "ssh session") != w.sealed) {
+			t.Errorf("%s: the explanation does not fit the Keychain (sealed %v):\n%s", c.name, w.sealed, out.String())
+		}
 	}
 }
 
@@ -426,26 +432,6 @@ func TestThePlanSaysWhyNoProfileMatched(t *testing.T) {
 	remote := approver{remote: true, unread: profileListError{path: "/h/Local State", err: fs.ErrNotExist}}
 	if got := remote.page("a@x.com").phrase(); got != "over ssh: you open the printed URL where you are" {
 		t.Errorf("remote: %q", got)
-	}
-}
-
-// A remote user cannot see this machine's screen: the login is asked for a
-// remote page, and the instructions say to open the printed URL and paste the
-// code. That nothing opens is pinned through the binary.
-func TestLoginRemoteAsksForThePastedCode(t *testing.T) {
-	cfg, w := renewFixture(t)
-	w.remote = true
-	var out bytes.Buffer
-	if code := loginTo(&out, io.Discard, cfg, []string{"a@x.com"}, w.deps()); code != 0 {
-		t.Fatalf("exit %d:\n%s", code, out.String())
-	}
-	if len(w.logins) != 1 || w.logins[0] != "a@x.com a@x.com remote" {
-		t.Errorf("logins = %q, want the remote page", w.logins)
-	}
-	for _, s := range []string{"over ssh: you open the printed URL where you are", "paste the code it shows"} {
-		if !strings.Contains(out.String(), s) {
-			t.Errorf("output lacks %q:\n%s", s, out.String())
-		}
 	}
 }
 
@@ -610,7 +596,7 @@ func TestLoginHoldsAPrimaryWhoseIdentityIsUnknown(t *testing.T) {
 	if code := loginTo(&out, io.Discard, cfg, []string{"primary"}, w.deps()); code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, out.String())
 	}
-	if len(w.logins) != 0 || !strings.Contains(out.String(), "identity unreadable") {
+	if len(w.logins) != 0 || planHolds(t, cfg, w.deps())["primary"] != heldIdentity {
 		t.Errorf("logins %q\n%s", w.logins, out.String())
 	}
 

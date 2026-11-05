@@ -52,22 +52,17 @@ type Request struct {
 	Intent placement.Intent
 	Mode   string // how the account came to be decided: auto, named, last, picker
 
-	// Session is the session the launch is for. Its Record id is re-homed
-	// when the launch puts it somewhere other than its owner; MustReHome says
-	// the launch exists to move it, and is refused if that cannot be recorded.
-	Session    Session
-	MustReHome bool
-
-	// Owner is the account that last drove the session, when the surface
-	// knows it.
-	Owner string
+	// Resume is a session a surface chose — the picker's row — and decides
+	// the intent in place of Intent. nil for a launch that names its session,
+	// if any, in its VendorArgs.
+	Resume *Resume
 
 	// VendorArgs are a launch's pass-through arguments, for a launch that
-	// names its session there rather than in Session. An automatic Claude Code
-	// launch reads them (SessionOf): it follows the owner of a session named
-	// by id while that account has room, and records the re-home when it
-	// places the session elsewhere. A named launch was told where to go and
-	// reads nothing from them; the arguments reach the vendor as given.
+	// names its session there. An automatic Claude Code launch reads them
+	// (SessionOf): it follows the owner of a session named by id while that
+	// account has room, and records the re-home when it places the session
+	// elsewhere. A named launch was told where to go and reads nothing from
+	// them; the arguments reach the vendor as given.
 	VendorArgs []string
 
 	CWD     string
@@ -75,32 +70,85 @@ type Request struct {
 	Now     time.Time
 }
 
+// Resume is a session chosen for a launch, with the account its evidence says
+// last drove it ("" for none). Move asks for the session to be moved off that
+// account: the picker's override.
+type Resume struct {
+	ID    string
+	Owner string
+	Move  bool
+}
+
 // Plan is a request with the facts gathered for it, not yet decided.
 type Plan struct {
 	req   Request
 	facts facts
 	deps  Deps
+
+	// What Gather derived about the session: the session the launch is for,
+	// whose Record id is re-homed when the launch puts it somewhere other
+	// than its owner; whether the launch exists to move it, and is refused if
+	// that cannot be recorded; and the account that last drove it.
+	session    Session
+	mustReHome bool
+	owner      string
 }
 
 // Gather reads what the request's placement needs from the disk: every
 // account's figures and load, which of them an ordinary launch may run on,
-// and — for an automatic launch that follows a session — the session's
-// owner (Request.VendorArgs). Nothing is written.
+// and how the launch stands to the session it is for — the one a surface
+// chose (Request.Resume), or one an automatic launch names in its arguments
+// (Request.VendorArgs). Nothing is written.
 func Gather(req Request, deps Deps) *Plan {
+	p := &Plan{deps: deps}
+	res := readReservations(req.Set.Scope)
+	if r := req.Resume; r != nil {
+		req.Intent = resumeIntent(req, *r, res)
+		p.session, p.owner, p.mustReHome = Session{Route: r.ID}, r.Owner, r.Move
+		if r.Move || req.Intent.Owner != "" {
+			// The rule may take the session off its owner, and then the next
+			// resume has to find it there.
+			p.session.Record = r.ID
+		}
+	}
 	automatic := req.Intent.Kind == placement.Auto
 	req.Intent.Home = req.Store.Home()
-	f := gather(req.Set, req.Store, req.Environ, req.CWD, automatic, req.Now, deps)
-	if len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
+	f := gather(req.Set, req.Store, res, req.Environ, req.CWD, automatic, req.Now, deps)
+	if req.Resume == nil && len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
 		// A launch that names a session follows the account that last drove
 		// it, so its prompt cache and its checkpoints stay usable. Only Claude
 		// Code has an owner to ask about.
-		req.Session = SessionOf(req.VendorArgs)
-		if req.Session.Route != "" {
-			req.Owner = f.owner(req.Session.Route)
-			req.Intent.Owner = req.Owner
+		p.session = SessionOf(req.VendorArgs)
+		if p.session.Route != "" {
+			p.owner = f.owner(p.session.Route)
+			req.Intent.Owner = p.owner
 		}
 	}
-	return &Plan{req: req, facts: f, deps: deps}
+	p.req, p.facts = req, f
+	return p
+}
+
+// resumeIntent says how a resume's account is decided: enter follows the
+// session's owner, and everything else asks the rule. A session with no
+// owner is placed like a new one — the owner evidence names none for a
+// session nothing attributes, or whose owner is gone — and the override
+// moves the session to the least-loaded of the *other* accounts — moving means
+// somewhere other than where it is. An owner a reservation keeps from the
+// session's directory — or one nothing can say is not kept, `.reserved` being
+// unreadable — is the one owner enter does not follow: choosing a session is
+// not naming an account, so the rule decides, as it does for a launch that
+// names the session by id.
+func resumeIntent(req Request, r Resume, res reservations) placement.Intent {
+	owned := r.Owner != ""
+	switch {
+	case r.Move:
+		return placement.Intent{Exclude: r.Owner}
+	case owned && res.keeps(req.Set.RefOf(r.Owner), sessions.RepoKey(req.CWD)):
+		return placement.Intent{Owner: r.Owner}
+	case owned:
+		return placement.Intent{Kind: placement.Forced, Account: r.Owner, Reason: placement.ReasonOwner}
+	}
+	return placement.Intent{}
 }
 
 // preflight is every refusal a launch can know before it writes anything, and
@@ -142,7 +190,7 @@ func (p *Plan) Preview(w io.Writer, binary string) (chosen bool, err error) {
 		return false, err
 	}
 	d := placement.Choose(p.facts.rule(), p.facts.snap.Placements(), p.req.Intent, p.req.Now)
-	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts.home, p.facts.labels)
+	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts)
 	return d.Chosen != "", nil
 }
 
@@ -166,16 +214,16 @@ func (p *Plan) Commit() (*Launch, error) {
 	cands := f.rule()
 	l := state.Launch{
 		Candidates: cands, Intent: req.Intent, PID: os.Getpid(), Now: req.Now,
-		Session: req.Session.Record, MustReHome: req.MustReHome, Gone: f.gone,
+		Session: p.session.Record, MustReHome: p.mustReHome, Gone: f.gone,
 	}
-	if req.Session.Record != "" {
+	if p.session.Record != "" {
 		l.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
 	}
 	placed, placeErr := req.Store.Place(l)
-	if req.MustReHome && placeErr != nil {
+	if p.mustReHome && placeErr != nil {
 		return nil, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", placeErr)
 	}
-	out := &Launch{req: req, decision: placed.Decision, home: f.home, labels: f.labels}
+	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, home: f.home, labels: f.labels}
 	if out.decision.Chosen == "" {
 		return nil, errors.New(out.decision.Refusal)
 	}
@@ -193,9 +241,9 @@ func (p *Plan) Commit() (*Launch, error) {
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
 	}
-	rec := launchlog.New(out.decision, cands, placed.Ledger, req.Intent, req.Now)
-	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.CWD, req.Mode, placed.Recorded
-	rec.Session = req.Session.Route
+	rec := f.record(out.decision, placed.Ledger, req.Intent, req.Now)
+	rec.PID, rec.CWD, rec.Mode, rec.Recorded = os.Getpid(), req.CWD, req.Mode, placed.Recorded
+	rec.Session = p.session.Route
 	if missed != nil {
 		rec.Problem = missed.Error()
 	}
@@ -213,6 +261,8 @@ func (p *Plan) Commit() (*Launch, error) {
 // replaced the process that asked for it.
 type Launch struct {
 	req      Request
+	session  Session // the session it is for, as the plan derived it
+	owner    string  // the account that last drove that session
 	decision placement.Decision
 	account  accounts.Account
 	prepared launch.Prepared
@@ -243,7 +293,7 @@ func (l *Launch) Announce(w io.Writer, prefix string) {
 		fmt.Fprintln(w, prefix+notice)
 	}
 	c, _ := l.decision.Find(l.decision.Chosen)
-	fmt.Fprintln(w, prefix+launchLine(l.decision, l.req.Intent.Kind == placement.Auto, l.req.Session, l.req.Owner, elsewhere(c, l.home, l.labels), l.req.Now))
+	fmt.Fprintln(w, prefix+launchLine(l.decision, l.req.Intent.Kind == placement.Auto, l.session, l.owner, elsewhere(c, l.home, l.labels), l.req.Now))
 	for _, note := range l.notes {
 		fmt.Fprintln(w, prefix+note)
 	}

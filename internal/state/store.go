@@ -3,6 +3,7 @@ package state
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -487,7 +488,12 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		if out.Decision.Chosen == "" || !ok {
 			return false, nil
 		}
-		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, l.PID, s.root, now)
+		if chosen.Ref == "" {
+			// What --last and a re-home are kept under: one recorded without it
+			// would route to nothing, and silently.
+			return false, fmt.Errorf("%s was offered with no ref, so it cannot be recorded", chosen.Name)
+		}
+		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, chosen.Ref, l.PID, s.root, now)
 		led.dirty = true
 		out.Recorded = true
 		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
@@ -509,7 +515,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 				}
 			}
 		}
-		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
+		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
 		home.dirty = true
 		out.ReHomed = true
 		return l.MustReHome, nil
@@ -559,22 +565,6 @@ func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now tim
 		return nil
 	})
 	return out, err
-}
-
-// Forget drops a session's re-home — a deleted transcript needs no routing
-// preference. No sweep: this call knows exactly which record it means.
-func (s *Store) Forget(id string) error {
-	return s.update(s.root, claimWait, func(d *doc) error {
-		if d.badSessions {
-			return ErrCorrupt
-		}
-		if _, ok := d.sessions[id]; !ok {
-			return nil
-		}
-		delete(d.sessions, id)
-		d.dirty = true
-		return nil
-	})
 }
 
 // update is the only writer of one document. It is unexported on purpose: an

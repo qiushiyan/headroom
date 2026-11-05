@@ -65,9 +65,7 @@ func TestAccountsAddCommand(t *testing.T) {
 	if !strings.Contains(out.String(), "anything.md") || !strings.Contains(out.String(), "hooks") {
 		t.Errorf("whole-dir share report:\n%s", out.String())
 	}
-	wd, _ := os.Getwd()
-	os.Chdir(cfg.Home)
-	defer os.Chdir(wd)
+	t.Chdir(cfg.Home)
 	out.Reset()
 	if code := addTo(&out, &errw, cfg, "e@x.com", "--share-config=pkg"); code != 0 {
 		t.Fatalf("relative --share-config: exit %d: %s", code, errw.String())
@@ -85,7 +83,8 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	cfg := lifecycleConfig(t)
 	seed := func(name string) string {
 		t.Helper()
-		dir, _, _, err := accounts.Seed(cfg, name, accounts.SeedOptions{})
+		seeded, err := accounts.Seed(cfg, name, accounts.SeedOptions{})
+		dir := seeded.Dir
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +120,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	}
 
 	// The primary refuses by name; a missing dir refuses; flag policy.
-	if code := run(deps, "primary", "--yes"); code != 1 || !strings.Contains(errw.String(), "primary") {
+	if code := run(deps, "primary", "--yes"); code != 1 || !strings.Contains(errw.String(), "never removed") {
 		t.Errorf("primary: exit %d %s", code, errw.String())
 	}
 	if code := run(deps, "nope@x.com", "--yes"); code != 1 {
@@ -189,10 +188,14 @@ func TestAccountsRemoveCommand(t *testing.T) {
 		t.Errorf("unverifiable: exit %d %s", code, errw.String())
 	}
 	// Dead pid: the claim is stale, removal proceeds — Keychain first, then
-	// dir, then the account's headless token, and no other's.
+	// dir, then the account's headless token and reservation, and no other's:
+	// a row left behind would keep an account re-added under the email.
 	os.WriteFile(filepath.Join(cfg.StoreDir(), "t.jsonl"), []byte("x"), 0o644)
 	for _, n := range []string{"a@x.com", "other@x.com"} {
 		if err := headless.Put(cfg.AccountsRoot, n, headless.Token{Value: testToken}); err != nil {
+			t.Fatal(err)
+		}
+		if err := accounts.SetReservation(cfg, n, []string{"/work/" + n}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -201,6 +204,9 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	}
 	if tokens, _ := headless.Read(cfg.AccountsRoot); len(tokens) != 1 || tokens["other@x.com"].Value == "" || !strings.Contains(out.String(), "forgot its headless token") {
 		t.Errorf("headless tokens after removal: %v\n%s", tokens, out.String())
+	}
+	if held, err := accounts.ReadReservations(cfg); err != nil || held.Held("a@x.com") || !held.Held("other@x.com") {
+		t.Errorf("reservations after removal: %v (%v)", held, err)
 	}
 	if len(keychainCalls) != 1 || keychainCalls[0] != dir {
 		t.Errorf("keychain calls %v", keychainCalls)

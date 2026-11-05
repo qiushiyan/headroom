@@ -56,29 +56,28 @@ func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
 	case opts.ShareConfig:
 		// The primary's config, whitelisted.
 		opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), accounts.SharedConfigEntries(cfg.Vendor)
-	default:
-		// Sharing is optional; what governs the shared session store is not.
-		if names := accounts.StoreSettings(cfg.Vendor); names != nil {
-			opt.ShareFrom, opt.ShareNames = cfg.PrimaryDir(), names
-		}
 	}
-	dir, shared, kept, err := accounts.Seed(cfg, name, opt)
+	seeded, err := accounts.Seed(cfg, name, opt)
 	if err != nil {
 		return err
 	}
+	dir := seeded.Dir
 	fmt.Fprintf(out, "seeded %s\n", dir)
 	fmt.Fprintf(out, "  %s → %s (sessions are machine-global)\n", cfg.StoreLink(), cfg.StoreDir())
 	if opt.ShareFrom != "" {
-		if len(shared) == 0 {
+		if len(seeded.Shared) == 0 {
 			fmt.Fprintf(out, "  shared nothing from %s (no matching entries)\n", opt.ShareFrom)
 		} else {
-			fmt.Fprintf(out, "  shared from %s: %s\n", opt.ShareFrom, strings.Join(shared, ", "))
+			fmt.Fprintf(out, "  shared from %s: %s\n", opt.ShareFrom, strings.Join(seeded.Shared, ", "))
 		}
-		if len(kept) > 0 {
-			// A login and its history are never shared, whatever the source
-			// holds: this dir gets its own at its first login.
-			fmt.Fprintf(out, "  kept per dir, not linked: %s\n", strings.Join(kept, ", "))
-		}
+	}
+	if len(seeded.Settings) > 0 {
+		fmt.Fprintf(out, "  shared from %s: %s\n", cfg.PrimaryDir(), strings.Join(seeded.Settings, ", "))
+	}
+	if len(seeded.Kept) > 0 {
+		// A login and its history are never shared, whatever the source
+		// holds: this dir gets its own at its first login.
+		fmt.Fprintf(out, "  kept per dir, not linked: %s\n", strings.Join(seeded.Kept, ", "))
 	}
 	// A second home's dir is logged in from that home: the launch must run
 	// under its HOME, or it resolves the login home's accounts instead.
