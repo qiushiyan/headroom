@@ -231,8 +231,7 @@ func (r *Round) Mark(marks map[string]accountstate.Mark) {
 }
 
 // Narrow keeps the one account selector names. When it names none here the
-// round keeps no account — its vendor's `current` is still a fact — and says
-// why.
+// round keeps no account, and says why.
 func (r *Round) Narrow(selector string) error {
 	a, err := r.Set.Select(selector)
 	if err != nil {

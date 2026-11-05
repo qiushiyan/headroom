@@ -178,20 +178,15 @@ func (ui *picker) draw() {
 			header = append(header, "")
 		}
 	}
-	for _, line := range ui.p.Legend(ui.layout) {
-		header = append(header, "  "+line)
-	}
 	for _, line := range b.Header {
 		header = append(header, "  "+line)
 	}
 	var body []string
-	for i, g := range b.Groups {
-		for _, line := range g {
-			body = append(body, "  "+line)
+	for _, line := range b.Body() {
+		if line != "" {
+			line = "  " + line
 		}
-		if i < len(b.Groups)-1 && ui.layout == render.LayoutBlocks {
-			body = append(body, "")
-		}
+		body = append(body, line)
 	}
 	// Fit the board to the terminal — framePrinter's move-up arithmetic
 	// cannot survive a frame taller than the screen, and its own clamp cuts

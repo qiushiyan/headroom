@@ -191,10 +191,10 @@ func TestHeaderLine(t *testing.T) {
 			t.Errorf("%s: compact row = %q", c.name, row)
 		}
 	}
-	if legend := p.Legend(LayoutCompact); len(legend) != 1 || !strings.Contains(legend[0], "→") {
+	if legend := p.Board(nil, now, LayoutCompact, 0).Header; len(legend) == 0 || !strings.Contains(legend[0], "→") {
 		t.Errorf("compact legend = %q", legend)
 	}
-	if legend := p.Legend(LayoutBlocks); legend != nil {
+	if legend := p.Board(nil, now, LayoutBlocks, 0).Header; legend != nil {
 		t.Errorf("blocks legend = %q; ← next says itself", legend)
 	}
 }

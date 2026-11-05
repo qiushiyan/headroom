@@ -41,7 +41,7 @@ func TestCodexCompactColumnOrderAndLabels(t *testing.T) {
 	    {"limit_name":"","metered_feature":"astra_model","rate_limit":{"primary_window":{"used_percent":2,"limit_window_seconds":86400,"reset_after_seconds":100,"reset_at":1790080000}}}]}`
 	p := NewPalette(false)
 	b := p.Board([]accountstate.Facts{codexFacts(t, "a@x.com", body, renderNow)}, renderNow, LayoutCompact, 0)
-	header := b.Header[0]
+	header := b.Header[len(b.Header)-1] // the column headings, under the legend
 	want := []string{"weekly", "5h", "weekly code review", "1d astra_model", "1d Zed"}
 	at := -1
 	for _, w := range want {
@@ -65,7 +65,7 @@ func TestCodexDifferentDurationsAreDifferentColumns(t *testing.T) {
 		codexFacts(t, "a@x.com", win("71", "604800"), renderNow),
 		codexFacts(t, "b@x.com", win("22", "18000"), renderNow),
 	}, renderNow, LayoutCompact, 0)
-	header := b.Header[0]
+	header := b.Header[len(b.Header)-1] // the column headings, under the legend
 	// Columns are counted in cells, not bytes: the dash is a multi-byte rune.
 	cellIndex := func(s, sub string) int {
 		before, _, ok := strings.Cut(s, sub)
