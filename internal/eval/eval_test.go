@@ -8,6 +8,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -114,15 +116,6 @@ func scenarios() []struct {
 			cand("b", now, limits(0, 20, soon, week)),
 			cand("c", now, limits(30, 20, soon, week)),
 		}},
-		// The row above chooses b with or without its pending launches; here
-		// they decide: without them b is the emptiest account.
-		{"pending launches decide", placement.Intent{}, placement.Ledger{Recent: []placement.Pending{
-			{Key: "uuid:b", Name: "b", PID: 7, AtMS: at(-time.Minute).UnixMilli()},
-			{Key: "uuid:b", Name: "b", PID: 8, AtMS: at(-2 * time.Minute).UnixMilli()},
-		}}, []placement.Candidate{
-			cand("b", now, limits(0, 20, soon, week)),
-			cand("c", now, limits(10, 20, soon, week)),
-		}},
 		{"a launch that became a busy session counts once", placement.Intent{}, placement.Ledger{Recent: []placement.Pending{
 			{Key: "uuid:a", Name: "a", PID: 41, AtMS: at(-time.Minute).UnixMilli()},
 		}}, []placement.Candidate{
@@ -185,6 +178,33 @@ func TestEveryInputTheRuleReadsReachesTheLine(t *testing.T) {
 			}
 			if s := summary(t, rep, placement.Rule); !s.Replay.SameRule || s.Replay.Agreed != 1 {
 				t.Errorf("replay stats = %+v", s.Replay)
+			}
+		})
+	}
+}
+
+// The line rebuilds the rule's input field for field, whether or not the
+// scenario makes that field decide the choice: comparing choices alone, as
+// above, misses an input the replay drops wherever the choice survives it.
+// Below Build because no report can show a non-deciding input went missing.
+func TestTheLineRebuildsTheRulesInput(t *testing.T) {
+	for _, c := range scenarios() {
+		t.Run(c.name, func(t *testing.T) {
+			l := line(at(0), "auto", c.intent, c.ledger, c.cands...)
+			e := newEvaluator(Input{Vendor: config.Claude, Home: home, Launches: []Launch{l}, Now: at(time.Hour)})
+			cands, ledger, intent, now, exact := e.input(e.launches[0])
+			want := slices.Clone(c.cands)
+			for i := range want {
+				if want[i].Statuses == nil {
+					want[i].Statuses = []string{}
+				}
+			}
+			wantIntent := c.intent
+			wantIntent.Home = home
+			if !exact || !now.Equal(at(0)) || !reflect.DeepEqual(cands, want) || !reflect.DeepEqual(intent, wantIntent) ||
+				len(ledger.Recent)+len(c.ledger.Recent) > 0 && !reflect.DeepEqual(ledger.Recent, c.ledger.Recent) ||
+				len(ledger.Last)+len(c.ledger.Last) > 0 && !reflect.DeepEqual(ledger.Last, c.ledger.Last) {
+				t.Errorf("rebuilt exact %v at %v\n cands  %+v\n want   %+v\n intent %+v\n ledger %+v\n want   %+v", exact, now, cands, want, intent, ledger, c.ledger)
 			}
 		})
 	}
