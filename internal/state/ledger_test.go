@@ -321,8 +321,10 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		if err := h.second.Register(time.Now()); err != nil { // creates both lock files
 			t.Fatal(err)
 		}
-		if err := h.second.Forget("nothing"); err != nil {
+		if f, err := os.OpenFile(statePath(h.secondRoot)+".lock", os.O_CREATE|os.O_RDWR, 0o600); err != nil {
 			t.Fatal(err)
+		} else {
+			f.Close()
 		}
 		readOnly(t, h.secondRoot)
 		p, err := place(h.second, idle("a"), placement.Intent{}, 9, sid, time.Now())
@@ -342,8 +344,10 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		if err := h.second.Register(time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.second.Forget("nothing"); err != nil {
+		if f, err := os.OpenFile(statePath(h.secondRoot)+".lock", os.O_CREATE|os.O_RDWR, 0o600); err != nil {
 			t.Fatal(err)
+		} else {
+			f.Close()
 		}
 		readOnly(t, h.ownerRoot)
 		p, err := h.second.Place(Launch{

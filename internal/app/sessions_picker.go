@@ -283,8 +283,7 @@ func (ui *resumeUI) commitDelete() {
 	if s == nil {
 		return
 	}
-	removed, err := ui.delete(s)
-	if !removed {
+	if err := ui.delete(s); err != nil {
 		ui.message = err.Error()
 		return
 	}
@@ -298,9 +297,6 @@ func (ui *resumeUI) commitDelete() {
 	ui.listing.Sessions = kept
 	ui.refilter(ui.query)
 	ui.message = "deleted"
-	if err != nil {
-		ui.message += " — " + err.Error()
-	}
 }
 
 // ---- rendering ----

@@ -561,22 +561,6 @@ func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now tim
 	return out, err
 }
 
-// Forget drops a session's re-home — a deleted transcript needs no routing
-// preference. No sweep: this call knows exactly which record it means.
-func (s *Store) Forget(id string) error {
-	return s.update(s.root, claimWait, func(d *doc) error {
-		if d.badSessions {
-			return ErrCorrupt
-		}
-		if _, ok := d.sessions[id]; !ok {
-			return nil
-		}
-		delete(d.sessions, id)
-		d.dirty = true
-		return nil
-	})
-}
-
 // update is the only writer of one document. It is unexported on purpose: an
 // exported transaction taking a caller closure would publish the whole
 // document (every invariant this package enforces would become a caller's to

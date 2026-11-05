@@ -328,7 +328,7 @@ func TestUncertainProcessInspectionPreservesTranscript(t *testing.T) {
 			if err := ui.rename(s, "changed"); err == nil {
 				t.Fatal("uncertain process allowed rename")
 			}
-			if removed, err := ui.delete(s); removed || err == nil {
+			if err := ui.delete(s); err == nil {
 				t.Fatal("uncertain process allowed delete")
 			}
 			data, err := os.ReadFile(s.Path)

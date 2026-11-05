@@ -273,9 +273,6 @@ func TestUnreadableSectionSurvivesAnUnrelatedWrite(t *testing.T) {
 	if err := rehome(s, "s1", "a@x.com", time.Now(), nil); err != ErrCorrupt {
 		t.Errorf("re-home over a corrupt section: %v", err)
 	}
-	if err := s.Forget("s1"); err != ErrCorrupt {
-		t.Errorf("Forget over a corrupt section: %v", err)
-	}
 }
 
 // The ledger is disposable, so it is rebuilt rather than refused — but with no
@@ -353,7 +350,7 @@ func TestNewerSchemaIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestReHomeAndForget(t *testing.T) {
+func TestReHome(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "not-yet")
 	s := Open(rootScope(root))
 	now := time.UnixMilli(1000)
@@ -369,12 +366,6 @@ func TestReHomeAndForget(t *testing.T) {
 	m := s.Load().Owners()
 	if m["s1"].Account != "a@x.com" || m["s2"].AtMS != 1000 {
 		t.Fatalf("owners = %v", m)
-	}
-	if err := s.Forget("s2"); err != nil {
-		t.Fatal(err)
-	}
-	if m = s.Load().Owners(); len(m) != 1 || m["s2"].Account != "" {
-		t.Fatalf("after forget = %v", m)
 	}
 	if _, ok := s.Load().Owner("s1"); !ok {
 		t.Error("Owner lookup lost a live record")

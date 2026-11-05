@@ -157,15 +157,15 @@ func (actions *sessionActions) rename(s *sessions.Session, title string) error {
 	return nil
 }
 
-func (actions *sessionActions) delete(s *sessions.Session) (bool, error) {
+// delete removes the transcript and nothing of headroom's own: a re-home of
+// a session that no longer exists routes nothing, and the next launch that
+// records a session sweeps it.
+func (actions *sessionActions) delete(s *sessions.Session) error {
 	if err := actions.mutable(s, errOpenDelete); err != nil {
-		return false, err
+		return err
 	}
 	if err := sessions.DeleteTranscript(s); err != nil {
-		return false, fmt.Errorf("delete failed: %w", err)
+		return fmt.Errorf("delete failed: %w", err)
 	}
-	if err := actions.st.Forget(s.ID); err != nil {
-		return true, fmt.Errorf("re-home cleanup failed: %w", err)
-	}
-	return true, nil
+	return nil
 }
