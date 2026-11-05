@@ -46,12 +46,18 @@ const DefaultSpacing = 90 * time.Second
 
 // EnvPolicy is what a launched child's environment is built from, as data:
 // the variable that selects a non-primary account, every inherited variable
-// that could re-route the launch or substitute its credentials, and which of
-// those carry secrets whose values are never printed.
+// that could re-route the launch or substitute its credentials, which of
+// those carry secrets whose values are never printed, and the markers a
+// running session leaves on the processes it spawns.
+//
+// Markers are removed as silently as they arrive: every shell inside a
+// session carries them, so a notice would fire on the ordinary case. Strip's
+// variables are said out loud, because headroom never produces one.
 type EnvPolicy struct {
 	HomeVar string
 	Strip   []string
 	Secret  []string
+	Markers []string
 }
 
 // IsSecret reports whether name's value must never reach a notice.
@@ -73,9 +79,20 @@ func (v Vendor) EnvPolicy() EnvPolicy {
 			Secret:  []string{"CODEX_API_KEY", "CODEX_ACCESS_TOKEN"},
 		}
 	}
+	// A session marks every process it spawns, and a tmux server started
+	// inside one hands the marks to every pane it opens. Measured on 2.1.318
+	// (docs/research/2026-11-05-claude-entrypoint-and-session-markers.md): an
+	// interactive session started under CLAUDE_CODE_CHILD_SESSION writes no
+	// transcript and no sessions/<pid>.json, so nothing can resume it and
+	// placement and the liveness gate cannot see it; one started under an
+	// inherited CLAUDE_CODE_ENTRYPOINT sends that label instead of its own
+	// (print mode overrides only an inherited "cli"). Without them the vendor
+	// labels the launch by how it runs. The other variables a session sets
+	// for its children changed nothing measured and pass through.
 	return EnvPolicy{
 		HomeVar: "CLAUDE_CONFIG_DIR",
 		Strip:   []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"},
+		Markers: []string{"CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT"},
 	}
 }
 

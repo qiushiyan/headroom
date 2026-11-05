@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -97,14 +98,16 @@ func (t Target) IsPrimary() bool { return t.configDir == "" }
 
 // Env builds a child environment for this target from base (normally
 // os.Environ()). Every inherited entry of every variable the vendor's policy
-// strips — duplicates included — is removed; a non-primary target's dir is
-// then appended exactly once. Only the target's own vendor's variables are
-// touched: a Codex launch leaves Claude Code's alone, and the reverse.
+// strips or names as a session marker — duplicates included — is removed; a
+// non-primary target's dir is then appended exactly once. Only the target's
+// own vendor's variables are touched: a Codex launch leaves Claude Code's
+// alone, and the reverse.
 func (t Target) Env(base []string) []string {
 	policy := t.vendor.EnvPolicy()
+	removed := slices.Concat(policy.Strip, policy.Markers)
 	out := make([]string, 0, len(base)+1)
 	for _, kv := range base {
-		if !stripped(policy, kv) {
+		if !named(removed, kv) {
 			out = append(out, kv)
 		}
 	}
@@ -114,8 +117,8 @@ func (t Target) Env(base []string) []string {
 	return out
 }
 
-func stripped(policy config.EnvPolicy, kv string) bool {
-	for _, name := range policy.Strip {
+func named(names []string, kv string) bool {
+	for _, name := range names {
 		if strings.HasPrefix(kv, name+"=") {
 			return true
 		}
@@ -139,10 +142,10 @@ func (i Inherited) String() string {
 }
 
 // Redirects lists every inherited variable the vendor's policy strips other
-// than the home variable, which has a classifier of its own (Conflicts).
-// Always worth saying when present: headroom never produces one, and obeying
-// it would take credentials or state from somewhere the routing decision
-// never named.
+// than the home variable, which has a classifier of its own (Conflicts), and
+// the session markers, which go unsaid. Always worth saying when present:
+// headroom never produces one, and obeying it would take credentials or state
+// from somewhere the routing decision never named.
 func Redirects(v config.Vendor, base []string) []Inherited {
 	policy := v.EnvPolicy()
 	var out []Inherited

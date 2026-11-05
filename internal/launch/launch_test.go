@@ -173,6 +173,41 @@ func TestEnvStripsSecureStorageVar(t *testing.T) {
 	}
 }
 
+// A shell inside a Claude Code session carries the marks that session leaves
+// on its children (measured 2.1.318: an interactive session started under
+// CLAUDE_CODE_CHILD_SESSION writes no transcript and no registry entry, and
+// one under an inherited CLAUDE_CODE_ENTRYPOINT sends that label). Both are
+// removed for every Claude Code target and said nowhere; the variables that
+// changed nothing measured pass through, and a Codex target leaves all of
+// them alone.
+func TestEnvStripsSessionMarkers(t *testing.T) {
+	base := []string{
+		"HOME=/u",
+		"CLAUDE_CODE_CHILD_SESSION=1",
+		"CLAUDE_CODE_ENTRYPOINT=sdk-cli",
+		"CLAUDECODE=1",
+		"CLAUDE_CODE_SESSION_ID=11111111-2222-3333-4444-555555555555",
+	}
+	kept := []string{"HOME=/u", "CLAUDECODE=1", "CLAUDE_CODE_SESSION_ID=11111111-2222-3333-4444-555555555555"}
+	for _, c := range []struct {
+		target Target
+		want   []string
+	}{
+		{Primary(config.Claude), kept},
+		{extra(t, "/accts/a@x.com"), append(slices.Clone(kept), "CLAUDE_CONFIG_DIR=/accts/a@x.com")},
+	} {
+		if got := c.target.Env(base); !slices.Equal(got, c.want) {
+			t.Errorf("%v: Env = %v, want %v", c.target, got, c.want)
+		}
+	}
+	if got := Redirects(config.Claude, base); len(got) != 0 {
+		t.Errorf("a session marker was reported as a redirect: %v", got)
+	}
+	if got := Primary(config.Codex).Env(base); !slices.Equal(got, base) {
+		t.Errorf("a Codex target touched Claude Code's markers: %v", got)
+	}
+}
+
 // The environment policy table, Codex's row: the home variable set for an
 // extra and absent for the primary, every variable that could re-route the
 // child or substitute its credentials removed, and Claude Code's variables
