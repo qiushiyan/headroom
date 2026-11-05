@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"sort"
@@ -51,6 +52,7 @@ type Session struct {
 // AccountRef names one discovered account and its real config dir.
 type AccountRef struct {
 	Name string
+	Ref  string // how a re-home names it (accounts.Account.Ref); "" when it is Name
 	Dir  string
 }
 
@@ -198,6 +200,7 @@ func OwnerOf(id string, accts []AccountRef, evidence ProcessEvidence, owners map
 // which accounts exist, each one's prompt history, and the explicit re-homes.
 type ownerEvidence struct {
 	names  map[string]bool
+	byRef  map[string]string // a re-home's account, as the account is called now
 	hists  map[string]History
 	owners map[string]OwnerRec
 }
@@ -207,9 +210,10 @@ type ownerEvidence struct {
 // owner from the same files. history is false only when the answer is
 // already decided without it.
 func readOwnerEvidence(accts []AccountRef, owners map[string]OwnerRec, history bool) ownerEvidence {
-	ev := ownerEvidence{names: map[string]bool{}, hists: map[string]History{}, owners: owners}
+	ev := ownerEvidence{names: map[string]bool{}, byRef: map[string]string{}, hists: map[string]History{}, owners: owners}
 	for _, a := range accts {
 		ev.names[a.Name] = true
+		ev.byRef[cmp.Or(a.Ref, a.Name)] = a.Name
 		if !history {
 			continue
 		}
@@ -248,8 +252,8 @@ func (ev ownerEvidence) resolve(id string, process ProcessEvidence) (string, Own
 		}
 	}
 	if rec, ok := ev.owners[id]; ok {
-		if ev.names[rec.Account] {
-			consider(rec.Account, rec.AtMS, OwnerRehome)
+		if name, ok := ev.byRef[rec.Account]; ok {
+			consider(name, rec.AtMS, OwnerRehome)
 		} else {
 			// The re-homed-to account is gone. Surfacing that beats silently
 			// falling through to older history evidence that would resurrect

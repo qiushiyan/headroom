@@ -193,7 +193,11 @@ func TestResolveOwner(t *testing.T) {
 	}
 	for _, c := range cases {
 		evidence, _ := InspectClaims(c.registry, probe)
-		acct, st := ownerEvidence{names: names, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
+		byRef := map[string]string{}
+		for n := range names {
+			byRef[n] = n
+		}
+		acct, st := ownerEvidence{names: names, byRef: byRef, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
 		if acct != c.wantAcct || st != c.wantState {
 			t.Errorf("%s: = (%q, %v), want (%q, %v)", c.name, acct, st, c.wantAcct, c.wantState)
 		}

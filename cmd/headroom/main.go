@@ -49,13 +49,12 @@ func main() {
 }
 
 // loadConfig is every command's configuration, read once per run, with each
-// vendor's records first moved to the name its primary answers to now
-// (app.SettlePrimaryNames): a host file that renames the primary is all a
-// person changes.
+// home's records first moved to the primary's ref if a build before refs
+// wrote them (app.AdoptRefs, a one-time adoption).
 func loadConfig(ctx *kong.Context) (config.Config, error) {
 	cfg, err := config.Load()
 	if err == nil {
-		cfg = app.SettlePrimaryNames(cfg, ctx.Stderr)
+		app.AdoptRefs(cfg, ctx.Stderr)
 	}
 	return cfg, err
 }

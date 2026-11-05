@@ -108,26 +108,6 @@ func Put(accountsRoot, name string, t Token) error {
 	})
 }
 
-// Rename moves from's token to to and reports whether there was one. When to
-// already holds a token the one minted later stays: both were minted for the
-// same primary, and the newer is the one its owner last asked for.
-func Rename(accountsRoot, from, to string) (bool, error) {
-	moved := false
-	err := update(accountsRoot, func(tokens map[string]Token) bool {
-		t, ok := tokens[from]
-		if !ok {
-			return false
-		}
-		if cur, has := tokens[to]; !has || t.MintedMS > cur.MintedMS {
-			tokens[to] = t
-		}
-		delete(tokens, from)
-		moved = true
-		return true
-	})
-	return moved, err
-}
-
 // Remove drops name's token and reports whether there was one.
 func Remove(accountsRoot, name string) (bool, error) {
 	removed := false
@@ -168,4 +148,27 @@ func update(accountsRoot string, change func(map[string]Token) bool) error {
 		return err
 	}
 	return atomicfile.Write(Path(accountsRoot), ".headless-*.json", data) // 0600
+}
+
+// AdoptRefs moves the token held under any of names to ref, and reports
+// whether one moved: the one-time adoption of refs, retired with it. Where
+// several are held the one minted last stays: all were minted for the same
+// primary, and the newest is the one its owner last asked for.
+func AdoptRefs(accountsRoot string, names []string, ref string) (bool, error) {
+	moved := false
+	err := update(accountsRoot, func(tokens map[string]Token) bool {
+		for _, from := range names {
+			t, ok := tokens[from]
+			if !ok || from == ref {
+				continue
+			}
+			if cur, has := tokens[ref]; !has || t.MintedMS > cur.MintedMS {
+				tokens[ref] = t
+			}
+			delete(tokens, from)
+			moved = true
+		}
+		return moved
+	})
+	return moved, err
 }

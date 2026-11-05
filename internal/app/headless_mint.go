@@ -120,7 +120,7 @@ func headlessMint(std Streams, scope config.Scope, name string, deps mintDeps) e
 	if known {
 		tok.EndsMS = now.Add(life).UnixMilli()
 	}
-	if err := headless.Put(scope.AccountsRoot, a.Name, tok); err != nil {
+	if err := headless.Put(scope.AccountsRoot, a.Ref(), tok); err != nil {
 		fmt.Fprintf(out, "\n✗ %s: the token was minted but not stored (%v) — it was not shown; mint again\n", a.Name, err)
 		return Status(1)
 	}

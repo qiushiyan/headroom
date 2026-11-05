@@ -89,7 +89,7 @@ func TestWhenRoomReturns(t *testing.T) {
 // for the rest of its span once the process has gone.
 func TestAnAttachedPlacementCountsOnce(t *testing.T) {
 	var ledger Ledger
-	ledger.RecordAs("p1", "uuid:a", "a", 0, "/h", now.Add(-time.Minute))
+	ledger.RecordAs("p1", "uuid:a", "a", "a", 0, "/h", now.Add(-time.Minute))
 	a := acct("a", 0, 0)
 	if c := chosen(t, []Candidate{a}, ledger, Intent{}).Candidates[0]; c.Pending != 1 || c.Load != 1 {
 		t.Fatalf("placed: pending %d load %d", c.Pending, c.Load)

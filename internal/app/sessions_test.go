@@ -293,7 +293,7 @@ func TestSessionExecFailureKeepsRehome(t *testing.T) {
 	if owner.Account == "" || owner.Account == "yan@planlab.ai" {
 		t.Fatalf("re-home after failed exec: %+v", owner)
 	}
-	if output := ui.failed.Error(); !strings.Contains(output, "re-home remains recorded for "+owner.Account) {
+	if output := ui.failed.Error(); !strings.Contains(output, "re-home remains recorded for "+ui.set.NameOf(owner.Account)) {
 		t.Fatalf("missing persistence explanation: %s", output)
 	}
 }

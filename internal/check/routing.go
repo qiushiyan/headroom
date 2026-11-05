@@ -190,11 +190,12 @@ func checkReservations(set accounts.Set, r *report) {
 		return
 	}
 	var why []string
-	for _, name := range slices.Sorted(maps.Keys(held)) {
+	for _, ref := range slices.Sorted(maps.Keys(held)) {
+		name := set.NameOf(ref)
 		if !set.Has(name) {
 			why = append(why, name+" is not a discovered account — headroom accounts reserve "+name+" --clear")
 		}
-		for _, dir := range held[name] {
+		for _, dir := range held[ref] {
 			if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 				why = append(why, fmt.Sprintf("%s is gone — %s can be launched only by name until its reservation is replaced", dir, name))
 			}

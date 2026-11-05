@@ -91,18 +91,14 @@ type Scope struct {
 	AccountsRoot string // one dir per extra subscription, keyed by email
 
 	// PrimaryName is the name the vendor's primary dir answers to — what
-	// `--account` selects, the records beside the store are kept under and the
-	// board's launcher column shows. Set explicitly by HEADROOM_PRIMARY_NAME (HEADROOM_CODEX_PRIMARY_NAME
+	// `--account` selects and the board's launcher column shows; the records
+	// name the dir (accounts.PrimaryRef), so a new name changes nothing they
+	// say. Set explicitly by HEADROOM_PRIMARY_NAME (HEADROOM_CODEX_PRIMARY_NAME
 	// for Codex); "" means *derive it at discovery* from the primary's
 	// logged-in email (accounts.PrimaryName), so a fresh install needs no
 	// configuration and the primary is named the way the extras are — by who
-	// is logged in. Pin it when the derived name must survive a primary logout
-	// (the records store the name, not the dir).
+	// is logged in.
 	PrimaryName string
-	// PrimaryAliases are names the primary had before PrimaryName, which
-	// still select it: a launcher defined in a shell started before a rename
-	// passes the old one.
-	PrimaryAliases []string
 
 	// LauncherFormat spells the command the board advertises for an account
 	// (`%s` = the account's name): every "run <this> and /login" hint and

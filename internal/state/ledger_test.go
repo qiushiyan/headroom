@@ -233,7 +233,7 @@ func TestLaunchesFromBeforeHomesBelongToTheLedgersHome(t *testing.T) {
 		if len(led.Recent) != 1 || led.Recent[0].Home != h.ownerRoot {
 			t.Errorf("recent = %+v", led.Recent)
 		}
-		if last, ok := led.Newest(h.ownerRoot); !ok || last.Name != "a" {
+		if last, ok := led.Newest(h.ownerRoot); !ok || last.Ref != "a" {
 			t.Errorf("the owner's last = %+v %v", last, ok)
 		}
 		if _, ok := led.Newest(h.secondRoot); ok {

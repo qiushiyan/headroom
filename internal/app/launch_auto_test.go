@@ -359,7 +359,7 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 		t.Errorf("a first turn's line does not say the session was new to headroom:\n%s", first.stderr)
 	}
 	rec, ok := f.st.Load().Owner(sessA)
-	if !ok || rec.Account != "qiushi" {
+	if !ok || rec.Account != accounts.PrimaryRef {
 		t.Fatalf("the placed session was not re-homed: %+v", rec)
 	}
 

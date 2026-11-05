@@ -397,8 +397,8 @@ func TestMintStoresTheTokenTheVendorPrinted(t *testing.T) {
 	if code := mintTo(io.Discard, &errw, f.cfg, "qiushi", wp.deps(now)); code != 0 {
 		t.Fatalf("mint for the primary: %d %s", code, errw.String())
 	}
-	if tokens, err := headless.Read(f.cfg.AccountsRoot); err != nil || tokens["qiushi"].Key != f.key("qiushi").ID() || tokens["qiushi"].Email != "qiushi@x.com" {
-		t.Fatalf("the primary's token: %+v %v", tokens["qiushi"], err)
+	if tokens, err := headless.Read(f.cfg.AccountsRoot); err != nil || tokens[accounts.PrimaryRef].Key != f.key("qiushi").ID() || tokens[accounts.PrimaryRef].Email != "qiushi@x.com" {
+		t.Fatalf("the primary's token: %+v %v", tokens[accounts.PrimaryRef], err)
 	}
 
 	// A run that printed no token stores nothing and replaces nothing.

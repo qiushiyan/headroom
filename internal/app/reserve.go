@@ -27,6 +27,7 @@ type ReserveOptions struct {
 // written here.
 func AccountsReserve(std Streams, cfg config.Scope, opts ReserveOptions) error {
 	out := std.Out
+	set := accounts.Discover(cfg)
 	switch {
 	case opts.Account == "" && (opts.Clear || len(opts.Dirs) > 0):
 		return usagef("name the account")
@@ -40,13 +41,13 @@ func AccountsReserve(std Streams, cfg config.Scope, opts ReserveOptions) error {
 		if len(held) == 0 {
 			fmt.Fprintln(out, "no account is reserved")
 		}
-		for _, name := range slices.Sorted(maps.Keys(held)) {
-			fmt.Fprintf(out, "%s  %s\n", render.Sanitize(name), reservedDirs(held[name]))
+		for _, ref := range slices.Sorted(maps.Keys(held)) {
+			fmt.Fprintf(out, "%s  %s\n", render.Sanitize(set.NameOf(ref)), reservedDirs(held[ref]))
 		}
 		return nil
 	case opts.Clear:
 		// By name alone: a row outlives its account until someone clears it.
-		if err := accounts.SetReservation(cfg, opts.Account, nil); err != nil {
+		if err := accounts.SetReservation(cfg, set.RefOf(opts.Account), nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "%s is no longer reserved\n", render.Sanitize(opts.Account))
@@ -54,7 +55,7 @@ func AccountsReserve(std Streams, cfg config.Scope, opts ReserveOptions) error {
 	case len(opts.Dirs) == 0:
 		return usagef("name the repositories %s is for, or --clear", opts.Account)
 	}
-	a, err := accounts.Discover(cfg).Select(opts.Account)
+	a, err := set.Select(opts.Account)
 	if err != nil {
 		return err
 	}
@@ -74,7 +75,7 @@ func AccountsReserve(std Streams, cfg config.Scope, opts ReserveOptions) error {
 			dirs = append(dirs, key)
 		}
 	}
-	if err := accounts.SetReservation(cfg, a.Name, dirs); err != nil {
+	if err := accounts.SetReservation(cfg, a.Ref(), dirs); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "%s reserved for %s\n", render.Sanitize(a.Name), reservedDirs(dirs))

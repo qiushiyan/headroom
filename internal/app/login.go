@@ -141,7 +141,7 @@ func Login(std Streams, scope config.Scope, opts LoginOptions) error {
 		approver:     newApprover(scope),
 		now:          time.Now,
 		login:        newVendorLogin(std),
-		tokens:       func() (map[string]headless.Token, error) { return headless.Read(scope.AccountsRoot) },
+		tokens:       func() (map[string]headless.Token, error) { return readTokens(accounts.Discover(scope)) },
 		signin:       liveSignin(scope),
 		acquire:      liveAcquire(scope),
 	})

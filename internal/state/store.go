@@ -487,7 +487,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		if out.Decision.Chosen == "" || !ok {
 			return false, nil
 		}
-		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, l.PID, s.root, now)
+		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, chosen.Ref, l.PID, s.root, now)
 		led.dirty = true
 		out.Recorded = true
 		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
@@ -509,7 +509,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 				}
 			}
 		}
-		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Name, AtMS: now.UnixMilli()}
+		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
 		home.dirty = true
 		out.ReHomed = true
 		return l.MustReHome, nil

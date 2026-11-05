@@ -123,6 +123,7 @@ type Proc struct {
 // Candidate is everything the rule knows about one account.
 type Candidate struct {
 	Name string // the account's name: what a launch selects and a line prints
+	Ref  string // how records name it (accounts.Account.Ref); "" when it is Name
 	Key  string // the quota it spends; two dirs on one account share a key
 
 	Reservation Reservation // how the account stands to this launch; carried for the record
@@ -159,9 +160,19 @@ type Pending struct {
 	ID   string `json:"id,omitempty"`
 }
 
-// Last is the newest launch recorded on one account.
+// Last is the newest launch recorded on one subscription, by the name its
+// account had then: for the record and the tie-break, never for routing.
 type Last struct {
 	Name string `json:"name"`
+	AtMS int64  `json:"at_ms"`
+}
+
+// HomeLast is the newest launch one home recorded, by the account's ref
+// (Candidate.Ref): what --last routes to, whatever the account is called
+// now. It is spelled on disk as Last is, so a build that reads the field as a
+// name carries it through a rewrite unchanged.
+type HomeLast struct {
+	Ref  string `json:"name"`
 	AtMS int64  `json:"at_ms"`
 }
 
@@ -175,9 +186,9 @@ type Last struct {
 // subscription name their dirs alike — so a launch in one home must never
 // answer the other's --last.
 type Ledger struct {
-	Recent []Pending       `json:"recent,omitempty"`
-	Last   map[string]Last `json:"last,omitempty"`
-	ByHome map[string]Last `json:"by_home,omitempty"`
+	Recent []Pending           `json:"recent,omitempty"`
+	Last   map[string]Last     `json:"last,omitempty"`
+	ByHome map[string]HomeLast `json:"by_home,omitempty"`
 }
 
 // Clone is a copy that a later RecordAs or Prune on the original leaves alone.
@@ -187,15 +198,17 @@ func (l Ledger) Clone() Ledger {
 
 // RecordAs adds a launch on an account, made by the home at that accounts
 // root. id names a headless placement, whose session process is attached to
-// it later (Attach); it is "" for a launch, whose process is pid.
-func (l *Ledger) RecordAs(id, key, name string, pid int, home string, now time.Time) {
+// it later (Attach); it is "" for a launch, whose process is pid. name is
+// what the account was called, for the record; ref is how --last finds it
+// again (Candidate.Ref), whatever it is called then.
+func (l *Ledger) RecordAs(id, key, name, ref string, pid int, home string, now time.Time) {
 	at := now.UnixMilli()
 	l.Recent = append(l.Recent, Pending{Key: key, Name: name, PID: pid, AtMS: at, Home: home, ID: id})
 	if l.Last == nil {
 		l.Last = map[string]Last{}
 	}
 	if l.ByHome == nil {
-		l.ByHome = map[string]Last{}
+		l.ByHome = map[string]HomeLast{}
 	}
 	// Newest wins: two homes' clocks are one machine's, but a record is never
 	// replaced by an older one.
@@ -203,7 +216,7 @@ func (l *Ledger) RecordAs(id, key, name string, pid int, home string, now time.T
 		l.Last[key] = Last{Name: name, AtMS: at}
 	}
 	if cur, ok := l.ByHome[home]; !ok || at >= cur.AtMS {
-		l.ByHome[home] = Last{Name: name, AtMS: at}
+		l.ByHome[home] = HomeLast{Ref: ref, AtMS: at}
 	}
 }
 
@@ -238,22 +251,17 @@ func (l *Ledger) Prune(now time.Time, keep time.Duration) bool {
 	}
 	l.Recent = kept
 	old := now.Add(-keep).UnixMilli()
-	for _, m := range []map[string]Last{l.Last, l.ByHome} {
-		for k, rec := range m {
-			if rec.AtMS < old {
-				delete(m, k)
-				changed = true
-			}
-		}
-	}
-	return changed
+	n := len(l.Last) + len(l.ByHome)
+	maps.DeleteFunc(l.Last, func(_ string, rec Last) bool { return rec.AtMS < old })
+	maps.DeleteFunc(l.ByHome, func(_ string, rec HomeLast) bool { return rec.AtMS < old })
+	return changed || len(l.Last)+len(l.ByHome) != n
 }
 
 // Newest is the account of the newest launch the home at that accounts root
 // recorded.
-func (l Ledger) Newest(home string) (Last, bool) {
+func (l Ledger) Newest(home string) (HomeLast, bool) {
 	rec, ok := l.ByHome[home]
-	return rec, ok && rec.Name != ""
+	return rec, ok && rec.Ref != ""
 }
 
 // IntentKind is how the account is to be decided.
@@ -308,6 +316,7 @@ type CountedLimit struct {
 // Counted is one candidate after counting: what the rule ranked on.
 type Counted struct {
 	Name         string
+	Ref          string
 	Key          string
 	Reservation  Reservation
 	Excluded     string
@@ -444,6 +453,16 @@ func (d Decision) Find(name string) (Counted, bool) {
 	return Counted{}, false
 }
 
+// findRef returns the counted candidate records name ref.
+func (d Decision) findRef(ref string) (Counted, bool) {
+	for _, c := range d.Candidates {
+		if c.Ref == ref {
+			return c, true
+		}
+	}
+	return Counted{}, false
+}
+
 // Choose applies the rule. It decides and nothing else: recording the choice
 // belongs to the store, which calls this under its lock so that two launches
 // cannot both see an account as empty.
@@ -465,12 +484,12 @@ func Choose(cands []Candidate, ledger Ledger, intent Intent, now time.Time) Deci
 		}
 	case LastUsed:
 		last, ok := ledger.Newest(intent.Home)
-		c, found := d.Find(last.Name)
+		c, found := d.findRef(last.Ref)
 		switch {
 		case !ok:
 			d.Refusal = "no launch is recorded yet — there is no last account"
 		case !found:
-			d.Refusal = fmt.Sprintf("the last account used, %s, is no longer a discovered account", last.Name)
+			d.Refusal = fmt.Sprintf("the last account used, %s, is no longer a discovered account", last.Ref)
 		case c.Unlaunchable:
 			d.Refusal = fmt.Sprintf("the last account used, %s, cannot be launched: %s", c.Name, c.Excluded)
 		default:
@@ -646,7 +665,7 @@ func whyNot(c Counted, intent Intent) string {
 func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 	nowS, nowMS := now.Unix(), now.UnixMilli()
 	out := Counted{
-		Name: c.Name, Key: c.Key, Reservation: c.Reservation, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
+		Name: c.Name, Ref: cmp.Or(c.Ref, c.Name), Key: c.Key, Reservation: c.Reservation, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
 		ObservedAt: c.ObservedAt, Source: c.Source, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
 		Stale:  c.ObservedAt > 0 && nowS-c.ObservedAt > int64(StaleAfter/time.Second),
 		Limits: make([]CountedLimit, 0, len(c.Limits)),

@@ -113,7 +113,7 @@ func (actions *sessionActions) resumeIntent(s *sessions.Session, override bool) 
 	switch {
 	case override:
 		return placement.Intent{Exclude: s.Owner}
-	case owned && launchop.HeldAway(actions.set.Scope, s.Owner, s.CWD):
+	case owned && launchop.HeldAway(actions.set, s.Owner, s.CWD):
 		return placement.Intent{Owner: s.Owner}
 	case owned:
 		return placement.Intent{Kind: placement.Forced, Account: s.Owner, Reason: placement.ReasonOwner}

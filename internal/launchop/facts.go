@@ -89,9 +89,10 @@ func (c candidate) keptOut() string {
 // HeldAway says a reservation keeps the account from work in dir, or that
 // nothing can say it does not: an unreadable `.reserved` never releases an
 // account.
-func HeldAway(scope config.Scope, account, dir string) bool {
-	held, err := accounts.ReadReservations(scope)
-	return err != nil || (held.Held(account) && !held.Admits(account, sessions.RepoKey(dir)))
+func HeldAway(set accounts.Set, account, dir string) bool {
+	held, err := accounts.ReadReservations(set.Scope)
+	ref := set.RefOf(account)
+	return err != nil || (held.Held(ref) && !held.Admits(ref, sessions.RepoKey(dir)))
 }
 
 // standing is how a reservation stands to a launch in project, and what it
@@ -224,9 +225,9 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 
 	for i, s := range src {
 		c := candidate{acct: s.acct, key: s.key, obs: s.obs,
-			Name: s.acct.Name, Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
+			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
-		c.Reservation, c.reserved = standing(held, s.acct.Name, project)
+		c.Reservation, c.reserved = standing(held, s.acct.Ref(), project)
 		if blobs != nil {
 			c.cred = blobs[i]
 		}
@@ -363,7 +364,7 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 func Refs(set accounts.Set) []sessions.AccountRef {
 	refs := make([]sessions.AccountRef, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
-		refs = append(refs, sessions.AccountRef{Name: a.Name, Dir: a.Dir()})
+		refs = append(refs, sessions.AccountRef{Name: a.Name, Ref: a.Ref(), Dir: a.Dir()})
 	}
 	return refs
 }
