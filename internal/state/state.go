@@ -418,18 +418,21 @@ type Document struct {
 
 	Ledger  bool // holds the request ledger, the responses, the placements and the runs
 	ReHomes bool // holds this home's re-homes
+	// RefsPending says the home's records may still name its primary by a
+	// name: the one-time adoption of refs has not committed here.
+	RefsPending bool
 }
 
 // Documents are the snapshot's files, the ledger first.
 func (s Snapshot) Documents() []Document {
 	if s.h == s.d {
-		return []Document{{Version: s.d.version, ReadOnly: s.d.readOnly(), Problems: s.d.problems, Ledger: true, ReHomes: true}}
+		return []Document{{Version: s.d.version, ReadOnly: s.d.readOnly(), Problems: s.d.problems, Ledger: true, ReHomes: true, RefsPending: s.d.refsPending()}}
 	}
 	led := Document{Name: "ledger", Version: s.d.version, ReadOnly: s.d.readOnly(), Ledger: true}
 	for _, p := range s.d.problems {
 		led.Problems = append(led.Problems, Problem{"ledger " + p.Section, p.Detail})
 	}
-	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true}
+	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true, RefsPending: s.h.refsPending()}
 	for _, p := range s.h.problems {
 		switch p.Section {
 		case "accounts", "placements", "runs", "members":

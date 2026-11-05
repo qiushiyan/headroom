@@ -43,6 +43,13 @@ func checkOwnState(snap state.Snapshot, r *report) {
 			r.own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
 				"explicit re-homes are being ignored and cannot be rewritten")
 		}
+		if doc.RefsPending {
+			// A transition, not a failed assumption: every command's start
+			// tries the one-time adoption again and says on stderr why it could
+			// not finish. Said only while it is so, so the line's absence on
+			// every home says the adoption has done its work.
+			r.note("state[refs]: this home's records still name the primary as an older headroom wrote them — every headroom command tries to move them to its dir, and says on stderr what stops it")
+		}
 		if doc.Ledger {
 			auditResponses(snap, r)
 		}
