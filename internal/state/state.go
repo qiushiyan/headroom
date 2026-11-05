@@ -375,8 +375,8 @@ func (d *doc) adoptHomeless() {
 			newest = rec
 		}
 	}
-	// A ref is the account's name for every extra; the primary's is
-	// translated by the one-time adoption of refs (adoptRefs).
+	// The newest name recorded stands as the ref, which it is for an extra;
+	// a primary's launch from that long ago answers no --last.
 	d.placements.ByHome = map[string]placement.HomeLast{d.root: {Ref: newest.Name, AtMS: newest.AtMS}}
 }
 
@@ -418,21 +418,18 @@ type Document struct {
 
 	Ledger  bool // holds the request ledger, the responses, the placements and the runs
 	ReHomes bool // holds this home's re-homes
-	// RefsPending says the home's records may still name its primary by a
-	// name: the one-time adoption of refs has not committed here.
-	RefsPending bool
 }
 
 // Documents are the snapshot's files, the ledger first.
 func (s Snapshot) Documents() []Document {
 	if s.h == s.d {
-		return []Document{{Version: s.d.version, ReadOnly: s.d.readOnly(), Problems: s.d.problems, Ledger: true, ReHomes: true, RefsPending: s.d.refsPending()}}
+		return []Document{{Version: s.d.version, ReadOnly: s.d.readOnly(), Problems: s.d.problems, Ledger: true, ReHomes: true}}
 	}
 	led := Document{Name: "ledger", Version: s.d.version, ReadOnly: s.d.readOnly(), Ledger: true}
 	for _, p := range s.d.problems {
 		led.Problems = append(led.Problems, Problem{"ledger " + p.Section, p.Detail})
 	}
-	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true, RefsPending: s.h.refsPending()}
+	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true}
 	for _, p := range s.h.problems {
 		switch p.Section {
 		case "accounts", "placements", "runs", "members":

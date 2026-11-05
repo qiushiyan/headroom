@@ -827,27 +827,3 @@ func TestCheckReservations(t *testing.T) {
 		})
 	}
 }
-
-// A home an older headroom wrote and the one-time adoption has not yet moved
-// is said, and once the adoption committed nothing is: the line's absence on
-// every home is how a person knows the adoption can be retired. It asserts
-// nothing — every command retries the adoption and says why it stopped.
-func TestAPendingAdoptionIsSaidUntilItCommits(t *testing.T) {
-	home := config.ForHome(t.TempDir()).Claude
-	if err := os.MkdirAll(home.AccountsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for doc, said := range map[string]bool{
-		`{"version":1,"primary":{"name":"me"},"sessions":{"s":{"account":"me","atMs":1}}}`: true,
-		`{"version":1,"refs":1,"sessions":{"s":{"account":".primary","atMs":1}}}`:          false,
-	} {
-		if err := os.WriteFile(filepath.Join(home.AccountsRoot, "state.json"), []byte(doc), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		r, out := testReport()
-		checkOwnState(state.Open(home).Load(), r)
-		if got := strings.Contains(out.String(), "state[refs]"); got != said || r.verdict() != ExitPass {
-			t.Errorf("%s: said %v, want %v; exit %d\n%s", doc, got, said, r.verdict(), out.String())
-		}
-	}
-}

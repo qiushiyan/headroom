@@ -149,26 +149,3 @@ func update(accountsRoot string, change func(map[string]Token) bool) error {
 	}
 	return atomicfile.Write(Path(accountsRoot), ".headless-*.json", data) // 0600
 }
-
-// AdoptRefs moves the token held under any of names to ref, and says which
-// names moved: the one-time adoption of refs, retired with it. Where
-// several are held the one minted last stays: all were minted for the same
-// primary, and the newest is the one its owner last asked for.
-func AdoptRefs(accountsRoot string, names []string, ref string) ([]string, error) {
-	var moved []string
-	err := update(accountsRoot, func(tokens map[string]Token) bool {
-		for _, from := range names {
-			t, ok := tokens[from]
-			if !ok || from == ref {
-				continue
-			}
-			if cur, has := tokens[ref]; !has || t.MintedMS > cur.MintedMS {
-				tokens[ref] = t
-			}
-			delete(tokens, from)
-			moved = append(moved, from)
-		}
-		return len(moved) > 0
-	})
-	return moved, err
-}

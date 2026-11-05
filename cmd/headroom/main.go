@@ -48,16 +48,8 @@ func main() {
 	os.Exit(cli.Run(os.Args[1:]))
 }
 
-// loadConfig is every command's configuration, read once per run, with each
-// home's records first moved to the primary's ref if a build before refs
-// wrote them (app.AdoptRefs, a one-time adoption).
-func loadConfig(ctx *kong.Context) (config.Config, error) {
-	cfg, err := config.Load()
-	if err == nil {
-		app.AdoptRefs(cfg, ctx.Stderr)
-	}
-	return cfg, err
-}
+// loadConfig is every command's configuration, read once per run.
+func loadConfig(*kong.Context) (config.Config, error) { return config.Load() }
 
 // host is the machine a run acts on: the edges a surface reaches through
 // beyond its files, bound once. A test replaces it by appending a binding of
