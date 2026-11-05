@@ -22,7 +22,7 @@ func TestParseTailTitleChain(t *testing.T) {
 		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"done"},{"type":"tool_use"}]}}`,
 	}
 	tail := ParseTail([]byte(strings.Join(lines, "\n")+"\n"), storeDir, true)
-	if tail.ID != "s1" || tail.AITitle != "new title" || tail.Title() != "new title" {
+	if tail.AITitle != "new title" || tail.Title() != "new title" {
 		t.Errorf("ai-title chain: %+v", tail)
 	}
 	if tail.CWD != "/tmp/proj" || tail.Branch != "main" {
@@ -733,5 +733,34 @@ func TestInspectClaimsVerifiesEachClaimByItsOwnProcess(t *testing.T) {
 	}
 	if got := strings.Join(running, " "); got != "live/1 registered-late/3 doubted/1" {
 		t.Errorf("running claims = %s", got)
+	}
+}
+
+// `claude --resume <id>` opens <id>.jsonl, so a session is the file it is
+// listed from: its id is the file's, and dd removes that file, whatever id the
+// records inside it carry.
+func TestASessionIsTheFileItIsListedFrom(t *testing.T) {
+	projects, write := storeFixture(t)
+	write("-tmp-p", "aaaa-1.jsonl", rec("bbbb-2", "/tmp/p", "carried over"), time.Now())
+	write("-tmp-p", "bbbb-2.jsonl", rec("bbbb-2", "/tmp/p", "the other one"), time.Now().Add(-time.Hour))
+
+	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
+	var listed *Session
+	for _, s := range l.Sessions {
+		if s.Path == filepath.Join(projects, "-tmp-p", "aaaa-1.jsonl") {
+			listed = s
+		}
+	}
+	if listed == nil || listed.ID != "aaaa-1" || len(l.Sessions) != 2 {
+		t.Fatalf("listed %d session(s); aaaa-1.jsonl as %+v", len(l.Sessions), listed)
+	}
+	if err := DeleteTranscript(listed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(listed.Path); !os.IsNotExist(err) {
+		t.Error("dd left the transcript it was pointed at")
+	}
+	if _, err := os.Stat(filepath.Join(projects, "-tmp-p", "bbbb-2.jsonl")); err != nil {
+		t.Errorf("dd removed another session's transcript: %v", err)
 	}
 }

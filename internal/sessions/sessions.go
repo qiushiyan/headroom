@@ -145,6 +145,13 @@ func Collect(in Input) Listing {
 // geometrically until a cwd verifies or the whole file has been read (rare:
 // 5 of 178 in the live store, and only ever on multi-MB files).
 func readSession(storeDir, storeDirName, name string) *Session {
+	// The file's name is the session's identity — the uuid before any suffix
+	// (".jsonl", ".orphaned-<ts>-<hash>.jsonl") — because it is what
+	// `claude --resume <id>` opens, whatever id the records inside carry.
+	id, _, _ := strings.Cut(name, ".")
+	if id == "" {
+		return nil
+	}
 	path := filepath.Join(storeDir, name)
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -171,15 +178,6 @@ func readSession(storeDir, storeDirName, name string) *Session {
 		}
 	}
 
-	id := tail.ID
-	if id == "" {
-		// The filename is the fallback identity: the uuid before any suffix
-		// (".jsonl", ".orphaned-<ts>-<hash>.jsonl").
-		id, _, _ = strings.Cut(name, ".")
-	}
-	if id == "" {
-		return nil
-	}
 	return &Session{
 		ID: id, Path: path, StoreDir: storeDir,
 		MTime: fi.ModTime(), Size: size, Tail: tail, CWD: tail.CWD,

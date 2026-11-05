@@ -62,7 +62,6 @@ func abs(n int64) int64 {
 // Later records override earlier ones throughout: every field is "the newest
 // one seen".
 type Tail struct {
-	ID          string // sessionId carried by records
 	CustomTitle string // user rename (custom-title record) — outranks AITitle
 	AITitle     string
 	LastPrompt  string // the vendor's own "newest real prompt" record
@@ -120,7 +119,6 @@ func (t Tail) ObservedBranch() string {
 // below decides what matters.
 type tailRec struct {
 	Type         string  `json:"type"`
-	SessionID    string  `json:"sessionId"`
 	CustomTitle  string  `json:"customTitle"`
 	AITitle      string  `json:"aiTitle"`
 	LastPrompt   *string `json:"lastPrompt"`
@@ -170,9 +168,6 @@ func ParseTail(data []byte, storeDirName string, whole bool) Tail {
 		if json.Unmarshal(line, &r) != nil {
 			t.Bad++
 			continue
-		}
-		if r.SessionID != "" {
-			t.ID = r.SessionID
 		}
 		if cwd := r.RelocatedCwd; cwd != "" && Munge(cwd) == storeDirName {
 			t.CWD = cwd
