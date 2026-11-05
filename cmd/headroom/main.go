@@ -26,7 +26,8 @@ var cli = clikit.App{
 	Description: "headroom shows which of this machine's Claude Code and Codex accounts has quota left, " +
 		"launches claude or codex on the account it decides, and continues any Claude Code session on " +
 		"the account that last drove it.",
-	New: func() any { return &CLI{} },
+	New:     func() any { return &CLI{} },
+	Outcome: outcome,
 	Options: []kong.Option{
 		kong.Vars{"version": app.VersionLine()},
 		kong.BindSingletonProvider(loadConfig),
@@ -83,8 +84,9 @@ func streams(ctx *kong.Context, in io.Reader) app.Streams {
 	return app.Streams{In: in, Out: ctx.Stdout, Err: ctx.Stderr}
 }
 
-// outcome is a surface's result as the run's status: a status it chose after
-// reporting, a request it could not carry out as asked, or a failure.
+// outcome is a command's error as the run's status: a status its surface
+// chose after reporting, a request it could not carry out as asked, or a
+// failure. What a command chose itself with clikit never reaches it.
 func outcome(err error) error {
 	if s, ok := errors.AsType[app.Status](err); ok {
 		return clikit.Exit(int(s))

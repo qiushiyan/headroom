@@ -343,6 +343,10 @@ func TestBrokenConfiguration(t *testing.T) {
 			t.Errorf("%q: exit %d\nstdout: %s\nstderr: %s", args, r.Code, r.Stdout, r.Stderr)
 		}
 	}
+	// The help word reaches resume's page, which must not read as a working command.
+	if r := clikittest.Run(a, "help", "resume"); r.Code != 0 || !strings.Contains(r.Stdout, "Retired") || !strings.Contains(r.Stdout, "headroom sessions") {
+		t.Errorf("help resume: exit %d\nstdout: %s\nstderr: %s", r.Code, r.Stdout, r.Stderr)
+	}
 	for _, args := range [][]string{{"limits"}, {"launch", "--account", "a@x.com"}, {}} {
 		if r := clikittest.Run(a, args...); r.Code != 1 || !strings.Contains(r.Stderr, "HEADROOM_HOME") {
 			t.Errorf("%q: exit %d, want 1\nstderr: %s", args, r.Code, r.Stderr)

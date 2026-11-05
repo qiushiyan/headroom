@@ -32,7 +32,7 @@ Constraints:
 Commands:
   board                          The account board: every account's limits, live; also headroom
                                  accounts (default).
-  accounts board                 The account board (default).
+  accounts board                 The account board (default of accounts).
   accounts add <email>           Seed the dir for a new subscription.
   accounts remove [<account>]    Remove an extra account: its Keychain item and its dir.
   accounts reserve [<account>] [<dirs> ...]
@@ -47,7 +47,7 @@ Commands:
   launches                       List the newest launches, or judge how automatic placement has
                                  done.
   login renew [<account> ...]    Renew the logins that end soon, or the named ones, one after
-                                 another at this terminal (default).
+                                 another at this terminal (default of login).
   login start <account>          Start one account's sign-in for an approver elsewhere, and print
                                  its URL as JSON.
   login finish <account>         Send a started sign-in the code its page showed, from stdin, and
@@ -55,7 +55,7 @@ Commands:
   login status <account>         Print one account's started sign-in as JSON.
   login cancel <account>         End one account's started sign-in while it waits for its code.
   headless list                  List every account's headless token: whether there is one, and when
-                                 it ends (default).
+                                 it ends (default of headless).
   headless mint <account>        Mint a long-lived token for one account through claude setup-token.
   headless place                 Decide which account the next headless session spends, and record
                                  it.

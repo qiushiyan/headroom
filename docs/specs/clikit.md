@@ -5,6 +5,9 @@ over two of its workarounds: it refuses a default's flag before another
 command itself (the root hook below is deleted), and reports a mistyped
 command under the root's usage, so difference 6 reads `unexpected argument
 <word>, did you mean "<command>"?` under `Usage: headroom [<command>]`.
+clikit v0.6.1 took over the per-command mapping too: `App.Outcome` maps a
+surface's status and usage error once, so the `Run` methods below return the
+call's error as it is.
 The record of what the migration was built from: what the grammar is, which
 differences callers see, how the code is reshaped around it, and the cases
 that hold it. Written against `main` at dd103a3, clikit v0.4.1 and Kong
