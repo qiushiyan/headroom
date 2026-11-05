@@ -189,7 +189,7 @@ func (p *Plan) Preview(w io.Writer, binary string) (chosen bool, err error) {
 		return false, err
 	}
 	d := placement.Choose(p.facts.rule(), p.facts.snap.Placements(), p.req.Intent, p.req.Now)
-	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts.home, p.facts.labels)
+	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts.home, p.facts.labels, p.facts.standing)
 	return d.Chosen != "", nil
 }
 
@@ -240,8 +240,8 @@ func (p *Plan) Commit() (*Launch, error) {
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
 	}
-	rec := launchlog.New(out.decision, cands, placed.Ledger, req.Intent, req.Now)
-	rec.Vendor, rec.PID, rec.CWD, rec.Mode, rec.Recorded = string(scope.Vendor), os.Getpid(), req.CWD, req.Mode, placed.Recorded
+	rec := f.record(out.decision, placed.Ledger, req.Intent, req.Now)
+	rec.PID, rec.CWD, rec.Mode, rec.Recorded = os.Getpid(), req.CWD, req.Mode, placed.Recorded
 	rec.Session = p.session.Route
 	if missed != nil {
 		rec.Problem = missed.Error()

@@ -22,6 +22,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launch"
+	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -45,9 +46,10 @@ type candidate struct {
 	// chooses: "" when it was not read, and when it could not be.
 	cred string
 
-	// reserved says what the account is reserved for, in a person's words: ""
-	// when it has no reservation.
-	reserved string
+	// standing is how a reservation stands to this launch — reservedHere,
+	// reservedElsewhere, or "" for none — and reserved what it is for, in a
+	// person's words. Neither reaches the rule: elsewhere is an exclusion.
+	standing, reserved string
 
 	// prepared is the launch an ordinary launch on this account would run, and
 	// prepareErr why none can run here at all. A headless placement prepares
@@ -80,7 +82,7 @@ type facts struct {
 
 // keptOut is why a reservation keeps this account from this launch, or "".
 func (c candidate) keptOut() string {
-	if c.Reservation == placement.ReservedElsewhere {
+	if c.standing == reservedElsewhere {
 		return c.reserved
 	}
 	return ""
@@ -103,13 +105,19 @@ func readReservations(scope config.Scope) reservations {
 // account.
 func (r reservations) keeps(ref, project string) bool {
 	s, _ := standing(r.held, ref, project)
-	return r.err != nil || s == placement.ReservedElsewhere
+	return r.err != nil || s == reservedElsewhere
 }
+
+// How a reservation stands to one launch, as the launch log spells it.
+const (
+	reservedHere      = "here"      // kept for the repository this launch runs in: ranked like any other
+	reservedElsewhere = "elsewhere" // kept for others: keptOut says which
+)
 
 // standing is how a reservation stands to a launch in project, and what it
 // is for in a person's words. An account whose repositories are all gone is
 // still kept from everything else: a missing directory is not permission.
-func standing(held accounts.Reservations, ref, project string) (placement.Reservation, string) {
+func standing(held accounts.Reservations, ref, project string) (string, string) {
 	if !held.Held(ref) {
 		return "", ""
 	}
@@ -119,9 +127,9 @@ func standing(held accounts.Reservations, ref, project string) (placement.Reserv
 	}
 	words := "reserved for " + strings.Join(dirs, ", ")
 	if held.Admits(ref, project) {
-		return placement.ReservedHere, words
+		return reservedHere, words
 	}
-	return placement.ReservedElsewhere, words
+	return reservedElsewhere, words
 }
 
 // rule is the candidates as the rule and the store take them.
@@ -131,6 +139,12 @@ func (f facts) rule() []placement.Candidate {
 		out[i] = c.Candidate
 	}
 	return out
+}
+
+// standing is how the named account's reservation stood to the launch.
+func (f facts) standing(name string) string {
+	c, _ := f.find(name)
+	return c.standing
 }
 
 // find is the candidate of that name.
@@ -237,7 +251,7 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 		c := candidate{acct: s.acct, key: s.key, obs: s.obs,
 			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
 		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
-		c.Reservation, c.reserved = standing(res.held, s.acct.Ref(), project)
+		c.standing, c.reserved = standing(res.held, s.acct.Ref(), project)
 		if blobs != nil {
 			c.cred = blobs[i]
 		}
@@ -470,4 +484,16 @@ func readCredsParallel(accts []accounts.Account, read func(accounts.Account) str
 	}
 	wg.Wait()
 	return out
+}
+
+// record is a placement's line in the launch log: the decision and every
+// input the rule read, and how each reserved account stood to the launch —
+// which the rule never sees, so that it cannot prefer an account for it.
+func (f facts) record(d placement.Decision, ledger placement.Ledger, intent placement.Intent, now time.Time) launchlog.Record {
+	rec := launchlog.New(d, f.rule(), ledger, intent, now)
+	rec.Vendor = string(f.set.Scope.Vendor)
+	for i, c := range rec.Candidates {
+		rec.Candidates[i].Reservation = f.standing(c.Name)
+	}
+	return rec
 }

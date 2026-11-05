@@ -19,10 +19,9 @@
 // are the ones that cannot be asked. Every counted figure carries its basis,
 // so a lower bound is never recorded as measured room.
 //
-// An account can be reserved for certain repositories, which is decided before
-// the rule: elsewhere the account is excluded like any other, and in them it is
-// ranked like any other. A reservation says what an account may be used for,
-// never that it goes first.
+// A reservation never reaches the rule: it is decided before it, as an
+// ordinary exclusion elsewhere and nothing at all in its repositories, so the
+// rule cannot prefer an account for what it is kept for.
 package placement
 
 import (
@@ -89,15 +88,6 @@ const (
 	TimeAssumed   TimeBasis = "assumed"   // nothing says: AssumedWindow
 )
 
-// Reservation is how an account kept for certain repositories stands to one
-// launch. "" is an account with no reservation.
-type Reservation string
-
-const (
-	ReservedHere      Reservation = "here"      // kept for the repository this launch runs in: ranked like any other
-	ReservedElsewhere Reservation = "elsewhere" // kept for others: Excluded says which
-)
-
 // Limit is one limit row of an account's newest observation.
 type Limit struct {
 	Kind    string // the vendor's word for the row
@@ -125,8 +115,6 @@ type Candidate struct {
 	Name string // the account's name: what a launch selects and a line prints
 	Ref  string // how records name it (accounts.Account.Ref); "" when it is Name
 	Key  string // the quota it spends; two dirs on one account share a key
-
-	Reservation Reservation // how the account stands to this launch; carried for the record
 
 	// Excluded says why an automatic choice avoids this account ("" = it may
 	// be chosen). Unlaunchable narrows that: no launch can run here at all, so
@@ -318,7 +306,6 @@ type Counted struct {
 	Name         string
 	Ref          string
 	Key          string
-	Reservation  Reservation
 	Excluded     string
 	Unlaunchable bool
 	ObservedAt   int64
@@ -665,7 +652,7 @@ func whyNot(c Counted, intent Intent) string {
 func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 	nowS, nowMS := now.Unix(), now.UnixMilli()
 	out := Counted{
-		Name: c.Name, Ref: cmp.Or(c.Ref, c.Name), Key: c.Key, Reservation: c.Reservation, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
+		Name: c.Name, Ref: cmp.Or(c.Ref, c.Name), Key: c.Key, Excluded: c.Excluded, Unlaunchable: c.Unlaunchable,
 		ObservedAt: c.ObservedAt, Source: c.Source, Statuses: c.Statuses, Busy: len(c.Busy), order: order,
 		Stale:  c.ObservedAt > 0 && nowS-c.ObservedAt > int64(StaleAfter/time.Second),
 		Limits: make([]CountedLimit, 0, len(c.Limits)),

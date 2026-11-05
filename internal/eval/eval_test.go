@@ -738,12 +738,13 @@ func TestNothingRecordedIsAnEmptyReport(t *testing.T) {
 func TestAReservedAccountIsNoOtherWorksRoom(t *testing.T) {
 	soon, week := at(2*time.Hour), at(3*24*time.Hour)
 	held := cand("b", at(0), limits(10, 10, soon, week))
-	held.Reservation = placement.ReservedHere
 	readings := []usagelog.Record{
 		logged(at(30*time.Minute), "a", 85, 10, soon, week),
 		logged(at(30*time.Minute), "b", 10, 10, soon, week),
 	}
-	rep := build([]Launch{auto(at(0), cand("a", at(0), limits(10, 10, soon, week)), held)}, readings, at(time.Hour))
+	l := auto(at(0), cand("a", at(0), limits(10, 10, soon, week)), held)
+	l.Candidates[1].Reservation = "here"
+	rep := build([]Launch{l}, readings, at(time.Hour))
 	if len(rep.Episodes) != 1 || rep.Episodes[0].Elsewhere != nil {
 		t.Errorf("episodes = %+v", rep.Episodes)
 	}

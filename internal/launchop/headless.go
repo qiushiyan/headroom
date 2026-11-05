@@ -99,8 +99,8 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 		out.ID = id
 		// The placement's line in the launch log, as a launch's: `launches
 		// --eval` judges the rule by every decision it made.
-		rec := launchlog.New(placed.Decision, f.rule(), placed.Ledger, intent, now)
-		rec.Vendor, rec.Mode, rec.Recorded, rec.CWD = string(req.Set.Scope.Vendor), "headless", placed.Recorded, req.CWD
+		rec := f.record(placed.Decision, placed.Ledger, intent, now)
+		rec.Mode, rec.Recorded, rec.CWD = "headless", placed.Recorded, req.CWD
 		if err := launchlog.Append(req.Set.Scope.AccountsRoot, rec); err != nil {
 			out.Notes = append(out.Notes, fmt.Sprintf("launch log not written (%v)", err))
 		}

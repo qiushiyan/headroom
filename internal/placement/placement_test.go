@@ -553,21 +553,3 @@ func TestTheLastAccountUsedIsPerHome(t *testing.T) {
 		t.Errorf("an older launch replaced this home's last: %q", d.Chosen)
 	}
 }
-
-// A reservation says what an account may be used for, never that it goes
-// first: in its repository the account is ranked like any other, and a tie
-// goes by weekly room.
-func TestInItsRepositoryAReservedAccountIsRankedLikeAnyOther(t *testing.T) {
-	held := acct("held", 0, 70)
-	held.Reservation = ReservedHere
-	free := acct("free", 0, 10)
-	if d := chosen(t, []Candidate{held, free}, Ledger{}, Intent{}); d.Chosen != "free" || d.Reason != ReasonLeastLoad {
-		t.Errorf("tie = %s, %s", d.Chosen, d.Reason)
-	}
-	held = acct("held", 0, 10)
-	held.Reservation = ReservedHere
-	free = acct("free", 0, 70)
-	if d := chosen(t, []Candidate{free, held}, Ledger{}, Intent{}); d.Chosen != "held" || d.Reason != ReasonLeastLoad {
-		t.Errorf("more weekly room = %s, %s", d.Chosen, d.Reason)
-	}
-}

@@ -86,7 +86,7 @@ type Candidate struct {
 	// Reservation is how the account stood to this launch: "here", "elsewhere",
 	// or absent when it has no reservation. It is the launch's input, resolved
 	// once: a replay never reads `.reserved` or the repository.
-	Reservation string   `json:"reservation,omitempty"`
+	Reservation string   `json:"reservation,omitempty"` // the caller's to add: the rule never sees it
 	NearLimit   bool     `json:"near_limit"`
 	ObservedAt  *string  `json:"observed_at"` // RFC3339 UTC; null = never observed
 	Source      string   `json:"source,omitempty"`
@@ -161,7 +161,7 @@ func New(d placement.Decision, cands []placement.Candidate, ledger placement.Led
 	}
 	for i, c := range d.Candidates {
 		lc := Candidate{
-			Name: c.Name, Key: c.Key, Eligible: c.Excluded == "", Excluded: c.Excluded, Reservation: string(c.Reservation), NearLimit: c.NearLimit,
+			Name: c.Name, Key: c.Key, Eligible: c.Excluded == "", Excluded: c.Excluded, NearLimit: c.NearLimit,
 			Source: c.Source, Statuses: c.Statuses, Busy: c.Busy, Pending: c.Pending, Load: c.Load, Weekly: c.Week.Counted,
 			Week: Week{
 				Kind: c.Week.Kind, Label: c.Week.Label, Counted: c.Week.Counted,
