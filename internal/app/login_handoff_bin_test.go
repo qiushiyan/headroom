@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -257,13 +259,15 @@ func (h handoffBin) vendorPIDs(t *testing.T) []int {
 func running(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
 
 // awaitRegistered waits for the vendor's registration, written just after
-// its launch: an owner killed before that moment leaves a vendor nothing
-// could find, which is not the case these tests are about.
-func (h handoffBin) awaitRegistered(t *testing.T) {
+// its launch, and returns it: an owner killed before that moment leaves a
+// vendor nothing could find, which is not the case these tests are about.
+// The registration, not the stub's own record, names the vendor: a freshly
+// written stub can take a while to run its first line.
+func (h handoffBin) awaitRegistered(t *testing.T) signin.Proc {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if _, ok := signin.ReadVendor(h.paths().Vendor()); ok {
-			return
+		if p, ok := signin.ReadVendor(h.paths().Vendor()); ok {
+			return p
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the vendor was never registered")
@@ -282,11 +286,20 @@ func awaitGone(pid int) bool {
 // start take a live sign-in for a dead one. (review r1 F1)
 func TestHandoffBinaryHolderKeepsItsLock(t *testing.T) {
 	h := newHandoffBin(t)
-	h.extraEnv = []string{"GOGC=1", "NOISE=200000"}
+	h.extraEnv = []string{"GOGC=1", "NOISE=20000"}
 	if doc, code, _ := h.run(t, "", "login", "start", "a@x.com"); code != 0 || doc.State != signin.Awaiting {
 		t.Fatalf("start: exit %d, %+v", code, doc)
 	}
-	time.Sleep(2 * time.Second) // the holder reads the noise, and collects
+	// The holder has read all the noise, collecting as it went, once the
+	// last of it is in its log.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if logged, _ := os.ReadFile(h.paths().Log()); bytes.Contains(logged, []byte("claude: 20000\n")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the holder never read the vendor's noise")
+		}
+	}
 	if doc, code, _ := h.run(t, "", "login", "start", "a@x.com"); code != 0 || doc.Reused == nil || !*doc.Reused {
 		t.Errorf("a second start: exit %d, %+v", code, doc)
 	}
@@ -306,29 +319,30 @@ func TestHandoffBinaryEndsAnyVendorLeftBehind(t *testing.T) {
 	if err := starting.Start(); err != nil {
 		t.Fatal(err)
 	}
-	h.awaitRegistered(t)
-	holder, _ := exec.Command("pgrep", "-f", h.bin+" login hold a@x.com").Output()
+	first := h.awaitRegistered(t)
+	// The holder is start's child until start returns.
+	holder, _ := exec.Command("pgrep", "-P", fmt.Sprint(starting.Process.Pid), "-f", "login hold").Output()
 	var hp int
 	fmt.Sscan(string(holder), &hp)
-	if hp == 0 || len(h.vendorPIDs(t)) != 1 {
-		t.Fatalf("holder %q, vendors %v", holder, h.vendorPIDs(t))
+	if hp == 0 {
+		t.Fatalf("no holder under start: %q", holder)
 	}
-	first := h.vendorPIDs(t)[0]
 	syscall.Kill(hp, syscall.SIGKILL)
 	// The start that waited on that holder still holds the lock, and ends
 	// the vendor it registered before reporting the holder failed.
 	if err := starting.Wait(); err == nil {
 		t.Error("start reported success for a holder that died")
 	}
-	if !awaitGone(first) {
+	if !awaitGone(first.PID) {
 		t.Error("a vendor started before its URL was left running")
 	}
 	if doc := h.recordOf(t); doc.Reason != reasonHolderFailed {
 		t.Errorf("record after: %+v", doc)
 	}
 
-	// A batch, killed while its vendor waits for a code.
-	os.Remove(h.record)
+	// A batch, killed while its vendor waits for a code. The vendors from
+	// here on print their URL at once.
+	h.extraEnv = nil
 	batch := exec.Command(h.bin, "login", "a@x.com")
 	batch.Env = append(h.env(), "SSH_CONNECTION=10.0.0.1 50000 10.0.0.2 22")
 	in, _ := batch.StdinPipe()
@@ -336,35 +350,55 @@ func TestHandoffBinaryEndsAnyVendorLeftBehind(t *testing.T) {
 	if err := batch.Start(); err != nil {
 		t.Fatal(err)
 	}
-	h.awaitRegistered(t)
+	orphan := h.awaitRegistered(t)
 	batch.Process.Kill()
 	batch.Wait()
-	orphan := h.vendorPIDs(t)[0]
-	if !running(orphan) {
+	if !alive(orphan) {
 		t.Fatal("the batch's vendor ended with it; nothing was left behind")
 	}
 	if _, code, _ := h.run(t, "", "login", "start", "a@x.com"); code != 0 {
 		t.Errorf("start after the batch: exit %d", code)
 	}
-	if !awaitGone(orphan) {
+	if !awaitGone(orphan.PID) {
 		t.Error("a killed batch's vendor was left running")
 	}
 }
 
 // A vendor runs only while it is registered: one whose registration cannot
-// be written is ended at once and the sign-in refused, since nothing could
-// find it should its holder die. (review r2, astra R1)
+// be written is ended at once and the login refused, since nothing could
+// find it should its owner die — the holder's and the batch's alike, which
+// start their vendors in two places. (review r2, astra R1)
 func TestHandoffBinaryRefusesAVendorItCannotRegister(t *testing.T) {
 	h := newHandoffBin(t)
 	if err := os.MkdirAll(h.paths().Vendor(), 0o700); err != nil { // nothing can be renamed over it
 		t.Fatal(err)
 	}
+	// A vendor ended before it ran its first line recorded no pid; one that
+	// recorded its pid must be gone.
+	ended := func(who string) {
+		t.Helper()
+		pids := h.vendorPIDs(t)
+		for _, pid := range pids {
+			if !awaitGone(pid) {
+				t.Errorf("%s: vendors %v: the unregistered vendor was left running", who, pids)
+			}
+		}
+		os.Remove(h.record)
+	}
 	doc, code, _ := h.run(t, "", "login", "start", "a@x.com")
 	if code != 1 || doc.reason() != reasonHolderFailed {
 		t.Errorf("start: exit %d, %+v", code, doc)
 	}
-	pids := h.vendorPIDs(t)
-	if len(pids) != 1 || !awaitGone(pids[0]) {
-		t.Errorf("vendors %v: the unregistered vendor was left running", pids)
+	ended("start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	batch := exec.CommandContext(ctx, h.bin, "login", "a@x.com")
+	batch.Env = append(h.env(), "SSH_CONNECTION=10.0.0.1 50000 10.0.0.2 22")
+	batch.WaitDelay = time.Second // a vendor left running holds the output open
+	out, _ := batch.CombinedOutput()
+	if code := batch.ProcessState.ExitCode(); code != 1 || !strings.Contains(string(out), "✗ a@x.com") || !strings.Contains(string(out), "registered") {
+		t.Errorf("the batch: exit %d\n%s", code, out)
 	}
+	ended("the batch")
 }

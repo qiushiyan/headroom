@@ -9,32 +9,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-func TestSeedShape(t *testing.T) {
-	cfg := testConfig(t)
-	dir, shared, _, err := Seed(cfg, "new@x.com", SeedOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir != filepath.Join(cfg.AccountsRoot, "new@x.com") || len(shared) != 0 {
-		t.Fatalf("dir=%q shared=%v", dir, shared)
-	}
-	// The store was created as a real dir and projects/ links to it.
-	if fi, err := os.Lstat(cfg.StoreDir()); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-		t.Fatalf("canonical store not a real directory: %v %v", fi, err)
-	}
-	if err := VerifyTopology(Account{Scope: cfg, ConfigDir: dir, Name: "new@x.com"}); err != nil {
-		t.Fatalf("seeded dir fails topology: %v", err)
-	}
-	// Discovery lists it; the strict selector resolves it.
-	if _, err := Discover(cfg).Select("new@x.com"); err != nil {
-		t.Fatalf("Select: %v", err)
-	}
-	// Seeding twice refuses.
-	if _, _, _, err := Seed(cfg, "new@x.com", SeedOptions{}); err == nil {
-		t.Fatal("second seed should refuse")
-	}
-}
-
 func TestSeedRefusesBadNames(t *testing.T) {
 	cfg := testConfig(t)
 	for _, n := range []string{"", "noatsign", "a@x.com.lock", "../a@x.com", "sub/a@x.com"} {

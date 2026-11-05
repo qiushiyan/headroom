@@ -177,7 +177,8 @@ func TestOnlyUsableBodiesAreStored(t *testing.T) {
 
 	s = Open(rootScope(t.TempDir()))
 	dec = claimOne(t, s, k, now)
-	huge := make([]byte, BodyLimit+1)
+	// A body that would store, but for its size.
+	huge := append(append([]byte(`{"limits":[],"pad":"`), bytes.Repeat([]byte("x"), BodyLimit)...), `"}`...)
 	if _, err := s.Complete(k, dec.Generation, OutcomeStored, huge, now); err != nil {
 		t.Fatal(err)
 	}
@@ -231,26 +232,17 @@ func TestClockAnomaliesAreNotTrusted(t *testing.T) {
 	}
 
 	// The same holds for a spacing longer than the maximum cooldown, whose
-	// bound is the spacing, each claim reading a freshly opened store. The
-	// document also carries the checkpoint a retired upgrade path wrote, a far
-	// deadline of its own: a section nothing reads, it neither holds the
-	// account quiet nor leaves the file.
+	// bound is the spacing, each claim reading a freshly opened store.
 	slow := rootScope(root)
 	slow.Spacing = 2 * CooldownMax
 	far := itoa(now.Add(72 * time.Hour).UnixMilli())
-	writeDoc(t, root, `{"version":1,"legacy_import":{"quiet_until_ms":`+far+`},"accounts":{"dir:c":{"request":{"next_eligible_ms":`+far+`}}}}`)
+	writeDoc(t, root, `{"version":1,"accounts":{"dir:c":{"request":{"next_eligible_ms":`+far+`}}}}`)
 	if claimOne(t, Open(slow), key("c"), now).Permit {
 		t.Fatal("inside the clamped bound a claim must be denied")
 	}
 	later = now.Add(ceiling(slow.Spacing) + time.Second)
 	if !claimOne(t, Open(slow), key("c"), later).Permit {
 		t.Error("the clamped deadline receded with the clock under a long spacing")
-	}
-	if !claimOne(t, Open(slow), key("d"), now).Permit {
-		t.Error("the retired checkpoint's deadline held an account quiet")
-	}
-	if _, kept := readRaw(t, root)["legacy_import"]; !kept {
-		t.Error("a section this binary does not read was dropped by a write")
 	}
 }
 
@@ -508,6 +500,27 @@ func TestLockAcquisitionIsBounded(t *testing.T) {
 	if elapsed > claimWait+time.Second {
 		t.Errorf("blocked for %v; a claim must give up quickly — nothing is lost by "+
 			"trying again next round", elapsed)
+	}
+}
+
+// The claim reaching disk is what authorizes a request, and refresh fetches
+// on Permit alone: a claim whose write fails must permit nothing, or every
+// surface would fetch against a ledger that records none of it. Dropping the
+// denial from Claim's error path must fail this.
+func TestAClaimThatCannotBeWrittenPermitsNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through the permission bits")
+	}
+	root := t.TempDir()
+	s := Open(rootScope(root))
+	claimOne(t, s, key("a"), time.Now()) // the document and its lock exist
+	if err := os.Chmod(root, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(root, 0o755) })
+	dec, err := s.Claim([]Key{key("b")}, time.Now())
+	if err == nil || dec[0].Permit {
+		t.Errorf("a claim that could not be written: permit %v, err %v", dec[0].Permit, err)
 	}
 }
 

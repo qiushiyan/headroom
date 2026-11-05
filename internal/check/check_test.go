@@ -450,22 +450,6 @@ func TestRunPrimaryCredentialSource(t *testing.T) {
 	}
 }
 
-func TestRereadCredentialFilePrimary(t *testing.T) {
-	primaryDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(primaryDir, ".credentials.json"),
-		[]byte(`{"claudeAiOauth":{"accessToken":"refreshed"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
-	if token, ok := rereadCredential(primaryDir)(""); !ok || token != "refreshed" {
-		t.Errorf("401 re-check got %q, %v", token, ok)
-	}
-}
-
 // soundClaudeTree builds a Claude Code fixture every assertion passes on —
 // stub claude and security on PATH, a logged-in primary, a registry, history
 // and one transcript — and hands back its scope and a file writer. The usage
@@ -535,9 +519,12 @@ func TestCheckRegistryStatus(t *testing.T) {
 	}
 }
 
-// The session store's two drift assertions that can actually fire. History
-// with lines but no parseable claim means attribution silently fell back to
-// the current account. A transcript larger than the tail budget must resolve
+// The session store's drift assertions. History with lines but no parseable
+// claim means attribution silently fell back to the current account. A
+// registry record that does not parse leaves liveness incomplete, and r and dd
+// then refuse what they cannot prove closed. A store where no transcript
+// titles, or none names a cwd its store dir was named after, means those
+// record shapes moved. A transcript larger than the tail budget must resolve
 // through the tail to what a full parse resolves: a rename beyond the budget,
 // with newer prompts inside it, renders the wrong title while "some title
 // exists" still passes.
@@ -554,32 +541,45 @@ func TestCheckSessionStore(t *testing.T) {
 		fmt.Fprintf(&b, "{\"type\":\"assistant\",\"sessionId\":\"s\",\"cwd\":%q,\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":\"hi\"}}\n", cwd)
 		return b.String()
 	}
+	// No title record, no prompt string, and a cwd the store dir was not named
+	// after: what every transcript looks like once those fields move.
+	const drifted = `{"type":"user","sessionId":"s","workingDir":"/project","message":{"role":"user","content":[{"type":"tool_result"}]}}` + "\n"
 	for _, tc := range []struct {
-		name, history string
-		rename        string
-		wantOK        string
-		wantFail      string
+		name, history, registry string
+		rename, body            string // body replaces the generated transcript
+		wantOK                  string
+		wantFail                []string
 	}{
 		{name: "history that parses", history: `{"sessionId":"s","timestamp":1}` + "\n", wantOK: "history[primary]"},
-		{name: "history with lines but no parseable claim", history: `{"display":"a prompt"}` + "\n", wantFail: "history[primary]: prompt records carry sessionId + timestamp"},
+		{name: "history with lines but no parseable claim", history: `{"display":"a prompt"}` + "\n", wantFail: []string{"history[primary]: prompt records carry sessionId + timestamp"}},
+		{name: "a registry record that does not parse", registry: `{"sessionId":"s","pid":`, wantFail: []string{"registry: live-session records carry sessionId + pid + startedAt"}},
 		{name: "a large transcript the tail resolves", wantOK: tailLine},
-		{name: "a rename beyond the tail budget", rename: "renamed long ago", wantFail: tailLine},
+		{name: "a rename beyond the tail budget", rename: "renamed long ago", wantFail: []string{tailLine}},
+		{name: "title and cwd records drifted", body: drifted, wantFail: []string{"sessions: title/prompt records parse", "sessions: cwd records verify"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cfg := claudeScope(home, "qiushi")
 			project := filepath.Join(home, "project")
-			path := filepath.Join(cfg.StoreDir(), sessions.Munge(project), "s.jsonl")
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
+			body := tc.body
+			if body == "" {
+				body = transcript(project, tc.rename)
 			}
-			if err := os.WriteFile(path, []byte(transcript(project, tc.rename)), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if tc.history != "" {
-				if err := os.WriteFile(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), []byte(tc.history), 0o600); err != nil {
+			write := func(path, body string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "s.jsonl"), body)
+			if tc.history != "" {
+				write(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), tc.history)
+			}
+			if tc.registry != "" {
+				write(filepath.Join(cfg.PrimaryDir(), "sessions", "7.json"), tc.registry)
 			}
 			r, out := testReport()
 			checkSessionStore(cfg, accounts.Discover(cfg).Accounts, state.Open(cfg).Load(), nil, r)
@@ -587,8 +587,13 @@ func TestCheckSessionStore(t *testing.T) {
 			if tc.wantOK != "" && !hasLine(oks, tc.wantOK) {
 				t.Errorf("no ok line %q in:\n%s", tc.wantOK, out)
 			}
-			if (tc.wantFail == "") != (len(fails) == 0) || (tc.wantFail != "" && (!hasLine(fails, tc.wantFail) || len(fails) != 1)) {
+			if len(fails) != len(tc.wantFail) {
 				t.Errorf("want FAIL %q alone, got:\n%s", tc.wantFail, out)
+			}
+			for _, w := range tc.wantFail {
+				if !hasLine(fails, w) {
+					t.Errorf("no FAIL %q in:\n%s", w, out)
+				}
 			}
 		})
 	}

@@ -99,12 +99,14 @@ func TestALaunchsLoadIsSharedAndItsReHomeIsNot(t *testing.T) {
 		t.Errorf("counted = %+v", c)
 	}
 
-	// --last is per home.
-	if d := placement.Choose(idle("a", "b", "c"), h.second.Load().Placements(), placement.Intent{Kind: placement.LastUsed, Home: h.secondRoot}, now); d.Chosen != p.Decision.Chosen {
-		t.Errorf("the second home's last = %q, want its own %q", d.Chosen, p.Decision.Chosen)
+	// --last is per home: each store answers it from its own home's last
+	// launch, never the ledger's newest.
+	last := placement.Intent{Kind: placement.LastUsed}
+	if r, err := place(h.second, idle("a", "b", "c"), last, 44, "", now.Add(2*time.Second)); err != nil || r.Decision.Chosen != p.Decision.Chosen {
+		t.Errorf("the second home's last = %q (%v), want its own %q", r.Decision.Chosen, err, p.Decision.Chosen)
 	}
-	if d := placement.Choose(idle("a", "b", "c"), h.owner.Load().Placements(), placement.Intent{Kind: placement.LastUsed, Home: h.ownerRoot}, now); d.Chosen != "c" {
-		t.Errorf("the owner's last = %q, want c", d.Chosen)
+	if r, err := place(h.owner, idle("a", "b", "c"), last, 45, "", now.Add(3*time.Second)); err != nil || r.Decision.Chosen != "c" {
+		t.Errorf("the owner's last = %q (%v), want c", r.Decision.Chosen, err)
 	}
 }
 

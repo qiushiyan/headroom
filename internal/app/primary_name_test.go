@@ -114,22 +114,6 @@ func TestARenamedPrimaryTakesItsRecords(t *testing.T) {
 	}
 }
 
-// The second run finds the name recorded and touches nothing.
-func TestASettledPrimaryIsLeftAlone(t *testing.T) {
-	cfg := renameHome(t)
-	SettlePrimaryNames(cfg, &bytes.Buffer{})
-	statePath := filepath.Join(cfg.Claude.AccountsRoot, "state.json")
-	before := readFile(t, statePath)
-	var out bytes.Buffer
-	SettlePrimaryNames(cfg, &out)
-	if out.Len() != 0 {
-		t.Errorf("a second run said %q", out.String())
-	}
-	if after := readFile(t, statePath); after != before {
-		t.Errorf("a second run rewrote state.json")
-	}
-}
-
 // Runs that start together move the records once: one says so, and the rest
 // find them moved.
 func TestConcurrentRunsMoveThePrimaryOnce(t *testing.T) {

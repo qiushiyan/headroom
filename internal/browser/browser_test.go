@@ -1,10 +1,6 @@
 package browser
 
 import (
-	"errors"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -57,39 +53,23 @@ func TestMatchPrefersSignInAndRefusesAmbiguity(t *testing.T) {
 	}
 }
 
-// A registry with no profiles is no profiles; one that is not JSON, or no
-// file at all, is no profiles and says why, so a plan can tell "nothing
-// matched" from "nothing was read".
+// A registry with no profiles is no profiles, not an unreadable one. A file
+// that is missing, unreadable or not JSON is each named apart in the plan:
+// app's TestThePlanSaysWhyNoProfileMatched.
 func TestParseLocalStateTolerates(t *testing.T) {
 	for _, raw := range []string{`{}`, `{"profile":{}}`} {
 		if got, err := ParseLocalState([]byte(raw)); len(got) != 0 || err != nil {
 			t.Errorf("%q: got %v, %v", raw, got, err)
 		}
 	}
-	for _, raw := range []string{``, `not json`} {
-		if got, err := ParseLocalState([]byte(raw)); len(got) != 0 || err == nil {
-			t.Errorf("%q: got %v, %v; want an error", raw, got, err)
-		}
-	}
-	if got, err := ReadProfiles("/nonexistent/Local State"); got != nil || !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("missing file: got %v, %v", got, err)
-	}
-	unreadable := filepath.Join(t.TempDir(), "Local State")
-	if err := os.WriteFile(unreadable, []byte(localState), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := ReadProfiles(unreadable); got != nil || err == nil || errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("unreadable file: got %v, %v", got, err)
-	}
 }
 
+// The default browser is open(1) with the URL alone. The profile's
+// arguments are pinned through the binary: app's
+// TestLoginBinaryOpensTheMatchedProfile.
 func TestOpenArgs(t *testing.T) {
 	if got := OpenArgs("", "https://x"); !reflect.DeepEqual(got, []string{"https://x"}) {
 		t.Errorf("default browser: %v", got)
-	}
-	want := []string{"-na", "Google Chrome", "--args", "--profile-directory=Profile 3", "https://x"}
-	if got := OpenArgs("Profile 3", "https://x"); !reflect.DeepEqual(got, want) {
-		t.Errorf("profile: %v", got)
 	}
 }
 

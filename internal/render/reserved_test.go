@@ -11,7 +11,7 @@ import (
 // mark and the compact row among its notes.
 func TestAReservationIsSaidOnTheAccountsRow(t *testing.T) {
 	v := accountstate.Facts{Label: "a@x.com", Launcher: "x-a", Plan: "max 5x", Next: true, Reserved: "reserved for ~/dev/itell"}
-	if got := (Palette{}).headerLine(v); !strings.Contains(got, "reserved for ~/dev/itell  ← next") {
+	if got := (Palette{}).headerLine(v); !strings.Contains(got, "reserved for ~/dev/itell") || strings.Index(got, "reserved") > strings.Index(got, "← next") {
 		t.Errorf("block: %q", got)
 	}
 	if got := (Palette{}).caption(v, 0, false); !strings.Contains(got, "reserved for ~/dev/itell") {

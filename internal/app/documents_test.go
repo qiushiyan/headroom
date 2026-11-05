@@ -14,7 +14,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-type doc5 struct {
+type vendorDoc struct {
 	Schema   int `json:"schema"`
 	Accounts []struct {
 		Vendor string `json:"vendor"`
@@ -45,9 +45,9 @@ type doc5 struct {
 	} `json:"problems"`
 }
 
-func decode5(t *testing.T, data []byte) doc5 {
+func decodeDoc(t *testing.T, data []byte) vendorDoc {
 	t.Helper()
-	var d doc5
+	var d vendorDoc
 	if err := json.Unmarshal(data, &d); err != nil {
 		t.Fatalf("not one JSON object: %v\n%s", err, data)
 	}
@@ -70,9 +70,10 @@ func decode5(t *testing.T, data []byte) doc5 {
 	return d
 }
 
-// Obligation 15: the schema 5 contract over a two-vendor fixture, from the
-// fetching surface and from `limits`, unfiltered and filtered.
-func TestSchema5TwoVendors(t *testing.T) {
+// The document over two vendors — one flat list, every account and problem
+// under its vendor, since schema 5 — from the fetching surface and from
+// `limits`, unfiltered and filtered.
+func TestOneDocumentHoldsBothVendors(t *testing.T) {
 	// The response names another plan than the login's id token does, so the
 	// test can tell which one a surface reported.
 	body := `{"plan_type":"prolite","account_id":"acct-1","user_id":"user-1",
@@ -100,7 +101,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := decode5(t, data)
+	d := decodeDoc(t, data)
 	if d.Schema != 8 {
 		t.Errorf("schema = %d", d.Schema)
 	}
@@ -157,7 +158,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	if code := limitsTo(&buf, both, ""); code != 0 {
 		t.Fatalf("limits exit %d", code)
 	}
-	ld := decode5(t, buf.Bytes())
+	ld := decodeDoc(t, buf.Bytes())
 	if len(ld.Accounts) != 5 {
 		t.Errorf("limits: %d accounts", len(ld.Accounts))
 	}
@@ -180,7 +181,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	if code := limitsTo(&buf, []config.Scope{f.scope}, ""); code != 0 {
 		t.Fatal("limits --vendor codex failed")
 	}
-	only := decode5(t, buf.Bytes())
+	only := decodeDoc(t, buf.Bytes())
 	if len(only.Accounts) != 2 {
 		t.Errorf("filtered: %d accounts", len(only.Accounts))
 	}
@@ -196,7 +197,7 @@ func TestSchema5TwoVendors(t *testing.T) {
 	if code := limitsTo(&buf, both, "u1@x.com"); code != 0 {
 		t.Fatal("limits --account failed")
 	}
-	named := decode5(t, buf.Bytes())
+	named := decodeDoc(t, buf.Bytes())
 	if len(named.Accounts) != 2 || named.Accounts[0].Vendor == named.Accounts[1].Vendor {
 		t.Errorf("--account across vendors: %+v", named.Accounts)
 	}
@@ -205,24 +206,13 @@ func TestSchema5TwoVendors(t *testing.T) {
 	if code := limitsTo(&buf, both, "claude-only@x.com"); code != 0 {
 		t.Fatal("limits --account claude-only@x.com failed")
 	}
-	if p := decode5(t, buf.Bytes()); len(p.Accounts) != 1 || p.Accounts[0].Vendor != "claude" {
+	if p := decodeDoc(t, buf.Bytes()); len(p.Accounts) != 1 || p.Accounts[0].Vendor != "claude" {
 		t.Errorf("--account claude-only@x.com: %+v", p.Accounts)
 	}
 	buf.Reset()
 	if code := limitsTo(&buf, both, "nobody@x.com"); code != 1 || buf.Len() != 0 {
 		t.Errorf("an unknown name: exit %d, wrote %q", code, buf.String())
 	}
-}
-
-func join(s []string) string {
-	out := ""
-	for i, x := range s {
-		if i > 0 {
-			out += " "
-		}
-		out += x
-	}
-	return out
 }
 
 // An unreadable store must be distinguishable from "nothing has ever been
@@ -233,7 +223,7 @@ func join(s []string) string {
 // filters problems with everything else, and a healthy store carries none:
 // the section is a signal, not a fixture. Dropping the store's problems from
 // either surface's board must fail here.
-func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
+func TestStoreProblemsCarryTheirVendor(t *testing.T) {
 	f := newCodexFixture(t, "http://127.0.0.1:1")
 	f.extra(t, login(1))
 	t.Setenv("PATH", t.TempDir()) // the board's probes and credential reads answer "unavailable"
@@ -256,7 +246,7 @@ func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
 	// The file's own sections. A request the board made against the broken
 	// ledger reports its bookkeeping too, as request[<name>]; that is the
 	// attempt's problem, not the file's.
-	fileProblems := func(d doc5) (out []string) {
+	fileProblems := func(d vendorDoc) (out []string) {
 		for _, p := range d.Problems {
 			if !strings.HasPrefix(p.Section, "request[") {
 				out = append(out, p.Vendor+":"+p.Section)
@@ -272,7 +262,7 @@ func TestSchema5ProblemsCarryTheirVendor(t *testing.T) {
 	}
 
 	for surface, run := range map[string]func(...config.Scope) []byte{"limits": limits, "--json": board} {
-		doc := func(scopes ...config.Scope) doc5 { t.Helper(); return decode5(t, run(scopes...)) }
+		doc := func(scopes ...config.Scope) vendorDoc { t.Helper(); return decodeDoc(t, run(scopes...)) }
 		for _, file := range []string{claudeState, codexState} {
 			if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
 				t.Fatal(err)

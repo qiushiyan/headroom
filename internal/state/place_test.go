@@ -113,16 +113,17 @@ func TestPlaceForcedAndLast(t *testing.T) {
 	if p, err := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 1, "", now); err != nil || p.Decision.Chosen != "" || p.Recorded {
 		t.Fatalf("last with nothing recorded: %+v %v", p, err)
 	}
-	if _, err := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "b", Reason: "named"}, 2, "", now); err != nil {
+	// Named on a, the account the rule would otherwise take first.
+	if _, err := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "a", Reason: "named"}, 2, "", now); err != nil {
 		t.Fatal(err)
 	}
 	// A named launch is load for the automatic ones…
-	if p, _ := place(s, cands, placement.Intent{}, 3, "", now.Add(time.Second)); p.Decision.Chosen != "a" {
-		t.Fatalf("automatic launch after a named one on b chose %q", p.Decision.Chosen)
+	if p, _ := place(s, cands, placement.Intent{}, 3, "", now.Add(time.Second)); p.Decision.Chosen != "b" {
+		t.Fatalf("automatic launch after a named one on a chose %q", p.Decision.Chosen)
 	}
 	// …and the last account used is whichever launch came last, in any mode.
-	if p, _ := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 4, "", now.Add(2*time.Second)); p.Decision.Chosen != "a" {
-		t.Fatalf("last = %q, want a", p.Decision.Chosen)
+	if p, _ := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 4, "", now.Add(2*time.Second)); p.Decision.Chosen != "b" {
+		t.Fatalf("last = %q, want b", p.Decision.Chosen)
 	}
 	// A refused choice records nothing.
 	before := s.Load().Placements()

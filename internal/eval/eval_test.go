@@ -114,6 +114,15 @@ func scenarios() []struct {
 			cand("b", now, limits(0, 20, soon, week)),
 			cand("c", now, limits(30, 20, soon, week)),
 		}},
+		// The row above chooses b with or without its pending launches; here
+		// they decide: without them b is the emptiest account.
+		{"pending launches decide", placement.Intent{}, placement.Ledger{Recent: []placement.Pending{
+			{Key: "uuid:b", Name: "b", PID: 7, AtMS: at(-time.Minute).UnixMilli()},
+			{Key: "uuid:b", Name: "b", PID: 8, AtMS: at(-2 * time.Minute).UnixMilli()},
+		}}, []placement.Candidate{
+			cand("b", now, limits(0, 20, soon, week)),
+			cand("c", now, limits(10, 20, soon, week)),
+		}},
 		{"a launch that became a busy session counts once", placement.Intent{}, placement.Ledger{Recent: []placement.Pending{
 			{Key: "uuid:a", Name: "a", PID: 41, AtMS: at(-time.Minute).UnixMilli()},
 		}}, []placement.Candidate{
@@ -149,6 +158,12 @@ func scenarios() []struct {
 		}},
 		{"the picker moves a session off its account", placement.Intent{Exclude: "a"}, placement.Ledger{}, []placement.Candidate{
 			cand("a", now, limits(0, 10, soon, week)), cand("b", now, limits(30, 10, soon, week)), cand("c", now, limits(40, 10, soon, week)),
+		}},
+		// The idle account sits at the near-limit threshold: a rule that moved
+		// the threshold, or let a row at it count as room, decides this
+		// differently under its old name.
+		{"a weekly row at the threshold is near the limit", placement.Intent{}, placement.Ledger{}, []placement.Candidate{
+			cand("a", now, limits(0, 80, soon, week)), cand("b", now, limits(30, 20, soon, week)),
 		}},
 	}
 }

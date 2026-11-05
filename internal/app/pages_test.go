@@ -116,14 +116,32 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 		t.Errorf("a tick started a round off the visible page: claude %d, codex %d", *claudeBegun, *codexBegun)
 	}
 
-	// Back on its page, the passed deadline is simply due at the next tick.
-	close(codexCh)
-	ui.step(ctx, tick, keys)
+	// Back on Claude Code's page, the other way round: Codex's round is still
+	// in flight, and its result and its close land on Codex's page, never the
+	// visible one. The loop receives from each page's channel by name, so
+	// each direction is its own line in step.
 	keys <- tui.Key{Kind: tui.KeyTab}
 	ui.step(ctx, tick, keys)
 	if *claudeBegun != 1 {
 		t.Errorf("returning to a page restarted it (%d rounds)", *claudeBegun)
 	}
+	r = observed(17)
+	codexCh <- r
+	ui.step(ctx, tick, keys)
+	if got := codex.accounts()[0].View.Obs; got == nil || got.Rows[0].Percent != 17 {
+		t.Errorf("a hidden page did not get its result: %+v", codex.accounts()[0].View)
+	}
+	if got := claude.accounts()[0].View.Obs; got != nil {
+		t.Errorf("Codex's result landed on the visible page: %+v", got)
+	}
+	close(codexCh)
+	ui.step(ctx, tick, keys)
+	if codex.updates != nil || codex.nextAt.IsZero() {
+		t.Errorf("a hidden page's round was not closed out on it: updates=%v nextAt=%v", codex.updates, codex.nextAt)
+	}
+
+	// On its page, the deadline that passed while hidden is simply due at the
+	// next tick.
 	claude.lastLocal = time.Now().Add(-time.Hour)
 	tick <- time.Now()
 	ui.step(ctx, tick, keys)

@@ -101,25 +101,6 @@ func TestLauncher(t *testing.T) {
 	}
 }
 
-// A name resolves to the one account that answers to it, and nothing else
-// does: no empty name, no unknown one, no fallback to anyone.
-func TestSelect(t *testing.T) {
-	cfg := testConfig(t)
-	mkAccount(t, cfg, "yan@planlab.ai")
-	set := Discover(cfg)
-	if a, err := set.Select("yan@planlab.ai"); err != nil || a.Name != "yan@planlab.ai" {
-		t.Errorf("an extra: got (%v, %v)", a.Name, err)
-	}
-	if a, err := set.Select("qiushi"); err != nil || !a.IsPrimary() {
-		t.Errorf("the primary: got (%v, %v)", a.Name, err)
-	}
-	for _, name := range []string{"", "nope@x.com"} {
-		if a, err := set.Select(name); err == nil {
-			t.Errorf("%q resolved to %s", name, a.Name)
-		}
-	}
-}
-
 func TestMetaEmail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".claude.json")

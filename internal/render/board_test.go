@@ -221,6 +221,20 @@ func TestCaptionKeepsEveryClause(t *testing.T) {
 			want: []string{"stale", "observed 22h ago", "live check deferred"},
 		},
 		{
+			// Before the three-axis model a 429 was the whole block and the
+			// bars vanished. The retry rounds up: 150s is 3m, never 2m.
+			name: "a refused refresh keeps the figures and says when it retries",
+			view: accountstate.Facts{Label: "a@x.com", Obs: obs(20*time.Second, accountstate.SourceLive, row),
+				Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, NextEligibleAt: now + 150}},
+			want: []string{"12%", "rate limited", "next attempt in 3m"},
+		},
+		{
+			name: "a bookkeeping failure is said beside the endpoint's verdict, never instead of it",
+			view: accountstate.Facts{Label: "a@x.com", Obs: obs(5*time.Second, accountstate.SourceLive, row),
+				Attempt: accountstate.Attempt{State: accountstate.AttemptRefused, StoreError: "read-only"}},
+			want: []string{"12%", "rate limited", "state file unavailable"},
+		},
+		{
 			name: "headroom's own state failing is said alone over good figures",
 			view: accountstate.Facts{Label: "a@x.com", Obs: obs(5*time.Second, accountstate.SourceLive, row),
 				Attempt: accountstate.Attempt{State: accountstate.AttemptOK, StoreError: "disk full"}},

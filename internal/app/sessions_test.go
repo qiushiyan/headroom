@@ -11,7 +11,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -308,34 +307,45 @@ func claimedTranscript(t *testing.T) (*resumeUI, *sessions.Session, []byte) {
 	claimSession(t, filepath.Join(ui.set.Scope.AccountsRoot, "yan@planlab.ai"), s.ID, 7, time.UnixMilli(1000))
 	s.StoreDir = t.TempDir()
 	s.Path = filepath.Join(s.StoreDir, s.ID+".jsonl")
-	original := []byte("{}\n")
+	original := []byte(`{"type":"user","sessionId":"` + s.ID + `","message":{"role":"user","content":"keep me"}}` + "\n")
 	if err := os.WriteFile(s.Path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return ui, s, original
 }
 
+// Whatever ps answers short of "no such process" leaves the claim unproven,
+// and r and dd refuse an unproven claim: a ps that fails outright — a sandbox
+// denying it, say — must never read as the session being closed.
 func TestUncertainProcessInspectionPreservesTranscript(t *testing.T) {
-	ui, s, original := claimedTranscript(t)
-	stubPS(t, "echo unreadable-start-time")
-	if err := ui.rename(s, "changed"); err == nil {
-		t.Fatal("uncertain process allowed rename")
-	}
-	if removed, err := ui.delete(s); removed || err == nil {
-		t.Fatal("uncertain process allowed delete")
-	}
-	data, err := os.ReadFile(s.Path)
-	if err != nil || string(data) != string(original) {
-		t.Fatalf("transcript changed: %q %v", data, err)
+	for _, c := range []struct{ name, ps string }{
+		{"a start time ps cannot render", "echo unreadable-start-time"},
+		{"ps failing with a reason", "echo 'ps: operation not permitted' >&2; exit 1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ui, s, original := claimedTranscript(t)
+			stubPS(t, c.ps)
+			if err := ui.rename(s, "changed"); err == nil {
+				t.Fatal("uncertain process allowed rename")
+			}
+			if removed, err := ui.delete(s); removed || err == nil {
+				t.Fatal("uncertain process allowed delete")
+			}
+			data, err := os.ReadFile(s.Path)
+			if err != nil || string(data) != string(original) {
+				t.Fatalf("transcript changed: %q %v", data, err)
+			}
+		})
 	}
 }
 
 // ps exiting 1 with nothing on either stream is its answer for "no such
 // process": the claim is stale, the session is not open, and r goes ahead.
 // Read as a failed inspection instead, every stale registry file would refuse
-// r, dd and accounts remove for good.
+// r, dd and accounts remove for good. The rename is one appended record, as
+// the vendor's own: the transcript it was given is left byte for byte.
 func TestAbsentProcessLeavesTheSessionMutable(t *testing.T) {
-	ui, s, _ := claimedTranscript(t)
+	ui, s, original := claimedTranscript(t)
 	stubPS(t, "exit 1")
 	if err := ui.rename(s, "changed"); err != nil {
 		t.Fatalf("a claim whose process is gone refused rename: %v", err)
@@ -344,24 +354,11 @@ func TestAbsentProcessLeavesTheSessionMutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	added, kept := bytes.CutPrefix(data, original)
+	if !kept || bytes.Count(added, []byte("\n")) != 1 {
+		t.Fatalf("rename rewrote the transcript instead of appending one record: %q", data)
+	}
 	if got := sessions.ParseTail(data, "", true).CustomTitle; got != "changed" {
 		t.Errorf("transcript's custom title = %q, want the rename", got)
-	}
-}
-
-// How a resume's account is decided: enter follows an owner the set has, and
-// everything else asks the rule — never the primary, which no evidence chose.
-func TestResumeIntent(t *testing.T) {
-	ui := &sessionActions{set: accounts.Set{Accounts: []accounts.Account{{Name: "qiushi"}, {ConfigDir: "/r/b@x.com", Name: "b@x.com"}}}}
-	if intent := ui.resumeIntent(&sessions.Session{Owner: "b@x.com"}, false); intent.Kind != placement.Forced || intent.Account != "b@x.com" || intent.Reason != placement.ReasonOwner {
-		t.Errorf("an existing owner: %+v", intent)
-	}
-	for _, owner := range []string{"", "gone@x.com"} {
-		if intent := ui.resumeIntent(&sessions.Session{Owner: owner}, false); intent.Kind != placement.Auto || intent.Exclude != "" {
-			t.Errorf("owner %q: %+v, want the rule", owner, intent)
-		}
-	}
-	if intent := ui.resumeIntent(&sessions.Session{Owner: "b@x.com"}, true); intent.Kind != placement.Auto || intent.Exclude != "b@x.com" {
-		t.Errorf("the override: %+v, want the rule, away from the owner", intent)
 	}
 }

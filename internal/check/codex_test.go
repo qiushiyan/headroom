@@ -1,7 +1,6 @@
 package check
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,24 +13,38 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-// stubCodex answers `login status` the way 0.155.0 does: "Logged in using
-// ChatGPT" on stdout, or "Not logged in" on stderr with exit 1, decided by the
-// home CODEX_HOME selects. keyringHome, when set, is a home that reports a
-// login with no auth.json — the keyring credential store. The seams sit in a
-// comment, as they do in the claude stub. It proves the probes' wiring and
-// verdict mapping, never that the installed binary honours CODEX_HOME.
-func stubCodex(t *testing.T, bin, primaryHome, keyringHome string, loginOut string) {
+// stubCodex answers `login status` the way 0.155.0 does: loginLine (such as
+// "Logged in using ChatGPT") on stdout, or "Not logged in" on stderr with exit
+// 1, decided by the home CODEX_HOME selects. keyringHome, when set, is a home
+// that reports a login with no auth.json — the keyring credential store. The
+// seams sit in a comment, as they do in the claude stub. It proves the probes'
+// wiring and verdict mapping, never that the installed binary honours
+// CODEX_HOME. What varies is read from files beside the script, so its bytes
+// are the same in every test: macOS scans an executable whose bytes it has not
+// seen on its first run, ~0.1s each.
+func stubCodex(t *testing.T, bin, primaryHome, keyringHome, loginLine string) {
 	t.Helper()
-	script := fmt.Sprintf(`#!/bin/sh
+	const script = `#!/bin/sh
 # wham/usage ChatGPT-Account-Id CODEX_HOME CODEX_ACCESS_TOKEN
-home="${CODEX_HOME:-%s}"
+here=${0%/*}
+read -r primary < "$here/codex.primary"
+read -r keyring < "$here/codex.keyring"
+read -r login < "$here/codex.login"
+home="${CODEX_HOME:-$primary}"
 if [ -n "$CODEX_API_KEY$CODEX_ACCESS_TOKEN" ]; then echo "leaked credential variable"; exit 3; fi
-if [ "$home" = %q ] || [ -f "$home/auth.json" ]; then %s; exit 0; fi
+if [ "$home" = "$keyring" ] || [ -f "$home/auth.json" ]; then echo "$login"; exit 0; fi
 echo "Not logged in" >&2
 exit 1
-`, primaryHome, keyringHome, loginOut)
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+`
+	for name, body := range map[string]string{
+		"codex":         script,
+		"codex.primary": primaryHome + "\n",
+		"codex.keyring": keyringHome + "\n",
+		"codex.login":   loginLine + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -137,7 +150,7 @@ func TestCodexCheckRequestVerdicts(t *testing.T) {
 				defer srv.Close()
 			}
 			scope, bin := codexCheckFixture(t, url)
-			stubCodex(t, bin, scope.PrimaryDir(), "", `echo "Logged in using ChatGPT"`)
+			stubCodex(t, bin, scope.PrimaryDir(), "", "Logged in using ChatGPT")
 			l := checkLogin
 			if tc.stale {
 				l.Expires = time.Now().Add(-time.Hour)
@@ -171,7 +184,7 @@ func TestCodexCheckAuthDrift(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
-			stubCodex(t, bin, scope.PrimaryDir(), "", `echo "Logged in using ChatGPT"`)
+			stubCodex(t, bin, scope.PrimaryDir(), "", "Logged in using ChatGPT")
 			dir := seedCodexExtra(t, scope, codexauthtest.Login{Email: "a@x.com"})
 			codexauthtest.WriteRaw(t, dir, []byte(doc))
 			r := runCodexCheck(scope, []string{"PATH=" + bin})
@@ -182,7 +195,7 @@ func TestCodexCheckAuthDrift(t *testing.T) {
 	}
 	// Another auth mode is a fact, not drift.
 	scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
-	stubCodex(t, bin, scope.PrimaryDir(), "", `echo "Logged in using an API key"`)
+	stubCodex(t, bin, scope.PrimaryDir(), "", "Logged in using an API key")
 	dir := seedCodexExtra(t, scope, codexauthtest.Login{Email: "k@x.com"})
 	codexauthtest.WriteRaw(t, dir, []byte(`{"auth_mode":"apikey","OPENAI_API_KEY":"sk"}`))
 	if r := runCodexCheck(scope, []string{"PATH=" + bin}); r.fails != 0 || !r.has(`auth_mode "apikey"`) {
@@ -195,7 +208,7 @@ func TestCodexCheckCredentialSource(t *testing.T) {
 	t.Run("logged in beside no auth.json is undetermined", func(t *testing.T) {
 		scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
 		keyring := seedCodexExtra(t, scope, codexauthtest.Login{Email: "ring@x.com"})
-		stubCodex(t, bin, scope.PrimaryDir(), keyring, `echo "Logged in using ChatGPT"`)
+		stubCodex(t, bin, scope.PrimaryDir(), keyring, "Logged in using ChatGPT")
 		r := runCodexCheck(scope, []string{"PATH=" + bin})
 		if r.fails != 0 || !r.has("?? credentials[ring@x.com]") || !r.has("credential source undetermined") {
 			t.Errorf("keyring home:\n%s", strings.Join(r.lines, "\n"))
@@ -237,7 +250,7 @@ func TestCodexCheckCredentialSource(t *testing.T) {
 	})
 	t.Run("the probe strips inherited credential variables", func(t *testing.T) {
 		scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
-		stubCodex(t, bin, scope.PrimaryDir(), "", `echo "Logged in using ChatGPT"`)
+		stubCodex(t, bin, scope.PrimaryDir(), "", "Logged in using ChatGPT")
 		r := runCodexCheck(scope, []string{"PATH=" + bin, "CODEX_ACCESS_TOKEN=tok-secret", "CODEX_HOME=/somewhere/else"})
 		if !r.has("ok isolation:") {
 			t.Errorf("an inherited credential reached the probe:\n%s", strings.Join(r.lines, "\n"))
@@ -257,7 +270,7 @@ func TestCodexCheckCredentialSource(t *testing.T) {
 // having changed a format.
 func TestCodexCheckCorruptStateIsOwn(t *testing.T) {
 	scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
-	stubCodex(t, bin, scope.PrimaryDir(), "", `echo "Logged in using ChatGPT"`)
+	stubCodex(t, bin, scope.PrimaryDir(), "", "Logged in using ChatGPT")
 	if err := os.MkdirAll(scope.AccountsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -322,29 +335,58 @@ func TestRunCodexPresenceAndBlame(t *testing.T) {
 }
 
 // A wedged `codex login status` costs one timeout, not one per home and not
-// forever: the probes run side by side and each is bounded.
+// forever: the probes run side by side and each is bounded. Side by side is
+// proved by a rendezvous rather than a stopwatch — each stub answers only once
+// all five probes (primary, three extras, isolation) are running, which
+// serial probes never are — so the bound can be short and a slow start on a
+// loaded machine costs time, not a verdict.
 func TestCodexCheckProbesAreBoundedAndParallel(t *testing.T) {
-	scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
-	for _, n := range []string{"a@x.com", "b@x.com", "c@x.com"} {
-		seedCodexExtra(t, scope, codexauthtest.Login{Email: n})
+	fixture := func(t *testing.T, script string) (config.Scope, string) {
+		scope, bin := codexCheckFixture(t, "http://127.0.0.1:1")
+		for _, n := range []string{"a@x.com", "b@x.com", "c@x.com"} {
+			seedCodexExtra(t, scope, codexauthtest.Login{Email: n})
+		}
+		if err := os.Mkdir(filepath.Join(bin, "arrived"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n# wham/usage ChatGPT-Account-Id CODEX_HOME CODEX_ACCESS_TOKEN\n"+script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return scope, bin
 	}
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n# wham/usage ChatGPT-Account-Id CODEX_HOME CODEX_ACCESS_TOKEN\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
+	bound := func(t *testing.T, d time.Duration) {
+		prev := loginStatusTimeout
+		loginStatusTimeout = d
+		t.Cleanup(func() { loginStatusTimeout = prev })
 	}
-	prev := loginStatusTimeout
-	loginStatusTimeout = 2 * time.Second
-	t.Cleanup(func() { loginStatusTimeout = prev })
 
-	start := time.Now()
-	r := runCodexCheck(scope, []string{"PATH=" + bin + ":/bin:/usr/bin"})
-	elapsed := time.Since(start)
-	// Five probes (primary, three extras, isolation). Serial would be ≥ 10s;
-	// unbounded would be 30s. The slack above one bound is for a loaded
-	// machine, where a freshly written stub can take seconds to start.
-	if elapsed > 8*time.Second {
-		t.Errorf("probes took %v: not bounded, or not parallel", elapsed)
-	}
-	if r.fails != 0 || !r.has("?? isolation: not tested") || !r.has("?? credentials[c@x.com]: not tested") {
-		t.Errorf("a wedged probe is no evidence either way:\n%s", strings.Join(r.lines, "\n"))
-	}
+	t.Run("in parallel", func(t *testing.T) {
+		scope, bin := fixture(t, `here=${0%/*}
+: > "$here/arrived/$$"
+for i in $(seq 100); do
+  set -- "$here"/arrived/*
+  [ $# -ge 5 ] && { echo "Not logged in" >&2; exit 1; }
+  sleep 0.05
+done
+`)
+		bound(t, 10*time.Second)
+		r := runCodexCheck(scope, []string{"PATH=" + bin + ":/bin:/usr/bin"})
+		if !r.has("ok isolation:") || !r.has("ok credentials[c@x.com]") {
+			t.Errorf("the probes did not all run at once:\n%s", strings.Join(r.lines, "\n"))
+		}
+	})
+
+	t.Run("bounded", func(t *testing.T) {
+		scope, bin := fixture(t, "exec sleep 30\n")
+		bound(t, 100*time.Millisecond)
+		start := time.Now()
+		r := runCodexCheck(scope, []string{"PATH=" + bin + ":/bin:/usr/bin"})
+		// Unbounded would be 30s; the rest is slack for a loaded machine.
+		if elapsed := time.Since(start); elapsed > 10*time.Second {
+			t.Errorf("probes took %v: not bounded", elapsed)
+		}
+		if r.fails != 0 || !r.has("?? isolation: not tested") || !r.has("?? credentials[c@x.com]: not tested") {
+			t.Errorf("a wedged probe is no evidence either way:\n%s", strings.Join(r.lines, "\n"))
+		}
+	})
 }

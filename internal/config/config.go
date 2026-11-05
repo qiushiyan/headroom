@@ -29,15 +29,6 @@ const (
 // Vendors is the closed set in display order: Claude Code first.
 var Vendors = []Vendor{Claude, Codex}
 
-// ParseVendor is the one reader of a `--vendor` value.
-func ParseVendor(s string) (Vendor, error) {
-	switch Vendor(s) {
-	case Claude, Codex:
-		return Vendor(s), nil
-	}
-	return "", fmt.Errorf("unknown vendor %q — claude or codex", s)
-}
-
 // Title is the vendor's product name, for headings and the tab bar.
 func (v Vendor) Title() string {
 	if v == Codex {
