@@ -292,7 +292,7 @@ Nothing needs configuring on a standard install; environment variables re-point 
 | `HEADROOM_CODEX_ACCOUNTS_ROOT` | `~/.codex-accounts` | Where the extra Codex homes live. It must not name the same location as the Claude Code root |
 | `HEADROOM_CODEX_LAUNCHER_FORMAT` | `headroom launch --vendor codex --account %s` | The Codex counterpart of `HEADROOM_LAUNCHER_FORMAT`. Log-in hints keep the engine's own spelling whatever this says |
 | `HEADROOM_CODEX_PRIMARY_NAME` | *(derived)* | The name the primary `~/.codex` answers to, derived and pinned like `HEADROOM_PRIMARY_NAME` |
-| `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `--account`, the records beside the store, and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login). Set it to pin a name that must outlive a primary logout. Changing it moves `.reserved`, re-homes, `--last` and headless tokens to the new name at the next run, which says so on stderr; a shell still pinning a former name moves nothing back and runs under the recorded name |
+| `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `--account` and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login); set it to keep one name whoever is logged in. It is a name only: records name the dir, so changing it, or shells holding different values, changes nothing they say |
 
 Two settings are files rather than variables, because they belong to a home
 and must hold on every path that home's processes are started from:

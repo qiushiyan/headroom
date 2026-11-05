@@ -76,7 +76,8 @@ Everything derives from that tree:
 - **Small files beside the accounts.** `.order` (optional; one email per
   line, `#` comments) sets display order after the primary; unlisted
   accounts follow alphabetically — configuration a human edits. `.reserved`
-  (optional, one `<account><TAB><dir>` per line) keeps accounts for
+  (optional, one `<account><TAB><dir>` per line, the account named as every
+  record names it — see The one file headroom writes) keeps accounts for
   repositories, written by `accounts reserve` and read strictly: damage
   refuses every automatic choice rather than releasing an account — see
   Automatic placement. `.ledger` (optional, Claude Code only) names the
@@ -123,7 +124,7 @@ verifier's error messages name something that exists on every install:
   same check launch applies, so seed and gate cannot disagree. Names are
   emails: one path element, `@` present, never `.lock`. Sharing is a
   caller choice, with one exception: a Claude Code dir gets the primary's
-  `settings.json` whatever is asked (`accounts.StoreSettings`), because a dir
+  `settings.json` whenever the share does not provide one, because a dir
   with none writes its own at its first session and prunes every account's
   history by the vendor's default. A primary with no such file has nothing to
   link, and the add goes on, since refusing it would stop a fresh machine:
@@ -568,39 +569,39 @@ headless runs.
   file holds two halves with different owners: the *subscription ledger* —
   the request ledger, the responses, the recent launches, the headless runs
   and the homes that spend against it — is about quota, keyed by account identity; the
-  *re-homes* are about one home's sessions, named by that home's account
-  names. A home alone keeps both in its one file.
-- **A renamed primary takes its records with it.** Everything a person or a
-  launch writes about an account is written under its name — `.reserved`,
-  the re-homes, `--last`, headless tokens — and the primary's
-  name is the one name that can change under them, when a host file pins
-  another (`HEADROOM_PRIMARY_NAME`, `HEADROOM_CODEX_PRIMARY_NAME`). The home's
-  document records the name its records are under, and every run that loads
-  the configuration compares it with the pin: a change moves them under the
-  store's lock, the document recording the new name last, so a run stopped
-  partway is finished by the next (`app.SettlePrimaryNames`). Before any name
-  is recorded the old one is the login's local part, the name every pin so
-  far kept. The names the records had before are recorded too, and a pin
-  naming one moves nothing: it comes from a shell started before the rename,
-  and the run goes on under the recorded name, the old one still selecting
-  the primary for that shell's launchers. Otherwise the records would flip
-  between the names as old and new shells alternate, and a pin cannot tell a
-  stale shell from a person going back, so the newest name wins; going back
-  is removing the name from the document's `primary.former` first. Before
-  any history is recorded, the login's local part counts as a former name
-  once another name is recorded. A name that is an extra's dir moves nothing, and an unreadable
-  `.reserved`, token file or re-homes section stops the move before anything
-  is written. The launch and usage logs keep the old name: they are history,
-  joined on the account key, never on the name. A second home that holds
-  logins of the same subscriptions keeps its re-homes in its own file and
-  spends against the first home's ledger (see A second home); this is the
-  one place the rule bends, and it bends for the ledger only. `config.Load` refuses two
+  *re-homes* are about one home's sessions, naming that home's accounts. A
+  home alone keeps both in its one file. A second home that holds logins of
+  the same subscriptions keeps its re-homes in its own file and spends
+  against the first home's ledger (see A second home); this is the one place
+  the rule bends, and it bends for the ledger only. `config.Load` refuses two
   roots that name one location, judged by the filesystem and not the string:
   each root's nearest existing ancestor must be a different file, or the
   components still missing below them must differ — compared without case,
   since whether the filesystem folds a name cannot be known before it exists.
   A symlink anywhere above, and `Accounts` beside `accounts` on a case-folding
   volume, are both one location.
+- **A record names an account by its dir, never by what it is called.**
+  What a person or a launch writes about an account — `.reserved`, the
+  re-homes, `--last`, headless tokens — names an extra by its dir and the
+  primary `.primary` (`accounts.PrimaryRef`), which discovery never gives a
+  dir. The primary's name is the one that can change: a pin
+  (`HEADROOM_PRIMARY_NAME`, `HEADROOM_CODEX_PRIMARY_NAME`) or a new login
+  renames it. So a name is what a person types and reads, translated at the
+  edges (`Set.RefOf`, `Set.NameOf`), and shells holding different pins read
+  one set of records; a record that kept the name would strand on every
+  rename and chase it on every run. The launch and usage logs keep names:
+  they are history, joined on the account key. Builds before refs wrote the
+  primary's records under its name, and the first command a home sees from
+  a newer build moves them once (`app.AdoptRefs`, at configuration load):
+  every record under a name the primary could have had — the name and
+  former names its document recorded, the pin, the login's local part,
+  `primary` — unless an extra is called that, under the store's locks, the
+  files beside the store first and the home's document recording the `refs`
+  marker last, so a run stopped partway is finished by the next. An
+  unreadable `.reserved`, token file or re-homes section stops it before
+  anything is written, and every command says why until it can run; `check`
+  notes a home still waiting. A home with nothing an older build wrote is
+  never touched. The adoption is deleted once every home has run it.
 - **The ledger keys on the account's own UUID**, from `.claude.json`, falling
   back to the dir name only when that file parsed and reported none. The
   budget is per account, so two config dirs logged into the same account share
@@ -797,12 +798,16 @@ engineered from the 2.1.220 store and all perishable:
   cwd and model as a full-file parse for every oversized transcript —
   the assertion that fires the day a load-bearing record drifts out of
   reach. Listability is structural: top-level `<uuid>.jsonl` files are
-  sessions; `<uuid>/` closure dirs hold subagent transcripts and are not.
+  sessions, each identified by its filename — what `claude --resume <id>`
+  opens — whatever id its records carry; `<uuid>/` closure dirs hold
+  subagent transcripts and are not.
 - **The cd target is verified, never de-munged.** `claude --resume <id>`
-  resolves only from the session's owning project dir, and store dir names
-  munge `/` and `.` to `-` — lossily. The resume target is therefore the
-  newest recorded `cwd`/`relocatedCwd` whose munge *equals* the store dir
-  name. No verifiable cwd → the row says so and refuses to resume (worktree
+  resolves only from the session's owning project dir, and the vendor names
+  a store dir by turning every UTF-16 unit outside `[a-zA-Z0-9]` into `-`,
+  cutting a name over 200 characters and suffixing a 32-bit hash of the
+  whole cwd in base 36 (2.1.318's helper, which `sessions.Munge` reproduces
+  and is tested against) — lossily. The resume target is therefore the newest recorded
+  `cwd`/`relocatedCwd` whose munge *equals* the store dir name. No verifiable cwd → the row says so and refuses to resume (worktree
   churn deletes project dirs constantly; a third of the store's rows point
   at dirs that no longer exist, and guessing would resume into the wrong
   project). `dd` is the honest follow-up for those.
@@ -1102,8 +1107,9 @@ and it lasts one launch.
   reserve <account> <dir>...`. Elsewhere an automatic choice cannot take the
   account: it is an ordinary exclusion, built with the rest (`keptOut`), for a
   launch, the board's mark and a headless placement alike. In those
-  repositories it is ranked like any other, so the rule never reads a
-  directory and every other account stays available there. The obvious second
+  repositories it is ranked like any other: the rule never receives a
+  reservation, so it cannot prefer an account for what it is kept for, never
+  reads a directory, and every other account stays available there. The obvious second
   half, preferring the account in its own repositories, is what the design
   declines: going first until 80% overruns a small plan's five-hour window in
   a model of the owner's launches, because sessions already running keep
@@ -1151,7 +1157,9 @@ and it lasts one launch.
   one must count.
 - **A launch is one operation, whoever asks for it.** `headroom launch` and
   the session picker each build a request and commit it through `launchop`'s
-  plan. It refuses first whatever is known before a write — a named account
+  plan; the picker hands over the row it chose (`Request.Resume`), and the
+  plan decides the intent from it as it does for a session a launch names in
+  its arguments. It refuses first whatever is known before a write — a named account
   that cannot be launched, a reservation that cannot be read — since
   `state.Place` registers the home and prunes even when its rule refuses, and
   a launch that cannot start must leave nothing behind; then it places and
@@ -1241,8 +1249,8 @@ was shown and chose, and what every account's windows did afterwards.
 - **A launch line is the decision's whole input.** `launches.jsonl`, per
   home, holds every candidate as counted and as the rule was handed it: its
   subscription key, its busy processes, its last placement to the
-  millisecond, how its reservation stood to the launch, the record of recent
-  launches the rule read (`state.Place` returns it before recording the
+  millisecond and, beside what the rule read, how its reservation stood to
+  the launch; the record of recent launches the rule read (`state.Place` returns it before recording the
   launch), the intent, and the decision's millisecond. So any rule can be run
   over a line again, one that counts load differently included, and a replay
   reads neither `.reserved` nor the repository. Version 1 lines carried counts, names and seconds
@@ -1556,13 +1564,15 @@ takes a scope beside an account. The set travels with whatever was built from
 it — a round, the page that shows it, the disk snapshot — and is never rebuilt
 from a scope plus a list. Each vendor keeps its own `.order`, `.reserved`
 and `state.json` under its own accounts root; a second home names another root's
-ledger in its `.ledger` (see A second home).
+ledger in its `.ledger`, which `config` reads and writes by one rule
+(`internal/config/ledger.go`; see A second home).
 
 - **The command line** is `cmd/headroom`: Kong structs on clikit
   (`github.com/qiushiyan/clikit`), one declaration per command holding its
   flags, constraints and `Help()`, so the help page is generated from what
   parses. Configuration loads only when a command asks for it, so help
-  prints whatever the environment says. A command's `Run` turns its flags
+  prints whatever the environment says, and loading it first adopts the
+  records of a home an older build wrote (see The one file headroom writes). A command's `Run` turns its flags
   into one typed call into `internal/app` and maps the returned error to a
   status. How help renders, how an argv error reads and which errors are usage
   errors are clikit's: a change there is a clikit release and a `go.mod` bump,
@@ -1591,8 +1601,9 @@ ledger in its `.ledger` (see A second home).
   candidate of the other vendor. `state` owns the request ledger, stored
   bodies, placements, member homes and re-homes; `Place` is the one
   operation that writes both of a second home's files, the ledger's lock
-  first. `render` draws the block and compact layouts and the session rows;
-  JSON serialization stays with the surfaces.
+  first. `render` decides an account's notes once (`clauses`) and lays them
+  out in the block and the compact row, and draws the session rows; JSON
+  serialization stays with the surfaces.
 - **A round** is `internal/round`: one vendor's discovery, facts on disk,
   access (health and a request candidate — the second place vendor
   documents are read), claim, fetches and results. `Prepare` is the local
@@ -1610,7 +1621,7 @@ ledger in its `.ledger` (see A second home).
   liveness and ownership; mutations re-inspect at action time.
   `app/sessions.go` owns the command's entry and collection,
   `app/sessions_picker.go` the picker's state, `app/session_actions.go`
-  routing, resume and mutation effects.
+  the resume it hands to `launchop` and the mutation effects.
 - **Placement.** `placement` is the rule: one pure function over candidates,
   recent launches and an intent, with no clock, file or network of its own.
   `internal/launchop` owns a placement from request to record. `Gather`
@@ -1636,10 +1647,12 @@ ledger in its `.ledger` (see A second home).
   decides whether a login took (`judgeLogin`, shared with the handoff);
   `internal/browser` matches an email to a Chrome profile and reads the
   vendor's sign-in URL. `app/login_handoff.go` is `start`, `finish`,
-  `status`, `cancel` and the holder's life; `internal/signin` owns a dir's
-  sign-in files — the login lock, the start lock, the record, the vendor
-  registration — and the socket protocol, knowing nothing of accounts or
-  the vendor. See Renewing logins.
+  `status` and `cancel`, `app/login_holder.go` the holder's life;
+  `internal/signin` owns a dir's sign-in files — the login lock, the start
+  lock, the record, the vendor registration — the vendor login's life under
+  that registration (started, registered or ended, waited for, stopped),
+  for the batch and the holder alike, and the socket protocol, knowing
+  nothing of accounts. See Renewing logins.
 - **Launch preparation.** `launch.Prepare` validates routing, topology and
   the executable and builds the environment before any surface persists a
   choice. `internal/tui` owns raw-mode lifetime, restoration on
