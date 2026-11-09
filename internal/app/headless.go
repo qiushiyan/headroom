@@ -87,7 +87,6 @@ type headlessDoc struct {
 	Account   string `json:"account,omitempty"`
 	Placement string `json:"placement,omitempty"` // the id `started` reports the session's process against
 	Reason    string `json:"reason,omitempty"`
-	Rule      string `json:"rule"`
 
 	// TokenEndsAt is when the chosen account's token ends; null when the
 	// vendor did not say.
@@ -214,7 +213,7 @@ func HeadlessPlace(std Streams, scope config.Scope, opts HeadlessPlaceOptions, p
 
 	doc := headlessDoc{Schema: headlessSchema, DryRun: opts.DryRun, Placement: placed.ID, Notes: placed.Notes}
 	d := placed.Decision
-	doc.Rule, doc.Accounts = d.Rule, headlessAccounts(d)
+	doc.Accounts = headlessAccounts(d)
 	var outcome error
 	if d.Chosen == "" {
 		doc.Refusal, doc.RetryAt, outcome = d.Refusal, rfc(d.RoomAt), Status(ExitRefused)

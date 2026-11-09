@@ -204,42 +204,6 @@ func (c *LimitsCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) erro
 	return app.Limits(streams(ctx, in), scopes, string(c.Account))
 }
 
-type LaunchesCmd struct {
-	vendorFilter
-	Count int    `short:"n" default:"20" help:"How many of the newest launches to list; 0 lists every one."`
-	JSON  bool   `name:"json" help:"Print the records, or with --eval the evaluation, as JSON."`
-	Eval  bool   `help:"Judge how automatic placement has done instead of listing launches."`
-	Since string `placeholder:"SPAN|DATE" help:"With --eval, only what happened since: a span back from now (7d, 36h) or a date (2026-10-01)."`
-}
-
-func (LaunchesCmd) Help() string { return launchesHelp }
-
-func (c *LaunchesCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	switch {
-	case c.Eval && given(ctx, "count"):
-		return clikit.Usage(fmt.Errorf("--eval reads every line — -n does not apply; --since narrows it"))
-	case !c.Eval && c.Since != "":
-		return clikit.Usage(fmt.Errorf("--since narrows --eval"))
-	case c.Count < 0:
-		return clikit.Usage(fmt.Errorf("-n %d is not a count", c.Count))
-	}
-	scopes, err := c.scopes(cfg)
-	if err != nil {
-		return err
-	}
-	std, now := streams(ctx, in), time.Now()
-	if !c.Eval {
-		return app.Launches(std, scopes, c.Count, c.JSON)
-	}
-	var since time.Time
-	if c.Since != "" {
-		if since, err = app.ParseSince(c.Since, now); err != nil {
-			return clikit.Usage(err)
-		}
-	}
-	return app.LaunchesEval(std, scopes, since, c.JSON, now)
-}
-
 type LoginCmd struct {
 	Renew  LoginRenewCmd  `cmd:"" default:"withargs" help:"Renew the logins that end soon, or the named ones, one after another at this terminal."`
 	Start  LoginStartCmd  `cmd:"" help:"Start one account's sign-in for an approver elsewhere, and print its URL as JSON."`

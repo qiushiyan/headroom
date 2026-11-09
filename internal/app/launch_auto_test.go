@@ -15,7 +15,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -174,9 +173,9 @@ func launchOn(t *testing.T, scope config.Scope, place launchop.Deps, args ...str
 	return launched{code: r.code, called: rec.called, binary: rec.binary, args: rec.args, env: rec.env, stdout: r.stdout, stderr: r.stderr}
 }
 
-func (f autoFixture) log() []launchlog.Record {
+func (f autoFixture) log() []loggedLaunch {
 	f.t.Helper()
-	recs, skipped, err := launchlog.Read(f.cfg.AccountsRoot)
+	recs, skipped, err := readLaunchLog(f.cfg.AccountsRoot)
 	if err != nil || skipped != 0 {
 		f.t.Fatalf("log: %d skipped, %v", skipped, err)
 	}
@@ -210,7 +209,7 @@ func TestAutoLaunchChoosesTheLeastLoadedAccountAndSaysSo(t *testing.T) {
 	}
 	recs := f.log()
 	if len(recs) != 1 || recs[0].Mode != "auto" || recs[0].Reason != placement.ReasonLeastLoad ||
-		recs[0].Chosen != "a@x.com" || !recs[0].Recorded || len(recs[0].Candidates) != 3 {
+		recs[0].Chosen != "a@x.com" || recs[0].Problem != "" || recs[0].PID != os.Getpid() || recs[0].Vendor != "claude" {
 		t.Errorf("log = %+v", recs)
 	}
 	if *f.refreshes != 1 {
@@ -295,11 +294,12 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	if got.account(f.cfg) != "ok@x.com" {
 		t.Fatalf("launched on %s:\n%s", got.account(f.cfg), got.stderr)
 	}
-	recs := f.log()
+	table := f.launch("--dry-run").stdout
 	want := map[string]string{"out@x.com": "not logged in", "expired@x.com": "login expired", "ok@x.com": "", "torn@x.com": "", "qiushi": ""}
-	for _, c := range recs[0].Candidates {
-		if c.Excluded != want[c.Name] {
-			t.Errorf("%s excluded %q, want %q", c.Name, c.Excluded, want[c.Name])
+	for name, why := range want {
+		note := dryNote(table, name)
+		if (why == "" && strings.Contains(note, "excluded")) || (why != "" && !strings.Contains(note, "excluded: "+why)) {
+			t.Errorf("%s: note %q, want exclusion %q\n%s", name, note, why, table)
 		}
 	}
 
@@ -336,10 +336,9 @@ func TestAPercentThatDidNotParseIsNotRoom(t *testing.T) {
 	if got := f.launch(); got.account(f.cfg) != "a@x.com" {
 		t.Fatalf("launched on %s, whose session figure did not parse:\n%s", got.account(f.cfg), got.stderr)
 	}
-	for _, c := range f.log()[0].Candidates {
-		if c.Name == "qiushi" && (len(c.Limits) == 0 || c.Limits[0].Basis != "bad" || !c.NearLimit) {
-			t.Errorf("the unreadable figure was counted as %+v", c)
-		}
+	table := f.launch("--dry-run").stdout
+	if r := dryRow(table, "qiushi"); r == nil || !strings.Contains(r[0], "?") || !strings.Contains(dryNote(table, "qiushi"), "near a limit") {
+		t.Errorf("the unreadable figure was counted as %v:\n%s", r, table)
 	}
 }
 
@@ -484,7 +483,7 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 		if got.code != 0 || !got.called || !strings.Contains(got.stderr, "placement not recorded") {
 			t.Fatalf("under a held lock: %+v", got)
 		}
-		if recs := f.log(); len(recs) != 1 || recs[0].Recorded || recs[0].Problem == "" {
+		if recs := f.log(); len(recs) != 1 || recs[0].Problem == "" {
 			t.Errorf("log = %+v", recs)
 		}
 		if after, _ := os.ReadFile(statePath); !bytes.Equal(before, after) {
@@ -519,7 +518,7 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	})
 	t.Run("unwritable log", func(t *testing.T) {
 		f := newAutoFixture(t, "a@x.com")
-		if err := os.Mkdir(launchlog.Path(f.cfg.AccountsRoot), 0o755); err != nil {
+		if err := os.Mkdir(launchLogPath(f.cfg.AccountsRoot), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		got := f.launch()
@@ -529,8 +528,8 @@ func TestDegradedBookkeepingNeverRefuses(t *testing.T) {
 	})
 }
 
-// The log is never an input: without it, with a torn last line, and with its
-// lock held, a launch chooses the same account.
+// The log is never an input: without it, and with a torn last line, a launch
+// chooses the same account.
 func TestTheLogIsInert(t *testing.T) {
 	choose := func(t *testing.T, damage func(root string)) string {
 		f := newAutoFixture(t, "a@x.com", "b@x.com")
@@ -549,22 +548,15 @@ func TestTheLogIsInert(t *testing.T) {
 		return got.account(f.cfg)
 	}
 	want := choose(t, func(string) {})
-	if got := choose(t, func(root string) { os.Remove(launchlog.Path(root)) }); got != want {
+	if got := choose(t, func(root string) { os.Remove(launchLogPath(root)) }); got != want {
 		t.Errorf("with the log deleted: %s, want %s", got, want)
 	}
 	if got := choose(t, func(root string) {
-		f, _ := os.OpenFile(launchlog.Path(root), os.O_APPEND|os.O_WRONLY, 0o600)
+		f, _ := os.OpenFile(launchLogPath(root), os.O_APPEND|os.O_WRONLY, 0o600)
 		f.WriteString(`{"v":1,"at":"2026-`)
 		f.Close()
 	}); got != want {
 		t.Errorf("with a torn last line: %s, want %s", got, want)
-	}
-	if got := choose(t, func(root string) {
-		lock, _ := os.OpenFile(launchlog.Path(root)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-		syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
-		t.Cleanup(func() { lock.Close() })
-	}); got != want {
-		t.Errorf("with the log's lock held: %s, want %s", got, want)
 	}
 }
 
@@ -586,23 +578,6 @@ func TestAPassedWeeklyResetIsProjectedOnItsSchedule(t *testing.T) {
 	if got := f.launch(); got.code != 0 || !strings.Contains(got.stderr, "qiushi · auto") || strings.Contains(got.stderr, "resets in") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
-	recs, _, _ := launchlog.Read(f.cfg.AccountsRoot)
-	if len(recs) != 1 {
-		t.Fatalf("%d records", len(recs))
-	}
-	for _, c := range recs[0].Candidates {
-		if c.Name != "qiushi" {
-			continue
-		}
-		if c.Week.LeftBasis != "projected" || c.Week.LeftS < 154*3600 || c.Week.LeftS > 156*3600 {
-			t.Errorf("logged week = %+v", c.Week)
-		}
-		for _, l := range c.Limits {
-			if !l.Session && l.PeriodS != 604800 {
-				t.Errorf("weekly row %s logged without its schedule: %+v", l.Kind, l)
-			}
-		}
-	}
 }
 
 func TestDryRunHasNoEffects(t *testing.T) {
@@ -612,7 +587,7 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	if got := f.launch(); got.code != 0 {
 		t.Fatal(got.stderr)
 	}
-	files := []string{filepath.Join(f.cfg.AccountsRoot, "state.json"), launchlog.Path(f.cfg.AccountsRoot)}
+	files := []string{filepath.Join(f.cfg.AccountsRoot, "state.json"), launchLogPath(f.cfg.AccountsRoot)}
 	read := func() [][]byte {
 		var out [][]byte
 		for _, p := range files {
@@ -730,10 +705,11 @@ func TestBusySessionsAreLoad(t *testing.T) {
 	if got.account(f.cfg) != "a@x.com" {
 		t.Fatalf("the primary's busy session was not counted:\n%s", got.stderr)
 	}
-	for _, c := range f.log()[0].Candidates {
-		if c.Name == "qiushi" && (c.Busy != 1 || c.Load != 1 || strings.Join(c.Statuses, ",") != "busy,idle,shell") {
-			t.Errorf("primary counted as %+v", c)
-		}
+	// One busy session is one step of load; idle and shell are live and
+	// spend nothing, and a gone process is neither.
+	table := f.launch("--dry-run").stdout
+	if r := dryRow(table, "qiushi"); r == nil || r[3] != "1" || r[5] != "1" {
+		t.Errorf("primary counted as %v:\n%s", r, table)
 	}
 }
 
@@ -788,30 +764,6 @@ func TestRefreshAsksThroughTheClaimAndRecords(t *testing.T) {
 	}
 }
 
-// A week's time left is said as what it rests on, and a record written before
-// it was kept says nothing rather than something invented.
-func TestALaunchesLineSaysHowLongItsWeekHadLeft(t *testing.T) {
-	record := func(w launchlog.Week) launchlog.Record {
-		return launchlog.Record{At: "2026-10-05T14:39:35Z", Mode: "auto", Reason: "least-load", Chosen: "a", Recorded: true,
-			Candidates: []launchlog.Candidate{{Name: "a", Weekly: 7, Week: w}}}
-	}
-	for _, c := range []struct {
-		name string
-		week launchlog.Week
-		want string // "" = no time left is said
-	}{
-		{"reported", launchlog.Week{LeftS: 45 * 3600, LeftBasis: "reset"}, "1.9d left"},
-		{"projected", launchlog.Week{LeftS: 155 * 3600, LeftBasis: "projected"}, "≈6.5d left"},
-		{"nothing dates it", launchlog.Week{LeftS: 604800, LeftBasis: "assumed"}, ""},
-		{"written before the field", launchlog.Week{}, ""},
-	} {
-		line := launchesLine(record(c.week), 1, false)
-		if !strings.Contains(line, "7%") || (c.want == "") == strings.Contains(line, " left") || !strings.Contains(line, c.want) {
-			t.Errorf("%s: %q, want the week's figure and %q", c.name, line, c.want)
-		}
-	}
-}
-
 // rehome moves a session to an account the way the picker's override does: a
 // launch that exists to move it.
 func rehome(st *state.Store, id, account string, at time.Time) error {
@@ -823,9 +775,9 @@ func rehome(st *state.Store, id, account string, at time.Time) error {
 	return err
 }
 
-func readLog(t *testing.T, scope config.Scope) ([]launchlog.Record, int, error) {
+func readLog(t *testing.T, scope config.Scope) ([]loggedLaunch, int, error) {
 	t.Helper()
-	recs, skipped, err := launchlog.Read(scope.AccountsRoot)
+	recs, skipped, err := readLaunchLog(scope.AccountsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

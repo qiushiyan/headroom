@@ -24,7 +24,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -241,13 +240,14 @@ func (p *Plan) Commit() (*Launch, error) {
 	if placed.SessionErr != nil {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
 	}
-	rec := f.record(out.decision, placed.Ledger, req.Intent, req.Now)
-	rec.PID, rec.CWD, rec.Mode, rec.Recorded = os.Getpid(), req.CWD, req.Mode, placed.Recorded
-	rec.Session = p.session.Route
-	if missed != nil {
-		rec.Problem = missed.Error()
+	line := logLine{
+		Vendor: string(scope.Vendor), Mode: req.Mode, Reason: out.decision.Reason, Chosen: out.decision.Chosen,
+		CWD: req.CWD, Session: p.session.Route, PID: os.Getpid(),
 	}
-	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
+	if missed != nil {
+		line.Problem = missed.Error()
+	}
+	if err := appendLog(scope.AccountsRoot, line, req.Now); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
 	}
 	if req.Intent.Kind == placement.Auto && worthRefreshing(f, req.Now) {

@@ -107,8 +107,8 @@ func TestEveryAutomaticSurfaceHonoursAReservation(t *testing.T) {
 		t.Errorf("held outside its repository: %+v", doc.find("held@x.com"))
 	}
 	l := f.launch()
-	if rec := f.log()[0]; l.account(f.cfg) != "free@x.com" || rec.Candidates[2].Reservation != "elsewhere" || rec.Candidates[2].Eligible {
-		t.Errorf("launch outside: %s\nlog: %+v", l, rec.Candidates[2])
+	if note := dryNote(f.launch("--dry-run").stdout, "held@x.com"); l.account(f.cfg) != "free@x.com" || !strings.Contains(note, "excluded: reserved for") {
+		t.Errorf("launch outside: %s\nheld's note: %q", l, note)
 	}
 }
 
@@ -150,9 +150,8 @@ func TestAMissingRepositoryKeepsItsAccountHeld(t *testing.T) {
 	if l := f.launch(); l.code != 0 || l.account(f.cfg) == "held@x.com" {
 		t.Fatalf("launch: %s", l)
 	}
-	held := f.log()[0].Candidates[2]
-	if held.Name != "held@x.com" || held.Eligible || held.Reservation != "elsewhere" {
-		t.Errorf("with its repository gone: %+v", held)
+	if note := dryNote(f.launch("--dry-run").stdout, "held@x.com"); !strings.Contains(note, "excluded: reserved for") {
+		t.Errorf("with its repository gone, held's note: %q", note)
 	}
 }
 

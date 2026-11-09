@@ -11,7 +11,7 @@ records nothing. A bare headroom launch takes the least-loaded account; headroom
 
 An account is a config dir: Claude Code's primary is ~/.claude and the others are
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
-that report — the board, limits, launches, refresh — cover every vendor on this machine
+that report — the board, limits, refresh — cover every vendor on this machine
 unless --vendor names one. Commands that act on one account — launch, resolve, accounts
 add and remove — act on Claude Code unless --vendor says codex. login, sessions and
 headless are Claude Code only.`
@@ -118,19 +118,6 @@ headroom board --help), read from disk alone: no health probe, no credential rea
 request — about 10ms against the board's 300ms, so a statusline can ask often. health reads
 "unprobed" and load is null. Fresher figures come from the board, headroom --json and
 headroom refresh, all under the same per-account request budget.`
-
-const launchesHelp = `The newest launches from the launch log, one line each: when, which account, how it was
-decided, the load and weekly figure it was decided on, how long that week had left, and the
-account that would have been next. --json prints the records as logged, one per line.
-
---eval judges automatic placement instead, per rule version: windows its launches went into
-that reached a limit while another account had room, weekly room that may have renewed
-unspent, and the launches this binary's rule would decide differently. These are observed
-outcomes, not what another choice would have caused. A partial: line names a home or file
-it could not read; a fault: line counts launches this binary's rule decides differently
-from what was logged under its name, so that rule's figures mix two rules. It reads the
-launch logs of every home on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
-now (7d, 36h, 90m) or from a date (2026-10-01).`
 
 const loginHelp = `Renews Claude Code logins: one claude auth login per account, in turn, its approval page
 opened in the Chrome profile matched to the account's email, or the default browser when

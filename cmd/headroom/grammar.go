@@ -19,7 +19,6 @@ type CLI struct {
 	Launch   LaunchCmd   `cmd:"" help:"Run claude, or codex, on the account headroom decides."`
 	Sessions SessionsCmd `cmd:"" help:"Continue any Claude Code session on this machine, on the account that last drove it."`
 	Limits   LimitsCmd   `cmd:"" help:"Print what is known about every account's limits, read from disk alone."`
-	Launches LaunchesCmd `cmd:"" help:"List the newest launches, or judge how automatic placement has done."`
 	Login    LoginCmd    `cmd:"" help:"Renew the Claude Code logins that end soon."`
 	Headless HeadlessCmd `cmd:"" help:"Place sessions a headless runner starts itself, on per-account tokens."`
 	Resolve  ResolveCmd  `cmd:"" help:"Print an account's name, dir and kind, for shell preflight."`

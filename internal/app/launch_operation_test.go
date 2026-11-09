@@ -13,7 +13,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -141,10 +140,8 @@ func TestPlacementReadsThePrimarysFileBackedCredential(t *testing.T) {
 	if got.code != 0 || got.account(f.cfg) != "a@x.com" {
 		t.Fatalf("launched on %s:\n%s", got.account(f.cfg), got.stderr)
 	}
-	for _, c := range f.log()[0].Candidates {
-		if c.Name == "qiushi" && c.Excluded != "login expired" {
-			t.Errorf("the primary's file-backed credential was not read: excluded %q", c.Excluded)
-		}
+	if note := dryNote(f.launch("--dry-run").stdout, "qiushi"); !strings.Contains(note, "excluded: login expired") {
+		t.Errorf("the primary's file-backed credential was not read: %q", note)
 	}
 }
 
@@ -247,7 +244,7 @@ func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
 	f.observe("a@x.com", 0, 5, 3*time.Minute)
 	f.observe("b@x.com", 0, 30, 3*time.Minute)
 	// A log that cannot be appended to: the launch still starts, and says so.
-	if err := os.Mkdir(launchlog.Path(f.cfg.AccountsRoot), 0o755); err != nil {
+	if err := os.Mkdir(launchLogPath(f.cfg.AccountsRoot), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	proj := filepath.Join(f.cfg.Home, "proj")

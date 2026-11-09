@@ -9,7 +9,7 @@ records nothing. A bare headroom launch takes the least-loaded account; headroom
 
 An account is a config dir: Claude Code's primary is ~/.claude and the others are
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
-that report — the board, limits, launches, refresh — cover every vendor on this machine
+that report — the board, limits, refresh — cover every vendor on this machine
 unless --vendor names one. Commands that act on one account — launch, resolve, accounts
 add and remove — act on Claude Code unless --vendor says codex. login, sessions and
 headless are Claude Code only.
@@ -44,8 +44,6 @@ Commands:
                                  that last drove it.
   limits                         Print what is known about every account's limits, read from disk
                                  alone.
-  launches                       List the newest launches, or judge how automatic placement has
-                                 done.
   login renew [<account> ...]    Renew the logins that end soon, or the named ones, one after
                                  another at this terminal (default of login).
   login start <account>          Start one account's sign-in for an approver elsewhere, and print

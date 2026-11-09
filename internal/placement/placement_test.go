@@ -26,11 +26,7 @@ func acct(name string, session, weekly int) Candidate {
 
 func chosen(t *testing.T, cands []Candidate, ledger Ledger, intent Intent) Decision {
 	t.Helper()
-	d := Choose(cands, ledger, intent, now)
-	if d.Rule != Rule {
-		t.Fatalf("rule = %q", d.Rule)
-	}
-	return d
+	return Choose(cands, ledger, intent, now)
 }
 
 func TestRowsCountOnlyForTheWindowTheyDescribe(t *testing.T) {

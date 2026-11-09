@@ -308,25 +308,16 @@ func TestCodexPlacesItsOwnLaunches(t *testing.T) {
 	if second, stderr := launch(); second != "u1@x.com" {
 		t.Fatalf("the second launch went to %q, want u1@x.com: the first one's pending load did not count\n%s", second, stderr)
 	}
+	// Why the others were not chosen, as the dry run says it: a block and an
+	// unreadable login are positive evidence, and Codex reports no busy
+	// sessions.
+	table := launchOn(t, f.scope, place, "--dry-run").stdout
+	for _, want := range []string{"blocked by the vendor", "login unreadable"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("the dry run does not say %q:\n%s", want, table)
+		}
+	}
 	recs, _, _ := readLog(t, f.scope)
-	for _, c := range recs[0].Candidates {
-		if c.Name == "u3@x.com" && c.Excluded != "blocked by the vendor" {
-			t.Errorf("u3 excluded %q", c.Excluded)
-		}
-		if c.Name == "u4@x.com" && c.Excluded != "login unreadable" {
-			t.Errorf("u4 excluded %q", c.Excluded)
-		}
-		if c.Busy != 0 || len(c.Statuses) != 0 {
-			t.Errorf("%s carries busy sessions Codex cannot report: %+v", c.Name, c)
-		}
-	}
-	// The window's stated length travels with the row: it is what an
-	// unstarted or ended Codex window is counted to have left.
-	for _, c := range recs[0].Candidates {
-		if c.Name == "u2@x.com" && (len(c.Limits) == 0 || c.Limits[0].WindowS != 604800) {
-			t.Errorf("logged rows %+v lack the stated window", c.Limits)
-		}
-	}
 	if recs[0].Vendor != "codex" || recs[0].Reason != placement.ReasonLeastLoad {
 		t.Errorf("log = %+v", recs[0])
 	}

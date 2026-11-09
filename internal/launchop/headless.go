@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -81,7 +80,7 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	var out HeadlessPlacement
 	if f.reservedErr != nil {
 		out.Failed = reservedRefusal(f.reservedErr)
-		out.Decision = placement.Decision{Rule: placement.Rule, Refusal: out.Failed.Error()}
+		out.Decision = placement.Decision{Refusal: out.Failed.Error()}
 		return out
 	}
 	if req.DryRun {
@@ -97,11 +96,8 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 		out.Failed = err
 	case out.Decision.Chosen != "":
 		out.ID = id
-		// The placement's line in the launch log, as a launch's: `launches
-		// --eval` judges the rule by every decision it made.
-		rec := f.record(placed.Decision, placed.Ledger, intent, now)
-		rec.Mode, rec.Recorded, rec.CWD = "headless", placed.Recorded, req.CWD
-		if err := launchlog.Append(req.Set.Scope.AccountsRoot, rec); err != nil {
+		line := logLine{Vendor: string(req.Set.Scope.Vendor), Mode: "headless", Reason: placed.Decision.Reason, Chosen: placed.Decision.Chosen, CWD: req.CWD}
+		if err := appendLog(req.Set.Scope.AccountsRoot, line, now); err != nil {
 			out.Notes = append(out.Notes, fmt.Sprintf("launch log not written (%v)", err))
 		}
 		if worthRefreshing(f, now) {

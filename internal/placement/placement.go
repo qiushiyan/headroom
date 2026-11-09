@@ -34,11 +34,8 @@ import (
 	"time"
 )
 
-// The constants are policy, chosen and not measured. They are named in Rule,
-// so a log line says which values decided it.
+// The constants are policy, chosen and not measured.
 const (
-	Rule = "load-2"
-
 	// StepPoints is one step of load: ten points of session-window usage, one
 	// busy session, or one pending placement.
 	StepPoints = 10
@@ -421,7 +418,6 @@ type Decision struct {
 	Reason     string
 	Refusal    string
 	RunnerUp   string // the account the rule would have chosen next
-	Rule       string
 	Candidates []Counted
 
 	// RoomAt is when the first account set aside near a limit has room again,
@@ -454,7 +450,7 @@ func (d Decision) findRef(ref string) (Counted, bool) {
 // belongs to the store, which calls this under its lock so that two launches
 // cannot both see an account as empty.
 func Choose(cands []Candidate, ledger Ledger, intent Intent, now time.Time) Decision {
-	d := Decision{Rule: Rule, Candidates: make([]Counted, len(cands))}
+	d := Decision{Candidates: make([]Counted, len(cands))}
 	for i, c := range cands {
 		d.Candidates[i] = count(c, ledger, i, now)
 	}

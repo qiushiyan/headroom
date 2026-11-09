@@ -76,10 +76,6 @@ func TestContracts(t *testing.T) {
 		{"launch-codex-named", []string{"launch", "--vendor", "codex", "--account", "c@x.com", "--", "resume", "--all"}, ""},
 		{"launch-codex-bare", []string{"launch", "--vendor", "codex", "--"}, ""},
 		{"launch-codex-exec", []string{"launch", "--vendor", "codex", "--", "exec", "--json", "hello"}, ""},
-		{"launches", []string{"launches"}, ""},
-		{"launches-json", []string{"launches", "--json"}, ""},
-		{"launches-n", []string{"launches", "-n", "2"}, ""},
-		{"launches-eval-json", []string{"launches", "--eval", "--json"}, ""},
 
 		// The session picker needs a terminal; the cd file says nothing was entered.
 		{"sessions-no-terminal", []string{"sessions", "--cd-file", cdFile, "--", "--dangerously-skip-permissions"}, ""},
@@ -113,9 +109,6 @@ func TestContracts(t *testing.T) {
 		{"accounts-board-flag-before-remove", []string{"accounts", "--compact", "remove", "--yes", "a@x.com"}, ""},
 		{"json-before-command", []string{"--json", "sessions"}, ""},
 		{"launch-words-without-dashdash", []string{"launch", "fix", "it"}, ""},
-		{"launches-eval-n-default", []string{"launches", "--eval", "-n", "20"}, ""},
-		{"launches-eval-n-zero", []string{"launches", "--eval", "-n", "0"}, ""},
-		{"launches-since-without-eval", []string{"launches", "--since", "7d"}, ""},
 		{"login-within-negative", []string{"login", "--dry-run", "--within", "-1"}, ""},
 		{"headless-place-comma", []string{"headless", "place", "--dry-run", "--exclude", "a@x.com,b@x.com"}, ""},
 		{"headless-place-empty", []string{"headless", "place", "--exclude", ""}, ""},

@@ -16,7 +16,6 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -136,9 +135,9 @@ func (f *twoHomes) launch(cfg config.Scope, args ...string) launched {
 	return launchOn(f.t, cfg, f.edges, args...)
 }
 
-func (f *twoHomes) log(cfg config.Scope) []launchlog.Record {
+func (f *twoHomes) log(cfg config.Scope) []loggedLaunch {
 	f.t.Helper()
-	recs, _, err := launchlog.Read(cfg.AccountsRoot)
+	recs, _, err := readLaunchLog(cfg.AccountsRoot)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -154,15 +153,6 @@ func configDirs(env []string) []string {
 		}
 	}
 	return out
-}
-
-func loggedCandidate(rec launchlog.Record, name string) launchlog.Candidate {
-	for _, c := range rec.Candidates {
-		if c.Name == name {
-			return c
-		}
-	}
-	return launchlog.Candidate{}
 }
 
 // A launch in the second home counts the sessions running in the first home
@@ -192,15 +182,6 @@ func TestASecondHomeCountsTheFirstHomesBusySessions(t *testing.T) {
 	if !strings.Contains(got.stderr, "load 1 (1 from qiushiyan)") {
 		t.Errorf("the launch line does not say whose load it counted:\n%s", got.stderr)
 	}
-	rec := f.log(f.steward)[0]
-	if c := loggedCandidate(rec, "a@x.com"); c.Busy != 2 || len(c.Homes) != 1 || c.Homes[0].Home != f.owner.AccountsRoot {
-		t.Errorf("a@x.com counted as %+v", c)
-	}
-	// The second home's primary is the same subscription as its yan@x.com dir:
-	// both carry the owner's session on it.
-	if c := loggedCandidate(rec, "yan"); c.Busy != 1 {
-		t.Errorf("the second home's primary counted as %+v", c)
-	}
 }
 
 // The reverse: a launch in the first home counts the launches the second home
@@ -221,13 +202,6 @@ func TestTheFirstHomeCountsTheSecondHomesLaunchesAndSessions(t *testing.T) {
 	got := f.launch(f.owner, "--auto")
 	if dirs := configDirs(got.env); len(dirs) != 1 || dirs[0] != filepath.Join(f.owner.AccountsRoot, "yan@x.com") {
 		t.Fatalf("the owner's launch went to %v — a carries the second home's launch and b its session:\n%s", dirs, got.stderr)
-	}
-	rec := f.log(f.owner)[0]
-	if c := loggedCandidate(rec, "a@x.com"); c.Pending != 1 || len(c.Homes) != 1 || c.Homes[0].Home != f.steward.AccountsRoot || c.Homes[0].Pending != 1 {
-		t.Errorf("a@x.com counted as %+v", c)
-	}
-	if c := loggedCandidate(rec, "b@x.com"); c.Busy != 1 || len(c.Homes) != 1 || c.Homes[0].Busy != 1 {
-		t.Errorf("b@x.com counted as %+v", c)
 	}
 }
 
@@ -447,9 +421,6 @@ func TestASessionIDInBothHomesIsOwnedHereAndCountedThere(t *testing.T) {
 	if dirs := configDirs(got.env); got.code != 0 || len(dirs) != 1 || filepath.Base(dirs[0]) != "a@x.com" ||
 		!strings.Contains(got.stderr, "this session's account") {
 		t.Fatalf("exit %d on %v — the owner is this home's a@x.com:\n%s", got.code, dirs, got.stderr)
-	}
-	if c := loggedCandidate(f.log(f.owner)[0], "b@x.com"); c.Busy != 1 || len(c.Homes) != 1 || c.Homes[0].Home != f.steward.AccountsRoot {
-		t.Errorf("the other home's session on that id counted as %+v", c)
 	}
 }
 

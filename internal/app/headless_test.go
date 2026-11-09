@@ -85,8 +85,8 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if code != 0 || !doc.Placed || doc.Account != "b@x.com" || doc.Reason != placement.ReasonLeastLoad || doc.Placement == "" {
 		t.Fatalf("code %d doc %+v stderr %s", code, doc, errw)
 	}
-	if doc.TokenEndsAt == nil || doc.RetryAt != nil || doc.Rule != placement.Rule {
-		t.Errorf("ends %v retry %v rule %q", doc.TokenEndsAt, doc.RetryAt, doc.Rule)
+	if doc.TokenEndsAt == nil || doc.RetryAt != nil {
+		t.Errorf("ends %v retry %v", doc.TokenEndsAt, doc.RetryAt)
 	}
 	for _, name := range []string{"c@x.com", "qiushi"} {
 		if a := doc.find(name); a.Eligible || !strings.HasPrefix(a.Excluded, "no headless token") || !strings.Contains(a.Excluded, "headroom headless mint "+name) {
@@ -105,7 +105,7 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 		t.Fatalf("recorded %+v", rec)
 	}
 	log := f.log()
-	if len(log) != 1 || log[0].Mode != "headless" || !log[0].Automatic || log[0].Chosen != "b@x.com" || !log[0].Recorded {
+	if len(log) != 1 || log[0].Mode != "headless" || log[0].Reason != placement.ReasonLeastLoad || log[0].Chosen != "b@x.com" || log[0].Problem != "" {
 		t.Fatalf("log %+v", log)
 	}
 	if *f.refreshes != 1 {
@@ -569,8 +569,8 @@ func TestACallerExcludesAccountsItWillNotTake(t *testing.T) {
 	if rec := f.st.Load().Placements().Recent; len(rec) != 1 || rec[0].Name != "b@x.com" {
 		t.Fatalf("recorded %+v", rec)
 	}
-	if l := f.log(); len(l) != 1 || loggedCandidate(l[0], "a@x.com").Excluded != "excluded by the caller" {
-		t.Errorf("the log does not carry the exclusion: %+v", l)
+	if l := f.log(); len(l) != 1 || l[0].Chosen != "b@x.com" {
+		t.Errorf("log %+v", l)
 	}
 
 	// Excluding the near account leaves no instant: what is left is open or

@@ -150,7 +150,7 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 		}
 		fmt.Fprintf(w, "headroom launch --dry-run: would start %s on %s (%s)\n", binary, d.Chosen, how)
 	}
-	fmt.Fprintf(w, "rule %s — nothing was recorded, logged or started\n\n", d.Rule)
+	fmt.Fprint(w, "nothing was recorded, logged or started\n\n")
 
 	nameW := len("account")
 	for _, c := range d.Candidates {

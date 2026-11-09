@@ -22,7 +22,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -228,8 +227,8 @@ func OtherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 // launch in dir, which each policy composes as keptOut.
 func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, res reservations, dir string, credentials bool, deps Deps) facts {
 	scope := set.Scope
-	f := facts{set: set, snap: snap, home: st.Home(), labels: snap.HomeLabels(), cands: make([]candidate, len(src))}
-	f.reservedErr = res.err
+	f := facts{set: set, snap: snap, home: st.Home(), labels: snap.HomeLabels(), cands: make([]candidate, len(src)),
+		reservedErr: res.err}
 	project := sessions.RepoKey(dir)
 
 	var blobs []string
@@ -484,16 +483,4 @@ func readCredsParallel(accts []accounts.Account, read func(accounts.Account) str
 	}
 	wg.Wait()
 	return out
-}
-
-// record is a placement's line in the launch log: the decision and every
-// input the rule read, and how each reserved account stood to the launch —
-// which the rule never sees, so that it cannot prefer an account for it.
-func (f facts) record(d placement.Decision, ledger placement.Ledger, intent placement.Intent, now time.Time) launchlog.Record {
-	rec := launchlog.New(d, f.rule(), ledger, intent, now)
-	rec.Vendor = string(f.set.Scope.Vendor)
-	for i, c := range rec.Candidates {
-		rec.Candidates[i].Reservation = f.standing(c.Name)
-	}
-	return rec
 }

@@ -153,16 +153,6 @@ func TestGrammarRefuses(t *testing.T) {
 		{[]string{"headless", "started", "id", "0"}, "0 is not a process id"},
 		{[]string{"headless", "started", "id", "many"}, "pid"},
 
-		{[]string{"launches", "-n"}, "count"},
-		{[]string{"launches", "-n", "many"}, "count"},
-		{[]string{"launches", "--count=-1"}, "-n -1 is not a count"},
-		{[]string{"launches", "--nope"}, "unknown flag --nope"},
-		{[]string{"launches", "--eval", "-n", "3"}, "-n does not apply"},
-		{[]string{"launches", "--eval", "-n", "20"}, "-n does not apply"}, // given, though it is the default
-		{[]string{"launches", "--since", "7d"}, "--since narrows --eval"},
-		{[]string{"launches", "--eval", "--since"}, "--since"},
-		{[]string{"launches", "--eval", "--since", "soon"}, "soon"},
-
 		{[]string{"login", "--within", "x"}, "--within"},
 		{[]string{"login", "--within", "-1"}, "--within"},
 		{[]string{"login", "--within=-1"}, "--within -1 is not a number of days"},
@@ -191,6 +181,8 @@ func TestGrammarRefuses(t *testing.T) {
 		// Retired spellings, and words that are no command.
 		{[]string{"select"}, "unexpected argument select"},
 		{[]string{"select", "add"}, "unexpected argument select"},
+		{[]string{"launches"}, "unexpected argument launches, did you mean \"launch\"?"},
+		{[]string{"launches", "--eval", "--json"}, "unexpected argument launches"},
 		{[]string{"--check"}, "unknown flag --check"},
 		// A mistyped command is the root's error; under the board typed by
 		// name, the word is the board's.
@@ -312,14 +304,6 @@ func TestGrammarDecodes(t *testing.T) {
 	}
 	if g, _ := parse(t, "accounts", "add", "c@x.com"); g.Accounts.Vendor != nil {
 		t.Errorf("accounts add with no --vendor: %v", *g.Accounts.Vendor)
-	}
-
-	// -n is given or not, whatever its value: --eval refuses it typed as 20.
-	if _, ctx := parse(t, "launches", "--eval"); given(ctx, "count") {
-		t.Error("launches --eval: -n reads as given")
-	}
-	if _, ctx := parse(t, "launches", "-n", "20"); !given(ctx, "count") {
-		t.Error("launches -n 20: -n reads as absent")
 	}
 }
 
