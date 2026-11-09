@@ -325,6 +325,54 @@ func TestRequestVerdictsSeparateStateFailureAndVendorEvidence(t *testing.T) {
 	}
 }
 
+// The session window is counted over the responses the rule would count as
+// measured: all carrying it is an ok line, any lacking it a note that fails
+// nothing, and a response that is old, empty or names no limit is no evidence
+// either way.
+func TestCheckSessionWindows(t *testing.T) {
+	now := time.Now()
+	const with = `{"limits":[{"kind":"session","percent":3},{"kind":"weekly_all","percent":40}]}`
+	const without = `{"limits":[{"kind":"weekly_all","percent":40},{"kind":"weekly_scoped","percent":7}]}`
+	rec := func(body string, age time.Duration) state.AuditRecord {
+		return state.AuditRecord{Name: "a", FetchedAtMS: now.Add(-age).UnixMilli(), Body: []byte(body)}
+	}
+	for _, tc := range []struct {
+		name string
+		recs []state.AuditRecord
+		ok   string // an ok line carrying this
+		note string // a note carrying this
+	}{
+		{name: "every response carries it", recs: []state.AuditRecord{rec(with, time.Minute), rec(with, 2*time.Minute)},
+			ok: "usage: every fresh response carries a five-hour session window (2)"},
+		{name: "one carries it", recs: []state.AuditRecord{rec(with, time.Minute), rec(without, time.Minute), rec(without, time.Minute)},
+			note: "usage: 1 of 3 fresh responses carry a five-hour session window"},
+		{name: "none carries it", recs: []state.AuditRecord{rec(without, time.Minute), rec(without, time.Minute)},
+			note: "usage: 0 of 2 fresh responses carry a five-hour session window"},
+		// What the vendor sent an hour ago is not what it sends now.
+		{name: "old figures are no evidence", recs: []state.AuditRecord{rec(without, time.Hour), rec(with, time.Minute)},
+			ok: "every fresh response carries a five-hour session window (1)"},
+		{name: "nothing fresh", recs: []state.AuditRecord{rec(without, time.Hour), {Name: "never read"}}},
+		{name: "no limits at all", recs: []state.AuditRecord{rec(`{"limits":[]}`, time.Minute)}},
+		{name: "a body that does not parse", recs: []state.AuditRecord{rec(`{"limits":"bad"}`, time.Minute)}},
+		{name: "stamped in the future", recs: []state.AuditRecord{rec(without, -time.Hour)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, out := testReport()
+			checkSessionWindows(tc.recs, config.Claude, now, r)
+			oks, _, _ := printed(out)
+			text := out.String()
+			switch {
+			case tc.ok != "" && !hasLine(oks, tc.ok), tc.note != "" && !strings.Contains(text, " --   "+tc.note),
+				tc.ok == "" && tc.note == "" && text != "":
+				t.Errorf("printed %q, want ok %q note %q", text, tc.ok, tc.note)
+			}
+			if r.fails != 0 || r.unknowns != 0 {
+				t.Errorf("a fact failed the run: fails=%d unknowns=%d", r.fails, r.unknowns)
+			}
+		})
+	}
+}
+
 // Real command, credential and HTTP boundaries use local fixtures so this
 // pins exit status and user-facing evidence together without personal state.
 // The closing line says whose files a failure is against: a corrupt state

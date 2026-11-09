@@ -17,6 +17,7 @@ FAIL  binary (claude): endpoint + config-dir + credential seams present — miss
  ok   state[a@x.com]: stored usage response parses via shared contract
  ok   state[b@x.com]: stored usage response parses via shared contract
  ok   state[p]: stored usage response parses via shared contract
+ ok   usage: every fresh response carries a five-hour session window (3)
  ok   dirs: every account config dir is absolute
  ok   topology[a@x.com]: projects/ resolves to the canonical store
  ok   topology[b@x.com]: projects/ resolves to the canonical store
