@@ -166,7 +166,7 @@ a placement would not choose the account. Tokens are never shown here.`
 
 const placeHelp = `Decides which account the caller's next headless session spends, records the decision as
 load the person's own launches steer around, and prints it as JSON on stdout:
-  {"schema": 1, "placed": bool, "account", "placement", "reason", "rule", "token_ends_at",
+  {"schema": 1, "placed": bool, "account", "placement", "reason", "token_ends_at",
    "refusal", "retry_at", "notes": [...], "accounts": [{"account", "eligible", "excluded",
    "near_limit", "room_at", "load", "busy", "pending", "observed_at", "stale",
    "session", "week"}]}
