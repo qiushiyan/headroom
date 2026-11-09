@@ -70,7 +70,7 @@ func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 			if !slices.Equal(got.args, rest) {
 				t.Errorf("vendor args = %q, want %q", got.args, rest)
 			}
-			if rec, ok := state.Open(cfg).Load().Owner(sessA); ok {
+			if rec, ok := state.Open(cfg).Load().Owners()[sessA]; ok {
 				t.Errorf("a launch told where to go re-homed the session it named: %+v", rec)
 			}
 		})

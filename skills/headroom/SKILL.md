@@ -66,8 +66,9 @@ shell's `x-<name>`) — quote that spelling.
   --resume <id>` (or `-- --continue` for the newest session there). The
   session's id is in its transcript's filename under
   `~/.claude/projects/<munged project path>/`, or in Claude Code's own
-  `/resume`. The move is recorded, so the session's next automatic launch
-  follows it. Done when the session is running on the named account.
+  `/resume`. The account named drives it from the first prompt, so the
+  session's next automatic launch follows it there. Done when the session
+  is running on the named account.
 - **Resume, same account**: `headroom launch -- --resume <id>` from the
   session's project follows the account that last drove it while it has
   room, and moves it to the least-loaded account when it has none.

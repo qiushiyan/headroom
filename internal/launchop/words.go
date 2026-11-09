@@ -24,13 +24,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
-		switch d.Reason {
-		case placement.ReasonOwner:
-			parts = append(parts, "this session's account")
-		default:
-			parts = append(parts, d.Reason)
-		}
-		return strings.Join(parts, " · ")
+		return strings.Join(append(parts, d.Reason), " · ")
 	}
 	parts = append(parts, "auto")
 	switch {

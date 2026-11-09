@@ -7,8 +7,9 @@ exit statuses and JSON below. The design as it stands lives in `DESIGN.md`
 every measurement below was taken on the owner's laptop on that date. A real
 mint is owed (§ Owed): minting needs a person to click Authorize.
 
-`place`'s `rule` field, the load other homes add to its candidates
-(§ Commands), and the Summary's `launches --eval` are retired by
+`place`'s `rule` field, the load other homes add to its candidates and
+the home a run records (§ Commands), and the Summary's `launches --eval`
+are retired by
 `docs/specs/what-is-used.md`; every other command, exit status and field
 stands.
 

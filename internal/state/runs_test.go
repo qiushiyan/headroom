@@ -15,8 +15,8 @@ import (
 func placeHeadless(t *testing.T, s *Store, id string, cands []placement.Candidate, now time.Time) Placed {
 	t.Helper()
 	p, err := s.Place(Launch{Candidates: cands, Intent: placement.Intent{CanWait: true}, ID: id, Now: now})
-	if err != nil || !p.Recorded {
-		t.Fatalf("place %s: recorded=%v err=%v", id, p.Recorded, err)
+	if err != nil || p.Decision.Chosen == "" {
+		t.Fatalf("place %s: chose %q err=%v", id, p.Decision.Chosen, err)
 	}
 	return p
 }

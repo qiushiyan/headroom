@@ -100,22 +100,33 @@ Kept, each with a caller:
 - Codex;
 - the remaining knobs.
 
+Callers, on the dotfiles branch: the `x-select` picker binding goes with
+the picker, and `remote-logins` reads Codex account names from `limits
+--vendor codex` rather than the board's `--json`. Both come from the same
+discovery and spend no request, so the change is the caller's, not
+headroom's.
+
 ## Steward on tokens
 
 Steward runs Claude through envoy, whose `ENVOY_CLAUDE_CMD` names a
 launcher prefix. The prefix becomes steward's own wrapper, which:
 
 1. runs `headroom headless place` and prints the document's notes on stderr;
-2. on exit 3, prints the refusal and exits 2: envoy's infra failure, and the
-   next scheduled turn retries;
+2. on exit 3 prints the refusal on its one `no session started:` line and
+   exits 2, as on every exit before claude. envoy, seeing no result, records
+   an infra failure with the prompt's fate unknown; steward reads the line
+   as proof the prompt never ran, so the attempt retries after its backoff;
 3. runs `headroom headless token <account>` and exports it as
    `CLAUDE_CODE_OAUTH_TOKEN`;
 4. reports its own pid with `headroom headless started <placement> $$`;
 5. prints its account line;
 6. execs `claude "$@"` under steward's one config dir.
 
-Every headroom call in the wrapper and in steward's doctor sets
-`HEADROOM_HOME` to the owner's home, where the tokens are. The doctor asks
+The owner's home, where the tokens are, is the wrapper's alone. The
+installer writes it into the shim on the sessions' `PATH`, the wrapper sets
+`HEADROOM_HOME` on its own headroom calls, and steward's prelude clears the
+variable, so nothing a session runs addresses the owner's logins. The doctor
+derives the home from the same `STEWARD_HOME` the installer wrote. It asks
 `version` and `headless --json`, never `check`: under a re-pointed
 `HEADROOM_HOME`, `check` fails its `home:` line by design, since the primary
 it would describe is not the one the vendor resolves.
@@ -173,13 +184,24 @@ What must still hold, each by a test:
   unwritable log is a note, never a refusal.
 - `headroom sessions`, `resume`, `resolve`, `launches`, `accounts ledger`,
   `launch --last` and `launch --auto` exit 2 with nothing on stdout.
-- A `state.json` carrying `members`, `legacy_import` or `placements.by_home`
-  from an older binary reads, places and writes without error. Retired
-  sections are carried or dropped, never a refusal.
-- A `.ledger` left in an accounts root is ignored.
+- A `state.json` carrying `members`, `legacy_import`, `placements.by_home`
+  and a `home` on placements and runs, from an older binary, reads, places
+  and writes without error. Retired sections are carried or dropped, never
+  a refusal.
+- In steward: a launch the wrapper refused retries after the backoff, an
+  unreadable token starts nothing, an unreported process still runs, and a
+  session's environment names no headroom home.
 - `limits` and the board's `--json` carry schema 8 without `load.homes`.
 
+A `.ledger` left in an accounts root has no test: no code reads the file,
+so one would restate the deletion. The verification spike placed with one
+present.
+
 ## Owed
+
+In order: `twin sync headroom` moves the owner's headroom on mini before
+steward's deploy pins the new build. An older owner binary labels steward's
+runs by the home they no longer carry.
 
 By hand, once every machine runs the new build:
 

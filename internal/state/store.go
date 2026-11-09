@@ -360,16 +360,13 @@ func (d *doc) sweepRuns(gone []Run, now time.Time) {
 	d.runs = kept
 }
 
-// Placed is Place's answer. The decision is always there; the flags say what
-// reached disk.
+// Placed is Place's answer. The decision is always there; with no error, a
+// decision that chose an account is in the record the next placement reads.
+// SessionErr says why the session's routing was not recorded when it should
+// have been: an unreadable sessions section is never written over, here as
+// everywhere, and the launch goes ahead.
 type Placed struct {
-	Decision placement.Decision
-	Recorded bool // the launch is in the record the next placement reads
-
-	// ReHomed reports that the session's routing was recorded. SessionErr says
-	// why it was not when it should have been: an unreadable sessions section
-	// is never written over, here as everywhere, and the launch goes ahead.
-	ReHomed    bool
+	Decision   placement.Decision
 	SessionErr error
 }
 
@@ -390,7 +387,7 @@ type Placed struct {
 //
 // An error means nothing was recorded. That is never a reason to stop a
 // launch — for an automatic launch every usable account is a correct answer
-// — so the decision is then made from an unlocked read and Recorded is false.
+// — so the decision is then made from an unlocked read and nothing is recorded.
 func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
 	now := l.Now
@@ -414,7 +411,6 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		}
 		d.placements.Record(l.ID, chosen.Key, chosen.Name, l.PID, now)
 		d.dirty = true
-		out.Recorded = true
 		if l.Session == "" || chosen.Name == l.Intent.Owner {
 			return nil
 		}
@@ -435,7 +431,6 @@ func (s *Store) Place(l Launch) (Placed, error) {
 			}
 		}
 		d.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
-		out.ReHomed = true
 		return nil
 	})
 	if err != nil {

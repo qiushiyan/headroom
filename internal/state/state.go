@@ -93,8 +93,8 @@ type Key struct {
 	Name string // dir basename, or the primary's configured name
 }
 
-// KeyFor is an account's key: the one spelling of it, since the ledger, both
-// logs and every home sharing them join on it. AccountID is the identity
+// KeyFor is an account's key: the one spelling of it, since the ledger, the
+// placement record and the runs join on it. AccountID is the identity
 // discovery read — Claude Code's accountUuid, or for Codex the account and
 // user ids of the auth snapshot the account carries for the whole round.
 func KeyFor(a accounts.Account) Key { return Key{UUID: a.AccountID, Name: a.Name} }
@@ -371,12 +371,6 @@ func (d *doc) deadline(id string, now time.Time, ceil time.Duration) (next int64
 	return next, false
 }
 
-// Owner returns the explicit re-home recorded for a session, if any.
-func (s Snapshot) Owner(id string) (sessions.OwnerRec, bool) {
-	r, ok := s.d.sessions[id]
-	return r, ok
-}
-
 // Owners is every explicit re-home of this home. The map is the caller's to
 // read, not to keep: a re-home is written by Place, with the launch it
 // belongs to.
@@ -391,9 +385,9 @@ func (s Snapshot) Owners() map[string]sessions.OwnerRec {
 // only Place — under the lock — may record one.
 func (s Snapshot) Placements() placement.Ledger { return s.d.placements.Clone() }
 
-// Runs is every headless session process recorded in the ledger, in every
-// home that spends against it. A record says a process was started; whether
-// it still runs is the reader's to verify, by its pid and start instant.
+// Runs is every headless session process recorded against this accounts
+// root. A record says a process was started; whether it still runs is the
+// reader's to verify, by its pid and start instant.
 func (s Snapshot) Runs() []Run { return slices.Clone(s.d.runs) }
 
 // OwnersReadable reports whether the sessions section decoded. False means

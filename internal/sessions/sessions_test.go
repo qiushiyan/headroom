@@ -48,35 +48,30 @@ func TestResolveOwner(t *testing.T) {
 		}
 		return out
 	}
-	probe := func(pid int) (int64, error) { return 1_785_700_000, nil }
-	live := []RegistryEntry{{Account: "b", SessionID: "s", PID: 1, StartedAtMS: 1_785_700_003_000, OK: true}}
 
 	cases := []struct {
 		name     string
-		registry []RegistryEntry
 		owners   map[string]OwnerRec
 		hists    map[string]History
 		wantAcct string
 	}{
-		{"no evidence", nil, nil, nil, ""},
-		{"history only", nil, nil,
+		{"no evidence", nil, nil, ""},
+		{"history only", nil,
 			hist(map[string]map[string]int64{"a": {"s": 100}}), "a"},
-		{"newest history wins", nil, nil,
+		{"newest history wins", nil,
 			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 200}}), "b"},
-		{"rehome beats older history", nil,
+		{"rehome beats older history",
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 300}},
 			hist(map[string]map[string]int64{"a": {"s": 100}}), "b"},
-		{"newer prompt beats older rehome", nil,
+		{"newer prompt beats older rehome",
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 100}},
 			hist(map[string]map[string]int64{"a": {"s": 200}}), "a"},
-		{"verified live outranks everything", live,
-			map[string]OwnerRec{"s": {Account: "a", AtMS: 9999}}, nil, "b"},
-		{"rehome to deleted account surfaces, never falls through", nil,
+		{"rehome to deleted account surfaces, never falls through",
 			map[string]OwnerRec{"s": {Account: "gone", AtMS: 300}},
 			hist(map[string]map[string]int64{"a": {"s": 100}}), ""},
-		{"same-instant history claims are undecidable", nil, nil,
+		{"same-instant history claims are undecidable", nil,
 			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 100}}), ""},
-		{"same-instant rehome vs history is a conflict too", nil,
+		{"same-instant rehome vs history is a conflict too",
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 100}},
 			hist(map[string]map[string]int64{"a": {"s": 100}}), ""},
 	}
@@ -85,13 +80,20 @@ func TestResolveOwner(t *testing.T) {
 		for n := range names {
 			byRef[n] = n
 		}
-		acct := newestClaim("s", byRef, c.hists, c.owners)
-		if evidence, _ := InspectClaims(c.registry, probe); evidence["s"].State == Live {
-			acct = evidence["s"].Account
-		}
-		if acct != c.wantAcct {
+		if acct := newestClaim("s", byRef, c.hists, c.owners); acct != c.wantAcct {
 			t.Errorf("%s: = %q, want %q", c.name, acct, c.wantAcct)
 		}
+	}
+
+	// A verified live registry entry outranks everything: that account is
+	// driving the session at this instant, whatever the re-homes and prompts.
+	accts := []AccountRef{{Name: "a", Ref: "a", Dir: t.TempDir()}, {Name: "b", Ref: "b", Dir: t.TempDir()}}
+	newer := map[string]OwnerRec{"s": {Account: "a", AtMS: 9999}}
+	if got := OwnerOf("s", accts, ProcessEvidence{State: Live, Account: "b"}, newer); got != "b" {
+		t.Errorf("verified live: = %q, want b", got)
+	}
+	if got := OwnerOf("s", accts, ProcessEvidence{}, newer); got != "a" {
+		t.Errorf("with nothing live: = %q, want the re-home's a", got)
 	}
 }
 

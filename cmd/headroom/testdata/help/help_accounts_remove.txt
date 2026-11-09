@@ -11,8 +11,8 @@ never removed — headroom cannot tell whether a codex session is running on a h
 refusal names the dir to delete by hand.
 
 Arguments:
-  <account>              The account to remove, or <name>.lock debris; a picker on a terminal when
-                         absent (optional).
+  <account>              The account to remove, or <name>.lock debris; bare, the removable ones are
+                         listed and nothing is removed (optional).
 
 Flags:
   -y, --yes              Remove without asking.

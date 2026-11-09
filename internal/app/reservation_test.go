@@ -212,7 +212,7 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	if got := f.launch("--", "--resume", sessA).account(f.cfg); got != "free@x.com" {
 		t.Errorf("--resume went to %s", got)
 	}
-	if rec, _ := f.st.Load().Owner(sessA); rec.Account != "free@x.com" {
+	if rec, _ := f.st.Load().Owners()[sessA]; rec.Account != "free@x.com" {
 		t.Errorf("re-home after --resume = %+v", rec)
 	}
 
@@ -223,11 +223,11 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	// nothing: the session's record stays the one its first launch made.
 	t.Chdir(repo)
 	owner := f.launch("--", "--resume", sessB).account(f.cfg)
-	first, _ := f.st.Load().Owner(sessB)
+	first, _ := f.st.Load().Owners()[sessB]
 	if got := f.launch("--", "--resume", sessB).account(f.cfg); got != owner {
 		t.Errorf("the owner %s was not followed in its repository: %s", owner, got)
 	}
-	if again, _ := f.st.Load().Owner(sessB); again != first {
+	if again, _ := f.st.Load().Owners()[sessB]; again != first {
 		t.Errorf("following the owner rewrote its record: %+v → %+v", first, again)
 	}
 }

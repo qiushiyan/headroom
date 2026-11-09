@@ -357,7 +357,7 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 	if !strings.Contains(first.stderr, "session had no known account") {
 		t.Errorf("a first turn's line does not say the session was new to headroom:\n%s", first.stderr)
 	}
-	rec, ok := f.st.Load().Owner(sessA)
+	rec, ok := f.st.Load().Owners()[sessA]
 	if !ok || rec.Account != accounts.PrimaryRef {
 		t.Fatalf("the placed session was not re-homed: %+v", rec)
 	}
@@ -373,7 +373,7 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 			t.Errorf("vendor args %v, want %v unchanged", got.args, spelling)
 		}
 	}
-	if after, _ := f.st.Load().Owner(sessA); after != rec {
+	if after, _ := f.st.Load().Owners()[sessA]; after != rec {
 		t.Errorf("following the owner re-stamped its record: %+v → %+v", rec, after)
 	}
 
@@ -385,7 +385,7 @@ func TestANamedSessionFollowsItsOwner(t *testing.T) {
 	if got := f.launch("--", "--resume", sessB); got.account(f.cfg) != "a@x.com" {
 		t.Fatalf("a session known from prompt history went to %s:\n%s", got.account(f.cfg), got.stderr)
 	}
-	if _, ok := f.st.Load().Owner(sessB); ok {
+	if _, ok := f.st.Load().Owners()[sessB]; ok {
 		t.Error("following a history owner wrote a re-home")
 	}
 }
@@ -402,7 +402,7 @@ func TestAnOwnerNearALimitIsLeftAndTheMoveIsRecorded(t *testing.T) {
 	if got.account(f.cfg) != "room@x.com" || !strings.Contains(got.stderr, "session moved from full@x.com") {
 		t.Fatalf("went to %s:\n%s", got.account(f.cfg), got.stderr)
 	}
-	if rec, _ := f.st.Load().Owner(sessA); rec.Account != "room@x.com" {
+	if rec, _ := f.st.Load().Owners()[sessA]; rec.Account != "room@x.com" {
 		t.Errorf("the move was not recorded: %+v", rec)
 	}
 	if recs := f.log(); recs[0].Reason != placement.ReasonMoved || recs[0].Session != sessA {

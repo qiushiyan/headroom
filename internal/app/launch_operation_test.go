@@ -213,16 +213,16 @@ func TestALaunchThatRecordsASessionSweepsTheGoneOnes(t *testing.T) {
 		t.Fatalf("launch: %s", got.stderr)
 	}
 	snap := f.st.Load()
-	if _, ok := snap.Owner(sessA); !ok {
+	if _, ok := snap.Owners()[sessA]; !ok {
 		t.Fatal("the launch did not record its own session")
 	}
-	if _, ok := snap.Owner(gone); ok {
+	if _, ok := snap.Owners()[gone]; ok {
 		t.Error("a re-home whose transcript is gone survived a launch that wrote one")
 	}
-	if _, ok := snap.Owner(kept); !ok {
+	if _, ok := snap.Owners()[kept]; !ok {
 		t.Error("a re-home whose transcript exists was swept")
 	}
-	if _, ok := snap.Owner(young); !ok {
+	if _, ok := snap.Owners()[young]; !ok {
 		t.Error("a re-home too young to have a transcript yet was swept")
 	}
 }

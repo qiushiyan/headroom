@@ -54,18 +54,17 @@ func Launch(std Streams, scope config.Scope, opts LaunchOptions, place launchop.
 	set := accounts.Discover(scope)
 	now := time.Now()
 	var intent placement.Intent
-	mode := "auto"
 	if opts.Account != "" {
 		a, err := set.Select(opts.Account)
 		if err != nil {
 			return err
 		}
-		intent, mode = placement.Intent{Kind: placement.Forced, Account: a.Name, Reason: "named"}, "named"
+		intent = placement.Intent{Kind: placement.Forced, Account: a.Name, Reason: "named"}
 	}
 
 	cwd, _ := os.Getwd()
 	plan := launchop.Gather(launchop.Request{
-		Set: set, Store: state.Open(scope), Intent: intent, Mode: mode, VendorArgs: opts.Args,
+		Set: set, Store: state.Open(scope), Intent: intent, VendorArgs: opts.Args,
 		CWD: cwd, Environ: os.Environ(), Now: now,
 	}, place)
 	if opts.DryRun {

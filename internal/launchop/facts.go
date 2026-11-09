@@ -1,9 +1,8 @@
 package launchop
 
 // What a placement reads before the rule chooses: discovery, the stored
-// observations, the session registries of this home and of every home that
-// shares its ledger, the headless runs, and — for an automatic choice — the
-// credentials; then which accounts may be chosen, by the caller's own policy —
+// observations, this home's session registries, the headless runs recorded
+// against its accounts root, and — for an automatic choice — the credentials; then which accounts may be chosen, by the caller's own policy —
 // an ordinary launch's preparation and positive evidence, or a headless
 // caller's eligibility. A launch, the board's mark and a headless placement
 // all read through here, so they cannot hold two opinions of one account.
@@ -152,13 +151,6 @@ func (f facts) find(name string) (candidate, bool) {
 		}
 	}
 	return candidate{}, false
-}
-
-// owner resolves the session a launch names to the account that last drove
-// it: "" when there is no evidence, or none that names an account still here.
-func (f facts) owner(id string) string {
-	name := sessions.OwnerOf(id, f.refs, f.evidence[id], f.snap.Owners())
-	return name
 }
 
 // source is one account as a surface holds it: who it is, the quota it

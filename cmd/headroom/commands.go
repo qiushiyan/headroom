@@ -101,7 +101,7 @@ func (c *AddCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, parent 
 
 type RemoveCmd struct {
 	// A plain string: an empty name is the bare form, as it always was.
-	Account string `arg:"" optional:"" help:"The account to remove, or <name>.lock debris; a picker on a terminal when absent."`
+	Account string `arg:"" optional:"" help:"The account to remove, or <name>.lock debris; bare, the removable ones are listed and nothing is removed."`
 	Yes     bool   `short:"y" help:"Remove without asking."`
 }
 

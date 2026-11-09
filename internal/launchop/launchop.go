@@ -48,7 +48,6 @@ type Request struct {
 	Set    accounts.Set
 	Store  *state.Store
 	Intent placement.Intent
-	Mode   string // how the account came to be decided: auto, named, last
 
 	// VendorArgs are a launch's pass-through arguments, for a launch that
 	// names its session there. An automatic Claude Code launch reads them
@@ -90,12 +89,21 @@ func Gather(req Request, deps Deps) *Plan {
 		// Code has an owner to ask about.
 		p.session = SessionOf(req.VendorArgs)
 		if p.session.Route != "" {
-			p.owner = f.owner(p.session.Route)
+			p.owner = sessions.OwnerOf(p.session.Route, f.refs, f.evidence[p.session.Route], f.snap.Owners())
 			req.Intent.Owner = p.owner
 		}
 	}
 	p.req, p.facts = req, f
 	return p
+}
+
+// modeOf is how a launch's account came to be decided, as the dry run and the
+// launch log say it: named when the caller forced one, auto when the rule chose.
+func modeOf(i placement.Intent) string {
+	if i.Kind == placement.Forced {
+		return "named"
+	}
+	return "auto"
 }
 
 // preflight is every refusal a launch can know before it writes anything, and
@@ -104,9 +112,9 @@ func Gather(req Request, deps Deps) *Plan {
 // a session's owner — that cannot be launched at all refuses with its own
 // preparation error, said the way it always was.
 //
-// A forced refusal never reaches the store: Place registers the home, prunes
-// and commits even when its rule refuses, and a launch that cannot start must
-// leave nothing behind. What can still refuse afterwards is the store's own
+// A forced refusal never reaches the store: Place prunes and commits even
+// when its rule refuses, and a launch that cannot start must leave nothing
+// behind. What can still refuse afterwards is the store's own
 // decision under its lock.
 func (p *Plan) preflight() error {
 	req, f := p.req, p.facts
@@ -137,7 +145,7 @@ func (p *Plan) Preview(w io.Writer, binary string) (chosen bool, err error) {
 		return false, err
 	}
 	d := placement.Choose(p.facts.rule(), p.facts.snap.Placements(), p.req.Intent, p.req.Now)
-	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts)
+	writeDryRun(w, binary, d, modeOf(p.req.Intent), p.req.Now, p.facts)
 	return d.Chosen != "", nil
 }
 
@@ -184,7 +192,7 @@ func (p *Plan) Commit() (*Launch, error) {
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
 	}
 	line := logLine{
-		Vendor: string(scope.Vendor), Mode: req.Mode, Reason: out.decision.Reason, Chosen: out.decision.Chosen,
+		Vendor: string(scope.Vendor), Mode: modeOf(req.Intent), Reason: out.decision.Reason, Chosen: out.decision.Chosen,
 		CWD: req.CWD, Session: p.session.Route, PID: os.Getpid(),
 	}
 	if missed != nil {

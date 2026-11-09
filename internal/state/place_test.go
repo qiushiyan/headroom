@@ -55,8 +55,8 @@ func TestPlaceIsChooseAndRecord(t *testing.T) {
 			s := Open(rootScope(root))
 			<-start
 			p, err := place(s, cands, placement.Intent{}, 1000+i, "", now)
-			if err != nil || !p.Recorded {
-				t.Errorf("place %d: recorded=%v err=%v", i, p.Recorded, err)
+			if err != nil || p.Decision.Chosen == "" {
+				t.Errorf("place %d: chose %q err=%v", i, p.Decision.Chosen, err)
 			}
 			got[i] = p.Decision.Chosen
 		}(i)
@@ -113,10 +113,13 @@ func TestAChoiceWithNoRefIsNotRecorded(t *testing.T) {
 	root := t.TempDir()
 	s := Open(rootScope(root))
 	cands := []placement.Candidate{{Name: "a", Key: "uuid:a"}}
-	if p, err := place(s, cands, placement.Intent{}, 1000, "s1", time.Now()); err == nil || p.Recorded {
-		t.Fatalf("recorded=%v err=%v", p.Recorded, err)
+	if _, err := place(s, cands, placement.Intent{}, 1000, "s1", time.Now()); err == nil {
+		t.Fatal("a choice with no ref was placed without a word")
 	}
-	if _, ok := s.Load().Owner("s1"); ok {
+	if n := len(s.Load().Placements().Recent); n != 0 {
+		t.Errorf("a choice with no ref was recorded: %d placements", n)
+	}
+	if _, ok := s.Load().Owners()["s1"]; ok {
 		t.Error("a choice with no ref was recorded as a re-home")
 	}
 }
@@ -135,8 +138,8 @@ func TestPlaceForced(t *testing.T) {
 	}
 	// A refused choice records nothing.
 	before := s.Load().Placements()
-	if p, _ := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "nobody"}, 5, "", now.Add(3*time.Second)); p.Recorded {
-		t.Fatal("a refusal was recorded")
+	if p, _ := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "nobody"}, 5, "", now.Add(3*time.Second)); p.Decision.Chosen != "" {
+		t.Fatalf("a refusal chose %q", p.Decision.Chosen)
 	}
 	if after := s.Load().Placements(); len(after.Recent) != len(before.Recent) {
 		t.Fatal("a refusal changed the record")
@@ -166,8 +169,8 @@ func TestPlaceUnderAHeldLockStillChooses(t *testing.T) {
 
 	start := time.Now()
 	p, err := place(s, cands, placement.Intent{}, 2, "", now.Add(time.Second))
-	if err != ErrBusy || p.Recorded {
-		t.Fatalf("recorded=%v err=%v, want unrecorded and ErrBusy", p.Recorded, err)
+	if err != ErrBusy {
+		t.Fatalf("err=%v, want ErrBusy", err)
 	}
 	if p.Decision.Chosen != "b" {
 		t.Fatalf("chose %q: the unlocked read still shows the launch on a", p.Decision.Chosen)
@@ -194,7 +197,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 		t.Fatalf("problems = %+v", probs)
 	}
 	p, err := place(s, idle("a", "b"), placement.Intent{}, 1, "new-session", time.Now())
-	if err != nil || !p.Recorded || !p.ReHomed {
+	if err != nil || p.Decision.Chosen == "" {
 		t.Fatalf("place over an unreadable placements section: %+v %v", p, err)
 	}
 	raw := readRaw(t, root)
@@ -205,10 +208,10 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	if len(snap.Problems()) != 0 || len(snap.Placements().Recent) != 1 {
 		t.Errorf("after the rebuild: problems %v, recent %d", snap.Problems(), len(snap.Placements().Recent))
 	}
-	if rec, _ := snap.Owner("s1"); rec.Account != "a" {
+	if rec, _ := snap.Owners()["s1"]; rec.Account != "a" {
 		t.Errorf("an existing re-home was disturbed: %+v", rec)
 	}
-	if rec, _ := snap.Owner("new-session"); rec.Account != "a" {
+	if rec, _ := snap.Owners()["new-session"]; rec.Account != "a" {
 		t.Errorf("the placed session was not re-homed: %+v", rec)
 	}
 
@@ -221,8 +224,11 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	}
 	s = Open(rootScope(root))
 	p, err = place(s, idle("a"), placement.Intent{}, 1, "new-session", time.Now())
-	if err != nil || !p.Recorded || p.ReHomed || p.SessionErr != ErrCorrupt {
+	if err != nil || p.SessionErr != ErrCorrupt {
 		t.Fatalf("place beside an unreadable sessions section: %+v %v", p, err)
+	}
+	if n := len(s.Load().Placements().Recent); n != 1 {
+		t.Errorf("the placement beside an unreadable sessions section was not recorded: %d", n)
 	}
 	if got := compact(t, readRaw(t, root)["sessions"]); got != `{"s1":{"account":"","atMs":5}}` {
 		t.Errorf("sessions section rewritten: %s", got)
@@ -237,7 +243,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	}
 	s = Open(rootScope(root))
 	p, err = place(s, idle("a", "b"), placement.Intent{}, 1, "", time.Now())
-	if err != ErrReadOnly || p.Recorded || p.Decision.Chosen != "b" {
+	if err != ErrReadOnly || p.Decision.Chosen != "b" {
 		t.Fatalf("newer schema: %+v %v", p, err)
 	}
 	if after, _ := os.ReadFile(filepath.Join(root, "state.json")); string(after) != doc {
@@ -251,10 +257,10 @@ func TestPlaceFollowingTheOwnerWritesNoReHome(t *testing.T) {
 	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	p, err := place(s, idle("a", "b"), placement.Intent{Owner: "b"}, 1, "sess", now)
-	if err != nil || p.Decision.Chosen != "b" || p.ReHomed {
+	if err != nil || p.Decision.Chosen != "b" {
 		t.Fatalf("%+v %v", p, err)
 	}
-	if _, ok := s.Load().Owner("sess"); ok {
+	if _, ok := s.Load().Owners()["sess"]; ok {
 		t.Fatal("following the owner recorded a re-home")
 	}
 }
