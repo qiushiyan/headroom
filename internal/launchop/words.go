@@ -51,11 +51,35 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 		parts = append(parts, figures(c, now)...)
 		parts = append(parts, fmt.Sprintf("load %d", c.Load))
 	}
+	if left := expiredLogins(d); left != "" {
+		parts = append(parts, left)
+	}
 	line := strings.Join(parts, " · ")
 	if d.RunnerUp != "" {
 		line += " (next: " + d.RunnerUp + ")"
 	}
 	return line
+}
+
+// expiredLogins says how many accounts the rule could not consider because
+// their login has expired, and the command that renews them. An automatic
+// launch is the line a person reads every day, and an account left out this
+// way is quota nobody spends: the board and the dry run say so too, but only
+// when they are opened.
+func expiredLogins(d placement.Decision) string {
+	n := 0
+	for _, c := range d.Candidates {
+		if c.Excluded == loginExpired {
+			n++
+		}
+	}
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "1 account left out, login expired: run headroom login"
+	}
+	return fmt.Sprintf("%d accounts left out, login expired: run headroom login", n)
 }
 
 // figure is one counted percentage said as what it rests on: measured, a lower

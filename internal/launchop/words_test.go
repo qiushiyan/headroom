@@ -66,6 +66,35 @@ func TestLaunchLineWording(t *testing.T) {
 		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, Session{Unidentified: true}, "",
 			[]string{"session not identified"}, nil},
 	}
+	// An account the rule could not consider for an expired login is counted
+	// on the line of every automatic launch, with the command that renews it,
+	// whether the rule had room or every account was near a limit. Any other
+	// exclusion is not a login's to end.
+	out := func(name, why string) placement.Candidate {
+		c := obs(name, 0, 0, time.Minute)
+		c.Excluded = why
+		return c
+	}
+	cases = append(cases, []struct {
+		name  string
+		d     placement.Decision
+		auto  bool
+		ref   Session
+		owner string
+		want  []string
+		not   []string
+	}{
+		{"one expired login", choose(placement.Intent{}, obs("a", 0, 0, time.Minute), obs("b", 5, 5, time.Minute), out("c", loginExpired)), true, Session{}, "",
+			[]string{"a · auto", "load 0 · 1 account left out, login expired: run headroom login (next: b)"}, []string{"accounts left out"}},
+		{"expired logins", choose(placement.Intent{}, obs("a", 0, 0, time.Minute), out("b", loginExpired), out("c", loginExpired)), true, Session{}, "",
+			[]string{"a · auto", "2 accounts left out, login expired: run headroom login"}, nil},
+		{"expired logins near a limit", choose(placement.Intent{}, obs("a", 10, 84, time.Minute), out("b", loginExpired)), true, Session{}, "",
+			[]string{"every account is near a limit", "1 account left out, login expired: run headroom login"}, nil},
+		{"a reservation is no login", choose(placement.Intent{}, obs("a", 0, 0, time.Minute), out("b", "reserved for ~/dev/x")), true, Session{}, "",
+			[]string{"a · auto"}, []string{"left out"}},
+		{"a named launch counts nothing", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "named"}, obs("a", 0, 0, time.Minute), out("b", loginExpired)), false, Session{}, "",
+			[]string{"a · named"}, []string{"left out"}},
+	}...)
 	// A named launch says so, and no figures: the rule chose nothing.
 	cases = append(cases, struct {
 		name  string

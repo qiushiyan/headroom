@@ -52,7 +52,8 @@ shell's `x-<name>`) — quote that spelling.
   session on the account named. Nothing records a choice for later
   launches. Every launch prints the account it took on stderr before
   `claude` starts (`· auto` or `· named`; `≥12%` there is a lower bound from
-  old figures).
+  old figures; `N accounts left out, login expired` on an automatic line
+  means `headroom login` would bring that quota back).
 - **Keep an account for certain repositories**: `headroom accounts reserve
   <name> <dir>...`, one directory per repository; its worktrees come with it.
   Automatic launches and headless placements elsewhere then never choose the

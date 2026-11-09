@@ -300,6 +300,11 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	if got.account(f.cfg) != "ok@x.com" {
 		t.Fatalf("launched on %s:\n%s", got.account(f.cfg), got.stderr)
 	}
+	// The line every launch prints counts the logins to renew; an account
+	// never logged in is not one of them.
+	if !strings.Contains(got.stderr, "2 accounts left out, login expired: run headroom login") {
+		t.Errorf("the launch line does not count the expired logins:\n%s", got.stderr)
+	}
 	table := f.launch("--dry-run").stdout
 	want := map[string]string{"out@x.com": "not logged in", "expired@x.com": "login expired", "ended@x.com": "login expired", "ok@x.com": "", "torn@x.com": "", "qiushi": ""}
 	for name, why := range want {

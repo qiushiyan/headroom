@@ -408,6 +408,10 @@ func statusWord(e sessions.RegistryEntry) string {
 	}
 }
 
+// loginExpired is avoidReason's word for the one exclusion a person ends by
+// logging in. The launch line counts the accounts that carry it.
+const loginExpired = "login expired"
+
 // avoidReason is why an automatic choice must not land on this account, or "".
 // Positive evidence only — see build.
 func avoidReason(a accounts.Account, obs *accountstate.Observation, raw string, now time.Time) string {
@@ -422,7 +426,7 @@ func avoidReason(a accounts.Account, obs *accountstate.Observation, raw string, 
 	// Whether the blob holds a token is not asked: a login the vendor ended
 	// has none, and its passed refresh expiry is the evidence (creds.Parse).
 	if blob, _ := creds.Parse(raw); blob.ReloginRequired(now.UnixMilli()) {
-		return "login expired"
+		return loginExpired
 	}
 	if obs != nil && obs.Allowance.State == usage.AllowanceBlocked {
 		return "blocked by the vendor"
