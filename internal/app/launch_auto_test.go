@@ -272,7 +272,7 @@ func TestOnlyTheRuleRoutesABareLaunch(t *testing.T) {
 }
 
 func TestExcludedAccountsAreNeverChosen(t *testing.T) {
-	f := newAutoFixture(t, "out@x.com", "expired@x.com", "ok@x.com", "torn@x.com")
+	f := newAutoFixture(t, "out@x.com", "expired@x.com", "ended@x.com", "ok@x.com", "torn@x.com")
 	// Parsed, and names nobody: never logged in.
 	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "out@x.com", ".claude.json"), `{}`)
 	// Did not parse: says nothing about who is logged in, so excludes nothing.
@@ -286,6 +286,12 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 		if a.Name == "ok@x.com" {
 			return "" // unreadable is not evidence: a locked Keychain reads this way for every account
 		}
+		if a.Name == "ended@x.com" {
+			// What the vendor leaves when it ends a login: the item kept, the
+			// tokens emptied, the passed expiry — and .claude.json still
+			// naming the email.
+			return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"refreshTokenExpiresAt":%d,"loginEnded":"time_limit"}}`, time.Now().Add(-time.Hour).UnixMilli())
+		}
 		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d,"refreshTokenExpiresAt":%d}}`, far, refresh)
 	}
 	f.observe("qiushi", 50, 50, time.Minute)
@@ -295,7 +301,7 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 		t.Fatalf("launched on %s:\n%s", got.account(f.cfg), got.stderr)
 	}
 	table := f.launch("--dry-run").stdout
-	want := map[string]string{"out@x.com": "not logged in", "expired@x.com": "login expired", "ok@x.com": "", "torn@x.com": "", "qiushi": ""}
+	want := map[string]string{"out@x.com": "not logged in", "expired@x.com": "login expired", "ended@x.com": "login expired", "ok@x.com": "", "torn@x.com": "", "qiushi": ""}
 	for name, why := range want {
 		note := dryNote(table, name)
 		if (why == "" && strings.Contains(note, "excluded")) || (why != "" && !strings.Contains(note, "excluded: "+why)) {
@@ -318,6 +324,7 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	}
 	refused := f.launch()
 	if refused.code != 1 || refused.called || !strings.Contains(refused.stderr, "expired@x.com (login expired)") ||
+		!strings.Contains(refused.stderr, "ended@x.com (login expired)") ||
 		!strings.Contains(refused.stderr, "out@x.com (not logged in)") {
 		t.Fatalf("with no usable account: %+v", refused)
 	}

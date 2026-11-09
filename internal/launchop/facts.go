@@ -419,7 +419,9 @@ func avoidReason(a accounts.Account, obs *accountstate.Observation, raw string, 
 	case a.Scope.Vendor == config.Claude && a.Readable && a.Email == "":
 		return "not logged in"
 	}
-	if blob, ok := creds.Parse(raw); ok && blob.ReloginRequired(now.UnixMilli()) {
+	// Whether the blob holds a token is not asked: a login the vendor ended
+	// has none, and its passed refresh expiry is the evidence (creds.Parse).
+	if blob, _ := creds.Parse(raw); blob.ReloginRequired(now.UnixMilli()) {
 		return "login expired"
 	}
 	if obs != nil && obs.Allowance.State == usage.AllowanceBlocked {
