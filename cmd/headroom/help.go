@@ -20,18 +20,17 @@ var configuration = clikit.Section{
 	Title: "Configuration",
 	Body: `Nothing needs configuring on a standard install. These variables re-point the defaults:
 
-  HEADROOM_HOME                    everything home-derived, for both vendors (test isolation)
-  HEADROOM_ACCOUNTS_ROOT           where Claude Code's extra account dirs live
+  HEADROOM_HOME                    the home both vendors' dirs and accounts roots derive from:
+                                   a test's sandbox, or this home reached from a process whose
+                                   HOME is another; a launch of the primary refuses under it
   HEADROOM_PRIMARY_NAME            the name ~/.claude answers to (default: its email's local part);
                                    a name only: what headroom records follows the dir, whatever it is called
   HEADROOM_LAUNCHER_FORMAT         how the board spells an account's launch command (%s = name)
-  HEADROOM_CODEX_ACCOUNTS_ROOT     where Codex's extra homes live
   HEADROOM_CODEX_PRIMARY_NAME      the name ~/.codex answers to
   HEADROOM_CODEX_LAUNCHER_FORMAT   the board's Codex launch command
-  HEADROOM_USAGE_URL, HEADROOM_CODEX_USAGE_URL   the usage endpoints
 
-A relative HEADROOM_HOME or accounts root makes every command refuse until it is fixed;
-headroom check says which.`,
+A relative HEADROOM_HOME makes every command refuse until it is fixed; headroom check
+says which.`,
 }
 
 const boardHelp = `The account board: a block per account with its usage limits — the five-hour session
@@ -194,9 +193,9 @@ session; for Codex, headroom launch --vendor codex --account <email> -- login.`
 
 const removeHelp = `Removes an extra account: deletes its Keychain item and its dir, and scrubs .order and
 any reservation.
-Refused while a session is live on it, or when that cannot be verified. Bare on a terminal
-it offers a picker of the removable accounts; it asks y/N unless --yes. Transcripts are
-machine-global and survive. Also removes stranded <name>.lock debris. Codex accounts are
+Refused while a session is live on it, or when that cannot be verified. Bare, it names the
+removable accounts and refuses; it asks y/N unless --yes. Transcripts are machine-global
+and survive. Also removes stranded <name>.lock debris. Codex accounts are
 never removed — headroom cannot tell whether a codex session is running on a home — and the
 refusal names the dir to delete by hand.`
 

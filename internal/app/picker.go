@@ -13,8 +13,8 @@ import (
 	"github.com/qiushiyan/headroom/internal/tui"
 )
 
-// isCancelKey is the shared "get me out" chord set: esc, q, ctrl-c, ctrl-d.
-// On the board it closes the board; in the other pickers it cancels a choice.
+// isCancelKey is the "get me out" chord set that closes the board: esc, q,
+// ctrl-c, ctrl-d.
 func isCancelKey(k tui.Key) bool {
 	return k.Kind == tui.KeyEsc ||
 		k == tui.Key{Kind: tui.KeyRune, Rune: 'q'} ||

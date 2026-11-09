@@ -41,9 +41,9 @@ func (e UsageError) Unwrap() error { return e.Err }
 func usagef(format string, args ...any) error { return UsageError{fmt.Errorf(format, args...)} }
 
 // Terminal says which of a command's streams reach a terminal, and the
-// output terminal's size. Surfaces need them differently: the board and
-// remove's picker draw on stdout and read keys from stdin, so they need
-// both; mint hands the vendor stdin alone.
+// output terminal's size. Surfaces need them differently: the board draws on
+// stdout and reads keys from stdin, and remove's y/N asks on stdout and reads
+// stdin, so they need both; mint hands the vendor stdin alone.
 type Terminal struct {
 	In, Out bool
 	// Size is the output terminal's width and height; nil off a terminal.

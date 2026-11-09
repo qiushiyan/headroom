@@ -19,37 +19,33 @@ trap 'rm -rf "$work"' EXIT
 HEADROOM_BIN="$work/headroom"
 (cd "$repo" && go build -o "$HEADROOM_BIN" ./cmd/headroom)
 
-# A fake accounts root with two extra accounts. The usage URL points at a
-# closed local port: fetches fail instantly and no token leaves the machine,
-# so the picker renders deterministic status lines with no network.
-export HEADROOM_ACCOUNTS_ROOT="$work/accounts"
+# HEADROOM_HOME re-points the primary config dir, both accounts roots and the
+# session store into the sandbox, so no case reads the real machine's
+# accounts or sessions. The usage URLs point at a closed local port: fetches
+# fail instantly and no token leaves the machine, so the board renders
+# deterministic status lines with no network. The Codex root does not exist
+# until the two-vendor block creates it, so until then Codex is absent and
+# every frame is the single-vendor one.
+export HEADROOM_HOME="$work/home"
+accounts_root="$HEADROOM_HOME/.claude-accounts"
+codex_root="$HEADROOM_HOME/.codex-accounts"
 export HEADROOM_PRIMARY_NAME=primary
 export HEADROOM_USAGE_URL="http://127.0.0.1:1/usage"
-# The same for Codex, from the first invocation on: a shell that exports
-# HEADROOM_CODEX_ACCOUNTS_ROOT would otherwise lend its real root — which
-# HEADROOM_HOME does not override — to every case below, against the live
-# usage URL. The fixture root does not exist until the two-vendor block
-# creates it, so until then Codex is absent and every frame is the
-# single-vendor one.
-export HEADROOM_CODEX_ACCOUNTS_ROOT="$work/codex-accounts"
 export HEADROOM_CODEX_USAGE_URL="http://127.0.0.1:1/usage"
 unset HEADROOM_CODEX_PRIMARY_NAME HEADROOM_CODEX_LAUNCHER_FORMAT HEADROOM_LAUNCHER_FORMAT
 unset CODEX_HOME CODEX_SQLITE_HOME CODEX_API_KEY CODEX_ACCESS_TOKEN
 # One account carries an accountUuid (every real dir on this machine does —
 # it is what the request ledger keys on) and one deliberately does not, so the
 # degraded dir-name path stays exercised too.
-mkdir -p "$HEADROOM_ACCOUNTS_ROOT/a@x.com" "$HEADROOM_ACCOUNTS_ROOT/b@x.com"
+mkdir -p "$accounts_root/a@x.com" "$accounts_root/b@x.com"
 printf '{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"11111111-aaaa-4bbb-8ccc-dddddddddddd"}}' \
-    >"$HEADROOM_ACCOUNTS_ROOT/a@x.com/.claude.json"
+    >"$accounts_root/a@x.com/.claude.json"
 printf '{"oauthAccount":{"emailAddress":"b@x.com"}}' \
-    >"$HEADROOM_ACCOUNTS_ROOT/b@x.com/.claude.json"
+    >"$accounts_root/b@x.com/.claude.json"
 export HEADROOM_BIN
 export STTY_OUT="$work/stty.out"
 export HEADROOM_PID_FILE="$work/headroom.pid"
 
-# HEADROOM_HOME re-points the primary config dir and the session store into
-# the sandbox, so no case reads the real machine's sessions.
-export HEADROOM_HOME="$work/home"
 mkdir -p "$HEADROOM_HOME/.claude/projects"
 
 # The exec-success fixture: an extra account with valid topology, and a stub
@@ -74,14 +70,14 @@ EOS
 chmod +x "$work/stub/claude" "$work/stub/security"
 export PATH="$work/stub:$PATH"
 export STUB_DIR="$work/stub"
-ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/a@x.com/projects"
+ln -s "$HEADROOM_HOME/.claude/projects" "$accounts_root/a@x.com/projects"
 
 fail=0
 run() {
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$HEADROOM_PID_FILE"
+    rm -f "$accounts_root/.current" "$STTY_OUT" "$HEADROOM_PID_FILE"
     # Each case starts from an unclaimed budget, or the board would open
     # inside a quiet period the previous case paid for.
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
+    rm -f "$accounts_root/state.json"
     if expect -f "$here/$1.exp" >"$work/$1.log" 2>&1; then
         echo "ok   $1"
     else
@@ -123,7 +119,7 @@ fi
 
 # ESC closes the board and writes nothing.
 run accounts_cancel
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+if [ -e "$accounts_root/.current" ]; then
     echo "FAIL accounts_cancel: closing must write nothing"
     fail=1
 fi
@@ -134,7 +130,7 @@ run accounts_refresh
 # The compact layout draws its column header and one row per account and quits
 # clean — the same loop under a second presentation.
 run accounts_compact
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+if [ -e "$accounts_root/.current" ]; then
     echo "FAIL accounts_compact: quit must write nothing"
     fail=1
 fi
@@ -142,8 +138,8 @@ fi
 # The board marks the next account; enter and a, the keys that once recorded
 # routing, write nothing.
 run accounts_auto
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
-    echo "FAIL accounts_auto: enter or a wrote .current ('$(cat "$HEADROOM_ACCOUNTS_ROOT/.current")')"
+if [ -e "$accounts_root/.current" ]; then
+    echo "FAIL accounts_auto: enter or a wrote .current ('$(cat "$accounts_root/.current")')"
     fail=1
 fi
 
@@ -152,18 +148,18 @@ fi
 # HEADROOM_HOME and b@x.com has no sessions link, so both must be left out by
 # name rather than chosen. The stub claude prints the config dir it was given.
 for n in c d e f; do
-    mkdir -p "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"
+    mkdir -p "$accounts_root/$n@x.com"
     printf '{"oauthAccount":{"emailAddress":"%s@x.com","accountUuid":"2222222%s-aaaa-4bbb-8ccc-dddddddddddd"}}' "$n" "$n" \
-        >"$HEADROOM_ACCOUNTS_ROOT/$n@x.com/.claude.json"
-    ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/$n@x.com/projects"
+        >"$accounts_root/$n@x.com/.claude.json"
+    ln -s "$HEADROOM_HOME/.claude/projects" "$accounts_root/$n@x.com/projects"
 done
-rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+rm -f "$accounts_root/state.json" "$accounts_root/launches.jsonl"
 
 # A dry run changes nothing: no state file, no log.
 dry_out=$("$HEADROOM_BIN" launch --dry-run 2>&1) && dry_code=0 || dry_code=$?
 if [ "$dry_code" != 0 ] || ! printf '%s\n' "$dry_out" | grep -q 'would start claude on a@x.com' ||
     ! printf '%s\n' "$dry_out" | grep -q 'b@x.com.*excluded' ||
-    [ -e "$HEADROOM_ACCOUNTS_ROOT/state.json" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl" ]; then
+    [ -e "$accounts_root/state.json" ] || [ -e "$accounts_root/launches.jsonl" ]; then
     echo "FAIL launch-dry-run: exit $dry_code, or it left something behind"
     printf '%s\n' "$dry_out" | sed 's/^/     /'
     fail=1
@@ -189,7 +185,7 @@ else
 fi
 # Every launch is one line in the log, whole, though they were appended
 # together.
-log="$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+log="$accounts_root/launches.jsonl"
 if [ "$(grep -c '"mode":"auto"' "$log" 2>/dev/null)" != 5 ] || [ "$(wc -l <"$log" | tr -d ' ')" != 5 ]; then
     echo "FAIL launch-log: the log does not hold the five launches, one line each"
     sed 's/^/     /' "$log" 2>/dev/null
@@ -219,8 +215,8 @@ else
     echo "ok   board-auto"
 fi
 # Back to the fixture every other case expects.
-for n in c d e f; do rm -rf "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"; done
-rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+for n in c d e f; do rm -rf "$accounts_root/$n@x.com"; done
+rm -f "$accounts_root/state.json" "$accounts_root/launches.jsonl"
 
 # Two vendors. Codex is absent from every other case — its directories do not
 # exist under the fixture home, so those frames are what they always were —
@@ -228,12 +224,12 @@ rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jso
 # are unsigned fixtures and the usage URL is a closed port.
 b64() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
 jwt() { printf '%s.%s.sig' "$(b64 '{"alg":"none"}')" "$(b64 "$1")"; }
-mkdir -p "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com" "$HEADROOM_HOME/.codex/sessions"
-ln -s "$HEADROOM_HOME/.codex/sessions" "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/sessions"
+mkdir -p "$codex_root/cx@x.com" "$HEADROOM_HOME/.codex/sessions"
+ln -s "$HEADROOM_HOME/.codex/sessions" "$codex_root/cx@x.com/sessions"
 id_token=$(jwt '{"email":"cx@x.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro","chatgpt_account_id":"acct-cx","chatgpt_user_id":"user-cx"}}')
 access_token=$(jwt '{"exp":4102444800}')
 printf '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"%s","access_token":"%s","refresh_token":"rt","account_id":"acct-cx"},"last_refresh":"2026-09-13T08:00:00Z"}' \
-    "$id_token" "$access_token" >"$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/auth.json"
+    "$id_token" "$access_token" >"$codex_root/cx@x.com/auth.json"
 
 # Off a terminal, two vendors print under a heading each, and --json is still
 # one document with a vendor on every account.
@@ -263,14 +259,14 @@ fi
 
 # Tab switches pages; enter and a on the Codex page write neither vendor's
 # .current.
-rm -f "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" "$HEADROOM_CODEX_ACCOUNTS_ROOT/state.json"
+rm -f "$codex_root/.current" "$codex_root/state.json"
 run accounts_tab
-if [ -e "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+if [ -e "$codex_root/.current" ] || [ -e "$accounts_root/.current" ]; then
     echo "FAIL accounts_tab: a key on the Codex page wrote a .current"
     fail=1
 fi
 # Codex goes absent again for everything below.
-rm -rf "$HEADROOM_CODEX_ACCOUNTS_ROOT" "$HEADROOM_HOME/.codex"
+rm -rf "$codex_root" "$HEADROOM_HOME/.codex"
 
 # SIGTERM mid-session must leave the terminal in canonical echoing mode.
 run accounts_sigterm
@@ -299,7 +295,7 @@ fi
 # The emulator itself archives one pre-resize screen per resize, so after
 # resizing the assertion is a bound, not zero.
 if command -v tmux >/dev/null 2>&1; then
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
+    rm -f "$accounts_root/state.json"
     tmux_sock="$work/tmux.sock"
     tmx() { tmux -S "$tmux_sock" "$@"; }
     # The pane runs the picker directly (exec, no shell lingering), and every

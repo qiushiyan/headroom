@@ -144,7 +144,7 @@ func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
 
 	cmd := exec.Command(bin, "launch", "--", "-p", "hello")
 	cmd.Env = append(os.Environ(),
-		"HEADROOM_HOME="+home, "HEADROOM_ACCOUNTS_ROOT="+cfg.AccountsRoot, "HEADROOM_PRIMARY_NAME=primary",
+		"HEADROOM_HOME="+home, "HEADROOM_PRIMARY_NAME=primary",
 		"HEADROOM_USAGE_URL="+srv.URL, "PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"))
 	start := time.Now()
 	out, err := cmd.CombinedOutput()

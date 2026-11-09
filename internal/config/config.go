@@ -209,18 +209,12 @@ func Load() (Config, error) {
 	c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated = relocated, relocated
 
 	for _, o := range []struct {
-		scope                          *Scope
-		root, name, launcher, usageURL string
+		scope                    *Scope
+		name, launcher, usageURL string
 	}{
-		{&c.Claude, "HEADROOM_ACCOUNTS_ROOT", "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL"},
-		{&c.Codex, "HEADROOM_CODEX_ACCOUNTS_ROOT", "HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL"},
+		{&c.Claude, "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL"},
+		{&c.Codex, "HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL"},
 	} {
-		if v := os.Getenv(o.root); v != "" {
-			if !filepath.IsAbs(v) {
-				return Config{}, relativeErr(o.root, v)
-			}
-			o.scope.AccountsRoot = v
-		}
 		if v := os.Getenv(o.name); v != "" {
 			o.scope.PrimaryName = v
 		}
@@ -235,62 +229,12 @@ func Load() (Config, error) {
 		}
 	}
 
-	// Distinct roots are what keep the two vendors' `.reserved`, `.order` and
-	// state.json apart; one location under two names would have each vendor
-	// reading the other's reservations and ledger.
-	if sameLocation(c.Claude.AccountsRoot, c.Codex.AccountsRoot) {
-		return Config{}, fmt.Errorf("the Claude Code accounts root (%s) and the Codex accounts root (%s) name the same location — each vendor keeps its own .reserved, .order and state.json, so the two roots must differ", c.Claude.AccountsRoot, c.Codex.AccountsRoot)
-	}
-
 	c.Codex.Present = isDir(c.Codex.PrimaryDir()) || isDir(c.Codex.AccountsRoot)
 	return c, nil
 }
 
 func relativeErr(name, v string) error {
 	return fmt.Errorf("%s=%q is not absolute — a relative config-dir path would make claude run as the primary while writing state beside the cwd; spell it absolute", name, v)
-}
-
-// sameLocation reports whether two roots name one directory. It only
-// compares: an accepted spelling is never rewritten.
-//
-// Identity is the filesystem's, not the string's. Each root is walked up to
-// its nearest existing ancestor; the two name one location when those
-// ancestors are the same file (so a symlink anywhere above, and a spelling
-// that differs only in case on a filesystem that folds it, both count) and
-// the components still missing below them match. The missing components are
-// compared case-insensitively: whether the filesystem would fold them cannot
-// be known before they exist, and refusing a pair of roots that differ only
-// by case costs a rename, while accepting one that folds puts both vendors'
-// .reserved and state.json in one directory.
-func sameLocation(a, b string) bool {
-	aDir, aRest := nearestExisting(filepath.Clean(a))
-	bDir, bRest := nearestExisting(filepath.Clean(b))
-	if !strings.EqualFold(aRest, bRest) {
-		return false
-	}
-	ai, errA := os.Stat(aDir)
-	bi, errB := os.Stat(bDir)
-	if errA != nil || errB != nil {
-		return aDir == bDir
-	}
-	return os.SameFile(ai, bi)
-}
-
-// nearestExisting splits path into its deepest existing ancestor and the
-// components below it that do not exist yet.
-func nearestExisting(path string) (dir, rest string) {
-	dir = path
-	for {
-		if _, err := os.Stat(dir); err == nil {
-			return dir, rest
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return dir, rest
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
-	}
 }
 
 func isDir(path string) bool {
