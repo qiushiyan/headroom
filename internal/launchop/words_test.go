@@ -68,7 +68,7 @@ func TestLaunchLineWording(t *testing.T) {
 	}
 	// The other ways of deciding say which they were, and no figures: the
 	// rule chose nothing.
-	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
+	for reason, want := range map[string]string{"named": "a · named", placement.ReasonOwner: "a · this session's account"} {
 		cases = append(cases, struct {
 			name  string
 			d     placement.Decision
@@ -81,7 +81,7 @@ func TestLaunchLineWording(t *testing.T) {
 			[]string{want}, []string{"auto", "load"}})
 	}
 	for _, c := range cases {
-		line := launchLine(c.d, c.auto, c.ref, c.owner, "", now)
+		line := launchLine(c.d, c.auto, c.ref, c.owner, now)
 		for _, w := range c.want {
 			if !strings.Contains(line, w) {
 				t.Errorf("%s: %q lacks %q", c.name, line, w)

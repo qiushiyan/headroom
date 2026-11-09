@@ -20,7 +20,6 @@ FAIL  binary (claude): endpoint + config-dir + credential seams present — miss
  ok   dirs: every account config dir is absolute
  ok   topology[a@x.com]: projects/ resolves to the canonical store
  ok   topology[b@x.com]: projects/ resolves to the canonical store
- ok   home: HOME is not this user's login home — the primary is launched by its dir ($BASE/home/.claude), never by absence
  ok   logins: every account dir keeps its own login, history and session registry
 FAIL  settings: every account sharing the session store reads one settings.json — primary has no settings.json; a@x.com has no settings.json; b@x.com has no settings.json — each account's cleanup sweep prunes the shared store with its own file's cleanupPeriodDays, and separate files drift apart; make every account's settings.json a symlink to one file (`accounts add --share-config` seeds it linked to the primary's)
 FAIL  retention: every account sharing the session store prunes it after 30 days (cleanupPeriodDays unset — Claude Code's default) — cleanupPeriodDays unset (primary, a@x.com, b@x.com) — the shared store is then pruned on Claude Code's default (30 days as of 2.1.287), which any release may change; set cleanupPeriodDays explicitly in the settings.json every account reads

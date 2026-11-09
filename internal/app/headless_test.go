@@ -198,7 +198,7 @@ func TestAStartedSessionCountsAsBusyForItsWholeLife(t *testing.T) {
 		t.Fatalf("started: %d %s", code, errw.String())
 	}
 	runs := f.st.Load().Runs()
-	if len(runs) != 1 || runs[0].PID != 4242 || runs[0].Name != doc.Account || runs[0].Home != f.st.Home() {
+	if len(runs) != 1 || runs[0].PID != 4242 || runs[0].Name != doc.Account {
 		t.Fatalf("runs %+v", runs)
 	}
 

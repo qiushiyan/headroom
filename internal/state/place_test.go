@@ -106,9 +106,9 @@ func TestAPlacementOutlivesItsProcess(t *testing.T) {
 	}
 }
 
-// A candidate offered with no ref is refused rather than recorded: --last and
-// a re-home are kept under the ref, and one written under nothing would route
-// to nothing without a word.
+// A candidate offered with no ref is refused rather than recorded: a re-home
+// is kept under the ref, and one written under nothing would route to nothing
+// without a word.
 func TestAChoiceWithNoRefIsNotRecorded(t *testing.T) {
 	root := t.TempDir()
 	s := Open(rootScope(root))
@@ -116,29 +116,22 @@ func TestAChoiceWithNoRefIsNotRecorded(t *testing.T) {
 	if p, err := place(s, cands, placement.Intent{}, 1000, "s1", time.Now()); err == nil || p.Recorded {
 		t.Fatalf("recorded=%v err=%v", p.Recorded, err)
 	}
-	if _, ok := s.Load().Placements().Newest(root); ok {
-		t.Error("a choice with no ref was recorded as --last")
+	if _, ok := s.Load().Owner("s1"); ok {
+		t.Error("a choice with no ref was recorded as a re-home")
 	}
 }
 
-func TestPlaceForcedAndLast(t *testing.T) {
+func TestPlaceForced(t *testing.T) {
 	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	cands := idle("a", "b")
-	if p, err := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 1, "", now); err != nil || p.Decision.Chosen != "" || p.Recorded {
-		t.Fatalf("last with nothing recorded: %+v %v", p, err)
-	}
 	// Named on a, the account the rule would otherwise take first.
 	if _, err := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "a", Reason: "named"}, 2, "", now); err != nil {
 		t.Fatal(err)
 	}
-	// A named launch is load for the automatic ones…
+	// A named launch is load for the automatic ones.
 	if p, _ := place(s, cands, placement.Intent{}, 3, "", now.Add(time.Second)); p.Decision.Chosen != "b" {
 		t.Fatalf("automatic launch after a named one on a chose %q", p.Decision.Chosen)
-	}
-	// …and the last account used is whichever launch came last, in any mode.
-	if p, _ := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 4, "", now.Add(2*time.Second)); p.Decision.Chosen != "b" {
-		t.Fatalf("last = %q, want b", p.Decision.Chosen)
 	}
 	// A refused choice records nothing.
 	before := s.Load().Placements()

@@ -48,8 +48,7 @@ exit 0
       "load": {
         "value": 1,
         "busy": 0,
-        "launched": 0,
-        "homes": []
+        "launched": 0
       }
     },
     {
@@ -95,8 +94,7 @@ exit 0
       "load": {
         "value": 0,
         "busy": 0,
-        "launched": 0,
-        "homes": []
+        "launched": 0
       }
     },
     {
@@ -142,8 +140,7 @@ exit 0
       "load": {
         "value": 8,
         "busy": 0,
-        "launched": 0,
-        "homes": []
+        "launched": 0
       }
     },
     {
@@ -179,8 +176,7 @@ exit 0
       "load": {
         "value": 3,
         "busy": 0,
-        "launched": 0,
-        "homes": []
+        "launched": 0
       }
     },
     {
@@ -216,8 +212,7 @@ exit 0
       "load": {
         "value": 7,
         "busy": 0,
-        "launched": 0,
-        "homes": []
+        "launched": 0
       }
     }
   ]

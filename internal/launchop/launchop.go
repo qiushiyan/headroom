@@ -14,7 +14,6 @@
 package launchop
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -84,7 +83,6 @@ type Plan struct {
 func Gather(req Request, deps Deps) *Plan {
 	p := &Plan{deps: deps}
 	automatic := req.Intent.Kind == placement.Auto
-	req.Intent.Home = req.Store.Home()
 	f := gather(req.Set, req.Store, readReservations(req.Set.Scope), req.Environ, req.CWD, automatic, req.Now, deps)
 	if len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
 		// A launch that names a session follows the account that last drove
@@ -169,7 +167,7 @@ func (p *Plan) Commit() (*Launch, error) {
 		l.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
 	}
 	placed, placeErr := req.Store.Place(l)
-	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, home: f.home, labels: f.labels}
+	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision}
 	if out.decision.Chosen == "" {
 		return nil, errors.New(out.decision.Refusal)
 	}
@@ -178,9 +176,7 @@ func (p *Plan) Commit() (*Launch, error) {
 	chosen, _ := f.find(out.decision.Chosen)
 	out.prepared, out.account = chosen.prepared, chosen.acct
 
-	// RecordErr: the re-home this launch depended on is written, and the
-	// shared ledger's write failed after it.
-	missed := cmp.Or(placeErr, placed.RecordErr)
+	missed := placeErr
 	if missed != nil {
 		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", missed))
 	}
@@ -217,11 +213,6 @@ type Launch struct {
 	// notes are the bookkeeping that did not happen, worded for the person:
 	// the launch proceeds regardless, and says so.
 	notes []string
-
-	// home and labels say whose load is whose: this home's accounts root,
-	// and every home's name.
-	home   string
-	labels state.HomeLabels
 }
 
 // Account is the account the launch was placed on.
@@ -239,8 +230,7 @@ func (l *Launch) Announce(w io.Writer, prefix string) {
 	for _, notice := range l.prepared.Notices {
 		fmt.Fprintln(w, prefix+notice)
 	}
-	c, _ := l.decision.Find(l.decision.Chosen)
-	fmt.Fprintln(w, prefix+launchLine(l.decision, l.req.Intent.Kind == placement.Auto, l.session, l.owner, elsewhere(c, l.home, l.labels), l.req.Now))
+	fmt.Fprintln(w, prefix+launchLine(l.decision, l.req.Intent.Kind == placement.Auto, l.session, l.owner, l.req.Now))
 	for _, note := range l.notes {
 		fmt.Fprintln(w, prefix+note)
 	}

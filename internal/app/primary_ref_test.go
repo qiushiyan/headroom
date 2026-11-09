@@ -13,7 +13,7 @@ import (
 )
 
 // The primary's name is display. What a run records under one pin — a
-// session's routing, --last, a reservation — is the primary's under any
+// session's routing, a reservation — is the primary's under any
 // other, so a shell started before a rename and one started after read one
 // set of records and nothing moves. Recording the primary by its name must
 // fail this.
@@ -36,9 +36,6 @@ func TestARenamedPrimaryKeepsItsRecords(t *testing.T) {
 	set := accounts.Discover(renamed)
 	if owner := sessions.OwnerOf(sessA, launchop.Refs(set), sessions.ProcessEvidence{}, state.Open(renamed).Load().Owners()); owner != "q2" {
 		t.Errorf("the session's owner after the rename: %q", owner)
-	}
-	if out := launchOn(t, renamed, f.edges, "--last", "--dry-run").stdout; !strings.Contains(out, "would start claude on q2") {
-		t.Errorf("--last after the rename:\n%s", out)
 	}
 	if keptFrom(t, renamed, "q2", work) || !keptFrom(t, renamed, "q2", t.TempDir()) {
 		t.Error("the reservation did not stay with the primary")

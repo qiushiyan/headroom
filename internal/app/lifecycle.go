@@ -79,19 +79,13 @@ func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
 		// holds: this dir gets its own at its first login.
 		fmt.Fprintf(out, "  kept per dir, not linked: %s\n", strings.Join(seeded.Kept, ", "))
 	}
-	// A second home's dir is logged in from that home: the launch must run
-	// under its HOME, or it resolves the login home's accounts instead.
-	under := ""
-	if cfg.PrimaryExplicit {
-		under = "HOME=" + cfg.Home + " "
-	}
 	if cfg.Vendor == config.Codex {
 		// Codex has no in-session /login: logging in is one command, in the
 		// engine's own spelling — a wrapper's argument passing is not
 		// headroom's to know.
-		fmt.Fprintf(out, "next: %sheadroom launch --vendor codex --account %s -- login   and log in as %s\n", under, name, name)
+		fmt.Fprintf(out, "next: headroom launch --vendor codex --account %s -- login   and log in as %s\n", name, name)
 	} else {
-		fmt.Fprintf(out, "next: %sheadroom launch --account %s   then /login as %s\n", under, name, name)
+		fmt.Fprintf(out, "next: headroom launch --account %s   then /login as %s\n", name, name)
 	}
 	fmt.Fprintf(out, "      (the board warns if the login does not match the dir name; new accounts sort last until listed in %s)\n", cfg.OrderFile())
 	return nil

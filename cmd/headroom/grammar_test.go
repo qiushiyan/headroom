@@ -131,17 +131,14 @@ func TestGrammarRefuses(t *testing.T) {
 		want string
 	}{
 		// A launch decides one way. Nothing records a choice for later.
-		{[]string{"launch", "--auto", "--last"}, "--auto and --last can't be used together"},
-		{[]string{"launch", "--auto", "--account", "a@x.com"}, "can't be used together"},
-		{[]string{"launch", "--last", "--account", "a@x.com"}, "can't be used together"},
+		{[]string{"launch", "--auto"}, "unknown flag --auto"},
+		{[]string{"launch", "--last"}, "unknown flag --last"},
 		{[]string{"launch", "--remember", "--account", "a@x.com"}, "unknown flag --remember"},
 		{[]string{"launch", "--resume", "abc"}, "unknown flag --resume"},
 		{[]string{"launch", "--vendor", "gemini"}, "--vendor"},
 
 		// An empty name is a caller's expansion bug, never some default account.
 		{[]string{"launch", "--account", ""}, "an account name cannot be empty"},
-		{[]string{"resolve", ""}, "an account name cannot be empty"},
-		{[]string{"resolve"}, "<account>"},
 		{[]string{"limits", "--account", ""}, "an account name cannot be empty"},
 		{[]string{"login", ""}, "an account name cannot be empty"},
 		{[]string{"headless", "place", "--exclude", ""}, "an account name cannot be empty"},
@@ -165,14 +162,13 @@ func TestGrammarRefuses(t *testing.T) {
 		{[]string{"accounts", "add", "--share-config=", "c@x.com"}, "--share-config= needs a directory"},
 		{[]string{"accounts", "bogus"}, "unexpected argument bogus"},
 		{[]string{"accounts", "remove", ""}, "name the account to remove"},
-		{[]string{"accounts", "ledger", "--vendor", "codex"}, "only Claude Code homes share a ledger"},
 
 		// A default command's flags never reach a command chosen over it.
 		{[]string{"accounts", "--compact", "remove", "--yes", "a@x.com"}, "--compact belongs to accounts board, which accounts remove does not run"},
-		{[]string{"accounts", "--json", "ledger"}, "--json belongs to accounts board"},
+		{[]string{"accounts", "--json", "reserve"}, "--json belongs to accounts board"},
 		{[]string{"--json", "limits"}, "--json belongs to board, which limits does not run"},
 		{[]string{"--compact", "launch", "--account", "a@x.com"}, "--compact belongs to board"},
-		{[]string{"--vendor", "codex", "resolve"}, "--vendor belongs to board"},
+		{[]string{"--vendor", "codex", "limits"}, "--vendor belongs to board"},
 		{[]string{"headless", "--json", "token", "a@x.com"}, "--json belongs to headless list"},
 
 		// Retired spellings, and words that are no command.
@@ -182,6 +178,8 @@ func TestGrammarRefuses(t *testing.T) {
 		{[]string{"launches", "--eval", "--json"}, "unexpected argument launches"},
 		{[]string{"sessions", "--cd-file", "/x"}, "unexpected argument sessions"},
 		{[]string{"resume", "--json"}, "unexpected argument resume"},
+		{[]string{"resolve", "a@x.com"}, "unexpected argument resolve"},
+		{[]string{"accounts", "ledger"}, "unexpected argument ledger"},
 		{[]string{"--check"}, "unknown flag --check"},
 		// A mistyped command is the root's error; under the board typed by
 		// name, the word is the board's.
@@ -318,7 +316,7 @@ func TestBrokenConfiguration(t *testing.T) {
 			t.Errorf("%q: exit %d\nstdout: %s\nstderr: %s", args, r.Code, r.Stdout, r.Stderr)
 		}
 	}
-	for _, args := range [][]string{{"resume"}, {"resume", "--json"}, {"sessions", "--cd-file", "/x"}} {
+	for _, args := range [][]string{{"resume"}, {"resume", "--json"}, {"sessions", "--cd-file", "/x"}, {"resolve", "a@x.com"}} {
 		r := clikittest.Run(a, args...)
 		if r.Code != 2 || r.Stdout != "" || !strings.Contains(r.Stderr, "unexpected argument "+args[0]) {
 			t.Errorf("%q: exit %d\nstdout: %s\nstderr: %s", args, r.Code, r.Stdout, r.Stderr)
@@ -350,7 +348,6 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"launch", "--vendor", "codex", "--account", "a@x.com"},
-		{"resolve", "--vendor", "codex", "a@x.com"},
 		{"limits", "--vendor", "codex"},
 		{"accounts", "remove", "--vendor", "codex", "a@x.com"},
 		{"accounts", "--vendor", "codex"},
@@ -371,9 +368,6 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 	}
 	if target, err := os.Readlink(filepath.Join(home, ".codex-accounts", "new@x.com", "sessions")); err != nil || target != filepath.Join(home, ".codex", "sessions") {
 		t.Errorf("sessions link = %q, %v", target, err)
-	}
-	if r := run("resolve", "--vendor", "codex", "new@x.com"); r.Code != 0 || r.Stdout != "new@x.com\t"+filepath.Join(home, ".codex-accounts", "new@x.com")+"\textra\n" {
-		t.Errorf("resolve after add: exit %d %q %s", r.Code, r.Stdout, r.Stderr)
 	}
 	// --vendor before remove reaches it: Codex accounts are never removed.
 	if r := run("accounts", "--vendor", "codex", "remove", "--yes", "new@x.com"); r.Code != 1 || !strings.Contains(r.Stderr, "never removes one") {
@@ -433,10 +427,6 @@ func TestCommandsOnAnAbsentVendor(t *testing.T) {
 	}
 	if !slices.Contains(rec.env, "CODEX_HOME="+filepath.Join(home, ".codex-accounts", "new@x.com")) {
 		t.Errorf("CODEX_HOME not the account's: %q", rec.env)
-	}
-
-	if r := run("resolve", "primary"); r.Code != 0 || !strings.HasSuffix(r.Stdout, filepath.Join(home, ".claude")+"\tprimary\n") {
-		t.Errorf("resolve primary: exit %d %q %s", r.Code, r.Stdout, r.Stderr)
 	}
 }
 

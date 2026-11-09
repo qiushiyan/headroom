@@ -125,16 +125,13 @@ func TestInItsRepositoryAReservedAccountYieldsToLessLoad(t *testing.T) {
 	}
 }
 
-// Named launches and --last say where to go: a reservation governs automatic
-// choices only.
+// A named launch says where to go: a reservation governs automatic choices
+// only.
 func TestAReservationLeavesAnExplicitLaunchAlone(t *testing.T) {
 	f, _, _, outside := reservedFixture(t)
 	t.Chdir(outside)
 	if got := f.launch("--account", "held@x.com").account(f.cfg); got != "held@x.com" {
 		t.Errorf("named launch went to %s", got)
-	}
-	if got := f.launch("--last").account(f.cfg); got != "held@x.com" {
-		t.Errorf("--last went to %s", got)
 	}
 }
 

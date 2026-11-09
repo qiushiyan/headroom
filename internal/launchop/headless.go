@@ -65,7 +65,7 @@ type HeadlessPlacement struct {
 // is always a recorded one: when the record fails, nothing is placed.
 func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	st, now := req.Store, req.Now
-	intent := placement.Intent{Kind: placement.Auto, CanWait: true, Owner: req.Prefer, Home: st.Home()}
+	intent := placement.Intent{Kind: placement.Auto, CanWait: true, Owner: req.Prefer}
 	snap := st.Load()
 	f := observe(req.Set, st, snap, diskSources(req.Set, snap, now), readReservations(req.Set.Scope), req.CWD, true, deps)
 	for i := range f.cands {

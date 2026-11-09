@@ -165,37 +165,11 @@ type Mark struct {
 }
 
 // Load is one subscription's busy sessions and recent launches, as the
-// placement rule counted them, and whose they are.
+// placement rule counted them.
 type Load struct {
 	Value    int // what an automatic launch ranks by: session usage in steps, plus busy, plus launched
-	Busy     int // verified-live sessions the vendor reports as working
+	Busy     int // verified-live sessions the vendor reports as working, and running headless sessions
 	Launched int // launches of the last fifteen minutes not yet among them
-	Homes    []HomeLoad
-}
-
-// HomeLoad is one home's share of a Load. This marks the home the surface
-// runs in; every other is another home holding logins of the same
-// subscriptions.
-type HomeLoad struct {
-	Home     string // accounts root
-	Label    string
-	This     bool
-	Busy     int
-	Launched int
-}
-
-// Elsewhere is the share of homes other than the surface's own.
-func (l *Load) Elsewhere() []HomeLoad {
-	if l == nil {
-		return nil
-	}
-	var out []HomeLoad
-	for _, h := range l.Homes {
-		if !h.This {
-			out = append(out, h)
-		}
-	}
-	return out
 }
 
 // Fresh reports whether the observation is recent enough to describe current

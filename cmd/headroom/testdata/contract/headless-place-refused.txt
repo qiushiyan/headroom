@@ -33,9 +33,9 @@ exit 3
       "eligible": false,
       "excluded": "excluded by the caller",
       "near_limit": false,
-      "load": 4,
+      "load": 3,
       "busy": 1,
-      "pending": 3,
+      "pending": 2,
       "observed_at": "<time>",
       "stale": false,
       "session": {

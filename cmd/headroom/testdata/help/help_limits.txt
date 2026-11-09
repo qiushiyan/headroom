@@ -28,7 +28,7 @@ The JSON document (schema 8):
        "limits": [{"kind", "group", "model", "label", "percent", "percent_state",
                    "resets_at": RFC3339|null, "reset_state", "identity_state", ...}]},
      "attempt": {"state", "http_status", "next_eligible_at"},   the newest request, not the account
-     "load": null | {"value", "busy", "launched", "homes": [...]}}],
+     "load": null | {"value", "busy", "launched"}}],
    "problems": [{"vendor", "section", "detail"}]}
 
   Select limits by kind, group and model, never by label. A *_state of "bad" means the

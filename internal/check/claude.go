@@ -143,7 +143,7 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
 	checkRouting(set, environ, r)
-	checkHomes(set, snap, r)
+	checkLogins(set, r)
 	checkRetention(set, r)
 	checkSessionStore(accts, probe, r)
 }

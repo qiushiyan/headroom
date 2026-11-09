@@ -20,7 +20,6 @@ type CLI struct {
 	Limits   LimitsCmd   `cmd:"" help:"Print what is known about every account's limits, read from disk alone."`
 	Login    LoginCmd    `cmd:"" help:"Renew the Claude Code logins that end soon."`
 	Headless HeadlessCmd `cmd:"" help:"Place sessions a headless runner starts itself, on per-account tokens."`
-	Resolve  ResolveCmd  `cmd:"" help:"Print an account's name, dir and kind, for shell preflight."`
 	Refresh  RefreshCmd  `cmd:"" help:"Ask the usage endpoint about every account that may be asked, and store the answers."`
 	Check    CheckCmd    `cmd:"" help:"Verify the vendor facts headroom relies on, and its own state."`
 	VersionC VersionCmd  `cmd:"" name:"version" help:"Print the build this binary is."`

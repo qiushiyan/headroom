@@ -80,10 +80,6 @@ func launchOptions(t *testing.T, args ...string) LaunchOptions {
 	var o LaunchOptions
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
-		case "--auto":
-			// What a bare launch does, said outright: nothing to carry.
-		case "--last":
-			o.Last = true
 		case "--dry-run":
 			o.DryRun = true
 		case "--account":

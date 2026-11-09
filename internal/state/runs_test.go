@@ -39,7 +39,7 @@ func TestAStartedSessionIsAttachedToItsPlacement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := Run{Placement: "p1", Key: "uuid:" + p.Decision.Chosen, Name: p.Decision.Chosen, PID: 4242, StartedMS: started.UnixMilli(), Home: s.Home()}
+		want := Run{Placement: "p1", Key: "uuid:" + p.Decision.Chosen, Name: p.Decision.Chosen, PID: 4242, StartedMS: started.UnixMilli()}
 		if run != want {
 			t.Fatalf("run %+v, want %+v", run, want)
 		}
@@ -86,26 +86,6 @@ func TestRunsAreSweptByEvidenceAndByAge(t *testing.T) {
 	runs := s.Load().Runs()
 	if len(runs) != 1 || runs[0].Placement != "live" {
 		t.Fatalf("runs kept %+v, want only the live one", runs)
-	}
-}
-
-// Runs are the subscription's: a second home sharing the ledger records into
-// it and reads the first home's.
-func TestRunsLiveInTheSharedLedger(t *testing.T) {
-	h := twoHomes(t)
-	now := time.Now()
-	placeHeadless(t, h.second, "p", idle("a"), now)
-	if _, err := h.second.Started("p", 99, now.UnixMilli(), nil, now); err != nil {
-		t.Fatal(err)
-	}
-	runs := h.owner.Load().Runs()
-	if len(runs) != 1 || runs[0].Home != h.secondRoot {
-		t.Fatalf("the owner sees %+v", runs)
-	}
-	if _, err := os.Stat(statePath(h.secondRoot)); err == nil {
-		if b, _ := os.ReadFile(statePath(h.secondRoot)); strings.Contains(string(b), `"runs"`) {
-			t.Errorf("a run landed in the second home's own file:\n%s", b)
-		}
 	}
 }
 

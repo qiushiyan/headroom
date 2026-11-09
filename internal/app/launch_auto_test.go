@@ -621,45 +621,28 @@ func TestDryRunHasNoEffects(t *testing.T) {
 	// A launch that would refuse is a dry run that fails: a script asking
 	// "would this launch?" reads the exit status.
 	g := newAutoFixture(t)
-	refused := g.launch("--dry-run", "--last")
+	writeJSON(t, g.cfg.PrimaryMeta(), `{}`) // logged in as nobody: no account can take it
+	refused := g.launch("--dry-run")
 	table = refused.stdout
 	if refused.code != 1 || refused.called || !strings.Contains(table, "would refuse") {
 		t.Errorf("a dry run that would refuse: exit %d, called %v:\n%s", refused.code, refused.called, table)
 	}
 }
 
-func TestOverrides(t *testing.T) {
+// Naming an account is obeyed only for an account that can run. One that is
+// gone, or that can no longer be launched, refuses, and the refusal records
+// nothing: no load, no log line.
+func TestANamedLaunchThatCannotRunRecordsNothing(t *testing.T) {
 	f := newAutoFixture(t, "a@x.com", "b@x.com")
 	for _, name := range []string{"qiushi", "a@x.com", "b@x.com"} {
 		f.observe(name, 0, 10, time.Minute)
 	}
-
-	// With nothing recorded there is no last account.
-	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no launch is recorded") {
-		t.Fatalf("--last with nothing recorded: %+v", got)
-	}
-	// The last account used is whichever launch came last, however decided.
-	f.launch("--account", "a@x.com")
-	if got := f.launch("--last"); got.account(f.cfg) != "a@x.com" || !strings.Contains(got.stderr, "the last account used") {
-		t.Fatalf("--last after a named launch: %+v", got)
-	}
-	// The --auto spelling is the command line's (cmd/headroom's launch-auto
-	// contract); here a bare launch is the automatic one.
-	auto := f.launch()
-	if got := f.launch("--last"); got.account(f.cfg) != auto.account(f.cfg) {
-		t.Fatalf("--last after an automatic launch went to %s, want %s", got.account(f.cfg), auto.account(f.cfg))
-	}
-	// A removed account is not launched on the strength of an old record.
-	f.launch("--account", "a@x.com")
 	if err := os.RemoveAll(filepath.Join(f.cfg.AccountsRoot, "a@x.com")); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "no longer a discovered account") {
-		t.Fatalf("--last naming a removed account: %+v", got)
+	if got := f.launch("--account", "a@x.com"); got.code != 1 || got.called {
+		t.Fatalf("a launch naming a removed account: %+v", got)
 	}
-	// Nor is one that can no longer be launched, and the refusal records
-	// nothing: no load, no log line, no new last account.
-	f.launch("--account", "b@x.com")
 	link := filepath.Join(f.cfg.AccountsRoot, "b@x.com", "projects")
 	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
@@ -667,16 +650,14 @@ func TestOverrides(t *testing.T) {
 	if err := os.MkdirAll(link, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	recent, logged := len(f.st.Load().Placements().Recent), len(f.log())
-	if got := f.launch("--last"); got.code != 1 || got.called || !strings.Contains(got.stderr, "cannot be launched") {
-		t.Fatalf("--last onto an account that cannot be launched: %+v", got)
+	if got := f.launch("--account", "b@x.com"); got.code != 1 || got.called {
+		t.Fatalf("a launch naming an account that cannot be launched: %+v", got)
 	}
-	if n, m := len(f.st.Load().Placements().Recent), len(f.log()); n != recent || m != logged {
-		t.Errorf("a refused --last left %d placement(s) and %d log line(s) behind", n-recent, m-logged)
+	if n, m := len(f.st.Load().Placements().Recent), len(f.log()); n != 0 || m != 0 {
+		t.Errorf("refused launches left %d placement(s) and %d log line(s) behind", n, m)
 	}
 
-	// The flag combinations that cannot be decided, and an empty --account,
-	// are the grammar's refusals: cmd/headroom's TestGrammar.
+	// An empty --account is the grammar's refusal: cmd/headroom's TestGrammar.
 }
 
 // Busy sessions are load: the registry's own word for a session, read from a

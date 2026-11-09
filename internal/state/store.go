@@ -1,7 +1,6 @@
 package state
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -40,11 +39,6 @@ const (
 	// first's routing before its transcript appeared.
 	rehomeGrace = 10 * time.Minute
 
-	// memberRefresh is how stale a home's registration may grow before a
-	// request rewrites it. Registration is otherwise written only when it
-	// changes, so a claim that permits nothing stays a read.
-	memberRefresh = 24 * time.Hour
-
 	// runKeep bounds a headless session's record by age, whether or not its
 	// process still runs: far longer than any session such a caller starts,
 	// and short enough that a record whose process nobody has seen exit — the
@@ -61,66 +55,32 @@ const (
 	retention = 30 * 24 * time.Hour
 )
 
-// Store is the handle to one home's state: its own accounts root's file, and
-// the subscription ledger — the same file, unless the home shares another
-// home's ledger. Every mutation is a locked read-modify-write of its own;
-// nothing is cached between calls, and no method holds a lock across work
-// this package does not own.
+// Store is the handle to one accounts root's state.json. Every mutation is a
+// locked read-modify-write of its own; nothing is cached between calls, and
+// no method holds a lock across work this package does not own.
 //
-// A store is opened from a scope, so it knows its roots, whose responses it
+// A store is opened from a scope, so it knows its root, whose responses it
 // holds and the spacing its deadlines respect. One store per accounts root is
 // what lets a second vendor add files without re-keying the first's: nothing
-// in Claude Code's state.json changes when Codex is fetched. A second home of
-// the same vendor shares the first's ledger instead of keeping one, because
-// the budget and the load are the subscription's, not the home's.
+// in Claude Code's state.json changes when Codex is fetched.
 type Store struct {
-	root    string // this home's accounts root: its re-homes, and its identity in the ledger
-	ledger  string // the accounts root whose state.json holds the subscription ledger
+	root    string
 	vendor  config.Vendor
 	spacing time.Duration
-	member  Member
 }
 
 func Open(scope config.Scope) *Store {
-	root := filepath.Clean(scope.AccountsRoot)
-	return &Store{
-		root: root, ledger: filepath.Clean(scope.Ledger()), vendor: scope.Vendor, spacing: scope.RequestSpacing(),
-		member: Member{Root: root, Home: scope.Home, Explicit: scope.PrimaryExplicit},
-	}
+	return &Store{root: filepath.Clean(scope.AccountsRoot), vendor: scope.Vendor, spacing: scope.RequestSpacing()}
 }
 
 // Vendor is whose responses this store holds — and therefore which parser
 // reads a body that came out of it.
 func (s *Store) Vendor() config.Vendor { return s.vendor }
 
-// Home is this home's identity in the ledger: its accounts root, as every
-// record of a launch or a busy session names it.
-func (s *Store) Home() string { return s.root }
-
-// Ledger is the accounts root whose state.json holds the subscription ledger.
-func (s *Store) Ledger() string { return s.ledger }
-
-func (s *Store) shared() bool { return s.ledger != s.root }
-
-// Load reads the documents. No lock: writes land by atomic rename, so a reader
-// sees one whole version or the previous one of each.
+// Load reads the document. No lock: writes land by atomic rename, so a reader
+// sees one whole version or the previous one.
 func (s *Store) Load() Snapshot {
-	d := read(s.ledger)
-	h := d
-	if s.shared() {
-		h = read(s.root)
-	}
-	return Snapshot{d: d, h: h, vendor: s.vendor, spacing: s.spacing}
-}
-
-// Register records this home in the ledger it spends against, so the other
-// homes can find its account dirs. Every request and launch registers on its
-// way; this is for a home that has just joined and done neither.
-func (s *Store) Register(now time.Time) error {
-	return s.update(s.ledger, claimWait, func(d *doc) error {
-		d.register(s.member, now)
-		return nil
-	})
+	return Snapshot{d: read(s.root), vendor: s.vendor, spacing: s.spacing}
 }
 
 // ceiling is the furthest out a deadline written by this code can sit: the
@@ -180,8 +140,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	for i, k := range keys {
 		out[i] = Decision{Key: k, NextEligible: now.Add(ceiling(s.spacing))}
 	}
-	err := s.update(s.ledger, claimWait, func(d *doc) error {
-		d.register(s.member, now)
+	err := s.update(claimWait, func(d *doc) error {
 		d.sweepStale(now)
 		if d.badAccounts {
 			// No readable ledger. "Eligible" is then a guess, and a live
@@ -251,7 +210,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 // arithmetic this package owns.
 func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, at time.Time) (time.Time, error) {
 	var next time.Time
-	err := s.update(s.ledger, completeWait, func(d *doc) error {
+	err := s.update(completeWait, func(d *doc) error {
 		if d.badAccounts {
 			return ErrCorrupt
 		}
@@ -371,7 +330,6 @@ type Run struct {
 	Name      string `json:"name"`
 	PID       int    `json:"pid"`
 	StartedMS int64  `json:"started_ms"`
-	Home      string `json:"home"`
 }
 
 // validRuns rejects a section that decodes around a record nothing could
@@ -408,21 +366,9 @@ type Placed struct {
 	Decision placement.Decision
 	Recorded bool // the launch is in the record the next placement reads
 
-	// Ledger is the record of launches the decision was made on, as the rule
-	// read it — before this launch was added to it — for the launch log, which
-	// keeps every input so a rule can be run over the line again.
-	Ledger placement.Ledger
-
-	// RecordErr says why the launch is not in the record although Place
-	// returned no error: the ledger is another home's file, the re-home this
-	// launch depended on was written first, and the ledger's write then
-	// failed. The launch goes ahead — it is routed — and misses only its load.
-	RecordErr error
-
 	// ReHomed reports that the session's routing was recorded. SessionErr says
-	// why it was not when it should have been and the launch did not depend on
-	// it: an unreadable sessions section is never written over, here as
-	// everywhere.
+	// why it was not when it should have been: an unreadable sessions section
+	// is never written over, here as everywhere, and the launch goes ahead.
 	ReHomed    bool
 	SessionErr error
 }
@@ -440,89 +386,60 @@ type Placed struct {
 //
 // A launch and what it means for a session are one fact, so they are one
 // write: the load the next launch counts and the re-home that routes the
-// session's next turn land together or not at all. Recording them in two
-// operations is how a resume that was then refused left a placement, a log
-// line and a "last account" behind it.
+// session's next turn land together or not at all.
 //
-// When the ledger is another home's file they are two documents, both locked
-// for the whole operation — the ledger's lock first, always, so no two
-// operations can wait on each other — and written in the order that keeps a
-// refusal clean: the write a launch depends on goes first, and a failure there
-// returns before anything else is written. A launch that must re-home writes
-// the re-home first, so a refused move leaves nothing; any other launch writes
-// its placement first, and a re-home that then fails is a note, exactly as an
-// unreadable sessions section is.
-//
-// An error means nothing was recorded. For an ordinary launch that is never a
-// reason to stop — for an automatic launch every usable account is a correct
-// answer — so
-// the decision is then made from an unlocked read and Recorded is false. For a
-// launch that must re-home it is: the caller refuses.
+// An error means nothing was recorded. That is never a reason to stop a
+// launch — for an automatic launch every usable account is a correct answer
+// — so the decision is then made from an unlocked read and Recorded is false.
 func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
 	now := l.Now
-	l.Intent.Home = s.root
-	err := s.updatePair(placeWait, func(led, home *doc, homeErr error) (bool, error) {
+	err := s.update(placeWait, func(d *doc) error {
 		// Disposable, like the request ledger: an unreadable record of
 		// launches is set aside and starts from nothing.
-		led.setAside("placements", &led.badPlacements)
-		if led.placements.Prune(now, retention) {
-			led.dirty = true
+		d.setAside("placements", &d.badPlacements)
+		if d.placements.Prune(now, retention) {
+			d.dirty = true
 		}
-		led.sweepRuns(l.Gone, now)
-		led.register(s.member, now)
-		out.Decision = placement.Choose(l.Candidates, led.placements, l.Intent, now)
-		out.Ledger = led.placements.Clone()
+		d.sweepRuns(l.Gone, now)
+		out.Decision = placement.Choose(l.Candidates, d.placements, l.Intent, now)
 		chosen, ok := out.Decision.Find(out.Decision.Chosen)
 		if out.Decision.Chosen == "" || !ok {
-			return false, nil
+			return nil
 		}
 		if chosen.Ref == "" {
-			// What --last and a re-home are kept under: one recorded without it
-			// would route to nothing, and silently.
-			return false, fmt.Errorf("%s was offered with no ref, so it cannot be recorded", chosen.Name)
+			// What a re-home is kept under: one recorded without it would
+			// route to nothing, and silently.
+			return fmt.Errorf("%s was offered with no ref, so it cannot be recorded", chosen.Name)
 		}
-		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, chosen.Ref, l.PID, s.root, now)
-		led.dirty = true
+		d.placements.Record(l.ID, chosen.Key, chosen.Name, l.PID, now)
+		d.dirty = true
 		out.Recorded = true
 		if l.Session == "" || chosen.Name == l.Intent.Owner {
-			return false, nil
+			return nil
 		}
-		if homeErr != nil || home.badSessions {
-			out.SessionErr = cmp.Or(homeErr, ErrCorrupt)
-			return false, nil
+		if d.badSessions {
+			out.SessionErr = ErrCorrupt
+			return nil
 		}
 		if l.Live != nil {
 			// The sweep runs before the write, so the record this very call
 			// writes can never be swept by it.
 			if exists, ok := l.Live(); ok {
 				young := now.Add(-rehomeGrace).UnixMilli()
-				for sid, rec := range home.sessions {
+				for sid, rec := range d.sessions {
 					if !exists[sid] && rec.AtMS < young {
-						delete(home.sessions, sid)
+						delete(d.sessions, sid)
 					}
 				}
 			}
 		}
-		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
-		home.dirty = true
+		d.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
 		out.ReHomed = true
-		return false, nil
+		return nil
 	})
-	var partial pairErr
-	switch {
-	case errors.As(err, &partial) && partial.homeWritten:
-		// The re-home this launch depended on is written; its load is not.
-		out.Recorded, out.RecordErr = false, partial.err
-		return out, nil
-	case errors.As(err, &partial):
-		// The placement is written; the session's routing is not.
-		out.ReHomed, out.SessionErr = false, partial.err
-		return out, nil
-	case err != nil:
-		ledger := s.Load().Placements()
-		out = Placed{Decision: placement.Choose(l.Candidates, ledger, l.Intent, now), Ledger: ledger}
-		return out, err
+	if err != nil {
+		return Placed{Decision: placement.Choose(l.Candidates, s.Load().Placements(), l.Intent, now)}, err
 	}
 	return out, nil
 }
@@ -538,7 +455,7 @@ var ErrNotPlaced = errors.New("no recent placement has that id")
 // second report for one placement replaces the first.
 func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now time.Time) (Run, error) {
 	var out Run
-	err := s.update(s.ledger, claimWait, func(d *doc) error {
+	err := s.update(claimWait, func(d *doc) error {
 		if d.badPlacements {
 			return ErrCorrupt
 		}
@@ -547,7 +464,7 @@ func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now tim
 			return ErrNotPlaced
 		}
 		d.sweepRuns(gone, now)
-		out = Run{Placement: id, Key: p.Key, Name: p.Name, PID: pid, StartedMS: startedMS, Home: p.Home}
+		out = Run{Placement: id, Key: p.Key, Name: p.Name, PID: pid, StartedMS: startedMS}
 		d.runs = slices.DeleteFunc(d.runs, func(r Run) bool { return r.Placement == id })
 		d.runs = append(d.runs, out)
 		d.dirty = true
@@ -562,14 +479,14 @@ func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now tim
 // remember) and would make re-entry possible — flock is per open file
 // description, so a nested update opens a second descriptor and blocks
 // against itself forever.
-func (s *Store) update(root string, wait time.Duration, fn func(*doc) error) error {
-	lock, err := acquire(root, wait)
+func (s *Store) update(wait time.Duration, fn func(*doc) error) error {
+	lock, err := acquire(s.root, wait)
 	if err != nil {
 		return err
 	}
 	defer release(lock)
 
-	d := read(root)
+	d := read(s.root)
 	if err := writable(d); err != nil {
 		return err
 	}
@@ -591,87 +508,6 @@ func writable(d *doc) error {
 		// Something is in that file and nobody could read it. Writing a fresh
 		// document here is how re-homes get destroyed by an I/O blip.
 		return ErrUnreadable
-	}
-	return nil
-}
-
-// pairErr is a pair's second write failing after its first landed: half of
-// the operation is on disk, and which half is the caller's to say.
-type pairErr struct {
-	err         error
-	homeWritten bool // the home's document was the one that landed
-}
-
-func (e pairErr) Error() string { return e.err.Error() }
-
-// updatePair is update over the ledger and this home's own document, for the
-// one operation that writes both. When they are one file it is update. When
-// they are two, the ledger's lock is taken first — the only operation holding
-// two locks takes them in one order, so none can wait on another — and an
-// unusable home document does not stop the ledger: fn is told why (homeErr)
-// and decides what that costs. Each document is written when fn dirtied it;
-// homeFirst, fn's answer, says the home's write is the one the operation
-// depends on, so it goes first and a failure there leaves the ledger as it was.
-func (s *Store) updatePair(wait time.Duration, fn func(led, home *doc, homeErr error) (homeFirst bool, err error)) error {
-	if !s.shared() {
-		return s.update(s.root, wait, func(d *doc) error {
-			_, err := fn(d, d, nil)
-			return err
-		})
-	}
-	ll, err := acquire(s.ledger, wait)
-	if err != nil {
-		return err
-	}
-	defer release(ll)
-	led := read(s.ledger)
-	if err := writable(led); err != nil {
-		return err
-	}
-	var home *doc
-	hl, homeErr := acquire(s.root, wait)
-	if homeErr == nil {
-		defer release(hl)
-		home = read(s.root)
-		homeErr = writable(home)
-	}
-	if homeErr != nil {
-		home = &doc{root: s.root, sessions: map[string]sessions.OwnerRec{}, badSessions: true}
-	}
-	homeFirst, err := fn(led, home, homeErr)
-	if err != nil {
-		return err
-	}
-	writeHome := home.dirty && homeErr == nil
-	writeLedger := led.dirty
-	if homeFirst {
-		if writeHome {
-			if err := commitDoc(home); err != nil {
-				return err
-			}
-		}
-		if writeLedger {
-			if err := commitDoc(led); err != nil {
-				if !writeHome {
-					return err
-				}
-				return pairErr{err: err, homeWritten: true}
-			}
-		}
-		return nil
-	}
-	if writeLedger {
-		if err := commitDoc(led); err != nil {
-			return err
-		}
-	}
-	if writeHome {
-		if err := commitDoc(home); err != nil {
-			if !writeLedger {
-				return err
-			}
-			return pairErr{err: err}
-		}
 	}
 	return nil
 }

@@ -57,7 +57,6 @@ type AccountsCmd struct {
 	Add     AddCmd           `cmd:"" help:"Seed the dir for a new subscription."`
 	Remove  RemoveCmd        `cmd:"" help:"Remove an extra account: its Keychain item and its dir."`
 	Reserve ReserveCmd       `cmd:"" help:"Keep an account for certain repositories, and list what is kept."`
-	Ledger  LedgerCmd        `cmd:"" help:"Spend against another home's ledger, and list the homes that share it."`
 }
 
 func (AccountsCmd) Help() string { return accountsHelp }
@@ -131,27 +130,9 @@ func (c *ReserveCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, par
 	})
 }
 
-type LedgerCmd struct {
-	Root string `arg:"" optional:"" help:"The accounts root whose ledger this home spends against; this home's own stops sharing."`
-}
-
-func (LedgerCmd) Help() string { return ledgerHelp }
-
-func (c *LedgerCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, parent *AccountsCmd) error {
-	if parent.Vendor != nil && *parent.Vendor != config.Claude {
-		return clikit.Usage(fmt.Errorf("only Claude Code homes share a ledger"))
-	}
-	return app.AccountsLedger(streams(ctx, in), cfg, c.Root, time.Now())
-}
-
 type LaunchCmd struct {
 	vendorOne
-	// Auto is read by nobody: a bare launch is already automatic. It stays a
-	// flag because callers spell it (steward's `headroom launch --auto --`),
-	// and it still excludes the flags that decide otherwise.
-	Auto    bool        `xor:"decide" help:"Place the launch on the least-loaded account: what a bare launch does, said outright."`
-	Last    bool        `xor:"decide" help:"Launch on the account of the newest recorded launch."`
-	Account accountName `xor:"decide" placeholder:"NAME" help:"Launch on this account, named by email or dir name."`
+	Account accountName `placeholder:"NAME" help:"Launch on this account, named by email or dir name."`
 	DryRun  bool        `help:"Print the choice and every account's figures; record, log and start nothing."`
 	Args    []string    `arg:"" optional:"" passthrough:"partial" help:"Arguments for claude (or codex), passed on unchanged; put them after --."`
 }
@@ -165,7 +146,7 @@ func (c *LaunchCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, h ho
 		return err
 	}
 	return app.Launch(streams(ctx, in), scope, app.LaunchOptions{
-		Account: string(c.Account), Last: c.Last, DryRun: c.DryRun,
+		Account: string(c.Account), DryRun: c.DryRun,
 		Args: vendorArgs(c.Args),
 	}, h.place, h.exec)
 }
@@ -369,21 +350,6 @@ type HeadlessForgetCmd struct {
 
 func (c *HeadlessForgetCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
 	return app.HeadlessForget(streams(ctx, in), cfg.Claude, string(c.Account))
-}
-
-type ResolveCmd struct {
-	vendorOne
-	Account accountName `arg:"" help:"The account to resolve."`
-}
-
-func (ResolveCmd) Help() string { return resolveHelp }
-
-func (c *ResolveCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config) error {
-	scope, err := c.scope(cfg)
-	if err != nil {
-		return err
-	}
-	return app.Resolve(streams(ctx, in), scope, string(c.Account))
 }
 
 type RefreshCmd struct {

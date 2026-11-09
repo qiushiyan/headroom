@@ -12,8 +12,8 @@ records nothing. A bare headroom launch takes the least-loaded account; headroom
 An account is a config dir: Claude Code's primary is ~/.claude and the others are
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
 that report — the board, limits, refresh — cover every vendor on this machine
-unless --vendor names one. Commands that act on one account — launch, resolve, accounts
-add and remove — act on Claude Code unless --vendor says codex. login and headless are
+unless --vendor names one. Commands that act on one account — launch, accounts add and
+remove — act on Claude Code unless --vendor says codex. login and headless are
 Claude Code only.`
 
 var configuration = clikit.Section{
@@ -30,9 +30,8 @@ var configuration = clikit.Section{
   HEADROOM_CODEX_LAUNCHER_FORMAT   the board's Codex launch command
   HEADROOM_USAGE_URL, HEADROOM_CODEX_USAGE_URL   the usage endpoints
 
-A relative HEADROOM_HOME or accounts root, or a ~/.claude-accounts/.ledger naming no
-usable accounts root, makes every command refuse until it is fixed; headroom check says
-which.`,
+A relative HEADROOM_HOME or accounts root makes every command refuse until it is fixed;
+headroom check says which.`,
 }
 
 const boardHelp = `The account board: a block per account with its usage limits — the five-hour session
@@ -63,7 +62,7 @@ var boardDocument = clikit.Section{
      "limits": [{"kind", "group", "model", "label", "percent", "percent_state",
                  "resets_at": RFC3339|null, "reset_state", "identity_state", ...}]},
    "attempt": {"state", "http_status", "next_eligible_at"},   the newest request, not the account
-   "load": null | {"value", "busy", "launched", "homes": [...]}}],
+   "load": null | {"value", "busy", "launched"}}],
  "problems": [{"vendor", "section", "detail"}]}
 
 Select limits by kind, group and model, never by label. A *_state of "bad" means the
@@ -77,9 +76,8 @@ CODEX_HOME and its credential variables) is stripped, never obeyed. The process 
 replaced, so the vendor's exit status is the command's.
 
 How the account is decided:
-  bare, --auto  the least-loaded account
+  bare          the least-loaded account
   --account N   that account, for this one launch
-  --last        the account of the newest recorded launch
 
 Every launch says on stderr where it went and why before the vendor starts, as one line:
   headroom launch: a@x.com · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: b@x.com)
@@ -180,7 +178,7 @@ waiting alone will not help). Report the session's process with headroom headles
 
 const accountsHelp = `Bare, the account board (see headroom board --help). Its subcommands change the set of
 accounts: add seeds a new account's dir, remove deletes one, reserve keeps one for certain
-repositories, ledger shares the request budget with a second home on this machine.`
+repositories.`
 
 const addHelp = `Seeds the dir for a new subscription: ~/.claude-accounts/<email> (or ~/.codex-accounts/
 <email> under --vendor codex), its session store linked to the machine-global one so every
@@ -208,24 +206,17 @@ directories it replaces the account's reservation; --clear drops it.
 An automatic launch or headless placement outside those repositories never chooses the
 account. Inside them it is ranked like any other account: a reservation says what an account
 may be used for, never that it goes first, and every other account stays available there. A
-launch that names its account and --last are not affected, and a resumed session moves off
-the account when its directory is outside them. Where a launch is decides this: the
+launch that names its account is not affected, and a resumed session moves off the account
+when its directory is outside them. Where a launch is decides this: the
 directory it starts in, a session's own directory on a resume, a headless caller's working
 directory.
 
 A repository counts with every worktree of it, wherever they live. A directory in no
 repository counts with everything under it. If a directory later goes missing the account
-stays kept: it can then be launched only by name. A reservation belongs to this home, so
-another home's login of the same subscription is not kept.
+stays kept: it can then be launched only by name.
 
 The reservation lives in .reserved in the accounts root. While that file cannot be read,
 automatic choices refuse and launches that name their account still run.`
-
-const ledgerHelp = `Claude Code only. With a root, this home spends against that accounts root's ledger from
-now on — for a second home on this machine holding its own logins of the same
-subscriptions: both then ask each subscription once per request spacing and count each
-other's sessions and launches. Naming this home's own root stops sharing. Either way it
-registers this home in the ledger and lists the homes registered there.`
 
 const checkHelp = `Verifies the reverse-engineered vendor facts headroom relies on — credential, identity and
 usage-response shapes, the binary's seams, the session store's topology and retention —
@@ -240,6 +231,3 @@ prints nothing: the round headroom --json runs, without the health probes or the
 An automatic launch leaves one running for the next launch's figures. It ends within about
 twelve seconds; SIGTERM, SIGINT or SIGHUP stop it within one, with the request it abandoned
 recorded.`
-
-const resolveHelp = `Prints one line for shell preflight: the account's canonical name, its config dir and its
-kind (primary or extra), separated by tabs.`

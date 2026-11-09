@@ -339,8 +339,8 @@ func TestNewerSchemaIsReadOnly(t *testing.T) {
 	writeDoc(t, root, doc)
 	s := Open(rootScope(root))
 
-	if docs := s.Load().Documents(); len(docs) != 1 || !docs[0].ReadOnly || docs[0].Version != 999 {
-		t.Fatalf("a newer schema must be reported read-only: %+v", docs)
+	if snap := s.Load(); !snap.ReadOnly() || snap.Version() != 999 {
+		t.Fatalf("a newer schema must be reported read-only: version %d", snap.Version())
 	}
 	if _, err := s.Claim([]Key{key("a")}, time.Now()); err != ErrReadOnly {
 		t.Errorf("Claim: %v, want ErrReadOnly", err)
