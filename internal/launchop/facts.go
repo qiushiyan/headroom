@@ -96,14 +96,6 @@ func readReservations(scope config.Scope) reservations {
 	return reservations{held, err}
 }
 
-// keeps says a reservation keeps the account from work in project, or that
-// nothing can say it does not: an unreadable `.reserved` never releases an
-// account.
-func (r reservations) keeps(ref, project string) bool {
-	s, _ := standing(r.held, ref, project)
-	return r.err != nil || s == reservedElsewhere
-}
-
 // How a reservation stands to one launch, as the launch log spells it.
 const (
 	reservedHere      = "here"      // kept for the repository this launch runs in: ranked like any other
@@ -224,8 +216,8 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 
 	for i, s := range src {
 		c := candidate{acct: s.acct, key: s.key, obs: s.obs,
-			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
-		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
+			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()]}
+		c.ObservedAt, c.Limits = limitsOf(scope.Vendor, s.obs)
 		c.standing, c.reserved = standing(res.held, s.acct.Ref(), project)
 		if blobs != nil {
 			c.cred = blobs[i]
@@ -284,7 +276,6 @@ func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source,
 // are the runs proven over.
 type sessionLoad struct {
 	busy     map[string][]placement.Proc
-	statuses map[string][]string
 	refs     []sessions.AccountRef
 	evidence map[string]sessions.ProcessEvidence
 	gone     []state.Run
@@ -296,7 +287,7 @@ type sessionLoad struct {
 // keys. Codex has no registry headroom can read: its accounts carry no busy
 // sessions, and an empty read there is not evidence of idleness.
 func readSessionLoad(set accounts.Set, keys map[string]string, runs []state.Run, probe sessions.PIDProbe) sessionLoad {
-	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
+	out := sessionLoad{busy: map[string][]placement.Proc{}}
 	if set.Scope.Vendor != config.Claude {
 		return out
 	}
@@ -331,7 +322,6 @@ func readSessionLoad(set accounts.Set, keys map[string]string, runs []state.Run,
 		if c.key == "" {
 			continue
 		}
-		out.statuses[c.key] = append(out.statuses[c.key], statusWord(e))
 		if e.Busy() {
 			out.busy[c.key] = append(out.busy[c.key], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS})
 		}
@@ -377,9 +367,9 @@ func retiredRuns(runs []state.Run, evidence map[string]sessions.ProcessEvidence)
 // limitsOf turns an observation into the rows the rule counts: the ones that
 // bound ordinary work on the account, with the session window marked. Which
 // rows those are is the usage package's to say.
-func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt int64, src string, limits []placement.Limit) {
+func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt int64, limits []placement.Limit) {
 	if obs == nil {
-		return 0, "", nil
+		return 0, nil
 	}
 	session := usage.SessionWindow(vendor, obs.Rows)
 	for j, r := range obs.Rows {
@@ -392,20 +382,7 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
 		})
 	}
-	return obs.ObservedAt, obs.Source.Name(), limits
-}
-
-// statusWord is a live session's status as the vendor wrote it. Absent and
-// unreadable are said as such: neither is "idle".
-func statusWord(e sessions.RegistryEntry) string {
-	switch {
-	case e.Status != "":
-		return e.Status
-	case e.StatusState == tag.Bad:
-		return "(unreadable)"
-	default:
-		return "(none)"
-	}
+	return obs.ObservedAt, limits
 }
 
 // loginExpired is avoidReason's word for the one exclusion a person ends by

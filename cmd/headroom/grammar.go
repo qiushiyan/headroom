@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"slices"
 
 	"github.com/alecthomas/kong"
 	"github.com/qiushiyan/clikit"
@@ -102,12 +101,6 @@ func (s *shareConfig) Decode(ctx *kong.DecodeContext) error {
 		}
 	}
 	return nil
-}
-
-// given reports whether the flag named name was on the command line, as
-// opposed to holding its default.
-func given(ctx *kong.Context, name string) bool {
-	return slices.ContainsFunc(ctx.Path, func(p *kong.Path) bool { return p.Flag != nil && p.Flag.Name == name })
 }
 
 // vendorArgs are the arguments a passthrough positional collected, with the

@@ -1,6 +1,6 @@
 // Package tui owns the terminal session for the interactive surfaces: raw-mode
 // lifetime — including restoration when the process is killed mid-session —
-// alternate-screen entry and exit, and turning key bytes into decoded keys.
+// and turning key bytes into decoded keys.
 // Keys are physical, not semantic: the decoder says "the user pressed j",
 // and each surface owns what j means there. Rendering stays with the caller.
 package tui
@@ -199,74 +199,9 @@ func (d *Decoder) Flush() []Key {
 	return []Key{{Kind: KeyEsc}}
 }
 
-// LineEdit is the shared single-line editor under rename and search input:
-// a rune buffer with a cursor, fed keys, rendered by the caller. It exists
-// once because backspace over a multi-byte rune and cursor-vs-display-column
-// arithmetic are exactly the mistakes worth making only once.
-type LineEdit struct {
-	runes []rune
-	cur   int
-}
-
-func (e *LineEdit) String() string { return string(e.runes) }
-
-func (e *LineEdit) SetString(s string) {
-	e.runes = []rune(s)
-	e.cur = len(e.runes)
-}
-
-// Split returns the text before the cursor, the rune under it (" " when the
-// cursor sits at the end), and the text after — the three spans a caller
-// needs to render an inverse-video cursor.
-func (e *LineEdit) Split() (before, at, after string) {
-	if e.cur >= len(e.runes) {
-		return string(e.runes), " ", ""
-	}
-	return string(e.runes[:e.cur]), string(e.runes[e.cur]), string(e.runes[e.cur+1:])
-}
-
-// Handle applies one key; false means the key isn't an editing key and the
-// caller's mode logic should interpret it (enter, esc, …).
-func (e *LineEdit) Handle(k Key) bool {
-	switch k.Kind {
-	case KeyRune:
-		e.runes = append(e.runes[:e.cur], append([]rune{k.Rune}, e.runes[e.cur:]...)...)
-		e.cur++
-	case KeyBackspace:
-		if e.cur > 0 {
-			e.runes = append(e.runes[:e.cur-1], e.runes[e.cur:]...)
-			e.cur--
-		}
-	case KeyDelete:
-		if e.cur < len(e.runes) {
-			e.runes = append(e.runes[:e.cur], e.runes[e.cur+1:]...)
-		}
-	case KeyLeft:
-		if e.cur > 0 {
-			e.cur--
-		}
-	case KeyRight:
-		if e.cur < len(e.runes) {
-			e.cur++
-		}
-	case KeyHome:
-		e.cur = 0
-	case KeyEnd:
-		e.cur = len(e.runes)
-	default:
-		return false
-	}
-	return true
-}
-
 type Terminal struct {
-	in  *os.File
-	out *os.File
-	// tty marks a session on /dev/tty (OpenTTY): headroom opened the
-	// descriptor, so Close closes it, and the session runs on the alternate
-	// screen. The two always go together — a session on the caller's stdio
-	// owns neither.
-	tty    bool
+	in     *os.File
+	out    *os.File
 	old    *term.State
 	events chan Key
 	sigs   chan os.Signal
@@ -276,44 +211,19 @@ type Terminal struct {
 	epilogue func()
 }
 
-// Open puts stdin into raw mode and hides the cursor, rendering to stdout —
-// the shape select and watch always had. The session owns its own
-// restoration: Close is idempotent, and SIGTERM/SIGHUP/SIGINT restore the
-// terminal before the process dies. (Raw mode disables ISIG, so ctrl-c
-// arrives as a key byte — these signals only come from outside.)
+// Open puts stdin into raw mode and hides the cursor, rendering to stdout.
+// The session owns its own restoration: Close is idempotent, and
+// SIGTERM/SIGHUP/SIGINT restore the terminal before the process dies. (Raw
+// mode disables ISIG, so ctrl-c arrives as a key byte — these signals only
+// come from outside.)
 func Open() (*Terminal, error) {
-	return open(os.Stdin, os.Stdout, false)
-}
-
-// OpenTTY runs the session on /dev/tty — both keys and frames — leaving
-// stdout free to carry a machine-readable result, and uses the alternate
-// screen so the session vanishes from scrollback on exit. Alt-screen entry
-// and exit live inside the same once-guarded Close and the same signal path
-// as raw mode: split from them, a SIGTERM could restore cooked mode yet
-// strand the user in the alternate buffer.
-func OpenTTY() (*Terminal, error) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return nil, fmt.Errorf("no controlling terminal: %w", err)
-	}
-	t, err := open(tty, tty, true)
-	if err != nil {
-		tty.Close()
-		return nil, err
-	}
-	return t, nil
-}
-
-func open(in, out *os.File, tty bool) (*Terminal, error) {
+	in, out := os.Stdin, os.Stdout
 	old, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
 		return nil, err
 	}
-	t := &Terminal{in: in, out: out, tty: tty, old: old,
+	t := &Terminal{in: in, out: out, old: old,
 		events: make(chan Key, 8), sigs: make(chan os.Signal, 1)}
-	if tty {
-		fmt.Fprint(out, "\x1b[?1049h")
-	}
 	fmt.Fprint(out, "\x1b[?25l")
 	signal.Notify(t.sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	go func() {
@@ -336,21 +246,11 @@ func open(in, out *os.File, tty bool) (*Terminal, error) {
 
 func (t *Terminal) Events() <-chan Key { return t.events }
 
-// Out is where frames belong: stdout for Open, /dev/tty for OpenTTY.
-func (t *Terminal) Out() *os.File { return t.out }
-
-// Size is the terminal's current dimensions, from the same descriptor frames
-// go to.
-func (t *Terminal) Size() (w, h int, err error) {
-	return term.GetSize(int(t.out.Fd()))
-}
-
 // OnClose registers one function to run first inside Close — still in raw
-// mode, before the cursor returns and cooked mode is restored. It exists for
-// the same reason alt-screen exit lives inside Close: a surface's final
-// rendering step (the board stepping below its last, newline-less line) must
-// share the once-guard and the signal path, or a SIGTERM would restore the
-// terminal yet leave the shell's next prompt glued to the frame.
+// mode, before the cursor returns and cooked mode is restored. A surface's
+// final rendering step (the board stepping below its last, newline-less line)
+// must share Close's once-guard and its signal path, or a SIGTERM would
+// restore the terminal yet leave the shell's next prompt glued to the frame.
 func (t *Terminal) OnClose(f func()) {
 	t.mu.Lock()
 	t.epilogue = f
@@ -368,13 +268,7 @@ func (t *Terminal) Close() {
 		signal.Stop(t.sigs)
 		close(t.sigs)
 		fmt.Fprint(t.out, "\x1b[?25h")
-		if t.tty {
-			fmt.Fprint(t.out, "\x1b[?1049l")
-		}
 		term.Restore(int(t.in.Fd()), t.old)
-		if t.tty {
-			t.in.Close()
-		}
 	})
 }
 

@@ -226,9 +226,6 @@ type Launch struct {
 	notes []string
 }
 
-// Account is the account the launch was placed on.
-func (l *Launch) Account() accounts.Account { return l.account }
-
 // Prepared is the vendor process the launch runs: its resolved path, argv[0]
 // and environment, built from the decision alone.
 func (l *Launch) Prepared() launch.Prepared { return l.prepared }
