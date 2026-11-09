@@ -108,6 +108,11 @@ func TestAHeadlessPlacementIsTheRuleOverTokenHolders(t *testing.T) {
 	if len(log) != 1 || log[0].Mode != "headless" || log[0].Reason != placement.ReasonLeastLoad || log[0].Chosen != "b@x.com" || log[0].Problem != "" {
 		t.Fatalf("log %+v", log)
 	}
+	// A headless placement is the rule's choice too, and its line says what it
+	// rested on: b alone at its load, the two accounts with no token left out.
+	if l := log[0]; l.AgeS == nil || *l.AgeS < 50 || *l.AgeS > 70 || l.Tied != 1 || l.Excluded != 2 {
+		t.Errorf("log says the placement rested on age %v, %d tied, %d excluded", l.AgeS, l.Tied, l.Excluded)
+	}
 	if *f.refreshes != 1 {
 		t.Errorf("%d refreshes left behind", *f.refreshes)
 	}

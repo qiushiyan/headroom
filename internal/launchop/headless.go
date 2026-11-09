@@ -97,6 +97,7 @@ func PlaceHeadless(req HeadlessRequest, deps Deps) HeadlessPlacement {
 	case out.Decision.Chosen != "":
 		out.ID = id
 		line := logLine{Vendor: string(req.Set.Scope.Vendor), Mode: "headless", Reason: placed.Decision.Reason, Chosen: placed.Decision.Chosen, CWD: req.CWD}
+		line.rested(placed.Decision, now)
 		if err := appendLog(req.Set.Scope.AccountsRoot, line, now); err != nil {
 			out.Notes = append(out.Notes, fmt.Sprintf("launch log not written (%v)", err))
 		}

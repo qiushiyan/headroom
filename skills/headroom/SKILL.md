@@ -37,8 +37,12 @@ shell's `x-<name>`) — quote that spelling.
   load, and why an account is left out. It starts nothing and records nothing.
 - **Where launches went**: `~/.claude-accounts/launches.jsonl` (Codex's
   under `~/.codex-accounts/`), one JSON line per launch and headless
-  placement — `at`, `mode`, `reason`, `chosen`, `cwd`, `session`. Read it
-  with `jq`; no command lists it.
+  placement — `at`, `mode`, `reason`, `chosen`, `cwd`, `session`, and on a
+  line the rule chose (`auto`, `headless`) what the choice rested on:
+  `age_s`, how old the chosen account's figures were; `tied`, how many
+  accounts shared its load, so past 1 the weekly tie-break decided;
+  `excluded`, how many it had to leave out. Read it with `jq`; no command
+  lists it.
 - **A `sessions:` line** under an account counts the sessions busy on it,
   headless runs included, and the launches of the last fifteen minutes.
 - **Which binary**: `headroom version` — the commit it was built from.

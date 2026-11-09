@@ -212,6 +212,11 @@ func TestAutoLaunchChoosesTheLeastLoadedAccountAndSaysSo(t *testing.T) {
 		recs[0].Chosen != "a@x.com" || recs[0].Problem != "" || recs[0].PID != os.Getpid() || recs[0].Vendor != "claude" {
 		t.Errorf("log = %+v", recs)
 	}
+	// What the choice rested on: figures three minutes old, and a tie with b
+	// at load 0 that the weekly room broke. Nobody was left out.
+	if r := recs[0]; r.V != 4 || r.AgeS == nil || *r.AgeS < 170 || *r.AgeS > 190 || r.Tied != 2 || r.Excluded != 0 {
+		t.Errorf("log v%d says the choice rested on age %v, %d tied, %d excluded", r.V, r.AgeS, r.Tied, r.Excluded)
+	}
 	if *f.refreshes != 1 {
 		t.Errorf("%d refreshes started, want one for the next launch", *f.refreshes)
 	}
@@ -317,6 +322,15 @@ func TestExcludedAccountsAreNeverChosen(t *testing.T) {
 	// Naming an account the rule avoids still launches it: that is how one logs in.
 	if named := f.launch("--account", "out@x.com"); named.code != 0 || named.account(f.cfg) != "out@x.com" {
 		t.Fatalf("named launch on a logged-out account: %+v", named)
+	}
+	// The log counts what the rule left out, and says nothing of a choice the
+	// rule did not make. ok@x.com was never observed, so its line has no age,
+	// and torn@x.com shared its load of nothing.
+	recs := f.log()
+	if len(recs) != 2 || recs[0].Excluded != 3 || recs[0].Tied != 2 || recs[0].AgeS != nil {
+		t.Errorf("the automatic line: %+v", recs)
+	} else if n := recs[1]; n.Mode != "named" || n.Excluded != 0 || n.Tied != 0 || n.AgeS != nil {
+		t.Errorf("the named line says what a choice rested on: %+v", n)
 	}
 
 	// Nothing left to choose: refuse, and say why for each.

@@ -198,6 +198,9 @@ func (p *Plan) Commit() (*Launch, error) {
 	if missed != nil {
 		line.Problem = missed.Error()
 	}
+	if req.Intent.Kind == placement.Auto {
+		line.rested(out.decision, req.Now)
+	}
 	if err := appendLog(scope.AccountsRoot, line, req.Now); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
 	}
