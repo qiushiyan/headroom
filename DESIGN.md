@@ -943,7 +943,11 @@ and it lasts one launch.
   account. Counting usage in steps, and busy sessions in the same unit, keeps
   a one-point difference from outranking forty points of weekly room, and an
   account at 9% with five busy sessions from beating one at 11% with none.
-  The constants are policy, not measurement.
+  The constants are policy, not measurement. The vendor may leave the session
+  window out of a response, which still parses: such an account is ranked on
+  its busy sessions and recent launches alone, weekly room then decides most
+  launches, and `check` counts the fresh responses that carry the window so
+  that its absence is seen.
 - **Weekly room matters as much as the five-hour window.** Over thirty days of
   transcripts on the author's machine, messages about the model-scoped weekly
   limit appeared on four days and messages about the five-hour limit on one.
@@ -1118,14 +1122,18 @@ read and no session ownership, so `resume` is placed like a new session.
 launch and per headless placement: when, the vendor, how the account was
 decided (`auto`, `named`, `headless`) and the rule's word for its choice,
 the account, the working directory, the session the launch named, the pid
-and any bookkeeping that failed. It explains and no code reads it — a person
+and any bookkeeping that failed. A choice the rule made also carries what it
+rested on, derived from the decision: `age_s`, the age of the chosen
+account's figures; `tied`, the accounts at its load, so past one the
+tie-break decided; `excluded`, the accounts it could not consider. It explains and no code reads it — a person
 reads it with `jq` — so it is appended with `O_APPEND` and never rewritten,
 takes no lock, and a line that cannot be written is a note on the launch,
 never a refusal. Deleting it or tearing its last line changes nothing
 headroom does. It is unbounded: at the busiest machine's rate it grows a few
 megabytes a year, and the questions it answers — which launches went where,
-which surfaces are used at all — need weeks of it. Lines from older builds
-carry more fields under an earlier `v`; every version has the fields above. The rule's
+which surfaces are used at all, how often the tie-break decides — need weeks
+of it. Lines under an earlier `v` carry other fields and lack those three;
+every version has the rest. The rule's
 constants are changed by reading this log and the board, and a change to
 what the rule chooses is held by the placement tests, never by a replay.
 

@@ -131,7 +131,8 @@ that cannot be asked (its token aged out because nothing has used it) is tried
 rather than avoided, with the line saying how old its figures are. Its own
 launch then counts against it, so a second one does not follow blindly. An
 account is left out only on positive evidence: not logged in, login expired,
-blocked by the vendor, or a broken sessions link. Or because you said so: an
+blocked by the vendor, or a broken sessions link; an automatic launch's line
+counts the accounts an expired login left out and names `headroom login`. Or because you said so: an
 account bought for one job can be kept to it, worktrees included.
 
 ```sh
