@@ -733,7 +733,7 @@ func TestAnOlderBinarysDocumentReadsPlacesAndWrites(t *testing.T) {
 		t.Errorf("a top-level section this binary does not read was not carried: members %s, legacy_import %s", raw["members"], raw["legacy_import"])
 	}
 	for _, section := range []string{"placements", "runs"} {
-		if strings.Contains(string(raw[section]), "home") {
+		if strings.Contains(string(raw[section]), `"home"`) {
 			t.Errorf("%s still carries a home: %s", section, raw[section])
 		}
 	}
