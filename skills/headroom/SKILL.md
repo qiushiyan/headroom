@@ -35,25 +35,12 @@ shell's `x-<name>`) — quote that spelling.
   one row per account with its figures, their age, how long its weekly
   window has left (`≈` when projected from the schedule), busy sessions,
   load, and why an account is left out. It starts nothing and records nothing.
-- **Where launches went**: `headroom launches` — newest launches, one line
-  each: account, how it was decided, the weekly figure and how long it had
-  left, the runner-up. `--json` for the full
-  records.
-- **How automatic placement has done**: `headroom launches --eval
-  [--since 7d]` — per rule version, how high the chosen accounts' session
-  windows went, windows that reached 80% while another account had room
-  (and which launches went into them: an `unplaced` window was filled by
-  named or resumed work, not by the rule), weekly room that may have renewed
-  unspent, and the past choices this binary's rule would make differently.
-  Outcomes are observed, not what another choice would have caused; a
-  `partial:` line names what could not be read, and a `fault:` line means
-  the current rule decides some of its own past launches differently — its
-  figures mix the rule that made them with the one carrying its name now.
-  `--json` for every decision and window.
-- **A `sessions:` line** under an account counts the sessions busy on it and
-  the launches of the last fifteen minutes; a name in parentheses
-  (`steward-home: 1 busy`) is another home on this machine spending the same
-  subscription — its sessions count against that account for every launch.
+- **Where launches went**: `~/.claude-accounts/launches.jsonl` (Codex's
+  under `~/.codex-accounts/`), one JSON line per launch and headless
+  placement — `at`, `mode`, `reason`, `chosen`, `cwd`, `session`. Read it
+  with `jq`; no command lists it.
+- **A `sessions:` line** under an account counts the sessions busy on it,
+  headless runs included, and the launches of the last fifteen minutes.
 - **Which binary**: `headroom version` — the commit it was built from.
 
 ## Act
@@ -62,32 +49,28 @@ shell's `x-<name>`) — quote that spelling.
   least-loaded account — five-hour usage plus busy sessions and recent
   launches, an account near any limit set aside, the weekly room that would
   lapse first breaking ties. `headroom launch --account <name>` is one
-  session on the account named; `headroom launch --last` reuses the account
-  of the last launch. Nothing records a choice for later launches. Every
-  launch prints the account it took on stderr before `claude` starts
-  (`· auto`, `· named`, `· the last account used`; `≥12%` there is a lower
-  bound from old figures).
+  session on the account named. Nothing records a choice for later
+  launches. Every launch prints the account it took on stderr before
+  `claude` starts (`· auto` or `· named`; `≥12%` there is a lower bound from
+  old figures).
 - **Keep an account for certain repositories**: `headroom accounts reserve
   <name> <dir>...`, one directory per repository; its worktrees come with it.
   Automatic launches and headless placements elsewhere then never choose the
   account (`--dry-run` says `excluded: reserved for …`); in those repositories
-  it is ranked like any other, so it does not go first. Naming it and
-  `--last` still work anywhere. `headroom accounts reserve` lists what is kept;
+  it is ranked like any other, so it does not go first. Naming it still
+  works anywhere. `headroom accounts reserve` lists what is kept;
   `--clear` drops one. A launch refused with `.reserved line …` means that file
   is damaged: `check` names it, and a launch that names its account still runs.
-- **Out of quota mid-session — continue it on another account**. The
-  session moves by re-home:
-  1. Quit the session.
-  2. `headroom sessions`, find the row, press **`x`** — continues on the
-     least-loaded of the other accounts, re-homed there. (Enter would return
-     it to the exhausted account.)
-  Without the picker: `headroom launch --account <name> -- --resume <id>`
-  (`headroom sessions --json` lists ids), or `-- --continue` for the newest
-  session in the cwd. Done when the session is running and its row shows
-  the new owner.
-- **Resume, same account**: `headroom sessions`, enter — every session on
-  the machine, each continued in its own project dir on the account that
-  last drove it.
+- **Out of quota mid-session — continue it on another account**: hand the
+  user, from the session's project, `headroom launch --account <name> --
+  --resume <id>` (or `-- --continue` for the newest session there). The
+  session's id is in its transcript's filename under
+  `~/.claude/projects/<munged project path>/`, or in Claude Code's own
+  `/resume`. The move is recorded, so the session's next automatic launch
+  follows it. Done when the session is running on the named account.
+- **Resume, same account**: `headroom launch -- --resume <id>` from the
+  session's project follows the account that last drove it while it has
+  room, and moves it to the least-loaded account when it has none.
 - **Renew logins before they end**: `headroom login --dry-run --json` is the
   plan — each account's `login_ends_at`, `renew` (what a bare `headroom
   login` renews: ends within a week, ended, or never made; `--within
@@ -132,7 +115,7 @@ shell's `x-<name>`) — quote that spelling.
 ## Codex
 
 `~/.codex` is the Codex primary, `~/.codex-accounts/<email>` each extra.
-Everything above applies with `--vendor codex` on `launch`, `resolve` and
+Everything above applies with `--vendor codex` on `launch` and
 `accounts add`; the board (**tab** switches page), `headroom --json` and
 `headroom limits` already show both vendors (`--vendor codex` for one), and
 every JSON account carries `"vendor"`.
@@ -140,9 +123,9 @@ every JSON account carries `"vendor"`.
 - **One session on another account**: `headroom launch --vendor codex
   --account <name> [-- <codex args>]`.
 - **Out of quota mid-session**: Codex sessions are shared across its
-  accounts and `headroom sessions` does not list them — `headroom launch
-  --vendor codex --account <other> -- resume` opens Codex's own picker for
-  this directory (`-- resume --all` for every project).
+  accounts — `headroom launch --vendor codex --account <other> -- resume`
+  opens Codex's own picker for this directory (`-- resume --all` for every
+  project).
 - **Health lines**: *not logged in* → the printed command, which ends in
   `-- login` (Codex has no `/login`). *access token stale* / *access token
   rejected* → any Codex session on that account refreshes it. *blocked — …*

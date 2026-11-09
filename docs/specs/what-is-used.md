@@ -65,7 +65,8 @@ Retired, with their code, tests, contract pins, help, docs and skills text:
   nothing on stdout, which is all the tombstone guaranteed.
 - **The second home:** `.ledger`, `accounts ledger`, member registration,
   the two-document store, other homes' registry scan, another home's share
-  in load (`load.homes` in the JSON document, now schema 9), `check`'s audit
+  in load (`load.homes` in the JSON document, which stays schema 8 without
+  it: no caller read the field), `check`'s audit
   of a shared ledger, and the spelled-out primary under a non-login `HOME`.
 - **`resolve`, `launch --last` and `launch --auto`.**
 - **`HEADROOM_ACCOUNTS_ROOT` and `HEADROOM_CODEX_ACCOUNTS_ROOT`.** Both roots
@@ -114,7 +115,10 @@ launcher prefix. The prefix becomes steward's own wrapper, which:
 6. execs `claude "$@"` under steward's one config dir.
 
 Every headroom call in the wrapper and in steward's doctor sets
-`HEADROOM_HOME` to the owner's home, where the tokens are.
+`HEADROOM_HOME` to the owner's home, where the tokens are. The doctor asks
+`version` and `headless --json`, never `check`: under a re-pointed
+`HEADROOM_HOME`, `check` fails its `home:` line by design, since the primary
+it would describe is not the one the vendor resolves.
 
 The tokens are the allow list. Minting one is the owner saying the account
 may be spent headlessly, and a reservation still keeps an account out of
@@ -173,7 +177,7 @@ What must still hold, each by a test:
   from an older binary reads, places and writes without error. Retired
   sections are carried or dropped, never a refusal.
 - A `.ledger` left in an accounts root is ignored.
-- `limits` and the board's `--json` carry schema 9 without `load.homes`.
+- `limits` and the board's `--json` carry schema 8 without `load.homes`.
 
 ## Owed
 

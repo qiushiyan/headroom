@@ -50,31 +50,28 @@ launches just made there; an account near any limit is set aside, and among
 equally loaded accounts the weekly room that would lapse first is spent
 first. Launches started together land on different accounts.
 `headroom launch --dry-run` shows the whole table without starting anything,
-`headroom launches` what was chosen before, and `headroom launches --eval` how
-those choices turned out.
+and each launch leaves one line in `~/.claude-accounts/launches.jsonl` for
+reading later with `jq`.
 
 An account bought for one job can be kept to it: `headroom accounts reserve
 <email> ~/dev/work ~/dev/work-cms`. Automatic launches elsewhere never choose
 it, and in those repositories and their worktrees it is ranked like any other.
 
-Every session, whichever account started it, shows up in one picker:
-`headroom sessions` lists every conversation on the machine and resumes each
-in its own project directory, on the account that last drove it.
+Every session, whichever account started it, lives in one machine-wide
+store, so any account can continue it. `headroom launch -- --resume <id>`
+from the session's project continues it on the account that last drove it,
+while that account has room.
 
 ### 3. Out of quota mid-session? Continue on another account
 
 A session on account A hits its limit with work unfinished. The transcript
-belongs to the machine, not the account, so any account can pick it up:
-
-1. Quit the session.
-2. `headroom sessions` — find the row, press **`x`**: the session continues
-   on the least-loaded of the other accounts, in its own project dir, and is
-   re-homed there. (Enter would send it back to A.)
-
-Without the picker: `headroom launch --account <email> -- --resume <id>`
-(`headroom sessions --json` lists ids), or `-- --continue` for the newest
-session in the current directory. Ownership follows automatically — the
-account that drives a session last is its owner.
+belongs to the machine, not the account, so any account can pick it up: quit
+the session and, from its project,
+`headroom launch --account <email> -- --resume <id>` continues it on the
+account named — or `-- --continue` for the newest session in that directory.
+A bare `headroom launch -- --resume <id>` moves it off A by itself once A is
+near a limit. Ownership follows automatically: the account that drives a
+session last is its owner.
 
 ### 4. The same, for Codex
 
@@ -85,8 +82,7 @@ With Codex on the machine the board has a second page — **tab** switches:
 - Out of quota mid-session: Codex's sessions are shared across its accounts,
   so continuing elsewhere is naming the account —
   `headroom launch --vendor codex --account <other> -- resume` (add `--all`
-  for every project's sessions). `headroom sessions` lists Claude Code
-  sessions only.
+  for every project's sessions).
 
 A Codex account reads *unknown* until headroom's first fetch, and *blocked*
 when the vendor says so, whatever its percentages.
@@ -116,18 +112,15 @@ pipe the code the page shows into `headroom login finish <account>`, which
 says whether the login took. See
 [docs/REFERENCE.md](docs/REFERENCE.md#renewing-a-login-from-elsewhere).
 
-### 6. A second home on the same machine
+### 6. A program that runs its own sessions
 
-An automated pipeline running headless `claude` sessions under its own
-`HOME` can hold its own logins of the same subscriptions and still be placed
-against the same load: `headroom accounts ledger <first home's accounts
-root>`, run as that home — and `headroom accounts ledger` once as the first
-home, so each can find the other's sessions — makes both homes ask each
-subscription once per spacing and count each other's busy sessions and
-launches. Each home keeps
-its own dirs, settings and sessions; the board names the other
-home's share (`sessions: 2 busy (steward-home: 1 busy)`). See
-[docs/REFERENCE.md](docs/REFERENCE.md#a-second-home-on-the-same-machine).
+A pipeline or eval runner that runs `claude` under a config dir of its own
+spends the subscriptions through long-lived tokens instead of logins:
+`headroom headless mint <account>` once a year per account, then
+`headroom headless place`, `token` and `started` per session, so its
+sessions count as load the launcher steers around. A program under another
+`HOME` reaches this home's headroom with `HEADROOM_HOME`. The contract is
+[docs/specs/headless.md](docs/specs/headless.md).
 
 ## Install
 
@@ -175,7 +168,7 @@ is running on one, so `accounts remove --vendor codex` names the directory to
 delete by hand.
 
 Every command's reference is `headroom <command> --help`. **Shell shortcuts**
-(`x`, `xa`, `xs`, …) and what holds across commands live in
+(`x`, `xa`, `xacc`, …) and what holds across commands live in
 [docs/REFERENCE.md](docs/REFERENCE.md).
 
 ## For your agent

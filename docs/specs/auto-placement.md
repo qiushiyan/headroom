@@ -10,6 +10,10 @@ below was taken on the owner's laptop on that date. Obligation 16 — a day of
 real use — is owed (§ Owed); § Delivery — What the build changed lists where
 the build departed from the first text.
 
+§ 8's `--auto` and `--last`, § 9's `headroom launches` and `resolve`, the
+session picker of §§ 7, 10 and 11, and the log line's rule name and inputs
+(§ Design — API) are retired by `docs/specs/what-is-used.md`.
+
 ## Summary
 
 Current: a bare `headroom launch` starts the vendor on the one account `.current` names; only the board's enter moves it.
