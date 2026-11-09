@@ -1050,12 +1050,14 @@ and it lasts one launch.
   launch that can start goes through it, a named one included, because a
   session started by name is load an automatic one must count.
 - **A launch is one operation.** `headroom launch` builds a request and
-  commits it through `launchop`'s plan, which decides the intent from a
-  session the launch names in its arguments. It refuses first whatever is
-  known before a write — a named account that cannot be launched, a
-  reservation that cannot be read — since `state.Place` prunes even when its
-  rule refuses, and a launch that cannot start must leave nothing behind;
-  then it places and logs, and the surface announces the outcome and execs.
+  commits it through `launchop`'s plan, which, for an automatic launch,
+  decides the intent from a session the launch names in its arguments; a
+  named launch reads nothing there and records no re-home. It refuses first
+  whatever is known before a write — a named account that cannot be
+  launched, a reservation that cannot be read — since `state.Place` prunes
+  even when its rule refuses, and a launch that cannot start must leave
+  nothing behind; then it places and logs, and the surface announces the
+  outcome and execs.
   What the launch means for a session travels into `state.Place` with it, so
   the load and the session's re-home are one write: both land or neither
   does. What a launch owes the next one is decided there as well: a launch
