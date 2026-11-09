@@ -764,13 +764,13 @@ func TestRefreshAsksThroughTheClaimAndRecords(t *testing.T) {
 	}
 }
 
-// rehome moves a session to an account the way the picker's override does: a
-// launch that exists to move it.
+// rehome records that a session was moved to an account, as a launch that
+// places a named session off its owner does.
 func rehome(st *state.Store, id, account string, at time.Time) error {
 	_, err := st.Place(state.Launch{
 		Candidates: []placement.Candidate{{Name: account, Ref: account, Key: "test:" + account}},
 		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
-		Session:    id, MustReHome: true, Now: at,
+		Session:    id, Now: at,
 	})
 	return err
 }

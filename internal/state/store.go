@@ -344,12 +344,6 @@ type Launch struct {
 	// anywhere but Intent.Owner; a launch that follows the owner writes none.
 	Session string
 
-	// MustReHome says the launch exists to move the session — the picker's
-	// override — so the re-home is written whoever the owner was, and a launch
-	// whose re-home cannot be written is not recorded at all: the caller
-	// refuses it, and nothing is left behind for the next launch to count.
-	MustReHome bool
-
 	// Live lists the transcripts that exist, for sweeping re-homes whose
 	// sessions are gone. It runs inside the lock, for Enumerator's reason, and
 	// only when this launch writes a re-home.
@@ -469,11 +463,6 @@ func (s *Store) Place(l Launch) (Placed, error) {
 	now := l.Now
 	l.Intent.Home = s.root
 	err := s.updatePair(placeWait, func(led, home *doc, homeErr error) (bool, error) {
-		if l.MustReHome && (homeErr != nil || home.badSessions) {
-			// Re-homes are user decisions. Writing a fresh section over bytes
-			// that merely failed to decode would destroy them for good.
-			return false, cmp.Or(homeErr, ErrCorrupt)
-		}
 		// Disposable, like the request ledger: an unreadable record of
 		// launches is set aside and starts from nothing.
 		led.setAside("placements", &led.badPlacements)
@@ -496,7 +485,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, chosen.Ref, l.PID, s.root, now)
 		led.dirty = true
 		out.Recorded = true
-		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
+		if l.Session == "" || chosen.Name == l.Intent.Owner {
 			return false, nil
 		}
 		if homeErr != nil || home.badSessions {
@@ -518,7 +507,7 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
 		home.dirty = true
 		out.ReHomed = true
-		return l.MustReHome, nil
+		return false, nil
 	})
 	var partial pairErr
 	switch {

@@ -13,8 +13,8 @@ An account is a config dir: Claude Code's primary is ~/.claude and the others ar
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
 that report — the board, limits, refresh — cover every vendor on this machine
 unless --vendor names one. Commands that act on one account — launch, resolve, accounts
-add and remove — act on Claude Code unless --vendor says codex. login, sessions and
-headless are Claude Code only.`
+add and remove — act on Claude Code unless --vendor says codex. login and headless are
+Claude Code only.`
 
 var configuration = clikit.Section{
 	Title: "Configuration",
@@ -98,20 +98,6 @@ var launchExamples = clikit.Section{
   headroom launch --dry-run                         what a bare launch would choose, and why
   headroom launch --vendor codex --account a@x.com -- login`,
 }
-
-const sessionsHelp = `An interactive picker over every Claude Code session on this machine — transcripts are
-machine-global — that enters the chosen session's project dir and continues it, by exec, on
-the account that last drove it. x continues it on the least-loaded of the other accounts
-instead and records the move; r renames, dd deletes; both are refused while the session is
-open. It needs a terminal on stdin and stdout: claude takes them over.
-
---json lists the sessions instead, with no terminal: each one's id, title, project dir,
-branch, owner and whether it is live now. --cd-file is for a shell wrapper: it is created
-empty first and holds the entered dir only once a session was committed, so the shell can
-cd there after claude exits.
-
-Arguments go to claude before the picker's own --resume; --resume and --continue are
-refused, since the picker chooses the session.`
 
 const limitsHelp = `What is already known about every account's limits, as the board's JSON document (see
 headroom board --help), read from disk alone: no health probe, no credential read, no

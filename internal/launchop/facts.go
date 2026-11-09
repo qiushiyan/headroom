@@ -159,7 +159,7 @@ func (f facts) find(name string) (candidate, bool) {
 // owner resolves the session a launch names to the account that last drove
 // it: "" when there is no evidence, or none that names an account still here.
 func (f facts) owner(id string) string {
-	name, _ := sessions.OwnerOf(id, f.refs, f.evidence[id], f.snap.Owners())
+	name := sessions.OwnerOf(id, f.refs, f.evidence[id], f.snap.Owners())
 	return name
 }
 

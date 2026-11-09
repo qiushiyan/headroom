@@ -170,19 +170,18 @@ func TestGrammarRefuses(t *testing.T) {
 		// A default command's flags never reach a command chosen over it.
 		{[]string{"accounts", "--compact", "remove", "--yes", "a@x.com"}, "--compact belongs to accounts board, which accounts remove does not run"},
 		{[]string{"accounts", "--json", "ledger"}, "--json belongs to accounts board"},
-		{[]string{"--json", "sessions"}, "--json belongs to board, which sessions does not run"},
+		{[]string{"--json", "limits"}, "--json belongs to board, which limits does not run"},
 		{[]string{"--compact", "launch", "--account", "a@x.com"}, "--compact belongs to board"},
 		{[]string{"--vendor", "codex", "resolve"}, "--vendor belongs to board"},
 		{[]string{"headless", "--json", "token", "a@x.com"}, "--json belongs to headless list"},
-
-		{[]string{"sessions", "--json", "--cd-file", "/x"}, "--json takes no other arguments"},
-		{[]string{"sessions", "--json", "--", "--fast"}, "--json takes no other arguments"},
 
 		// Retired spellings, and words that are no command.
 		{[]string{"select"}, "unexpected argument select"},
 		{[]string{"select", "add"}, "unexpected argument select"},
 		{[]string{"launches"}, "unexpected argument launches, did you mean \"launch\"?"},
 		{[]string{"launches", "--eval", "--json"}, "unexpected argument launches"},
+		{[]string{"sessions", "--cd-file", "/x"}, "unexpected argument sessions"},
+		{[]string{"resume", "--json"}, "unexpected argument resume"},
 		{[]string{"--check"}, "unknown flag --check"},
 		// A mistyped command is the root's error; under the board typed by
 		// name, the word is the board's.
@@ -240,9 +239,6 @@ func TestGrammarDecodes(t *testing.T) {
 	}
 	if g, _ := parse(t, "launch", "--vendor", "codex", "--account", "c@x.com", "--", "exec", "--vendor", "x"); g.Launch.Vendor != config.Codex || g.Launch.Account != "c@x.com" {
 		t.Errorf("launch --vendor codex: vendor %q account %q", g.Launch.Vendor, g.Launch.Account)
-	}
-	if g, _ := parse(t, "sessions", "--", "--dangerously-skip-permissions"); !slices.Equal(vendorArgs(g.Sessions.Args), []string{"--dangerously-skip-permissions"}) {
-		t.Errorf("sessions args %q", g.Sessions.Args)
 	}
 
 	if g, _ := parse(t, "headless", "place", "--exclude", "a@x.com,b@x.com", "--exclude", "c@x.com"); !slices.Equal(names(g.Headless.Place.Exclude), []string{"a@x.com,b@x.com", "c@x.com"}) {
@@ -307,9 +303,10 @@ func TestGrammarDecodes(t *testing.T) {
 	}
 }
 
-// Help and the retired verb's tombstone speak whatever the configuration
-// says: the shell the tombstone diagnoses is stale, and stale shells come
-// with old environments headroom may now refuse. Every other command refuses
+// Help speaks whatever the configuration says, and so does the refusal of a
+// retired verb: the shell that still calls one is stale, and stale shells come
+// with old environments headroom may now refuse — it gets exit 2 and nothing
+// on stdout before any configuration is read. Every other command refuses
 // that configuration with exit 1, and check says it as the FAIL it is.
 func TestBrokenConfiguration(t *testing.T) {
 	isolate(t)
@@ -321,15 +318,11 @@ func TestBrokenConfiguration(t *testing.T) {
 			t.Errorf("%q: exit %d\nstdout: %s\nstderr: %s", args, r.Code, r.Stdout, r.Stderr)
 		}
 	}
-	for _, args := range [][]string{{"resume"}, {"resume", "--json"}, {"resume", "--help"}, {"resume", "--version"}} {
+	for _, args := range [][]string{{"resume"}, {"resume", "--json"}, {"sessions", "--cd-file", "/x"}} {
 		r := clikittest.Run(a, args...)
-		if r.Code != 2 || r.Stdout != "" || !strings.Contains(r.Stderr, "`resume` was retired") || !strings.Contains(r.Stderr, "exec zsh") {
+		if r.Code != 2 || r.Stdout != "" || !strings.Contains(r.Stderr, "unexpected argument "+args[0]) {
 			t.Errorf("%q: exit %d\nstdout: %s\nstderr: %s", args, r.Code, r.Stdout, r.Stderr)
 		}
-	}
-	// The help word reaches resume's page, which must not read as a working command.
-	if r := clikittest.Run(a, "help", "resume"); r.Code != 0 || !strings.Contains(r.Stdout, "Retired") || !strings.Contains(r.Stdout, "headroom sessions") {
-		t.Errorf("help resume: exit %d\nstdout: %s\nstderr: %s", r.Code, r.Stdout, r.Stderr)
 	}
 	for _, args := range [][]string{{"limits"}, {"launch", "--account", "a@x.com"}, {}} {
 		if r := clikittest.Run(a, args...); r.Code != 1 || !strings.Contains(r.Stderr, "HEADROOM_HOME") {

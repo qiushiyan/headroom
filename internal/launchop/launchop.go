@@ -49,12 +49,7 @@ type Request struct {
 	Set    accounts.Set
 	Store  *state.Store
 	Intent placement.Intent
-	Mode   string // how the account came to be decided: auto, named, last, picker
-
-	// Resume is a session a surface chose — the picker's row — and decides
-	// the intent in place of Intent. nil for a launch that names its session,
-	// if any, in its VendorArgs.
-	Resume *Resume
+	Mode   string // how the account came to be decided: auto, named, last
 
 	// VendorArgs are a launch's pass-through arguments, for a launch that
 	// names its session there. An automatic Claude Code launch reads them
@@ -69,15 +64,6 @@ type Request struct {
 	Now     time.Time
 }
 
-// Resume is a session chosen for a launch, with the account its evidence says
-// last drove it ("" for none). Move asks for the session to be moved off that
-// account: the picker's override.
-type Resume struct {
-	ID    string
-	Owner string
-	Move  bool
-}
-
 // Plan is a request with the facts gathered for it, not yet decided.
 type Plan struct {
 	req   Request
@@ -86,34 +72,21 @@ type Plan struct {
 
 	// What Gather derived about the session: the session the launch is for,
 	// whose Record id is re-homed when the launch puts it somewhere other
-	// than its owner; whether the launch exists to move it, and is refused if
-	// that cannot be recorded; and the account that last drove it.
-	session    Session
-	mustReHome bool
-	owner      string
+	// than its owner, and the account that last drove it.
+	session Session
+	owner   string
 }
 
 // Gather reads what the request's placement needs from the disk: every
 // account's figures and load, which of them an ordinary launch may run on,
-// and how the launch stands to the session it is for — the one a surface
-// chose (Request.Resume), or one an automatic launch names in its arguments
-// (Request.VendorArgs). Nothing is written.
+// and how the launch stands to a session an automatic launch names in its
+// arguments. Nothing is written.
 func Gather(req Request, deps Deps) *Plan {
 	p := &Plan{deps: deps}
-	res := readReservations(req.Set.Scope)
-	if r := req.Resume; r != nil {
-		req.Intent = resumeIntent(req, *r, res)
-		p.session, p.owner, p.mustReHome = Session{Route: r.ID}, r.Owner, r.Move
-		if r.Move || req.Intent.Owner != "" {
-			// The rule may take the session off its owner, and then the next
-			// resume has to find it there.
-			p.session.Record = r.ID
-		}
-	}
 	automatic := req.Intent.Kind == placement.Auto
 	req.Intent.Home = req.Store.Home()
-	f := gather(req.Set, req.Store, res, req.Environ, req.CWD, automatic, req.Now, deps)
-	if req.Resume == nil && len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
+	f := gather(req.Set, req.Store, readReservations(req.Set.Scope), req.Environ, req.CWD, automatic, req.Now, deps)
+	if len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
 		// A launch that names a session follows the account that last drove
 		// it, so its prompt cache and its checkpoints stay usable. Only Claude
 		// Code has an owner to ask about.
@@ -127,29 +100,6 @@ func Gather(req Request, deps Deps) *Plan {
 	return p
 }
 
-// resumeIntent says how a resume's account is decided: enter follows the
-// session's owner, and everything else asks the rule. A session with no
-// owner is placed like a new one — the owner evidence names none for a
-// session nothing attributes, or whose owner is gone — and the override
-// moves the session to the least-loaded of the *other* accounts — moving means
-// somewhere other than where it is. An owner a reservation keeps from the
-// session's directory — or one nothing can say is not kept, `.reserved` being
-// unreadable — is the one owner enter does not follow: choosing a session is
-// not naming an account, so the rule decides, as it does for a launch that
-// names the session by id.
-func resumeIntent(req Request, r Resume, res reservations) placement.Intent {
-	owned := r.Owner != ""
-	switch {
-	case r.Move:
-		return placement.Intent{Exclude: r.Owner}
-	case owned && res.keeps(req.Set.RefOf(r.Owner), sessions.RepoKey(req.CWD)):
-		return placement.Intent{Owner: r.Owner}
-	case owned:
-		return placement.Intent{Kind: placement.Forced, Account: r.Owner, Reason: placement.ReasonOwner}
-	}
-	return placement.Intent{}
-}
-
 // preflight is every refusal a launch can know before it writes anything, and
 // the one place each is decided: a preview asks it, and so does Commit before
 // its first write. An account the launch was told to run on — by name, or as
@@ -159,7 +109,7 @@ func resumeIntent(req Request, r Resume, res reservations) placement.Intent {
 // A forced refusal never reaches the store: Place registers the home, prunes
 // and commits even when its rule refuses, and a launch that cannot start must
 // leave nothing behind. What can still refuse afterwards is the store's own
-// decision under its lock, and a re-home that must be written.
+// decision under its lock.
 func (p *Plan) preflight() error {
 	req, f := p.req, p.facts
 	if req.Intent.Kind == placement.Auto && f.reservedErr != nil {
@@ -213,15 +163,12 @@ func (p *Plan) Commit() (*Launch, error) {
 	cands := f.rule()
 	l := state.Launch{
 		Candidates: cands, Intent: req.Intent, PID: os.Getpid(), Now: req.Now,
-		Session: p.session.Record, MustReHome: p.mustReHome, Gone: f.gone,
+		Session: p.session.Record, Gone: f.gone,
 	}
 	if p.session.Record != "" {
 		l.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
 	}
 	placed, placeErr := req.Store.Place(l)
-	if p.mustReHome && placeErr != nil {
-		return nil, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", placeErr)
-	}
 	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, home: f.home, labels: f.labels}
 	if out.decision.Chosen == "" {
 		return nil, errors.New(out.decision.Refusal)

@@ -106,21 +106,6 @@ func (f autoFixture) boardDeps() BoardDeps {
 	return BoardDeps{Round: LiveRound(true), Place: f.edges}
 }
 
-// picker is a session picker over set, its exec recorded and what it says
-// after the picker closes written to errw.
-func (f autoFixture) picker(set accounts.Set) (*resumeUI, *execRecord, *bytes.Buffer) {
-	rec, errw := &execRecord{}, &bytes.Buffer{}
-	ui := &resumeUI{beforeLaunch: func() {}, st: f.st, set: set, place: f.edges, exec: rec.exec, errw: errw}
-	return ui, rec, errw
-}
-
-// rearm gives a picker a fresh exec record for its next commit.
-func rearm(ui *resumeUI) *execRecord {
-	rec := &execRecord{}
-	ui.exec = rec.exec
-	return rec
-}
-
 // The two terminal facts are each surface's to read. The board opens its
 // picker only with a terminal on both streams — it reads keys on one and
 // redraws the other — and on either alone prints one frame. A mint asks only

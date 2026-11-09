@@ -16,7 +16,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tui"
 )
@@ -136,95 +135,6 @@ func TestTheBoardHasNoRoutingKeys(t *testing.T) {
 		if footer := ui.status(time.Now(), scrolls); strings.Contains(footer, "enter") || strings.Contains(footer, "a auto") {
 			t.Errorf("the footer offers a routing key: %q", footer)
 		}
-	}
-}
-
-// The picker: a session with no owner to follow is placed by the rule, and the
-// override moves the session somewhere other than where it is.
-func TestThePickerPlaces(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.observe("qiushi", 50, 50, time.Minute)
-	f.observe("a@x.com", 0, 5, time.Minute)
-	f.observe("b@x.com", 0, 30, time.Minute)
-	proj := filepath.Join(f.cfg.Home, "proj")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	set := accounts.Discover(f.cfg)
-	newUI := func(owner string, state sessions.OwnerState) (*resumeUI, *sessions.Session) {
-		ui, _, _ := f.picker(set)
-		s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}
-		ui.listing.Sessions = []*sessions.Session{s}
-		ui.rows = ui.listing.Sessions
-		return ui, s
-	}
-	account := func(env []string) string {
-		if dir, ok := envValue(env, "CLAUDE_CONFIG_DIR"); ok {
-			return filepath.Base(dir)
-		}
-		return "qiushi"
-	}
-
-	// No evidence: placed like a new session, on the least-loaded account.
-	ui, _ := newUI("", sessions.OwnerNone)
-	keepWorkingDir(t)
-	rec := rearm(ui)
-	if done, code := ui.commitResume(false); !done || code != 0 || !rec.called {
-		t.Fatalf("enter with no owner: (%v, %d) called %v — %s", done, code, rec.called, ui.message)
-	}
-	if got := account(rec.env); got != "a@x.com" {
-		t.Fatalf("placed on %s, want a@x.com", got)
-	}
-	if _, ok := f.st.Load().Owner(sessA); ok {
-		t.Error("an ordinary resume wrote a re-home")
-	}
-
-	// An owner that exists is followed.
-	ui, _ = newUI("b@x.com", sessions.OwnerHistory)
-	keepWorkingDir(t)
-	rec = rearm(ui)
-	if done, _ := ui.commitResume(false); !done || account(rec.env) != "b@x.com" {
-		t.Fatalf("enter on an owned session went to %s", account(rec.env))
-	}
-	// Every session headroom starts is a line in the log and load on its
-	// account, a resume on its owner included — once each.
-	if recs := f.log(); len(recs) != 2 || recs[1].Mode != "picker" || recs[1].Reason != placement.ReasonOwner || recs[1].Chosen != "b@x.com" {
-		t.Fatalf("log after two resumes = %+v", recs)
-	}
-	if n := len(f.st.Load().Placements().Recent); n != 2 {
-		t.Fatalf("%d placements recorded after two resumes", n)
-	}
-
-	// The override: the least-loaded of the *other* accounts, re-homed, logged.
-	ui, s := newUI("a@x.com", sessions.OwnerHistory)
-	keepWorkingDir(t)
-	rec = rearm(ui)
-	if done, code := ui.commitResume(true); !done || code != 0 {
-		t.Fatalf("x: (%v, %d) — %s", done, code, ui.message)
-	}
-	moved := account(rec.env)
-	if moved == "a@x.com" {
-		t.Fatal("x left the session where it was")
-	}
-	if rec, _ := f.st.Load().Owner(s.ID); rec.Account != moved {
-		t.Errorf("re-home = %+v, want %s", rec, moved)
-	}
-	recs := f.log()
-	last := recs[len(recs)-1]
-	if len(recs) != 3 || last.Mode != "picker" || last.Session != sessA || last.Chosen != moved {
-		t.Errorf("log = %+v", last)
-	}
-
-	// With nowhere else to go, x says so and commits nothing.
-	solo := newAutoFixture(t)
-	soloSet := accounts.Discover(solo.cfg)
-	ui, rec, _ = solo.picker(soloSet)
-	sess := &sessions.Session{ID: sessB, CWD: proj, DirOK: true, Owner: "qiushi", OwnerState: sessions.OwnerHistory}
-	ui.listing.Sessions = []*sessions.Session{sess}
-	ui.rows = ui.listing.Sessions
-	keepWorkingDir(t)
-	if done, _ := ui.commitResume(true); done || rec.called || !strings.Contains(ui.message, "already there") {
-		t.Fatalf("x with one account: done %v called %v message %q", done, rec.called, ui.message)
 	}
 }
 

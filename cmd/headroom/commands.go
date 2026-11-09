@@ -170,24 +170,6 @@ func (c *LaunchCmd) Run(ctx *kong.Context, in io.Reader, cfg config.Config, h ho
 	}, h.place, h.exec)
 }
 
-type SessionsCmd struct {
-	JSON   bool     `name:"json" help:"List the sessions as JSON instead of picking one; takes nothing else."`
-	CDFile string   `name:"cd-file" placeholder:"PATH" help:"An absolute path to write the entered project dir to, for the shell's own cd once claude exits."`
-	Args   []string `arg:"" optional:"" passthrough:"partial" help:"Arguments for claude, before the picker's own --resume; put them after --."`
-}
-
-func (SessionsCmd) Help() string { return sessionsHelp }
-
-func (c *SessionsCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cfg config.Config, h host) error {
-	args := vendorArgs(c.Args)
-	if c.JSON && (c.CDFile != "" || len(args) > 0) {
-		return clikit.Usage(fmt.Errorf("--json takes no other arguments"))
-	}
-	return app.Sessions(streams(ctx, in), term, cfg.Claude,
-		app.SessionsOptions{JSON: c.JSON, CDFile: c.CDFile, Args: args},
-		app.SessionsDeps{Place: h.place, Exec: h.exec})
-}
-
 type LimitsCmd struct {
 	vendorFilter
 	Account accountName `placeholder:"NAME" help:"Only the accounts of this name, in every vendor selected."`
@@ -439,30 +421,4 @@ type VersionCmd struct{}
 func (VersionCmd) Run(ctx *kong.Context) error {
 	fmt.Fprintln(ctx.Stdout, app.VersionLine())
 	return nil
-}
-
-// ResumeCmd is the retired `resume`, dispatched before configuration and
-// taking anything, --help included: the shell it diagnoses is stale, and
-// stale shells come with old environments that configuration may now refuse,
-// so this message must speak regardless. The name must never be rebound: its
-// stdout was a decision protocol, and one name with two meanings across
-// binary generations is how a session once started on the wrong account.
-// Nothing goes to stdout. `headroom help resume` does reach a help page,
-// which says the same.
-type ResumeCmd struct {
-	Args []string `arg:"" optional:"" help:"Whatever the stale shell passes; ignored."`
-}
-
-func (ResumeCmd) Help() string {
-	return "Retired: it prints how to fix a stale shell integration and exits 2, whatever it is given.\n" +
-		"The session picker is headroom sessions (listing: headroom sessions --json)."
-}
-
-func (ResumeCmd) Run(ctx *kong.Context) error {
-	fmt.Fprint(ctx.Stderr, "headroom: `resume` was retired. Its stdout was a decision protocol, and a\n"+
-		"shell function loaded before this binary can misread it — that produced a\n"+
-		"session on the wrong account.\n"+
-		"Your shell integration is stale. Fix it:  exec zsh\n"+
-		"The session picker is now `headroom sessions` (listing: `headroom sessions --json`).\n")
-	return clikit.Exit(2)
 }

@@ -18,12 +18,12 @@ func place(s *Store, cands []placement.Candidate, intent placement.Intent, pid i
 	return s.Place(Launch{Candidates: cands, Intent: intent, PID: pid, Session: session, Now: now})
 }
 
-// rehome moves a session to an account the way the picker's override does: a
-// launch that exists to move it.
+// rehome records that a session was moved to an account, as a launch that
+// places a named session off its owner does.
 func rehome(s *Store, id, account string, at time.Time, live Enumerator) error {
 	_, err := s.Place(Launch{
 		Candidates: idle(account), Intent: placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
-		Session: id, MustReHome: true, Live: live, Now: at,
+		Session: id, Live: live, Now: at,
 	})
 	return err
 }

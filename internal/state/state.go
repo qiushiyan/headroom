@@ -580,8 +580,8 @@ func (s Snapshot) Placements() placement.Ledger { return s.d.placements.Clone() 
 func (s Snapshot) Runs() []Run { return slices.Clone(s.d.runs) }
 
 // OwnersReadable reports whether the sessions section decoded. False means
-// routing falls back to derived evidence, which the resume picker says out
-// loud on open and `check` reports — rather than silently behaving as though
+// routing falls back to derived evidence, which a launch that would re-home
+// says out loud and `check` reports — rather than silently behaving as though
 // no session was ever re-homed.
 func (s Snapshot) OwnersReadable() bool { return !s.h.badSessions }
 

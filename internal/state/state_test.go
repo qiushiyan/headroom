@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -269,9 +271,17 @@ func TestUnreadableSectionSurvivesAnUnrelatedWrite(t *testing.T) {
 	if compact(t, raw["extra"]) != `{"future":true}` {
 		t.Errorf("an unknown section was dropped: %s", raw["extra"])
 	}
-	// And mutations against it are refused rather than silently rebuilding it.
-	if err := rehome(s, "s1", "a@x.com", time.Now(), nil); err != ErrCorrupt {
-		t.Errorf("re-home over a corrupt section: %v", err)
+	// A launch that would re-home over it records its load, leaves the
+	// section as it is, and says why its routing was not written.
+	p, err := s.Place(Launch{
+		Candidates: idle("a@x.com"), Intent: placement.Intent{Kind: placement.Forced, Account: "a@x.com", Reason: "test"},
+		Session: "s1", Now: time.Now(),
+	})
+	if err != nil || !p.Recorded || p.ReHomed || !errors.Is(p.SessionErr, ErrCorrupt) {
+		t.Errorf("re-home over a corrupt section: %+v %v", p, err)
+	}
+	if raw := readRaw(t, root); string(raw["sessions"]) != `"not-an-object"` {
+		t.Errorf("a launch rebuilt the unreadable re-homes: %s", raw["sessions"])
 	}
 }
 

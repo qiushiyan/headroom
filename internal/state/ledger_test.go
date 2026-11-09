@@ -155,30 +155,6 @@ func TestEachHomeSweepsOnlyItsOwnReHomes(t *testing.T) {
 	}
 }
 
-// A move is refused when its re-home cannot be written, and a refused move
-// leaves nothing in the shared ledger either.
-func TestARefusedMoveLeavesTheLedgerUntouched(t *testing.T) {
-	h := twoHomes(t)
-	write(t, filepath.Join(h.secondRoot, "state.json"), `{"version":1,"sessions":{"x":{}}}`)
-	_, err := h.second.Place(Launch{
-		Candidates: idle("a"), Intent: placement.Intent{Kind: placement.Forced, Account: "a", Reason: "test"},
-		Session: "44444444-4444-4444-8444-444444444444", MustReHome: true, Now: time.Now(),
-	})
-	if err == nil {
-		t.Fatal("a move whose re-home cannot be written was not refused")
-	}
-	if led := h.owner.Load().Placements(); len(led.Recent) != 0 {
-		t.Errorf("a refused move left a placement: %+v", led.Recent)
-	}
-
-	// An ordinary launch from that home still records its load, and says
-	// its routing was not written.
-	p, err := place(h.second, idle("a"), placement.Intent{}, 7, "55555555-5555-4555-8555-555555555555", time.Now())
-	if err != nil || !p.Recorded || p.ReHomed || p.SessionErr == nil {
-		t.Errorf("ordinary launch: %+v %v", p, err)
-	}
-}
-
 // Every home that spends against a ledger is registered in it, so the others
 // can find its account dirs; a claim that permits nothing writes nothing.
 func TestHomesRegisterInTheLedger(t *testing.T) {
@@ -336,32 +312,6 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		}
 		if _, ok := h.second.Load().Owner(sid); ok {
 			t.Error("a re-home reported missing is on disk")
-		}
-	})
-
-	t.Run("a move whose load cannot be written", func(t *testing.T) {
-		h := twoHomes(t)
-		if err := h.second.Register(time.Now()); err != nil {
-			t.Fatal(err)
-		}
-		if f, err := os.OpenFile(statePath(h.secondRoot)+".lock", os.O_CREATE|os.O_RDWR, 0o600); err != nil {
-			t.Fatal(err)
-		} else {
-			f.Close()
-		}
-		readOnly(t, h.ownerRoot)
-		p, err := h.second.Place(Launch{
-			Candidates: idle("a"), Intent: placement.Intent{Kind: placement.Forced, Account: "a", Reason: "test"},
-			Session: sid, MustReHome: true, Now: time.Now(),
-		})
-		if err != nil || p.Recorded || !p.ReHomed || p.RecordErr == nil {
-			t.Fatalf("placed %+v, %v — want the move routed and its load reported missing", p, err)
-		}
-		if rec, ok := h.second.Load().Owner(sid); !ok || rec.Account != "a" {
-			t.Error("the re-home the move depended on is not on disk")
-		}
-		if len(h.owner.Load().Placements().Recent) != 0 {
-			t.Error("a load reported missing is in the ledger")
 		}
 	})
 }

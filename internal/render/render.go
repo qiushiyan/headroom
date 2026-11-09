@@ -1,7 +1,6 @@
 // Package render draws what headroom shows a person: the accounts board in
 // both of its layouts (Board — the block per account and the compact row),
-// the session picker's rows and preview, and the cell-width text handling
-// both rest on. It decides no facts: it spells the ones accountstate and
+// and the cell-width text handling it rests on. It decides no facts: it spells the ones accountstate and
 // sessions hand it, and the callers own the terminal — clipping, framing and
 // the in-place redraw.
 package render
@@ -336,9 +335,8 @@ func (p Palette) join(c clauses, kinds ...clauseKind) string {
 	return strings.Join(parts, p.Dim+" · "+p.Rst)
 }
 
-// Age is the one relative-time vocabulary: the board's "observed … ago", the
-// session picker's row stamps and the launch surfaces' figure ages all say
-// how old something is the same way.
+// Age is the one relative-time vocabulary: the board's "observed … ago" and
+// the launch surfaces' figure ages say how old something is the same way.
 func Age(sec int64) string {
 	switch {
 	case sec < 1:

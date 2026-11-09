@@ -336,8 +336,8 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 		return err
 	}
 
-	// Gate: a session this dir is driving right now. Same rule as the
-	// picker's dd — verified live refuses, and so does "could not verify":
+	// Gate: a session this dir is driving right now. Verified live refuses,
+	// and so does "could not verify":
 	// deleting a config dir under a running claude orphans its login state.
 	// Strict read: a registry file that does not parse, or a sessions/ dir
 	// that cannot be listed, is "could not verify", not "nothing there".
@@ -419,6 +419,6 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 	if err := accounts.SetReservation(cfg, name, nil); err != nil {
 		fmt.Fprintf(std.Err, "headroom accounts remove: its reservation was not dropped (%v) — headroom accounts reserve %s --clear\n", err, name)
 	}
-	fmt.Fprintln(out, "transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed")
+	fmt.Fprintln(out, "transcripts are machine-global and survive; a session it drove is placed like a new one when it is next resumed")
 	return nil
 }

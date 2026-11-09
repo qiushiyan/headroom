@@ -10,7 +10,7 @@ package app
 // alone (launch.Target), a named launch fails closed on an unknown name
 // (set.Select), and a neutralized ambient value is said out loud — the shell
 // wrappers shrink to personal preflight and flags. This file parses and
-// dispatches; the launch itself is one operation the session picker shares
+// dispatches; the launch itself is one operation a headless placement shares
 // (launchop).
 
 import (

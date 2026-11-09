@@ -7,119 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/qiushiyan/headroom/internal/tag"
 )
-
-func TestParseTailTitleChain(t *testing.T) {
-	storeDir := "-tmp-proj"
-	lines := []string{
-		`{"type":"user","sessionId":"s1","cwd":"/tmp/proj","gitBranch":"main","message":{"role":"user","content":"first prompt"}}`,
-		`{"type":"ai-title","aiTitle":"old title","sessionId":"s1"}`,
-		`{"type":"ai-title","aiTitle":"new title","sessionId":"s1"}`,
-		`{"type":"last-prompt","lastPrompt":"do the thing","sessionId":"s1"}`,
-		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"done"},{"type":"tool_use"}]}}`,
-	}
-	tail := ParseTail([]byte(strings.Join(lines, "\n")+"\n"), storeDir, true)
-	if tail.AITitle != "new title" || tail.Title() != "new title" {
-		t.Errorf("ai-title chain: %+v", tail)
-	}
-	if tail.CWD != "/tmp/proj" || tail.Branch != "main" {
-		t.Errorf("cwd/branch: %+v", tail)
-	}
-	if tail.LastPrompt != "do the thing" || tail.LastReply != "done" || tail.LastUser != "first prompt" {
-		t.Errorf("preview fields: %+v", tail)
-	}
-
-	// A rename outranks the generated title no matter the order.
-	withRename := strings.Join(lines, "\n") + "\n" +
-		`{"type":"custom-title","customTitle":"my name","sessionId":"s1"}` + "\n"
-	if got := ParseTail([]byte(withRename), storeDir, true).Title(); got != "my name" {
-		t.Errorf("custom-title should win: %q", got)
-	}
-
-	// Untitled: the vendor's newest real prompt, and without one the newest
-	// plain user message — never a blank row while the transcript says more.
-	if got := ParseTail([]byte(lines[0]+"\n"+lines[3]+"\n"), storeDir, true).Title(); got != "do the thing" {
-		t.Errorf("untitled with a last prompt: %q, want the last prompt", got)
-	}
-	if got := ParseTail([]byte(lines[0]+"\n"), storeDir, true).Title(); got != "first prompt" {
-		t.Errorf("untitled without a last prompt: %q, want the last user message", got)
-	}
-}
-
-func TestParseTailModel(t *testing.T) {
-	lines := []string{
-		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"a"}]}}`,
-		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"claude-fable-5","content":[{"type":"tool_use"}]}}`,
-		`{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"err"}]}}`,
-	}
-	tail := ParseTail([]byte(strings.Join(lines, "\n")+"\n"), "-tmp-proj", true)
-	if tail.Model != "claude-fable-5" {
-		t.Errorf("Model = %q: newest wins, tool-use-only records count, <synthetic> never does", tail.Model)
-	}
-	// The synthetic placeholder must not surface even when it is the only claim.
-	only := `{"type":"assistant","sessionId":"s1","message":{"role":"assistant","model":"<synthetic>","content":[]}}` + "\n"
-	if got := ParseTail([]byte(only), "-tmp-proj", true).Model; got != "" {
-		t.Errorf("Model = %q, want empty for synthetic-only", got)
-	}
-}
-
-func TestParseTailCwdVerifiedNotDemunged(t *testing.T) {
-	// The transcript visits several cwds; only the one whose munge equals the
-	// store dir name is the resume target — the newest such value wins, and a
-	// last cwd from somewhere else entirely (measured in the live store) must
-	// not leak into it.
-	storeDir := "-repo-wt-a"
-	lines := []string{
-		`{"type":"user","cwd":"/repo/wt/a","message":{"role":"user","content":"x"}}`,
-		`{"type":"user","cwd":"/repo/other","message":{"role":"user","content":"y"}}`,
-	}
-	tail := ParseTail([]byte(strings.Join(lines, "\n")+"\n"), storeDir, true)
-	if tail.CWD != "/repo/wt/a" {
-		t.Errorf("CWD = %q, want the munge-verified value", tail.CWD)
-	}
-	// relocated records participate under the same verification.
-	reloc := `{"type":"relocated","relocatedCwd":"/repo/wt/a","sessionId":"s"}` + "\n"
-	if got := ParseTail([]byte(reloc), storeDir, true).CWD; got != "/repo/wt/a" {
-		t.Errorf("relocatedCwd = %q", got)
-	}
-	// …and fail it the same way: a relocation to somewhere this store dir was
-	// not named after is not the cd target.
-	foreign := `{"type":"relocated","relocatedCwd":"/repo/other","sessionId":"s"}` + "\n"
-	if got := ParseTail([]byte(foreign), storeDir, true).CWD; got != "" {
-		t.Errorf("unverifiable relocatedCwd = %q, want empty", got)
-	}
-	// No verifiable cwd at all → empty, never a guess.
-	if got := ParseTail([]byte(lines[1]+"\n"), storeDir, true).CWD; got != "" {
-		t.Errorf("unverifiable cwd should stay empty, got %q", got)
-	}
-}
-
-func TestParseTailDegradation(t *testing.T) {
-	storeDir := "-p"
-	// Torn final line: skipped, not drift. Mid-file garbage: counted Bad.
-	data := "garbage-not-json\n" +
-		`{"type":"ai-title","aiTitle":"t","sessionId":"s"}` + "\n" +
-		`{"type":"ai-title","aiTitle":"torn`
-	tail := ParseTail([]byte(data), storeDir, true)
-	if tail.Bad != 1 || tail.AITitle != "t" {
-		t.Errorf("degradation: %+v", tail)
-	}
-	// A last-prompt record without its field must not erase an earlier value.
-	data = `{"type":"last-prompt","lastPrompt":"kept","sessionId":"s"}` + "\n" +
-		`{"type":"last-prompt","leafUuid":"l","sessionId":"s"}` + "\n"
-	if got := ParseTail([]byte(data), storeDir, true).LastPrompt; got != "kept" {
-		t.Errorf("nil lastPrompt erased value: %q", got)
-	}
-	// Suffix mode drops the leading partial line.
-	data = `alf-line"}` + "\n" + `{"type":"ai-title","aiTitle":"t2","sessionId":"s"}` + "\n"
-	tail = ParseTail([]byte(data), storeDir, false)
-	if tail.AITitle != "t2" || tail.Bad != 0 {
-		t.Errorf("suffix mode: %+v", tail)
-	}
-}
 
 func TestParseHistory(t *testing.T) {
 	// The decoded sessionId field decides — a different session's UUID inside
@@ -162,422 +52,60 @@ func TestResolveOwner(t *testing.T) {
 	live := []RegistryEntry{{Account: "b", SessionID: "s", PID: 1, StartedAtMS: 1_785_700_003_000, OK: true}}
 
 	cases := []struct {
-		name      string
-		registry  []RegistryEntry
-		owners    map[string]OwnerRec
-		hists     map[string]History
-		wantAcct  string
-		wantState OwnerState
+		name     string
+		registry []RegistryEntry
+		owners   map[string]OwnerRec
+		hists    map[string]History
+		wantAcct string
 	}{
-		{"no evidence", nil, nil, nil, "", OwnerNone},
+		{"no evidence", nil, nil, nil, ""},
 		{"history only", nil, nil,
-			hist(map[string]map[string]int64{"a": {"s": 100}}), "a", OwnerHistory},
+			hist(map[string]map[string]int64{"a": {"s": 100}}), "a"},
 		{"newest history wins", nil, nil,
-			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 200}}), "b", OwnerHistory},
+			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 200}}), "b"},
 		{"rehome beats older history", nil,
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 300}},
-			hist(map[string]map[string]int64{"a": {"s": 100}}), "b", OwnerRehome},
+			hist(map[string]map[string]int64{"a": {"s": 100}}), "b"},
 		{"newer prompt beats older rehome", nil,
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 100}},
-			hist(map[string]map[string]int64{"a": {"s": 200}}), "a", OwnerHistory},
+			hist(map[string]map[string]int64{"a": {"s": 200}}), "a"},
 		{"verified live outranks everything", live,
-			map[string]OwnerRec{"s": {Account: "a", AtMS: 9999}}, nil, "b", OwnerLive},
+			map[string]OwnerRec{"s": {Account: "a", AtMS: 9999}}, nil, "b"},
 		{"rehome to deleted account surfaces, never falls through", nil,
 			map[string]OwnerRec{"s": {Account: "gone", AtMS: 300}},
-			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerMissing},
+			hist(map[string]map[string]int64{"a": {"s": 100}}), ""},
 		{"same-instant history claims are undecidable", nil, nil,
-			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 100}}), "", OwnerConflict},
+			hist(map[string]map[string]int64{"a": {"s": 100}, "b": {"s": 100}}), ""},
 		{"same-instant rehome vs history is a conflict too", nil,
 			map[string]OwnerRec{"s": {Account: "b", AtMS: 100}},
-			hist(map[string]map[string]int64{"a": {"s": 100}}), "", OwnerConflict},
+			hist(map[string]map[string]int64{"a": {"s": 100}}), ""},
 	}
 	for _, c := range cases {
-		evidence, _ := InspectClaims(c.registry, probe)
 		byRef := map[string]string{}
 		for n := range names {
 			byRef[n] = n
 		}
-		acct, st := ownerEvidence{names: names, byRef: byRef, hists: c.hists, owners: c.owners}.resolve("s", evidence["s"])
-		if acct != c.wantAcct || st != c.wantState {
-			t.Errorf("%s: = (%q, %v), want (%q, %v)", c.name, acct, st, c.wantAcct, c.wantState)
+		acct := newestClaim("s", byRef, c.hists, c.owners)
+		if evidence, _ := InspectClaims(c.registry, probe); evidence["s"].State == Live {
+			acct = evidence["s"].Account
 		}
-	}
-}
-
-// storeFixture builds a fake HEADROOM_HOME-style projects tree.
-func storeFixture(t *testing.T) (projects string, write func(dirName, fileName, content string, mtime time.Time)) {
-	t.Helper()
-	projects = filepath.Join(t.TempDir(), "projects")
-	write = func(dirName, fileName, content string, mtime time.Time) {
-		dir := filepath.Join(projects, dirName)
-		os.MkdirAll(dir, 0o755)
-		p := filepath.Join(dir, fileName)
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
+		if acct != c.wantAcct {
+			t.Errorf("%s: = %q, want %q", c.name, acct, c.wantAcct)
 		}
-		os.Chtimes(p, mtime, mtime)
-	}
-	return projects, write
-}
-
-func rec(id, cwd, title string) string {
-	return fmt.Sprintf(`{"type":"user","sessionId":%q,"cwd":%q,"message":{"role":"user","content":"p"}}
-{"type":"ai-title","aiTitle":%q,"sessionId":%q}
-`, id, cwd, title, id)
-}
-
-func TestCollectDedupesOrphans(t *testing.T) {
-	projects, write := storeFixture(t)
-	tm := time.Now().Add(-time.Hour)
-	write("-tmp-p", "aaaa-1.jsonl", rec("aaaa-1", "/tmp/p", "real"), tm)
-	write("-tmp-p", "aaaa-1.orphaned-123-ab.jsonl", rec("aaaa-1", "/tmp/p", "orphan"), tm.Add(time.Minute))
-	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
-	if len(l.Sessions) != 1 {
-		t.Fatalf("want 1 session, got %d", len(l.Sessions))
-	}
-	if l.Sessions[0].Tail.Title() != "real" {
-		t.Errorf("canonical file must win over orphan: %q", l.Sessions[0].Tail.Title())
-	}
-}
-
-func TestCollectGroupsAndSorts(t *testing.T) {
-	home := t.TempDir()
-	// A fake repo: main checkout + a worktree whose .git file points at it.
-	repo := filepath.Join(home, "dev", "proj")
-	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
-	wt := filepath.Join(home, "dev", ".worktrees", "proj", "feat")
-	os.MkdirAll(wt, 0o755)
-	os.WriteFile(filepath.Join(wt, ".git"),
-		[]byte("gitdir: "+repo+"/.git/worktrees/feat\n"), 0o644)
-	elsewhere := filepath.Join(home, "other")
-	os.MkdirAll(elsewhere, 0o755)
-
-	projects, write := storeFixture(t)
-	now := time.Now()
-	write(Munge(repo), "s-main.jsonl", rec("s-main", repo, "in main"), now.Add(-3*time.Hour))
-	write(Munge(wt), "s-wt.jsonl", rec("s-wt", wt, "in worktree"), now.Add(-1*time.Hour))
-	write(Munge(elsewhere), "s-other.jsonl", rec("s-other", elsewhere, "elsewhere"), now.Add(-2*time.Hour))
-	write("-gone-dir", "s-dead.jsonl", rec("s-dead", "/gone/dir", "dead dir"), now.Add(-4*time.Hour))
-
-	l := Collect(Input{ProjectsDir: projects, CWD: repo})
-	if len(l.Sessions) != 4 {
-		t.Fatalf("want 4 sessions, got %d", len(l.Sessions))
-	}
-	byID := map[string]*Session{}
-	for i, s := range l.Sessions {
-		byID[s.ID] = s
-		if i > 0 && s.MTime.After(l.Sessions[i-1].MTime) {
-			t.Error("sessions must sort newest first")
-		}
-	}
-	// Worktree sessions are local to the repo — the whole point of the rule.
-	if !byID["s-main"].Local || !byID["s-wt"].Local {
-		t.Errorf("main/worktree must both be local: %+v %+v", byID["s-main"], byID["s-wt"])
-	}
-	if byID["s-other"].Local {
-		t.Error("unrelated project must not be local")
-	}
-	// A deleted project dir: global, not resumable, never a guess.
-	dead := byID["s-dead"]
-	if dead.Local || dead.DirOK || dead.RepoKey != "" {
-		t.Errorf("dead dir must be global and unresumable: %+v", dead)
-	}
-	if !byID["s-main"].DirOK || byID["s-wt"].RepoKey != byID["s-main"].RepoKey {
-		t.Errorf("repo identity: main=%+v wt=%+v", byID["s-main"], byID["s-wt"])
-	}
-}
-
-// Collect is the picker's and --json's only path to each account's evidence:
-// its prompt history names the owner, its live registry says what is open,
-// an unreadable registry makes every unproven answer unknown, and the
-// re-homes it is handed compete with the history. The rules themselves are
-// TestResolveOwner's and TestRegistryProblemsKeepTheirScope's; this is the
-// wiring, which those cannot see — cutting any one input here must fail it.
-func TestCollectWiresEachAccountsEvidence(t *testing.T) {
-	projects, write := storeFixture(t)
-	cwd := t.TempDir()
-	now := time.Now()
-	for i, id := range []string{"s-hist", "s-live", "s-rehome", "s-none"} {
-		write(Munge(cwd), id+".jsonl", rec(id, cwd, id), now.Add(-time.Duration(i)*time.Minute))
-	}
-	dirA, dirB := t.TempDir(), t.TempDir()
-	// Both accounts drove s-hist; a did so last.
-	os.WriteFile(filepath.Join(dirA, "history.jsonl"), []byte(`{"sessionId":"s-hist","timestamp":100}`+"\n"), 0o644)
-	os.WriteFile(filepath.Join(dirB, "history.jsonl"), []byte(`{"sessionId":"s-hist","timestamp":50}`+"\n"), 0o644)
-	os.MkdirAll(filepath.Join(dirB, "sessions"), 0o755)
-	os.WriteFile(filepath.Join(dirB, "sessions", "42.json"), []byte(`{"sessionId":"s-live","pid":42,"startedAt":5001000}`), 0o644)
-	in := Input{
-		ProjectsDir: projects, CWD: "/nowhere",
-		Accounts: []AccountRef{{Name: "a", Ref: "a", Dir: dirA}, {Name: "b", Ref: "b", Dir: dirB}},
-		Owners:   map[string]OwnerRec{"s-rehome": {Account: "b", AtMS: 200}},
-		Probe: func(pid int) (int64, error) {
-			if pid == 42 {
-				return 5_000, nil
-			}
-			return 0, os.ErrNotExist
-		},
-	}
-	collect := func() map[string]*Session {
-		t.Helper()
-		by := map[string]*Session{}
-		for _, s := range Collect(in).Sessions {
-			by[s.ID] = s
-		}
-		if len(by) != 4 {
-			t.Fatalf("collected %d sessions, want 4", len(by))
-		}
-		return by
-	}
-
-	by := collect()
-	want := map[string]struct {
-		owner string
-		state OwnerState
-		live  LiveState
-	}{
-		"s-hist":   {"a", OwnerHistory, NotLive},
-		"s-live":   {"b", OwnerLive, Live},
-		"s-rehome": {"b", OwnerRehome, NotLive},
-		"s-none":   {"", OwnerNone, NotLive},
-	}
-	for id, w := range want {
-		if s := by[id]; s.Owner != w.owner || s.OwnerState != w.state || s.Live != w.live {
-			t.Errorf("%s: owner (%q, %v) live %v, want (%q, %v) live %v", id, s.Owner, s.OwnerState, s.Live, w.owner, w.state, w.live)
-		}
-	}
-
-	// One account's registry cannot be listed: nothing unproven reads as
-	// closed, and the proven-open session stays open.
-	sdir := filepath.Join(dirA, "sessions")
-	os.Mkdir(sdir, 0o755)
-	if err := os.Chmod(sdir, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(sdir, 0o755) })
-	by = collect()
-	if by["s-none"].Live != LiveUnknown || by["s-live"].Live != Live {
-		t.Errorf("with a registry unreadable: s-none %v, s-live %v — want unknown and live", by["s-none"].Live, by["s-live"].Live)
-	}
-}
-
-func TestDeleteTranscript(t *testing.T) {
-	projects, write := storeFixture(t)
-	tm := time.Now()
-	write("-tmp-p", "bbbb-2.jsonl", rec("bbbb-2", "/tmp/p", "x"), tm)
-	write("-tmp-p", "bbbb-2.orphaned-9-zz.jsonl", "", tm)
-	closure := filepath.Join(projects, "-tmp-p", "bbbb-2", "tool-results")
-	os.MkdirAll(closure, 0o755)
-	os.WriteFile(filepath.Join(closure, "r.json"), []byte("{}"), 0o644)
-	write("-tmp-p", "cccc-3.jsonl", rec("cccc-3", "/tmp/p", "keep"), tm)
-
-	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
-	var target *Session
-	for _, s := range l.Sessions {
-		if s.ID == "bbbb-2" {
-			target = s
-		}
-	}
-	if err := DeleteTranscript(target); err != nil {
-		t.Fatal(err)
-	}
-	left, _ := os.ReadDir(filepath.Join(projects, "-tmp-p"))
-	if len(left) != 1 || left[0].Name() != "cccc-3.jsonl" {
-		names := []string{}
-		for _, e := range left {
-			names = append(names, e.Name())
-		}
-		t.Errorf("after delete: %v", names)
-	}
-	// An id that could escape the store dir is refused outright.
-	if err := DeleteTranscript(&Session{ID: "../evil", StoreDir: projects}); err == nil {
-		t.Error("path-escaping id must be refused")
-	}
-}
-
-// A transcript ending in one message larger than the tail budget must still
-// resolve its cwd — the window widens until a record verifies. Without this,
-// a resumable session renders "dir gone" (5 real transcripts did). The model
-// claim after the oversized record is what makes this the cwd half of the
-// gate: the first window already holds a model, so only a missing cwd can
-// keep it widening.
-func TestCollectWidensPastCwdlessTail(t *testing.T) {
-	projects, write := storeFixture(t)
-	dir := t.TempDir()
-	filler := strings.Repeat("x", TailBudget) // one record larger than the budget
-	content := rec("s-big", dir, "big session") +
-		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n" +
-		`{"type":"assistant","sessionId":"s-big","message":{"role":"assistant","model":"claude-fable-5","content":[]}}` + "\n"
-	write(Munge(dir), "s-big.jsonl", content, time.Now())
-
-	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
-	if len(l.Sessions) != 1 {
-		t.Fatalf("sessions = %d", len(l.Sessions))
-	}
-	s := l.Sessions[0]
-	if s.CWD != dir || !s.DirOK {
-		t.Errorf("cwd starved by an oversized tail: CWD=%q DirOK=%v", s.CWD, s.DirOK)
-	}
-	if s.Tail.Title() != "big session" {
-		t.Errorf("title = %q", s.Tail.Title())
-	}
-}
-
-// The model must be part of the adaptive reader's contract like title and
-// cwd: a tail window that starts inside one enormous assistant record skips
-// it as a partial line, and a later small cwd record must not stop the
-// widening while the session's only model claim sits unread.
-func TestCollectWidensPastModellessTail(t *testing.T) {
-	projects, write := storeFixture(t)
-	dir := t.TempDir()
-	filler := strings.Repeat("x", TailBudget)
-	content := rec("s-model", dir, "model session") +
-		`{"type":"assistant","sessionId":"s-model","message":{"role":"assistant","model":"claude-fable-5","content":[{"type":"text","text":"` + filler + `"}]}}` + "\n" +
-		`{"type":"user","sessionId":"s-model","cwd":` + fmt.Sprintf("%q", dir) + `,"message":{"role":"user","content":"after"}}` + "\n"
-	write(Munge(dir), "s-model.jsonl", content, time.Now())
-
-	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
-	if len(l.Sessions) != 1 {
-		t.Fatalf("sessions = %d", len(l.Sessions))
-	}
-	s := l.Sessions[0]
-	if s.CWD != dir {
-		t.Errorf("CWD = %q", s.CWD)
-	}
-	if s.Tail.Model != "claude-fable-5" {
-		t.Errorf("Model = %q: cwd resolving must not end the search for the model", s.Tail.Model)
-	}
-}
-
-// The first window is the budget from EOF, and a transcript whose title, cwd
-// and model sit inside it is read no further: each transcript costs its tail,
-// which is what keeps the picker and --json fast over a store of gigabytes.
-// Nothing before the window reaches the parser, so damage there is not
-// counted in bad_lines.
-func TestCollectReadsOnlyATranscriptsTail(t *testing.T) {
-	projects, write := storeFixture(t)
-	dir := t.TempDir()
-	damaged := strings.Repeat("not a record\n", TailBudget/len("not a record\n"))
-	filler := `{"type":"assistant","sessionId":"s-tail","message":{"role":"assistant","content":[{"type":"text","text":"` + strings.Repeat("x", TailBudget) + `"}]}}` + "\n"
-	model := `{"type":"assistant","sessionId":"s-tail","message":{"role":"assistant","model":"claude-fable-5","content":[]}}` + "\n"
-	write(Munge(dir), "s-tail.jsonl", damaged+filler+rec("s-tail", dir, "tail only")+model, time.Now())
-
-	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
-	if len(l.Sessions) != 1 {
-		t.Fatalf("sessions = %d", len(l.Sessions))
-	}
-	s := l.Sessions[0]
-	if s.CWD != dir || s.Tail.Model != "claude-fable-5" || s.Tail.Title() != "tail only" {
-		t.Fatalf("tail unresolved: cwd %q model %q title %q", s.CWD, s.Tail.Model, s.Tail.Title())
-	}
-	if s.Tail.Bad != 0 {
-		t.Errorf("parsed %d damaged lines from before the tail window — the reader went past it", s.Tail.Bad)
-	}
-}
-
-// The live half of a row's branch label. Every case here is a shape seen in
-// the real store: a main checkout, a linked worktree, a submodule spelling
-// its gitdir relative, a rebase in flight, and the several ways HEAD gives no
-// branch at all — which split by whether there is a checkout here to have one
-// (HeadNone) or one whose HEAD no longer says (HeadUnreadable), because the
-// label layer marks those differently.
-func TestResolveReadsLiveHead(t *testing.T) {
-	root := t.TempDir()
-	write := func(path, body string) {
-		full := filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mkdir := func(path string) {
-		if err := os.MkdirAll(filepath.Join(root, path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// A main checkout, with a nested subdir the walk has to climb out of.
-	write("main/.git/HEAD", "ref: refs/heads/develop\n")
-	mkdir("main/internal/app")
-
-	// A linked worktree: .git is a file, HEAD lives in the main repo.
-	write("wt/.git", "gitdir: "+filepath.Join(root, "main/.git/worktrees/wt")+"\n")
-	write("main/.git/worktrees/wt/HEAD", "ref: refs/heads/feat/live-branch\n")
-
-	// A worktree mid-rebase: HEAD is detached, the state dir names the branch.
-	write("rebasing/.git", "gitdir: "+filepath.Join(root, "main/.git/worktrees/rebasing")+"\n")
-	write("main/.git/worktrees/rebasing/HEAD", "fdc9b6240d1e4c8a9b3f5e7d2c1a0b8f6e4d3c2b\n")
-	write("main/.git/worktrees/rebasing/rebase-merge/head-name", "refs/heads/topic\n")
-
-	// A rebase replaying a detached HEAD: in flight, but no branch to name.
-	write("rebase-anon/.git/HEAD", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
-	write("rebase-anon/.git/rebase-apply/head-name", "detached HEAD\n")
-
-	// A plain detached checkout.
-	write("detached/.git/HEAD", "0123456789abcdef0123456789abcdef01234567\n")
-
-	// A submodule: gitdir relative, and no /.git/worktrees/ in the path, so
-	// it is its own key — but its HEAD is still readable.
-	write("super/sub/.git", "gitdir: ../.git/modules/sub\n")
-	write("super/.git/modules/sub/HEAD", "ref: refs/heads/submodule-branch\n")
-
-	// HEAD shapes that name nothing: a symref outside refs/heads, junk, and
-	// a .git file pointing at a gitdir that does not exist.
-	write("symref/.git/HEAD", "ref: refs/remotes/origin/main\n")
-	write("junk/.git/HEAD", "not a sha and not a ref\n")
-	write("dangling/.git", "gitdir: "+filepath.Join(root, "nowhere")+"\n")
-
-	// And a dir with no checkout above it at all.
-	mkdir("plain")
-
-	cases := []struct {
-		name   string
-		dir    string
-		kind   HeadKind
-		branch string
-		commit string
-	}{
-		{"main checkout", "main", HeadBranch, "develop", ""},
-		{"subdir climbs to the checkout", "main/internal/app", HeadBranch, "develop", ""},
-		{"worktree reads the linked gitdir", "wt", HeadBranch, "feat/live-branch", ""},
-		{"rebase in flight names the branch", "rebasing", HeadRebasing, "topic", "fdc9b62"},
-		{"rebase from a detached head has none", "rebase-anon", HeadRebasing, "", "aaaaaaa"},
-		{"detached is a state, not a name", "detached", HeadDetached, "", "0123456"},
-		{"submodule gitdir resolves relative", "super/sub", HeadBranch, "submodule-branch", ""},
-		{"symref outside refs/heads is a checkout we cannot name", "symref", HeadUnreadable, "", ""},
-		{"unparseable HEAD is a checkout, degraded", "junk", HeadUnreadable, "", ""},
-		{"gitdir that isn't there holds no HEAD at all", "dangling", HeadNone, "", ""},
-		{"no checkout above has none", "plain", HeadNone, "", ""},
-	}
-	for _, c := range cases {
-		got := repoCache{}.resolve(filepath.Join(root, c.dir))
-		if got.Head.Kind != c.kind || got.Head.Branch != c.branch || got.Head.Commit != c.commit {
-			t.Errorf("%s: Head = %+v, want {%v %q %q}", c.name, got.Head, c.kind, c.branch, c.commit)
-		}
-	}
-
-	// Identity must survive the addition: a worktree still keys on its main
-	// checkout, a submodule still keys on itself, and a dir in no checkout
-	// keys on nothing.
-	if got := (repoCache{}).resolve(filepath.Join(root, "plain")); got.Key != "" || got.Root != "" {
-		t.Errorf("a dir in no checkout resolved to %+v", got)
-	}
-	if got := (repoCache{}).resolve(filepath.Join(root, "wt")); got.Key != canon(filepath.Join(root, "main")) {
-		t.Errorf("worktree key = %q, want the main checkout", got.Key)
-	}
-	if got := (repoCache{}).resolve(filepath.Join(root, "super/sub")); got.Key != canon(filepath.Join(root, "super/sub")) {
-		t.Errorf("submodule key = %q, want itself", got.Key)
 	}
 }
 
 // A directory named .git that holds no HEAD is not a checkout. Worktree
 // tooling and editors leave these husks behind — the live store has one at
 // dev/itell/apps/platform holding nothing but info/exclude — and stopping the
-// walk there hides the real repository above it: the session gets keyed on a
-// path git does not consider a checkout, and no branch can be read for it.
-func TestResolveWalksPastAGitHusk(t *testing.T) {
-	root := t.TempDir()
+// walk there hides the real repository above it: work in it gets keyed on a
+// path git does not consider a checkout, and a reservation for the
+// repository would not reach it.
+func TestRepoKeyWalksPastAGitHusk(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	write := func(path, body string) {
 		full := filepath.Join(root, path)
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -589,26 +117,21 @@ func TestResolveWalksPastAGitHusk(t *testing.T) {
 	}
 	write("repo/.git/HEAD", "ref: refs/heads/feat/summary-attempt-policy\n")
 	write("repo/apps/platform/.git/info/exclude", "")
-
-	got := repoCache{}.resolve(filepath.Join(root, "repo/apps/platform"))
-	if got.Key != canon(filepath.Join(root, "repo")) {
-		t.Errorf("Key = %q, want the real checkout above the husk", got.Key)
-	}
-	if got.Head.Kind != HeadBranch || got.Head.Branch != "feat/summary-attempt-policy" {
-		t.Errorf("Head = %+v, want the real checkout's branch", got.Head)
+	if got := RepoKey(filepath.Join(root, "repo/apps/platform")); got != filepath.Join(root, "repo") {
+		t.Errorf("RepoKey = %q, want the real checkout above the husk", got)
 	}
 
 	// With no real repo above it, the husk is still the best evidence there
-	// is — the walk must fall back to it, not report "no repo at all".
+	// is — the walk falls back to it, not to the directory asked about.
 	write("orphan/.git/info/exclude", "")
-	if got := (repoCache{}).resolve(filepath.Join(root, "orphan")); got.Root == "" {
-		t.Errorf("a husk with nothing above it resolved to %+v, want it kept as evidence", got)
+	write("orphan/sub/file", "")
+	if got := RepoKey(filepath.Join(root, "orphan/sub")); got != filepath.Join(root, "orphan") {
+		t.Errorf("under a husk with nothing above it: %q, want the husk's directory", got)
 	}
 }
 
 func TestRegistryProblemsKeepTheirScope(t *testing.T) {
 	root := t.TempDir()
-	refs := []AccountRef{{Name: "a", Ref: "a", Dir: root}}
 	dir := filepath.Join(root, "sessions")
 	os.Mkdir(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "unknown.json"), []byte(`broken`), 0644)
@@ -616,17 +139,18 @@ func TestRegistryProblemsKeepTheirScope(t *testing.T) {
 	if len(reg.Problems) != 1 || len(reg.Entries) != 0 {
 		t.Fatalf("lost registry problem: %+v", reg)
 	}
-	if got := LiveNow("unrelated", refs, nil); got != NotLive {
+	os.WriteFile(filepath.Join(dir, "known.json"), []byte(`{"sessionId":"known","pid":7}`), 0644)
+	evidence, _ := InspectClaims(ReadRegistry("a", root).Entries, nil)
+	if got := evidence["unrelated"].State; got != NotLive {
 		t.Fatalf("nameless file attributed to unrelated session: %v", got)
 	}
-	os.WriteFile(filepath.Join(dir, "known.json"), []byte(`{"sessionId":"known","pid":7}`), 0644)
-	if got := LiveNow("known", refs, nil); got != LiveUnknown {
+	if got := evidence["known"].State; got != LiveUnknown {
 		t.Fatalf("damaged identifiable claim = %v", got)
 	}
 	os.Chmod(dir, 0)
 	defer os.Chmod(dir, 0755)
-	if got := LiveNow("unrelated", refs, nil); got != LiveUnknown {
-		t.Fatalf("unreadable directory cleared liveness: %v", got)
+	if !ReadRegistry("a", root).Unreadable {
+		t.Fatal("an unreadable directory read as an empty registry")
 	}
 }
 
@@ -737,34 +261,5 @@ func TestInspectClaimsVerifiesEachClaimByItsOwnProcess(t *testing.T) {
 	}
 	if got := strings.Join(running, " "); got != "live/1 registered-late/3 doubted/1" {
 		t.Errorf("running claims = %s", got)
-	}
-}
-
-// `claude --resume <id>` opens <id>.jsonl, so a session is the file it is
-// listed from: its id is the file's, and dd removes that file, whatever id the
-// records inside it carry.
-func TestASessionIsTheFileItIsListedFrom(t *testing.T) {
-	projects, write := storeFixture(t)
-	write("-tmp-p", "aaaa-1.jsonl", rec("bbbb-2", "/tmp/p", "carried over"), time.Now())
-	write("-tmp-p", "bbbb-2.jsonl", rec("bbbb-2", "/tmp/p", "the other one"), time.Now().Add(-time.Hour))
-
-	l := Collect(Input{ProjectsDir: projects, CWD: "/nowhere"})
-	var listed *Session
-	for _, s := range l.Sessions {
-		if s.Path == filepath.Join(projects, "-tmp-p", "aaaa-1.jsonl") {
-			listed = s
-		}
-	}
-	if listed == nil || listed.ID != "aaaa-1" || len(l.Sessions) != 2 {
-		t.Fatalf("listed %d session(s); aaaa-1.jsonl as %+v", len(l.Sessions), listed)
-	}
-	if err := DeleteTranscript(listed); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(listed.Path); !os.IsNotExist(err) {
-		t.Error("dd left the transcript it was pointed at")
-	}
-	if _, err := os.Stat(filepath.Join(projects, "-tmp-p", "bbbb-2.jsonl")); err != nil {
-		t.Errorf("dd removed another session's transcript: %v", err)
 	}
 }

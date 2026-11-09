@@ -400,15 +400,6 @@ func TestANamedSessionFollowsItsOwnerWhileItHasRoom(t *testing.T) {
 	if d := chosen(t, []Candidate{other}, Ledger{}, Intent{Owner: "gone"}); d.Chosen != "other" || d.Reason != ReasonMoved {
 		t.Fatalf("a vanished owner: chose %q (%s)", d.Chosen, d.Reason)
 	}
-	// Moving a session means somewhere other than where it is.
-	d := chosen(t, []Candidate{acct("here", 0, 0), acct("there", 50, 50)}, Ledger{}, Intent{Exclude: "here"})
-	if d.Chosen != "there" {
-		t.Fatalf("chose %q", d.Chosen)
-	}
-	d = chosen(t, []Candidate{acct("here", 0, 0)}, Ledger{}, Intent{Exclude: "here"})
-	if d.Chosen != "" || !strings.Contains(d.Refusal, "already there") {
-		t.Fatalf("refusal = %q", d.Refusal)
-	}
 }
 
 func TestRotationWhenNothingWasEverObserved(t *testing.T) {

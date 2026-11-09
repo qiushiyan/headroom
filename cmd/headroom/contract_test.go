@@ -39,7 +39,6 @@ func TestContracts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(share, "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cdFile := filepath.Join(w.base, "cwd")
 	for _, c := range []struct {
 		name  string
 		args  []string
@@ -59,7 +58,6 @@ func TestContracts(t *testing.T) {
 		{"accounts-compact-codex", []string{"accounts", "--compact", "--vendor", "codex"}, ""},
 		{"resolve", []string{"resolve", "a@x.com"}, ""},
 		{"resolve-codex", []string{"resolve", "--vendor", "codex", "c@x.com"}, ""},
-		{"sessions-json", []string{"sessions", "--json"}, ""},
 		{"headless-list", []string{"headless"}, ""},
 		{"headless-json", []string{"headless", "--json"}, ""},
 		{"login-dry-run", []string{"login", "--dry-run"}, ""},
@@ -77,9 +75,6 @@ func TestContracts(t *testing.T) {
 		{"launch-codex-bare", []string{"launch", "--vendor", "codex", "--"}, ""},
 		{"launch-codex-exec", []string{"launch", "--vendor", "codex", "--", "exec", "--json", "hello"}, ""},
 
-		// The session picker needs a terminal; the cd file says nothing was entered.
-		{"sessions-no-terminal", []string{"sessions", "--cd-file", cdFile, "--", "--dangerously-skip-permissions"}, ""},
-
 		// Headless placement, as the eval runner drives it.
 		{"headless-place", []string{"headless", "place", "--prefer", "a@x.com", "--exclude", "b@x.com"}, ""},
 		{"headless-place-refused", []string{"headless", "place", "--exclude", "a@x.com", "--exclude", "b@x.com"}, ""},
@@ -96,9 +91,6 @@ func TestContracts(t *testing.T) {
 		{"accounts-ledger-own", []string{"accounts", "ledger", w.claude.AccountsRoot}, ""},
 
 		// Refusals a caller can meet.
-		{"resume-tombstone", []string{"resume", "--json"}, ""},
-		{"resume-help", []string{"resume", "--help"}, ""},
-		{"resume-version", []string{"resume", "--version"}, ""},
 		{"launch-empty-account", []string{"launch", "--account", "", "--"}, ""},
 		{"launch-unknown-flag", []string{"launch", "--resume", "abc"}, ""},
 		{"launch-auto-last", []string{"launch", "--auto", "--last", "--"}, ""},
@@ -107,7 +99,7 @@ func TestContracts(t *testing.T) {
 		{"check-argument", []string{"check", "extra"}, ""},
 		{"unknown-command", []string{"lauch"}, ""},
 		{"accounts-board-flag-before-remove", []string{"accounts", "--compact", "remove", "--yes", "a@x.com"}, ""},
-		{"json-before-command", []string{"--json", "sessions"}, ""},
+		{"json-before-command", []string{"--json", "limits"}, ""},
 		{"launch-words-without-dashdash", []string{"launch", "fix", "it"}, ""},
 		{"login-within-negative", []string{"login", "--dry-run", "--within", "-1"}, ""},
 		{"headless-place-comma", []string{"headless", "place", "--dry-run", "--exclude", "a@x.com,b@x.com"}, ""},

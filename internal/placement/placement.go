@@ -269,10 +269,8 @@ type Intent struct {
 	Home string
 
 	// Owner is the account that last drove the session this launch names, ""
-	// when it names none or none is known. Exclude is never chosen: moving a
-	// session means somewhere other than where it is.
-	Owner   string
-	Exclude string
+	// when it names none or none is known.
+	Owner string
 
 	// CanWait says the caller would rather wait than take an account near a
 	// limit: when every account left is near one, the rule refuses instead of
@@ -488,7 +486,7 @@ func (d *Decision) auto(intent Intent) {
 	var open, near []Counted
 	observed := false
 	for _, c := range d.Candidates {
-		if whyNot(c, intent) != "" {
+		if c.Excluded != "" {
 			continue
 		}
 		if c.ObservedAt > 0 {
@@ -517,11 +515,11 @@ func (d *Decision) auto(intent Intent) {
 	})
 	ranked := append(slices.Clone(open), near...)
 	if len(ranked) == 0 {
-		d.Refusal = "no account can take a launch: " + d.exclusions(intent)
+		d.Refusal = "no account can take a launch: " + d.exclusions()
 		return
 	}
 	if intent.CanWait && len(open) == 0 {
-		d.Refusal, d.RoomAt = d.nearRefusal(near, intent), roomAt(near)
+		d.Refusal, d.RoomAt = d.nearRefusal(near), roomAt(near)
 		return
 	}
 
@@ -558,7 +556,7 @@ func (d *Decision) auto(intent Intent) {
 // nearRefusal says why a caller that can wait was refused: every account it
 // could take is near a limit, each named with its highest figure, and the
 // others with why they could not be chosen at all.
-func (d Decision) nearRefusal(near []Counted, intent Intent) string {
+func (d Decision) nearRefusal(near []Counted) string {
 	parts := make([]string, 0, len(near))
 	for _, c := range near {
 		parts = append(parts, fmt.Sprintf("%s (%s %d%%)", c.Name, c.HighestLabel, c.Highest))
@@ -566,8 +564,8 @@ func (d Decision) nearRefusal(near []Counted, intent Intent) string {
 	why := "every account that could take it is near a limit: " + strings.Join(parts, ", ")
 	var others []string
 	for _, c := range d.Candidates {
-		if not := whyNot(c, intent); not != "" {
-			others = append(others, fmt.Sprintf("%s (%s)", c.Name, not))
+		if c.Excluded != "" {
+			others = append(others, fmt.Sprintf("%s (%s)", c.Name, c.Excluded))
 		}
 	}
 	if len(others) > 0 {
@@ -621,28 +619,15 @@ func compareReset(a, b int64) int {
 }
 
 // exclusions names why each candidate could not be chosen.
-func (d Decision) exclusions(intent Intent) string {
+func (d Decision) exclusions() string {
 	if len(d.Candidates) == 0 {
 		return "no accounts were discovered"
 	}
 	parts := make([]string, 0, len(d.Candidates))
 	for _, c := range d.Candidates {
-		parts = append(parts, fmt.Sprintf("%s (%s)", c.Name, whyNot(c, intent)))
+		parts = append(parts, fmt.Sprintf("%s (%s)", c.Name, c.Excluded))
 	}
 	return strings.Join(parts, ", ")
-}
-
-// whyNot is why an automatic choice cannot land on this candidate, or "": its
-// own exclusion, or the intent's — moving a session means somewhere other than
-// where it is. Every refusal names a candidate by this one reason.
-func whyNot(c Counted, intent Intent) string {
-	switch {
-	case c.Excluded != "":
-		return c.Excluded
-	case c.Name == intent.Exclude:
-		return "the session is already there"
-	}
-	return ""
 }
 
 func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {

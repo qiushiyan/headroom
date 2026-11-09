@@ -11,8 +11,8 @@ An account is a config dir: Claude Code's primary is ~/.claude and the others ar
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
 that report — the board, limits, refresh — cover every vendor on this machine
 unless --vendor names one. Commands that act on one account — launch, resolve, accounts
-add and remove — act on Claude Code unless --vendor says codex. login, sessions and
-headless are Claude Code only.
+add and remove — act on Claude Code unless --vendor says codex. login and headless are
+Claude Code only.
 
 Flags:
   -h, --help             Show context-sensitive help.
@@ -40,8 +40,6 @@ Commands:
   accounts ledger [<root>]       Spend against another home's ledger, and list the homes that share
                                  it.
   launch [<args> ...]            Run claude, or codex, on the account headroom decides.
-  sessions [<args> ...]          Continue any Claude Code session on this machine, on the account
-                                 that last drove it.
   limits                         Print what is known about every account's limits, read from disk
                                  alone.
   login renew [<account> ...]    Renew the logins that end soon, or the named ones, one after

@@ -34,7 +34,7 @@ func TestARenamedPrimaryKeepsItsRecords(t *testing.T) {
 	renamed := f.cfg
 	renamed.PrimaryName = "q2"
 	set := accounts.Discover(renamed)
-	if owner, _ := sessions.OwnerOf(sessA, launchop.Refs(set), sessions.ProcessEvidence{}, state.Open(renamed).Load().Owners()); owner != "q2" {
+	if owner := sessions.OwnerOf(sessA, launchop.Refs(set), sessions.ProcessEvidence{}, state.Open(renamed).Load().Owners()); owner != "q2" {
 		t.Errorf("the session's owner after the rename: %q", owner)
 	}
 	if out := launchOn(t, renamed, f.edges, "--last", "--dry-run").stdout; !strings.Contains(out, "would start claude on q2") {
