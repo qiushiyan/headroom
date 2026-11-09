@@ -1,6 +1,0 @@
-$ headroom launches -n 2
-exit 0
---- stdout
-<mm-dd> <clock>  codex   q  auto/least-load   load 3  week   0%  next c@x.com
-<mm-dd> <clock>  codex   q  auto/least-load   load 4  week   0%  next c@x.com
---- stderr

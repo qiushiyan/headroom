@@ -66,22 +66,19 @@ func TestLaunchLineWording(t *testing.T) {
 		{"unidentified", choose(placement.Intent{}, obs("a", 0, 0, time.Minute)), true, Session{Unidentified: true}, "",
 			[]string{"session not identified"}, nil},
 	}
-	// The other ways of deciding say which they were, and no figures: the
-	// rule chose nothing.
-	for reason, want := range map[string]string{"named": "a · named", placement.ReasonLast: "a · the last account used", placement.ReasonOwner: "a · this session's account"} {
-		cases = append(cases, struct {
-			name  string
-			d     placement.Decision
-			auto  bool
-			ref   Session
-			owner string
-			want  []string
-			not   []string
-		}{reason, choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: reason}, obs("a", 0, 0, time.Minute)), false, Session{}, "",
-			[]string{want}, []string{"auto", "load"}})
-	}
+	// A named launch says so, and no figures: the rule chose nothing.
+	cases = append(cases, struct {
+		name  string
+		d     placement.Decision
+		auto  bool
+		ref   Session
+		owner string
+		want  []string
+		not   []string
+	}{"named", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "named"}, obs("a", 0, 0, time.Minute)), false, Session{}, "",
+		[]string{"a · named"}, []string{"auto", "load"}})
 	for _, c := range cases {
-		line := launchLine(c.d, c.auto, c.ref, c.owner, "", now)
+		line := launchLine(c.d, c.auto, c.ref, c.owner, now)
 		for _, w := range c.want {
 			if !strings.Contains(line, w) {
 				t.Errorf("%s: %q lacks %q", c.name, line, w)

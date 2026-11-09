@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// OwnerRec is one explicit re-home: the user pressed the override key on a
-// session, routing it to an account the vendor's own evidence doesn't (yet)
-// name. Ordinary resumes record nothing — the launch itself becomes vendor
+// OwnerRec is one explicit re-home: a launch placed a session named by id on
+// an account other than the one that last drove it, routing it where the
+// vendor's own evidence doesn't (yet) point. A resume that stays put records nothing — the launch itself becomes vendor
 // evidence (the live registry immediately, the prompt history at the first
 // prompt) — so these stay rare, and their timestamps are honest event times
 // that merge cleanly with history timestamps: same machine, same clock, same
@@ -32,7 +32,7 @@ type OwnerRec struct {
 //
 // It is passed to the store as a function rather than called ahead of one, so
 // it runs inside the lock that protects the records it is used to sweep: a set
-// gathered beforehand cannot see a session another picker re-homed since, and
+// gathered beforehand cannot see a session another launch re-homed since, and
 // sweeping against it would delete that re-home.
 func TranscriptIDs(projectsDir string) (map[string]bool, bool) {
 	dirs, err := os.ReadDir(projectsDir)

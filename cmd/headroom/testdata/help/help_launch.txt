@@ -8,9 +8,8 @@ CODEX_HOME and its credential variables) is stripped, never obeyed. The process 
 replaced, so the vendor's exit status is the command's.
 
 How the account is decided:
-  bare, --auto  the least-loaded account
+  bare          the least-loaded account
   --account N   that account, for this one launch
-  --last        the account of the newest recorded launch
 
 Every launch says on stderr where it went and why before the vendor starts, as one line:
   headroom launch: a@x.com · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: b@x.com)
@@ -30,9 +29,6 @@ Arguments:
 Flags:
       --vendor=VENDOR    The vendor whose account this acts on (default: claude; one of: claude,
                          codex).
-      --auto             Place the launch on the least-loaded account: what a bare launch does, said
-                         outright.
-      --last             Launch on the account of the newest recorded launch.
       --account=NAME     Launch on this account, named by email or dir name.
       --dry-run          Print the choice and every account's figures; record, log and start
                          nothing.
@@ -41,9 +37,6 @@ Inherited flags:
   -h, --help             Show context-sensitive help.
       --version          Print the build this binary is — its commit and the commit's time — and
                          exit.
-
-Constraints:
-  At most one of --auto, --last, --account.
 
 Examples:
     headroom launch                                   the least-loaded account

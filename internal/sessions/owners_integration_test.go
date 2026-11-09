@@ -12,13 +12,13 @@ import (
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// rehome moves a session to an account the way the picker's override does: a
-// launch that exists to move it.
+// rehome records that a session was moved to an account, as a launch that
+// places a named session off its owner does.
 func rehome(st *state.Store, id, account string, at time.Time, live state.Enumerator) error {
 	_, err := st.Place(state.Launch{
 		Candidates: []placement.Candidate{{Name: account, Ref: account, Key: "uuid:" + account}},
 		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
-		Session:    id, MustReHome: true, Live: live, Now: at,
+		Session:    id, Live: live, Now: at,
 	})
 	return err
 }

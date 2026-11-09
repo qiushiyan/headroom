@@ -11,28 +11,26 @@ records nothing. A bare headroom launch takes the least-loaded account; headroom
 
 An account is a config dir: Claude Code's primary is ~/.claude and the others are
 ~/.claude-accounts/<email>; Codex's are ~/.codex and ~/.codex-accounts/<email>. Commands
-that report — the board, limits, launches, refresh — cover every vendor on this machine
-unless --vendor names one. Commands that act on one account — launch, resolve, accounts
-add and remove — act on Claude Code unless --vendor says codex. login, sessions and
-headless are Claude Code only.`
+that report — the board, limits, refresh — cover every vendor on this machine
+unless --vendor names one. Commands that act on one account — launch, accounts add and
+remove — act on Claude Code unless --vendor says codex. login and headless are
+Claude Code only.`
 
 var configuration = clikit.Section{
 	Title: "Configuration",
 	Body: `Nothing needs configuring on a standard install. These variables re-point the defaults:
 
-  HEADROOM_HOME                    everything home-derived, for both vendors (test isolation)
-  HEADROOM_ACCOUNTS_ROOT           where Claude Code's extra account dirs live
+  HEADROOM_HOME                    the home both vendors' dirs and accounts roots derive from:
+                                   a test's sandbox, or this home reached from a process whose
+                                   HOME is another; a launch of the primary refuses under it
   HEADROOM_PRIMARY_NAME            the name ~/.claude answers to (default: its email's local part);
                                    a name only: what headroom records follows the dir, whatever it is called
   HEADROOM_LAUNCHER_FORMAT         how the board spells an account's launch command (%s = name)
-  HEADROOM_CODEX_ACCOUNTS_ROOT     where Codex's extra homes live
   HEADROOM_CODEX_PRIMARY_NAME      the name ~/.codex answers to
   HEADROOM_CODEX_LAUNCHER_FORMAT   the board's Codex launch command
-  HEADROOM_USAGE_URL, HEADROOM_CODEX_USAGE_URL   the usage endpoints
 
-A relative HEADROOM_HOME or accounts root, or a ~/.claude-accounts/.ledger naming no
-usable accounts root, makes every command refuse until it is fixed; headroom check says
-which.`,
+A relative HEADROOM_HOME makes every command refuse until it is fixed; headroom check
+says which.`,
 }
 
 const boardHelp = `The account board: a block per account with its usage limits — the five-hour session
@@ -63,7 +61,7 @@ var boardDocument = clikit.Section{
      "limits": [{"kind", "group", "model", "label", "percent", "percent_state",
                  "resets_at": RFC3339|null, "reset_state", "identity_state", ...}]},
    "attempt": {"state", "http_status", "next_eligible_at"},   the newest request, not the account
-   "load": null | {"value", "busy", "launched", "homes": [...]}}],
+   "load": null | {"value", "busy", "launched"}}],
  "problems": [{"vendor", "section", "detail"}]}
 
 Select limits by kind, group and model, never by label. A *_state of "bad" means the
@@ -77,9 +75,8 @@ CODEX_HOME and its credential variables) is stripped, never obeyed. The process 
 replaced, so the vendor's exit status is the command's.
 
 How the account is decided:
-  bare, --auto  the least-loaded account
+  bare          the least-loaded account
   --account N   that account, for this one launch
-  --last        the account of the newest recorded launch
 
 Every launch says on stderr where it went and why before the vendor starts, as one line:
   headroom launch: a@x.com · auto · 5h 12% · week 33%, resets in 2.1d · load 2 (next: b@x.com)
@@ -99,38 +96,11 @@ var launchExamples = clikit.Section{
   headroom launch --vendor codex --account a@x.com -- login`,
 }
 
-const sessionsHelp = `An interactive picker over every Claude Code session on this machine — transcripts are
-machine-global — that enters the chosen session's project dir and continues it, by exec, on
-the account that last drove it. x continues it on the least-loaded of the other accounts
-instead and records the move; r renames, dd deletes; both are refused while the session is
-open. It needs a terminal on stdin and stdout: claude takes them over.
-
---json lists the sessions instead, with no terminal: each one's id, title, project dir,
-branch, owner and whether it is live now. --cd-file is for a shell wrapper: it is created
-empty first and holds the entered dir only once a session was committed, so the shell can
-cd there after claude exits.
-
-Arguments go to claude before the picker's own --resume; --resume and --continue are
-refused, since the picker chooses the session.`
-
 const limitsHelp = `What is already known about every account's limits, as the board's JSON document (see
 headroom board --help), read from disk alone: no health probe, no credential read, no
 request — about 10ms against the board's 300ms, so a statusline can ask often. health reads
 "unprobed" and load is null. Fresher figures come from the board, headroom --json and
 headroom refresh, all under the same per-account request budget.`
-
-const launchesHelp = `The newest launches from the launch log, one line each: when, which account, how it was
-decided, the load and weekly figure it was decided on, how long that week had left, and the
-account that would have been next. --json prints the records as logged, one per line.
-
---eval judges automatic placement instead, per rule version: windows its launches went into
-that reached a limit while another account had room, weekly room that may have renewed
-unspent, and the launches this binary's rule would decide differently. These are observed
-outcomes, not what another choice would have caused. A partial: line names a home or file
-it could not read; a fault: line counts launches this binary's rule decides differently
-from what was logged under its name, so that rule's figures mix two rules. It reads the
-launch logs of every home on the ledger and the usage log, and asks nothing. --since narrows it to a span back from
-now (7d, 36h, 90m) or from a date (2026-10-01).`
 
 const loginHelp = `Renews Claude Code logins: one claude auth login per account, in turn, its approval page
 opened in the Chrome profile matched to the account's email, or the default browser when
@@ -196,7 +166,7 @@ a placement would not choose the account. Tokens are never shown here.`
 
 const placeHelp = `Decides which account the caller's next headless session spends, records the decision as
 load the person's own launches steer around, and prints it as JSON on stdout:
-  {"schema": 1, "placed": bool, "account", "placement", "reason", "rule", "token_ends_at",
+  {"schema": 1, "placed": bool, "account", "placement", "reason", "token_ends_at",
    "refusal", "retry_at", "notes": [...], "accounts": [{"account", "eligible", "excluded",
    "near_limit", "room_at", "load", "busy", "pending", "observed_at", "stale",
    "session", "week"}]}
@@ -207,7 +177,7 @@ waiting alone will not help). Report the session's process with headroom headles
 
 const accountsHelp = `Bare, the account board (see headroom board --help). Its subcommands change the set of
 accounts: add seeds a new account's dir, remove deletes one, reserve keeps one for certain
-repositories, ledger shares the request budget with a second home on this machine.`
+repositories.`
 
 const addHelp = `Seeds the dir for a new subscription: ~/.claude-accounts/<email> (or ~/.codex-accounts/
 <email> under --vendor codex), its session store linked to the machine-global one so every
@@ -223,9 +193,9 @@ session; for Codex, headroom launch --vendor codex --account <email> -- login.`
 
 const removeHelp = `Removes an extra account: deletes its Keychain item and its dir, and scrubs .order and
 any reservation.
-Refused while a session is live on it, or when that cannot be verified. Bare on a terminal
-it offers a picker of the removable accounts; it asks y/N unless --yes. Transcripts are
-machine-global and survive. Also removes stranded <name>.lock debris. Codex accounts are
+Refused while a session is live on it, or when that cannot be verified. Bare, it names the
+removable accounts and refuses; it asks y/N unless --yes. Transcripts are machine-global
+and survive. Also removes stranded <name>.lock debris. Codex accounts are
 never removed — headroom cannot tell whether a codex session is running on a home — and the
 refusal names the dir to delete by hand.`
 
@@ -235,24 +205,17 @@ directories it replaces the account's reservation; --clear drops it.
 An automatic launch or headless placement outside those repositories never chooses the
 account. Inside them it is ranked like any other account: a reservation says what an account
 may be used for, never that it goes first, and every other account stays available there. A
-launch that names its account and --last are not affected, and a resumed session moves off
-the account when its directory is outside them. Where a launch is decides this: the
+launch that names its account is not affected, and a resumed session moves off the account
+when its directory is outside them. Where a launch is decides this: the
 directory it starts in, a session's own directory on a resume, a headless caller's working
 directory.
 
 A repository counts with every worktree of it, wherever they live. A directory in no
 repository counts with everything under it. If a directory later goes missing the account
-stays kept: it can then be launched only by name. A reservation belongs to this home, so
-another home's login of the same subscription is not kept.
+stays kept: it can then be launched only by name.
 
 The reservation lives in .reserved in the accounts root. While that file cannot be read,
 automatic choices refuse and launches that name their account still run.`
-
-const ledgerHelp = `Claude Code only. With a root, this home spends against that accounts root's ledger from
-now on — for a second home on this machine holding its own logins of the same
-subscriptions: both then ask each subscription once per request spacing and count each
-other's sessions and launches. Naming this home's own root stops sharing. Either way it
-registers this home in the ledger and lists the homes registered there.`
 
 const checkHelp = `Verifies the reverse-engineered vendor facts headroom relies on — credential, identity and
 usage-response shapes, the binary's seams, the session store's topology and retention —
@@ -267,6 +230,3 @@ prints nothing: the round headroom --json runs, without the health probes or the
 An automatic launch leaves one running for the next launch's figures. It ends within about
 twelve seconds; SIGTERM, SIGINT or SIGHUP stop it within one, with the request it abandoned
 recorded.`
-
-const resolveHelp = `Prints one line for shell preflight: the account's canonical name, its config dir and its
-kind (primary or extra), separated by tabs.`

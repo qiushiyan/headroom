@@ -158,14 +158,10 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if _, err := os.Lstat(dir); err != nil {
 		t.Fatal("dir removed despite aborted confirmation")
 	}
-	// Bare invocation on a terminal: the picker chooses and confirms;
-	// cancelling aborts, and a confirmed choice still meets the gate
-	// (exercised below with a@x.com's live session) before anything runs.
-	var picked []removeCandidate
-	bare := inter
-	bare.pick = func(c []removeCandidate) (string, bool) { picked = c; return "", false }
-	if code := run(bare); code != 1 || len(picked) != 1 || picked[0].Name != "a@x.com" || picked[0].Email != "a@x.com" {
-		t.Errorf("picker cancel: exit %d, candidates %+v", code, picked)
+	// Bare, even on a terminal: removal names its object up front, so the
+	// command refuses and names what could be removed.
+	if code := run(inter); code != 2 || !strings.Contains(errw.String(), "a@x.com  (logged in)") || len(keychainCalls) != 0 {
+		t.Errorf("bare on a terminal: exit %d %s", code, errw.String())
 	}
 
 	// A live (or unverifiable) registered session refuses before anything.
@@ -175,12 +171,6 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	live.probe = func(int) (int64, error) { return 1000, nil } // matches startedAt/1000
 	if code := run(live, "a@x.com", "--yes"); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
 		t.Errorf("live: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
-	}
-	pickedLive := live
-	pickedLive.interactive = true
-	pickedLive.pick = func([]removeCandidate) (string, bool) { return "a@x.com", true }
-	if code := run(pickedLive); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
-		t.Errorf("picked live: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
 	}
 	unknown := deps
 	unknown.probe = nil
@@ -283,21 +273,7 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	if code := run(racing, "e@x.com"); code != 1 || !strings.Contains(errw.String(), "live session") || len(keychainCalls) != 0 {
 		t.Errorf("session started during prompt: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
 	}
-	// A confirmed picker choice proceeds straight to removal — no second
-	// prompt reads stdin (EOF here), the dir goes.
-	dir5 := seed("f@x.com")
-	pickedOK := deps
-	pickedOK.interactive = true
-	pickedOK.stdin = strings.NewReader("")
-	pickedOK.pick = func([]removeCandidate) (string, bool) { return "f@x.com", true }
-	keychainCalls = nil
-	if code := run(pickedOK); code != 0 || len(keychainCalls) != 1 {
-		t.Errorf("picked dead account: exit %d %s keychain=%v", code, errw.String(), keychainCalls)
-	}
-	if _, err := os.Lstat(dir5); err == nil {
-		t.Error("picked dir still exists")
-	}
-	// Lock debris goes through the same door, is offered by the picker,
+	// Lock debris goes through the same door, is named among the candidates,
 	// and "yes" confirms.
 	os.Mkdir(filepath.Join(cfg.AccountsRoot, "b@x.com.lock"), 0o755)
 	cands, cerr := removeCandidates(cfg)
@@ -311,9 +287,8 @@ func TestAccountsRemoveCommand(t *testing.T) {
 		t.Errorf("lock debris: exit %d %s", code, errw.String())
 	}
 
-	// Nothing removable: the bare terminal invocation says so and never
-	// opens the picker; an unreadable root is reported as such rather than
-	// as an empty one.
+	// Nothing removable: the bare invocation says so, and an unreadable root
+	// is reported as such rather than as an empty one.
 	cands, _ = removeCandidates(cfg)
 	for _, c := range cands {
 		// Test fixtures, not accounts: the unmigrated-projects dir above
@@ -322,7 +297,6 @@ func TestAccountsRemoveCommand(t *testing.T) {
 	}
 	empty := deps
 	empty.interactive = true
-	empty.pick = func([]removeCandidate) (string, bool) { t.Fatal("picker opened over no candidates"); return "", false }
 	if code := run(empty); code != 2 || !strings.Contains(errw.String(), "nothing to remove") {
 		t.Errorf("no candidates: exit %d %s", code, errw.String())
 	}

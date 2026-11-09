@@ -4,15 +4,15 @@ Remove an extra account: its Keychain item and its dir.
 
 Removes an extra account: deletes its Keychain item and its dir, and scrubs .order and
 any reservation.
-Refused while a session is live on it, or when that cannot be verified. Bare on a terminal
-it offers a picker of the removable accounts; it asks y/N unless --yes. Transcripts are
-machine-global and survive. Also removes stranded <name>.lock debris. Codex accounts are
+Refused while a session is live on it, or when that cannot be verified. Bare, it names the
+removable accounts and refuses; it asks y/N unless --yes. Transcripts are machine-global
+and survive. Also removes stranded <name>.lock debris. Codex accounts are
 never removed — headroom cannot tell whether a codex session is running on a home — and the
 refusal names the dir to delete by hand.
 
 Arguments:
-  <account>              The account to remove, or <name>.lock debris; a picker on a terminal when
-                         absent (optional).
+  <account>              The account to remove, or <name>.lock debris; bare, the removable ones are
+                         listed and nothing is removed (optional).
 
 Flags:
   -y, --yes              Remove without asking.

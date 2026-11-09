@@ -3,15 +3,18 @@ package state
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -269,9 +272,17 @@ func TestUnreadableSectionSurvivesAnUnrelatedWrite(t *testing.T) {
 	if compact(t, raw["extra"]) != `{"future":true}` {
 		t.Errorf("an unknown section was dropped: %s", raw["extra"])
 	}
-	// And mutations against it are refused rather than silently rebuilding it.
-	if err := rehome(s, "s1", "a@x.com", time.Now(), nil); err != ErrCorrupt {
-		t.Errorf("re-home over a corrupt section: %v", err)
+	// A launch that would re-home over it records its load, leaves the
+	// section as it is, and says why its routing was not written.
+	p, err := s.Place(Launch{
+		Candidates: idle("a@x.com"), Intent: placement.Intent{Kind: placement.Forced, Account: "a@x.com", Reason: "test"},
+		Session: "s1", Now: time.Now(),
+	})
+	if err != nil || !errors.Is(p.SessionErr, ErrCorrupt) {
+		t.Errorf("re-home over a corrupt section: %+v %v", p, err)
+	}
+	if raw := readRaw(t, root); string(raw["sessions"]) != `"not-an-object"` {
+		t.Errorf("a launch rebuilt the unreadable re-homes: %s", raw["sessions"])
 	}
 }
 
@@ -329,8 +340,8 @@ func TestNewerSchemaIsReadOnly(t *testing.T) {
 	writeDoc(t, root, doc)
 	s := Open(rootScope(root))
 
-	if docs := s.Load().Documents(); len(docs) != 1 || !docs[0].ReadOnly || docs[0].Version != 999 {
-		t.Fatalf("a newer schema must be reported read-only: %+v", docs)
+	if snap := s.Load(); !snap.ReadOnly() || snap.Version() != 999 {
+		t.Fatalf("a newer schema must be reported read-only: version %d", snap.Version())
 	}
 	if _, err := s.Claim([]Key{key("a")}, time.Now()); err != ErrReadOnly {
 		t.Errorf("Claim: %v, want ErrReadOnly", err)
@@ -367,7 +378,7 @@ func TestReHome(t *testing.T) {
 	if m["s1"].Account != "a@x.com" || m["s2"].AtMS != 1000 {
 		t.Fatalf("owners = %v", m)
 	}
-	if _, ok := s.Load().Owner("s1"); !ok {
+	if _, ok := s.Load().Owners()["s1"]; !ok {
 		t.Error("Owner lookup lost a live record")
 	}
 }
@@ -538,7 +549,7 @@ func TestNullSectionsAreNotNilMaps(t *testing.T) {
 	}
 	// Nothing was destroyed to get there — a null section held no re-home to
 	// lose, which is what separates this from the hollow-record case.
-	if _, ok := Open(rootScope(root)).Load().Owner("s1"); !ok {
+	if _, ok := Open(rootScope(root)).Load().Owners()["s1"]; !ok {
 		t.Error("the re-home did not survive")
 	}
 }
@@ -582,7 +593,7 @@ func TestAnUnreadableFileIsNotAnEmptyStore(t *testing.T) {
 		t.Error("traffic was authorized on a ledger that could not be read")
 	}
 	os.Chmod(path, 0o600)
-	if _, ok := Open(rootScope(root)).Load().Owner("s1"); !ok {
+	if _, ok := Open(rootScope(root)).Load().Owners()["s1"]; !ok {
 		t.Error("the re-home was destroyed by a write that treated the file as absent")
 	}
 }
@@ -685,4 +696,55 @@ func TestSpacingAboveCooldownMaxIsNeverShortened(t *testing.T) {
 	}
 	atLeast("degraded claim", decs[0].NextEligible, now)
 	atLeast("snapshot after a degraded claim", broken.Load().NextEligible(k, now), now)
+}
+
+// A document an older headroom wrote — one that kept a second home's members,
+// a legacy import, placements by home and a home on every placement and run —
+// reads with no problem, places, and writes. What this binary no longer reads
+// is carried as it was at the top level and dropped inside a section it
+// rewrites; nothing it still reads is lost. Every machine runs the two
+// binaries side by side until each has moved.
+func TestAnOlderBinarysDocumentReadsPlacesAndWrites(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	ms := func(d time.Duration) string { return itoa(now.Add(d).UnixMilli()) }
+	writeDoc(t, root, `{"version":1,"accounts":{},
+		"members":[{"home":"/Users/o/.steward-home","explicit_primary":false,"seen_at_ms":5}],
+		"legacy_import":{"done":true},
+		"sessions":{"s-old":{"account":"a","atMs":`+ms(-time.Hour)+`}},
+		"placements":{
+			"recent":[{"account":"uuid:a","name":"a","pid":0,"at_ms":`+ms(-time.Minute)+`,"home":"/Users/o/.steward-home","id":"p-old"}],
+			"last":{"repo":{"name":"a","at_ms":`+ms(-time.Minute)+`}},
+			"by_home":{"/Users/o/.steward-home":{"name":"a","at_ms":`+ms(-time.Minute)+`}}},
+		"runs":[{"placement":"p-old","account":"uuid:a","name":"a","pid":`+itoa(int64(os.Getpid()))+`,"started_ms":`+ms(-time.Minute)+`,"home":"/Users/o/.steward-home"}]}`)
+	s := Open(rootScope(root))
+	if probs := s.Load().Problems(); len(probs) != 0 {
+		t.Fatalf("an older document read with problems: %+v", probs)
+	}
+
+	// The older placement on a is load: the rule takes b.
+	p, err := place(s, idle("a", "b"), placement.Intent{}, 7, "", now)
+	if err != nil || p.Decision.Chosen != "b" {
+		t.Fatalf("place over an older document: chose %q, err %v", p.Decision.Chosen, err)
+	}
+
+	raw := readRaw(t, root)
+	if compact(t, raw["members"]) != `[{"home":"/Users/o/.steward-home","explicit_primary":false,"seen_at_ms":5}]` || compact(t, raw["legacy_import"]) != `{"done":true}` {
+		t.Errorf("a top-level section this binary does not read was not carried: members %s, legacy_import %s", raw["members"], raw["legacy_import"])
+	}
+	for _, section := range []string{"placements", "runs"} {
+		if strings.Contains(string(raw[section]), `"home"`) {
+			t.Errorf("%s still carries a home: %s", section, raw[section])
+		}
+	}
+	snap := s.Load()
+	if rec := snap.Placements().Recent; len(rec) != 2 || rec[0].ID != "p-old" {
+		t.Errorf("the older placement was not kept beside the new one: %+v", rec)
+	}
+	if runs := snap.Runs(); len(runs) != 1 || runs[0].Placement != "p-old" {
+		t.Errorf("the older run was not kept: %+v", runs)
+	}
+	if _, ok := snap.Owners()["s-old"]; !ok {
+		t.Error("the older re-home was lost")
+	}
 }

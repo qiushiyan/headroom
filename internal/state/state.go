@@ -1,15 +1,7 @@
-// Package state owns the one file headroom writes for itself: what it asked
-// the usage endpoint, when, what came back, which sessions the user
-// explicitly re-homed, which launches are on their way, and which homes spend
-// against it.
-//
-// A file has two halves with different owners. The subscription ledger — the
-// request ledger, the stored responses, the recent launches and the member
-// homes — is about quota, keyed by account identity, and every home holding a
-// login of a subscription must see one copy of it. The re-homes are about one
-// home's sessions, named by that home's account names. A home alone keeps both
-// in one file, as it always did; a home that shares another's ledger keeps its
-// re-homes in its own file and spends against the other's.
+// Package state owns the one file headroom writes for itself, one per
+// accounts root: what it asked the usage endpoint, when, what came back, which
+// sessions were re-homed, which launches are on their way, and which headless
+// sessions are running.
 //
 // Three properties this package exists to guarantee, none of which a caller
 // can be trusted to maintain:
@@ -36,7 +28,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
@@ -102,8 +93,8 @@ type Key struct {
 	Name string // dir basename, or the primary's configured name
 }
 
-// KeyFor is an account's key: the one spelling of it, since the ledger, both
-// logs and every home sharing them join on it. AccountID is the identity
+// KeyFor is an account's key: the one spelling of it, since the ledger, the
+// placement record and the runs join on it. AccountID is the identity
 // discovery read — Claude Code's accountUuid, or for Codex the account and
 // user ids of the auth snapshot the account carries for the whole round.
 func KeyFor(a accounts.Account) Key { return Key{UUID: a.AccountID, Name: a.Name} }
@@ -165,7 +156,7 @@ type Problem struct {
 // raw map is what gets written back, so a section this binary could not decode
 // survives a write by a section it could.
 type doc struct {
-	root     string // the accounts root this document was read from
+	root     string // the accounts root this document was read from, and is written to
 	raw      map[string]json.RawMessage
 	version  int
 	accounts map[string]accountRec
@@ -186,14 +177,6 @@ type doc struct {
 	// aside at the next write and the record starts empty.
 	runs    []Run
 	badRuns bool
-
-	// members are the homes that spend against this ledger, keyed by accounts
-	// root: where each keeps its account dirs, so another home can read their
-	// live-session registries and count those sessions against the same
-	// subscriptions. Disposable: a home re-registers at its next request or
-	// launch.
-	members    map[string]Member
-	badMembers bool
 
 	// A section that failed to decode is empty above and true here, and the
 	// empty value is what a set-aside section is rebuilt from. The two
@@ -230,8 +213,7 @@ func (d *doc) readOnly() bool { return d.version > Version }
 // absent file is an empty store, and a section that will not decode is
 // reported rather than thrown away.
 type Snapshot struct {
-	d       *doc // the subscription ledger
-	h       *doc // this home's own document; d itself when the ledger is the home's own
+	d       *doc
 	vendor  config.Vendor
 	spacing time.Duration
 }
@@ -244,16 +226,6 @@ func statePath(accountsRoot string) string {
 	return filepath.Join(accountsRoot, "state.json")
 }
 
-// Member is one home that spends against a ledger. Root, its accounts root,
-// is its identity; Home and Explicit are what another home needs to discover
-// its account dirs (config.Scope's Home and PrimaryExplicit).
-type Member struct {
-	Root     string `json:"-"`
-	Home     string `json:"home"`
-	Explicit bool   `json:"explicit_primary,omitempty"`
-	SeenAtMS int64  `json:"seen_at_ms"`
-}
-
 func read(accountsRoot string) *doc {
 	d := &doc{
 		root:     accountsRoot,
@@ -261,7 +233,6 @@ func read(accountsRoot string) *doc {
 		version:  Version,
 		accounts: map[string]accountRec{},
 		sessions: map[string]sessions.OwnerRec{},
-		members:  map[string]Member{},
 	}
 	data, err := os.ReadFile(statePath(accountsRoot))
 	if err != nil {
@@ -327,21 +298,6 @@ func read(accountsRoot string) *doc {
 		d.runs, d.badRuns = nil, true
 		d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
 	}
-	d.adoptHomeless()
-	if !decoded("members", &d.members) {
-		d.members, d.badMembers = map[string]Member{}, true
-		d.problems = append(d.problems, Problem{"members", "unreadable — set aside at the next request; every home registers again"})
-	}
-	for root, m := range d.members {
-		// A record that cannot locate its home is no use to anyone, and
-		// nothing but this code writes one.
-		if !filepath.IsAbs(root) || !filepath.IsAbs(m.Home) {
-			delete(d.members, root)
-			continue
-		}
-		m.Root = root
-		d.members[root] = m
-	}
 	// A JSON null decodes into a map without error and leaves it nil. Nothing
 	// here writes one, but a foreign or hand-edited document may, and a nil map
 	// panics on the first assignment rather than failing any check above.
@@ -351,154 +307,16 @@ func read(accountsRoot string) *doc {
 	if d.sessions == nil {
 		d.sessions = map[string]sessions.OwnerRec{}
 	}
-	if d.members == nil {
-		d.members = map[string]Member{}
-	}
 	return d
 }
 
-// adoptHomeless attributes launches recorded before homes shared a ledger to
-// the home this file belongs to — the only home there was. Done on read, so a
-// file a newer binary has not yet rewritten reads the same as one it has.
-func (d *doc) adoptHomeless() {
-	for i := range d.placements.Recent {
-		if d.placements.Recent[i].Home == "" {
-			d.placements.Recent[i].Home = d.root
-		}
-	}
-	if d.placements.ByHome != nil || len(d.placements.Last) == 0 {
-		return
-	}
-	var newest placement.Last
-	for _, rec := range d.placements.Last {
-		if rec.AtMS > newest.AtMS || (rec.AtMS == newest.AtMS && rec.Name < newest.Name) {
-			newest = rec
-		}
-	}
-	// The newest name recorded stands as the ref, which it is for an extra;
-	// a primary's launch from that long ago answers no --last.
-	d.placements.ByHome = map[string]placement.HomeLast{d.root: {Ref: newest.Name, AtMS: newest.AtMS}}
-}
+// Version is the schema the document on disk carries, and ReadOnly says a
+// newer headroom wrote it: it is read and never written.
+func (s Snapshot) Version() int   { return s.d.version }
+func (s Snapshot) ReadOnly() bool { return s.d.readOnly() }
 
-// register records a home in the ledger, and drops homes nobody has seen for
-// the retention period. Only a change, or a record a day old, dirties the
-// document: a claim that permits nothing must not become a write.
-func (d *doc) register(m Member, now time.Time) {
-	if !filepath.IsAbs(m.Root) || !filepath.IsAbs(m.Home) {
-		// A home that cannot be located is no use to the others.
-		return
-	}
-	d.setAside("members", &d.badMembers)
-	for root, cur := range d.members {
-		if root != m.Root && cur.SeenAtMS < now.Add(-retention).UnixMilli() {
-			delete(d.members, root)
-			d.dirty = true
-		}
-	}
-	cur, ok := d.members[m.Root]
-	if ok && cur.Home == m.Home && cur.Explicit == m.Explicit && now.UnixMilli()-cur.SeenAtMS < memberRefresh.Milliseconds() {
-		return
-	}
-	m.SeenAtMS = now.UnixMilli()
-	d.members[m.Root] = m
-	d.dirty = true
-}
-
-// Document is one of a snapshot's files as an audit sees it. A home that
-// keeps its own ledger has one, holding everything; a home that shares
-// another's has two — the ledger and its own re-homes — and each is judged on
-// its own terms: a file written by a newer headroom is read and left alone
-// without silencing what is wrong in the other.
-type Document struct {
-	// Name is "" for a home's one file, else "ledger" or "home".
-	Name     string
-	Version  int
-	ReadOnly bool // written by a newer headroom: read, never written
-	Problems []Problem
-
-	Ledger  bool // holds the request ledger, the responses, the placements and the runs
-	ReHomes bool // holds this home's re-homes
-}
-
-// Documents are the snapshot's files, the ledger first.
-func (s Snapshot) Documents() []Document {
-	if s.h == s.d {
-		return []Document{{Version: s.d.version, ReadOnly: s.d.readOnly(), Problems: s.d.problems, Ledger: true, ReHomes: true}}
-	}
-	led := Document{Name: "ledger", Version: s.d.version, ReadOnly: s.d.readOnly(), Ledger: true}
-	for _, p := range s.d.problems {
-		led.Problems = append(led.Problems, Problem{"ledger " + p.Section, p.Detail})
-	}
-	home := Document{Name: "home", Version: s.h.version, ReadOnly: s.h.readOnly(), ReHomes: true}
-	for _, p := range s.h.problems {
-		switch p.Section {
-		case "accounts", "placements", "runs", "members":
-			// Left from before this home shared a ledger; nothing reads them.
-		default:
-			home.Problems = append(home.Problems, p)
-		}
-	}
-	return []Document{led, home}
-}
-
-// Problems lists what could not be read, in every document. Empty is the
-// ordinary case.
-func (s Snapshot) Problems() []Problem {
-	var out []Problem
-	for _, d := range s.Documents() {
-		out = append(out, d.Problems...)
-	}
-	return out
-}
-
-// Shared reports that the subscription ledger is another home's file.
-func (s Snapshot) Shared() bool { return s.h != s.d }
-
-// Members lists the homes registered in the ledger, by accounts root.
-func (s Snapshot) Members() []Member {
-	out := make([]Member, 0, len(s.d.members))
-	for _, m := range s.d.members {
-		out = append(out, m)
-	}
-	slices.SortFunc(out, func(a, b Member) int { return strings.Compare(a.Root, b.Root) })
-	return out
-}
-
-// HomeLabels names every registered home by accounts root: the home dir's
-// last element ("steward-home" for ~/.steward-home), which is what a person
-// calls it. Read it through Of, which also names a home that has not
-// registered — this one, before its first write.
-func (s Snapshot) HomeLabels() HomeLabels {
-	out := HomeLabels{}
-	for _, m := range s.Members() {
-		out[m.Root] = strings.TrimPrefix(filepath.Base(m.Home), ".")
-	}
-	return out
-}
-
-// HomeLabels maps an accounts root to the name of the home it belongs to.
-type HomeLabels map[string]string
-
-// Of is root's home name: its registered label, or for a home that has not
-// registered, its root's parent.
-func (l HomeLabels) Of(root string) string {
-	if name, ok := l[root]; ok && name != "" {
-		return name
-	}
-	return strings.TrimPrefix(filepath.Base(filepath.Dir(root)), ".")
-}
-
-// OtherHomes is every other home spending against this ledger today: the
-// homes registered in it, resolved by accounts.OtherHomes, which keeps only
-// those whose own .ledger still names it. Their accounts are read for live
-// sessions alone — never candidates, owners or sweep targets.
-func (s Snapshot) OtherHomes(self config.Scope) []accounts.Home {
-	var registered []config.Scope
-	for _, m := range s.Members() {
-		registered = append(registered, config.HomeScope(self.Vendor, m.Home, m.Root, m.Explicit))
-	}
-	return accounts.OtherHomes(self, registered)
-}
+// Problems lists what could not be read. Empty is the ordinary case.
+func (s Snapshot) Problems() []Problem { return slices.Clone(s.d.problems) }
 
 // Observation returns the newest usage response headroom itself stored for
 // this account, if any is usable.
@@ -553,19 +371,12 @@ func (d *doc) deadline(id string, now time.Time, ceil time.Duration) (next int64
 	return next, false
 }
 
-// Owner returns the explicit re-home recorded for a session, if any. Re-homes
-// are this home's: another home sharing the ledger keeps its own.
-func (s Snapshot) Owner(id string) (sessions.OwnerRec, bool) {
-	r, ok := s.h.sessions[id]
-	return r, ok
-}
-
 // Owners is every explicit re-home of this home. The map is the caller's to
 // read, not to keep: a re-home is written by Place, with the launch it
 // belongs to.
 func (s Snapshot) Owners() map[string]sessions.OwnerRec {
-	out := make(map[string]sessions.OwnerRec, len(s.h.sessions))
-	maps.Copy(out, s.h.sessions)
+	out := make(map[string]sessions.OwnerRec, len(s.d.sessions))
+	maps.Copy(out, s.d.sessions)
 	return out
 }
 
@@ -574,16 +385,16 @@ func (s Snapshot) Owners() map[string]sessions.OwnerRec {
 // only Place — under the lock — may record one.
 func (s Snapshot) Placements() placement.Ledger { return s.d.placements.Clone() }
 
-// Runs is every headless session process recorded in the ledger, in every
-// home that spends against it. A record says a process was started; whether
-// it still runs is the reader's to verify, by its pid and start instant.
+// Runs is every headless session process recorded against this accounts
+// root. A record says a process was started; whether it still runs is the
+// reader's to verify, by its pid and start instant.
 func (s Snapshot) Runs() []Run { return slices.Clone(s.d.runs) }
 
 // OwnersReadable reports whether the sessions section decoded. False means
-// routing falls back to derived evidence, which the resume picker says out
-// loud on open and `check` reports — rather than silently behaving as though
+// routing falls back to derived evidence, which a launch that would re-home
+// says out loud and `check` reports — rather than silently behaving as though
 // no session was ever re-homed.
-func (s Snapshot) OwnersReadable() bool { return !s.h.badSessions }
+func (s Snapshot) OwnersReadable() bool { return !s.d.badSessions }
 
 // AuditRecord is one ledger entry laid open for `check`. Nothing else reads
 // the store this way: the surfaces ask about one account at a time and get
@@ -654,9 +465,8 @@ func (d *doc) marshal() ([]byte, error) {
 	}
 	put("accounts", d.badAccounts, false, d.accounts)
 	put("sessions", d.badSessions, false, d.sessions)
-	put("members", d.badMembers, len(d.members) == 0, d.members)
 	put("runs", d.badRuns, len(d.runs) == 0, d.runs)
-	put("placements", d.badPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0, d.placements)
+	put("placements", d.badPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0, d.placements)
 	if err != nil {
 		return nil, err
 	}

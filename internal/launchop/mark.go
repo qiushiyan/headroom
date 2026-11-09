@@ -19,8 +19,6 @@ import (
 type Marks struct {
 	cands  []placement.Candidate
 	ledger placement.Ledger
-	home   string
-	labels state.HomeLabels
 	// refused says a launch would refuse — a reservation that cannot be read
 	// — so no account is the one it would take.
 	refused bool
@@ -30,10 +28,10 @@ type Marks struct {
 }
 
 // Mark gathers what a board's marks are decided from: the load a launch would
-// count on each account — its busy sessions and recent launches, from every
-// home sharing the ledger — and the account a launch in dir would take from
-// the figures the board is showing: a reservation makes that depend on the
-// directory, and the board's is the launch it can speak for.
+// count on each account — its busy sessions and recent launches — and the
+// account a launch in dir would take from the figures the board is showing: a
+// reservation makes that depend on the directory, and the board's is the
+// launch it can speak for.
 //
 // The mark is advice: it is computed from the board's observations and the
 // record as it stood, and a launch decides again from the disk — counting
@@ -52,7 +50,7 @@ func Mark(set accounts.Set, st *state.Store, accts []accountstate.Account, envir
 			reserved[c.Name] = c.reserved
 		}
 	}
-	return &Marks{cands: f.rule(), ledger: snap.Placements(), home: st.Home(), labels: f.labels, refused: f.reservedErr != nil, reserved: reserved}
+	return &Marks{cands: f.rule(), ledger: snap.Placements(), refused: f.reservedErr != nil, reserved: reserved}
 }
 
 // At is every account's mark at now, by name: its load and whether it is the
@@ -66,20 +64,9 @@ func (m *Marks) At(now time.Time) map[string]accountstate.Mark {
 	for _, c := range decision.Candidates {
 		out[c.Name] = accountstate.Mark{
 			Next:     !m.refused && decision.Chosen != "" && c.Name == decision.Chosen,
-			Load:     loadFacts(c, m.home, m.labels),
+			Load:     &accountstate.Load{Value: c.Load, Busy: c.Busy, Launched: c.Pending},
 			Reserved: m.reserved[c.Name],
 		}
 	}
 	return out
-}
-
-// loadFacts is a counted candidate's load as a surface reports it.
-func loadFacts(c placement.Counted, self string, labels state.HomeLabels) *accountstate.Load {
-	l := &accountstate.Load{Value: c.Load, Busy: c.Busy, Launched: c.Pending}
-	for _, sh := range c.Shares {
-		l.Homes = append(l.Homes, accountstate.HomeLoad{
-			Home: sh.Home, Label: labels.Of(sh.Home), This: sh.Home == self, Busy: sh.Busy, Launched: sh.Pending,
-		})
-	}
-	return l
 }

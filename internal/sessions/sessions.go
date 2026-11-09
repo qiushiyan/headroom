@@ -1,52 +1,9 @@
+// Package sessions reads what Claude Code records about its sessions, for a
+// launch to weigh: which account drove a session (its owner), which sessions
+// are running now and on which account (the live registry), and which
+// repository a directory belongs to. Transcripts are machine-global, kept in
+// one store every account links to; nothing here reads them beyond their ids.
 package sessions
-
-import (
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"time"
-)
-
-// OwnerState says how a session's owner account was established — carried to
-// the surface and `--json`, because "why that account?" must be answerable.
-type OwnerState int
-
-const (
-	OwnerNone     OwnerState = iota // no evidence at all → caller falls back to current
-	OwnerLive                       // verified live registry: that account runs it now
-	OwnerRehome                     // the user's explicit re-home record
-	OwnerHistory                    // newest prompt in that account's history
-	OwnerMissing                    // best evidence names an account that no longer exists
-	OwnerConflict                   // two accounts claim the same newest moment
-)
-
-// Session is one listable transcript plus everything the picker needs to
-// render and act on it. Axes stay separate on purpose: what the transcript
-// says (Tail), whether its project dir still exists (DirOK), whether it is
-// open right now (Live), and which account should resume it (Owner) vary
-// independently, and collapsing them is the class of bug this repo's model
-// exists to prevent.
-type Session struct {
-	ID       string
-	Path     string // the transcript
-	StoreDir string // its containing store directory (full path)
-	MTime    time.Time
-	Size     int64
-
-	Tail Tail
-
-	CWD      string // munge-verified resume target; "" = not recoverable
-	DirOK    bool   // CWD is non-empty and exists right now
-	RepoKey  string // canonical main-checkout path; "" = none
-	RepoRoot string // the checkout/worktree root containing CWD
-	Head     Head   // what RepoRoot is checked out on right now, read this collect
-	Local    bool   // same repo (or same dir) as the picker's cwd
-
-	Owner      string // account name; "" when OwnerState says there is nothing to name
-	OwnerState OwnerState
-	Live       LiveState
-}
 
 // AccountRef names one discovered account and its real config dir.
 type AccountRef struct {
@@ -55,245 +12,63 @@ type AccountRef struct {
 	Dir  string
 }
 
-// Input wires Collect. Exec stays outside: Probe is the one process
-// inspection the liveness check needs, injected by the app layer.
-type Input struct {
-	ProjectsDir string
-	CWD         string // where the picker runs; anchors the local section
-	Accounts    []AccountRef
-	Owners      map[string]OwnerRec // explicit re-homes, read from the state store
-	Probe       PIDProbe
-}
-
-// Listing is the collector's whole answer, shared by the picker and --json.
-type Listing struct {
-	Sessions []*Session // newest first
-	LocalKey string     // repo key (or canonical dir) the local section groups on
-}
-
-// Collect walks the store once, synchronously — measured at ~50ms for the
-// live store's 178 transcripts via TailBudget-bounded reads, which is under
-// any threshold worth a cache or a skeleton frame, and a cache over vendor
-// files would be a second source of truth with its own invalidation bugs.
-func Collect(in Input) Listing {
-	live := readLiveness(in.Accounts, in.Probe)
-	owners := readOwnerEvidence(in.Accounts, in.Owners, true)
-
-	repos := repoCache{}
-	byID := map[string]*Session{}
-	dirs, _ := os.ReadDir(in.ProjectsDir)
-	for _, d := range dirs {
-		if !d.IsDir() {
-			continue
-		}
-		storeDir := filepath.Join(in.ProjectsDir, d.Name())
-		files, _ := os.ReadDir(storeDir)
-		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
-				continue
-			}
-			s := readSession(storeDir, d.Name(), f.Name())
-			if s == nil {
-				continue
-			}
-			// Orphan-suffixed duplicates share the id of their sibling; one
-			// row per session, preferring the canonical file, else the newer.
-			if prev, ok := byID[s.ID]; ok {
-				if prevCanonical := prev.Path == filepath.Join(prev.StoreDir, prev.ID+".jsonl"); prevCanonical {
-					continue
-				}
-				if s.Path != filepath.Join(storeDir, s.ID+".jsonl") && !s.MTime.After(prev.MTime) {
-					continue
-				}
-			}
-			byID[s.ID] = s
-		}
-	}
-
-	local := repos.lookup(in.CWD)
-	localKey := local.Key
-	if localKey == "" {
-		localKey = canon(in.CWD)
-	}
-
-	out := Listing{LocalKey: localKey}
-	for _, s := range byID {
-		info := repos.lookup(s.CWD)
-		s.RepoKey, s.RepoRoot, s.Head = info.Key, info.Root, info.Head
-		if s.CWD != "" {
-			if fi, err := os.Stat(s.CWD); err == nil && fi.IsDir() {
-				s.DirOK = true
-			}
-		}
-		s.Local = (s.RepoKey != "" && s.RepoKey == localKey) ||
-			(s.RepoKey == "" && s.DirOK && canon(s.CWD) == localKey)
-		process := live.of(s.ID)
-		s.Live = process.State
-		s.Owner, s.OwnerState = owners.resolve(s.ID, process)
-		out.Sessions = append(out.Sessions, s)
-	}
-	sort.Slice(out.Sessions, func(i, j int) bool {
-		return out.Sessions[i].MTime.After(out.Sessions[j].MTime)
-	})
-	return out
-}
-
-// readSession stats and tail-parses one transcript file. The first pass
-// reads TailBudget bytes, which resolves every field for almost every
-// transcript — but a session can end in one enormous message, starving the
-// tail of any munge-verifiable cwd while the file plainly holds one. A row
-// wrongly marked unresumable is the picker lying, so the window widens
-// geometrically until a cwd verifies or the whole file has been read (rare:
-// 5 of 178 in the live store, and only ever on multi-MB files).
-func readSession(storeDir, storeDirName, name string) *Session {
-	// The file's name is the session's identity — the uuid before any suffix
-	// (".jsonl", ".orphaned-<ts>-<hash>.jsonl") — because it is what
-	// `claude --resume <id>` opens, whatever id the records inside carry.
-	id, _, _ := strings.Cut(name, ".")
-	if id == "" {
-		return nil
-	}
-	path := filepath.Join(storeDir, name)
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	size := fi.Size()
-	var tail Tail
-	for window := int64(TailBudget); ; window *= 2 {
-		off := max(size-window, 0)
-		buf := make([]byte, size-off)
-		n, _ := f.ReadAt(buf, off)
-		tail = ParseTail(buf[:n], storeDirName, off == 0)
-		// Both load-bearing rendered facts, or the whole file: a window that
-		// starts inside one enormous assistant record skips it as a partial
-		// line, and a later small cwd record must not end the search while
-		// the session's only model claim sits unread.
-		if (tail.CWD != "" && tail.Model != "") || off == 0 {
-			break
-		}
-	}
-
-	return &Session{
-		ID: id, Path: path, StoreDir: storeDir,
-		MTime: fi.ModTime(), Size: size, Tail: tail, CWD: tail.CWD,
-	}
-}
-
-// OwnerOf resolves one session's owner from the same evidence, under the same
-// precedence, as Collect does for every session — for a launch that names a
-// session by id and must decide where it runs without walking the store.
+// OwnerOf names the account that last drove a session, for a launch that
+// names the session by id and must decide where it runs: the newest account
+// claim headroom can observe or was explicitly given — not unobservable ground
+// truth. A verified live registry entry outranks everything (that account is
+// driving the session at this instant); otherwise the explicit re-home and
+// each account's newest prompt for the session compete on one honest axis,
+// event time on this machine's clock. Nothing is ever re-stamped, so stale
+// evidence cannot be promoted.
+//
+// It is "" when nothing names an owner: no evidence, two accounts claiming
+// the same newest moment, or a newest re-home to an account that no longer
+// exists — which must not fall through to older history, since that would
+// resurrect a routing the person abandoned. A launch then places the session
+// like a new one, never on the primary by default.
+//
 // evidence is that session's process evidence from the caller's one registry
 // inspection; owners are the explicit re-homes.
-func OwnerOf(id string, accts []AccountRef, evidence ProcessEvidence, owners map[string]OwnerRec) (string, OwnerState) {
-	// A verified live claim outranks every history, so none is read for one.
-	return readOwnerEvidence(accts, owners, evidence.State != Live).resolve(id, evidence)
-}
-
-// ownerEvidence is what the owner rule weighs besides a session's process:
-// which accounts exist, each one's prompt history, and the explicit re-homes.
-type ownerEvidence struct {
-	names  map[string]bool
-	byRef  map[string]string // a re-home's account, as the account is called now
-	hists  map[string]History
-	owners map[string]OwnerRec
-}
-
-// readOwnerEvidence assembles it for Collect and OwnerOf alike — one reading
-// of the accounts, so the listing and a launch naming one session resolve an
-// owner from the same files. history is false only when the answer is
-// already decided without it.
-func readOwnerEvidence(accts []AccountRef, owners map[string]OwnerRec, history bool) ownerEvidence {
-	ev := ownerEvidence{names: map[string]bool{}, byRef: map[string]string{}, hists: map[string]History{}, owners: owners}
+func OwnerOf(id string, accts []AccountRef, evidence ProcessEvidence, owners map[string]OwnerRec) string {
+	if evidence.State == Live {
+		return evidence.Account
+	}
+	byRef, hists := map[string]string{}, map[string]History{}
 	for _, a := range accts {
-		ev.names[a.Name] = true
-		ev.byRef[a.Ref] = a.Name
-		if !history {
-			continue
-		}
+		byRef[a.Ref] = a.Name
 		if h, ok := ReadHistory(a.Dir); ok {
-			ev.hists[a.Name] = h
+			hists[a.Name] = h
 		}
 	}
-	return ev
+	return newestClaim(id, byRef, hists, owners)
 }
 
-// resolve is the affinity contract: the owner is the newest account claim
-// headroom can observe or was explicitly given — not unobservable ground
-// truth. A verified live registry entry outranks everything (that account is
-// driving the session at this instant); otherwise the explicit re-home record
-// and each account's newest prompt compete on one honest axis, event time on
-// this machine's clock. Nothing is ever re-stamped, so stale evidence can't be
-// promoted.
-func (ev ownerEvidence) resolve(id string, process ProcessEvidence) (string, OwnerState) {
-	if process.State == Live {
-		return process.Account, OwnerLive
-	}
-
-	bestAcct, bestTS, bestState := "", int64(0), OwnerNone
-	conflict := false
-	consider := func(acct string, ts int64, st OwnerState) {
+// newestClaim is the owner rule over evidence already read: the account each
+// ref is called now, each account's prompt history and the explicit re-homes.
+func newestClaim(id string, byRef map[string]string, hists map[string]History, owners map[string]OwnerRec) string {
+	best, bestTS, conflict := "", int64(0), false
+	consider := func(acct string, ts int64) {
 		switch {
 		case ts > bestTS:
-			bestAcct, bestTS, bestState = acct, ts, st
-			conflict = false
-		case ts == bestTS && ts > 0 && acct != bestAcct:
+			best, bestTS, conflict = acct, ts, false
+		case ts == bestTS && ts > 0 && acct != best:
 			// Two accounts claiming the same newest moment is undecidable,
-			// whatever the sources — the contract has exactly one tie rule,
-			// visible fallback, and a re-home exception here would make the
-			// spec lie about the rare case it exists to keep honest.
+			// whatever the sources.
 			conflict = true
 		}
 	}
-	if rec, ok := ev.owners[id]; ok {
-		if name, ok := ev.byRef[rec.Account]; ok {
-			consider(name, rec.AtMS, OwnerRehome)
-		} else {
-			// The re-homed-to account is gone. Surfacing that beats silently
-			// falling through to older history evidence that would resurrect
-			// a routing the user explicitly abandoned.
-			consider("", rec.AtMS, OwnerMissing)
-		}
+	if rec, ok := owners[id]; ok {
+		// A re-home to an account that is gone is "" here, and still the
+		// newest word on the session.
+		consider(byRef[rec.Account], rec.AtMS)
 	}
-	for acct, h := range ev.hists {
+	for acct, h := range hists {
 		if ts, ok := h.Newest[id]; ok {
-			consider(acct, ts, OwnerHistory)
+			consider(acct, ts)
 		}
 	}
-	switch {
-	case conflict:
-		return "", OwnerConflict
-	case bestState == OwnerMissing:
-		return "", OwnerMissing
-	default:
-		return bestAcct, bestState
+	if conflict {
+		return ""
 	}
-}
-
-// DeleteTranscript removes a session from the store: the transcript, any
-// orphan-suffixed siblings, and the closure directory (subagents,
-// tool-results, …). The caller is responsible for refusing live sessions;
-// this function only refuses ids that could escape the store dir.
-func DeleteTranscript(s *Session) error {
-	if s.ID == "" || strings.ContainsAny(s.ID, "/.") {
-		return os.ErrInvalid
-	}
-	var firstErr error
-	note := func(err error) {
-		if err != nil && !os.IsNotExist(err) && firstErr == nil {
-			firstErr = err
-		}
-	}
-	note(os.Remove(filepath.Join(s.StoreDir, s.ID+".jsonl")))
-	orphans, _ := filepath.Glob(filepath.Join(s.StoreDir, s.ID+".orphaned-*.jsonl"))
-	for _, o := range orphans {
-		note(os.Remove(o))
-	}
-	note(os.RemoveAll(filepath.Join(s.StoreDir, s.ID)))
-	return firstErr
+	return best
 }

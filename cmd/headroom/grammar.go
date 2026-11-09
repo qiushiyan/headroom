@@ -17,17 +17,12 @@ type CLI struct {
 	Board    BoardCmd    `cmd:"" default:"withargs" help:"The account board: every account's limits, live; also headroom accounts."`
 	Accounts AccountsCmd `cmd:"" help:"The account board, and adding, removing and sharing accounts."`
 	Launch   LaunchCmd   `cmd:"" help:"Run claude, or codex, on the account headroom decides."`
-	Sessions SessionsCmd `cmd:"" help:"Continue any Claude Code session on this machine, on the account that last drove it."`
 	Limits   LimitsCmd   `cmd:"" help:"Print what is known about every account's limits, read from disk alone."`
-	Launches LaunchesCmd `cmd:"" help:"List the newest launches, or judge how automatic placement has done."`
 	Login    LoginCmd    `cmd:"" help:"Renew the Claude Code logins that end soon."`
 	Headless HeadlessCmd `cmd:"" help:"Place sessions a headless runner starts itself, on per-account tokens."`
-	Resolve  ResolveCmd  `cmd:"" help:"Print an account's name, dir and kind, for shell preflight."`
 	Refresh  RefreshCmd  `cmd:"" help:"Ask the usage endpoint about every account that may be asked, and store the answers."`
 	Check    CheckCmd    `cmd:"" help:"Verify the vendor facts headroom relies on, and its own state."`
 	VersionC VersionCmd  `cmd:"" name:"version" help:"Print the build this binary is."`
-
-	Resume ResumeCmd `cmd:"" hidden:"" passthrough:""`
 }
 
 func (CLI) Help() string { return rootHelp }

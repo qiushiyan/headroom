@@ -143,9 +143,9 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
 	checkRouting(set, environ, r)
-	checkHomes(set, snap, r)
+	checkLogins(set, r)
 	checkRetention(set, r)
-	checkSessionStore(scope, accts, snap, probe, r)
+	checkSessionStore(accts, probe, r)
 }
 
 // hasMeta reports an account whose .claude.json Claude Code has written; an

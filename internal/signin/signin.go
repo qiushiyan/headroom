@@ -242,7 +242,7 @@ const maxSocketPath = 103
 // holder answers there.
 func Listen(path string) (*net.UnixListener, error) {
 	if len(path) > maxSocketPath {
-		return nil, fmt.Errorf("the sign-in's socket path %s is %d bytes, longer than the %d a socket can bind at — set a shorter HEADROOM_ACCOUNTS_ROOT", path, len(path), maxSocketPath)
+		return nil, fmt.Errorf("the sign-in's socket path %s is %d bytes, longer than the %d a socket can bind at — set a shorter HEADROOM_HOME", path, len(path), maxSocketPath)
 	}
 	os.Remove(path)
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})

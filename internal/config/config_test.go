@@ -10,33 +10,27 @@ import (
 
 // clearOverrides leaves Load nothing but defaults, under a HOME of the test's
 // own: unset, HEADROOM_HOME is HOME, and Load would read the user's own
-// accounts root's .ledger and ~/.codex.
+// ~/.codex.
 func clearOverrides(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
-		"HEADROOM_HOME", "HEADROOM_ACCOUNTS_ROOT", "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL",
-		"HEADROOM_CODEX_ACCOUNTS_ROOT", "HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL",
+		"HEADROOM_HOME", "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL",
+		"HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL",
 	} {
 		t.Setenv(v, "")
 	}
 	t.Setenv("HOME", t.TempDir())
 }
 
-// Relative overrides refuse outright: verified against the 2.1.220 binary, a
-// relative CLAUDE_CONFIG_DIR runs the session as the primary (default
-// Keychain item) while writing state beside the cwd, and every config-dir
-// path headroom builds derives from these roots.
-func TestLoadRefusesRelativeOverrides(t *testing.T) {
-	for v, rel := range map[string]string{
-		"HEADROOM_HOME":                "fixture",
-		"HEADROOM_ACCOUNTS_ROOT":       "./accounts",
-		"HEADROOM_CODEX_ACCOUNTS_ROOT": "relative/root",
-	} {
-		clearOverrides(t)
-		t.Setenv(v, rel)
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), v) {
-			t.Errorf("relative %s: err = %v, want a refusal naming it", v, err)
-		}
+// A relative HEADROOM_HOME refuses outright: verified against the 2.1.220
+// binary, a relative CLAUDE_CONFIG_DIR runs the session as the primary
+// (default Keychain item) while writing state beside the cwd, and every
+// config-dir path headroom builds derives from that home.
+func TestLoadRefusesARelativeHome(t *testing.T) {
+	clearOverrides(t)
+	t.Setenv("HEADROOM_HOME", "fixture")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_HOME") {
+		t.Errorf("relative HEADROOM_HOME: err = %v, want a refusal naming it", err)
 	}
 }
 
@@ -82,7 +76,6 @@ func TestLoadOverridesLandOnTheirOwnScope(t *testing.T) {
 		t.Errorf("default LauncherFormat = %q", base.Claude.LauncherFormat)
 	}
 
-	root := func(s *Scope) *string { return &s.AccountsRoot }
 	name := func(s *Scope) *string { return &s.PrimaryName }
 	launcher := func(s *Scope) *string { return &s.LauncherFormat }
 	url := func(s *Scope) *string { return &s.UsageURL }
@@ -91,11 +84,9 @@ func TestLoadOverridesLandOnTheirOwnScope(t *testing.T) {
 		vendor     Vendor
 		field      func(*Scope) *string
 	}{
-		{"HEADROOM_ACCOUNTS_ROOT", filepath.Join(home, "claude-root"), Claude, root},
 		{"HEADROOM_PRIMARY_NAME", "pinned", Claude, name},
 		{"HEADROOM_LAUNCHER_FORMAT", "x-%s", Claude, launcher},
 		{"HEADROOM_USAGE_URL", "http://127.0.0.1:1/claude", Claude, url},
-		{"HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(home, "codex-root"), Codex, root},
 		{"HEADROOM_CODEX_PRIMARY_NAME", "cx", Codex, name},
 		{"HEADROOM_CODEX_LAUNCHER_FORMAT", "cx-%s", Codex, launcher},
 		{"HEADROOM_CODEX_USAGE_URL", "http://127.0.0.1:1/usage", Codex, url},
@@ -163,221 +154,5 @@ func TestLoadResolvesBothScopes(t *testing.T) {
 				t.Errorf("%s alone must make Codex present, Claude Code first: %v (%v)", dir, c.Present(), err)
 			}
 		})
-	}
-}
-
-// Distinct roots keep the two vendors' .reserved, .order and state.json apart.
-// One location refuses however it is spelled or reached: through a symlink,
-// through an alias above several components that do not exist yet, and under
-// a spelling that differs only in case on a filesystem that folds it —
-// seeding under an accepted pair would otherwise create the shared root the
-// refusal exists to prevent.
-func TestLoadRefusesAliasedAccountsRoots(t *testing.T) {
-	clearOverrides(t)
-	real := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
-	for name, roots := range map[string][2]string{
-		"same spelling":                        {real, real},
-		"different spelling":                   {real, real + "/./"},
-		"through a symlink":                    {real, link},
-		"absent leaf under a symlinked parent": {filepath.Join(real, "new"), filepath.Join(link, "new")},
-		"alias above two missing components":   {filepath.Join(real, "new", "accounts"), filepath.Join(link, "new", "accounts")},
-	} {
-		t.Setenv("HEADROOM_ACCOUNTS_ROOT", roots[0])
-		t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", roots[1])
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "same location") {
-			t.Errorf("%s: err = %v, want a refusal", name, err)
-		}
-	}
-	for name, roots := range map[string][2]string{
-		"distinct roots": {real, filepath.Join(real, "codex")},
-		"distinct siblings above missing components": {filepath.Join(real, "a", "accounts"), filepath.Join(real, "b", "accounts")},
-	} {
-		t.Setenv("HEADROOM_ACCOUNTS_ROOT", roots[0])
-		t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", roots[1])
-		c, err := Load()
-		if err != nil {
-			t.Errorf("%s refused: %v", name, err)
-		} else if c.Claude.AccountsRoot != roots[0] {
-			t.Errorf("%s: an accepted spelling was rewritten: %q", name, c.Claude.AccountsRoot)
-		}
-	}
-
-	existing := filepath.Join(real, "Accounts")
-	if err := os.Mkdir(existing, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HEADROOM_ACCOUNTS_ROOT", existing)
-	t.Setenv("HEADROOM_CODEX_ACCOUNTS_ROOT", filepath.Join(real, "accounts"))
-	_, err := Load()
-	if _, statErr := os.Stat(filepath.Join(real, "accounts")); statErr == nil {
-		// The filesystem folds case: both spellings are one directory.
-		if err == nil || !strings.Contains(err.Error(), "same location") {
-			t.Errorf("case-folded spellings of one directory: err = %v, want a refusal", err)
-		}
-	} else if err != nil {
-		t.Errorf("distinct directories on a case-sensitive filesystem refused: %v", err)
-	}
-}
-
-// A home that is not this user's login home spells its primary out: absent,
-// CLAUDE_CONFIG_DIR would take config from $HOME/.claude and the credential
-// from the base Keychain item, which belongs to the login home's primary.
-func TestASecondHomeSpellsItsPrimaryOut(t *testing.T) {
-	clearOverrides(t)
-	login, second := t.TempDir(), t.TempDir()
-	prev := loginHome
-	loginHome = func() string { return login }
-	t.Cleanup(func() { loginHome = prev })
-
-	t.Setenv("HOME", second)
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !c.Claude.PrimaryExplicit || c.Claude.PrimaryRelocated {
-		t.Errorf("second home: explicit %v relocated %v, want explicit and not relocated", c.Claude.PrimaryExplicit, c.Claude.PrimaryRelocated)
-	}
-	if c.Claude.PrimaryDir() != filepath.Join(second, ".claude") || c.Claude.PrimaryMeta() != filepath.Join(second, ".claude", ".claude.json") {
-		t.Errorf("second home's primary: dir %s meta %s — spelled out, its .claude.json lives inside it", c.Claude.PrimaryDir(), c.Claude.PrimaryMeta())
-	}
-	if c.Codex.PrimaryExplicit {
-		t.Error("Codex keeps its login in the home: nothing about it is spelled out")
-	}
-
-	t.Setenv("HOME", login)
-	if c, err = Load(); err != nil || c.Claude.PrimaryExplicit {
-		t.Errorf("login home: explicit %v (%v), want selection by absence as always", c.Claude.PrimaryExplicit, err)
-	}
-	if c.Claude.PrimaryMeta() != filepath.Join(login, ".claude.json") {
-		t.Errorf("login home's primary meta = %s", c.Claude.PrimaryMeta())
-	}
-
-	// No user database to ask: today's behavior.
-	loginHome = func() string { return "" }
-	t.Setenv("HOME", second)
-	if c, _ = Load(); c.Claude.PrimaryExplicit {
-		t.Error("an unknown login home made the primary explicit")
-	}
-}
-
-// `.ledger` is read strictly: a home that meant to share a ledger and quietly
-// kept its own would ask every subscription twice and pile launches onto
-// accounts the other home is filling.
-func TestTheLedgerFileIsReadStrictly(t *testing.T) {
-	clearOverrides(t)
-	home, other := t.TempDir(), t.TempDir()
-	t.Setenv("HEADROOM_HOME", home)
-	root := filepath.Join(home, ".claude-accounts")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	ledger := filepath.Join(root, ".ledger")
-
-	c, err := Load()
-	if err != nil || c.Claude.LedgerRoot != "" || c.Claude.Ledger() != root {
-		t.Fatalf("absent: ledger root %q ledger %q err %v", c.Claude.LedgerRoot, c.Claude.Ledger(), err)
-	}
-	if err := os.WriteFile(ledger, []byte(other+"/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if c, err = Load(); err != nil || c.Claude.LedgerRoot != other || c.Claude.Ledger() != other {
-		t.Fatalf("another root: ledger root %q ledger %q err %v", c.Claude.LedgerRoot, c.Claude.Ledger(), err)
-	}
-	if c.Codex.LedgerRoot != "" {
-		t.Error("Codex was given the Claude Code ledger")
-	}
-
-	// The relative spelling names a directory that exists from the cwd, so
-	// only absoluteness refuses it: a cwd-relative ledger would move with
-	// every shell.
-	t.Chdir(filepath.Dir(other))
-	for name, content := range map[string]string{
-		"empty":      "\n",
-		"relative":   filepath.Base(other) + "\n",
-		"missing":    filepath.Join(other, "gone") + "\n",
-		"codex root": filepath.Join(home, ".codex-accounts") + "\n",
-		"two lines":  other + "\n" + other + "\n",
-	} {
-		if name == "codex root" {
-			if err := os.MkdirAll(filepath.Join(home, ".codex-accounts"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := os.WriteFile(ledger, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), ".ledger") {
-			t.Errorf("%s: err = %v, want a refusal naming the file", name, err)
-		}
-	}
-
-	// Naming one's own root is having one's own ledger.
-	if err := os.WriteFile(ledger, []byte(root+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if c, err = Load(); err != nil || c.Claude.LedgerRoot != "" || c.Claude.Ledger() != root {
-		t.Errorf("own root: ledger root %q ledger %q err %v", c.Claude.LedgerRoot, c.Claude.Ledger(), err)
-	}
-}
-
-// A ledger is a place, not a pointer to follow: a root that itself spends
-// against another root's ledger is no ledger, and two homes pointing at each
-// other would each spend against the other's file while both read as shared.
-func TestALedgerRootMustNotDelegate(t *testing.T) {
-	clearOverrides(t)
-	a, b := t.TempDir(), t.TempDir()
-	t.Setenv("HEADROOM_HOME", a)
-	rootA := filepath.Join(a, ".claude-accounts")
-	rootB := filepath.Join(b, ".claude-accounts")
-	for _, r := range []string{rootA, rootB} {
-		if err := os.MkdirAll(r, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(rootB, ".ledger"), []byte(rootA+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rootA, ".ledger"), []byte(rootB+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "itself spends") {
-		t.Errorf("a ledger root that delegates was accepted: %v", err)
-	}
-	// A root whose .ledger names itself keeps its own: still a ledger.
-	if err := os.WriteFile(filepath.Join(rootB, ".ledger"), []byte(rootB+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if c, err := Load(); err != nil || c.Claude.LedgerRoot != rootB {
-		t.Errorf("a self-naming target: %q %v", c.Claude.LedgerRoot, err)
-	}
-}
-
-// `.ledger` is written with the rule Load reads it by, and naming this home's
-// own root removes it.
-func TestShareLedger(t *testing.T) {
-	c := ForHome(t.TempDir())
-	other := t.TempDir()
-	if _, err := c.ShareLedger("relative"); err == nil {
-		t.Error("a relative root was recorded")
-	}
-	if _, err := os.Stat(c.Claude.LedgerFile()); err == nil {
-		t.Fatal("a refused root left a file")
-	}
-	root, err := c.ShareLedger(other + "/")
-	if err != nil || root != other {
-		t.Fatalf("share: %q %v", root, err)
-	}
-	if data, _ := os.ReadFile(c.Claude.LedgerFile()); string(data) != other+"\n" {
-		t.Errorf(".ledger = %q", data)
-	}
-	if root, err := c.ShareLedger(c.Claude.AccountsRoot); err != nil || root != "" {
-		t.Fatalf("own root: %q %v", root, err)
-	}
-	if _, err := os.Stat(c.Claude.LedgerFile()); err == nil {
-		t.Error("naming this home's own root left .ledger behind")
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/launchop"
 	"github.com/qiushiyan/headroom/internal/placement"
-	"github.com/qiushiyan/headroom/internal/sessions"
 )
 
 // reservedFixture has three accounts where the one kept for the repository is
@@ -107,8 +106,8 @@ func TestEveryAutomaticSurfaceHonoursAReservation(t *testing.T) {
 		t.Errorf("held outside its repository: %+v", doc.find("held@x.com"))
 	}
 	l := f.launch()
-	if rec := f.log()[0]; l.account(f.cfg) != "free@x.com" || rec.Candidates[2].Reservation != "elsewhere" || rec.Candidates[2].Eligible {
-		t.Errorf("launch outside: %s\nlog: %+v", l, rec.Candidates[2])
+	if note := dryNote(f.launch("--dry-run").stdout, "held@x.com"); l.account(f.cfg) != "free@x.com" || !strings.Contains(note, "excluded: reserved for") {
+		t.Errorf("launch outside: %s\nheld's note: %q", l, note)
 	}
 }
 
@@ -126,16 +125,13 @@ func TestInItsRepositoryAReservedAccountYieldsToLessLoad(t *testing.T) {
 	}
 }
 
-// Named launches and --last say where to go: a reservation governs automatic
-// choices only.
+// A named launch says where to go: a reservation governs automatic choices
+// only.
 func TestAReservationLeavesAnExplicitLaunchAlone(t *testing.T) {
 	f, _, _, outside := reservedFixture(t)
 	t.Chdir(outside)
 	if got := f.launch("--account", "held@x.com").account(f.cfg); got != "held@x.com" {
 		t.Errorf("named launch went to %s", got)
-	}
-	if got := f.launch("--last").account(f.cfg); got != "held@x.com" {
-		t.Errorf("--last went to %s", got)
 	}
 }
 
@@ -150,9 +146,8 @@ func TestAMissingRepositoryKeepsItsAccountHeld(t *testing.T) {
 	if l := f.launch(); l.code != 0 || l.account(f.cfg) == "held@x.com" {
 		t.Fatalf("launch: %s", l)
 	}
-	held := f.log()[0].Candidates[2]
-	if held.Name != "held@x.com" || held.Eligible || held.Reservation != "elsewhere" {
-		t.Errorf("with its repository gone: %+v", held)
+	if note := dryNote(f.launch("--dry-run").stdout, "held@x.com"); !strings.Contains(note, "excluded: reserved for") {
+		t.Errorf("with its repository gone, held's note: %q", note)
 	}
 }
 
@@ -181,15 +176,10 @@ func TestADamagedReservationRefusesOnlyAutomaticChoices(t *testing.T) {
 		t.Errorf("headless place on a damaged file: exit %d %+v", code, doc)
 	}
 	// Choosing a session is not naming its account: nothing can say the
-	// owner is not kept from here, so the picker's enter refuses with the
-	// automatic choices rather than follow it. Reading the damage as "not
-	// held" in the picker must fail this.
-	ui, rec, _ := f.picker(accounts.Discover(f.cfg))
-	ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: outside, DirOK: true, Owner: "free@x.com", OwnerState: sessions.OwnerHistory}}
-	ui.rows = ui.listing.Sessions
-	keepWorkingDir(t)
-	if done, _ := ui.commitResume(false); done || rec.called || !strings.Contains(ui.message, ".reserved") {
-		t.Errorf("a picker resume on a damaged file: done %v, exec called %v — %q", done, rec.called, ui.message)
+	// owner is not kept from here, so a resume refuses with the automatic
+	// choices rather than follow it.
+	if l := f.launch("--", "--resume", sessA); l.code == 0 || l.called || !strings.Contains(l.stderr, ".reserved") {
+		t.Errorf("a resume on a damaged file: %s", l)
 	}
 	if len(f.log()) != before {
 		t.Error("a refused resume left a line in the log")
@@ -200,8 +190,8 @@ func TestADamagedReservationRefusesOnlyAutomaticChoices(t *testing.T) {
 }
 
 // A session is not an account the person named: outside the repositories its
-// owner is kept from, a resume moves it and records the move, on the CLI and
-// in the picker alike. In them the owner is followed as it always was.
+// owner is kept from, a resume moves it and records the move. In them the
+// owner is followed as it always was.
 func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	f, repo, _, outside := reservedFixture(t)
 	for _, id := range []string{sessA, sessB} {
@@ -222,43 +212,22 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 	if got := f.launch("--", "--resume", sessA).account(f.cfg); got != "free@x.com" {
 		t.Errorf("--resume went to %s", got)
 	}
-	if rec, _ := f.st.Load().Owner(sessA); rec.Account != "free@x.com" {
+	if rec, _ := f.st.Load().Owners()[sessA]; rec.Account != "free@x.com" {
 		t.Errorf("re-home after --resume = %+v", rec)
 	}
 
-	set := accounts.Discover(f.cfg)
-	resume := func(dir string) (*execRecord, *resumeUI) {
-		t.Helper()
-		ui, _, _ := f.picker(set)
-		ui.listing.Sessions = []*sessions.Session{{ID: sessB, CWD: dir, DirOK: true, Owner: "held@x.com", OwnerState: sessions.OwnerHistory}}
-		ui.rows = ui.listing.Sessions
-		keepWorkingDir(t)
-		rec := rearm(ui)
-		if done, code := ui.commitResume(false); !done || code != 0 {
-			t.Fatalf("resume in %s: (%v, %d) — %s", dir, done, code, ui.message)
-		}
-		return rec, ui
+	if last := f.log()[len(f.log())-1]; last.Reason != placement.ReasonMoved || last.Session != sessA {
+		t.Errorf("the move logged as %+v", last)
 	}
-	account := func(rec *execRecord) string {
-		if dir, ok := envValue(rec.env, "CLAUDE_CONFIG_DIR"); ok {
-			return filepath.Base(dir)
-		}
-		return "qiushi"
+	// In the repository the owner is followed, and following it writes
+	// nothing: the session's record stays the one its first launch made.
+	t.Chdir(repo)
+	owner := f.launch("--", "--resume", sessB).account(f.cfg)
+	first, _ := f.st.Load().Owners()[sessB]
+	if got := f.launch("--", "--resume", sessB).account(f.cfg); got != owner {
+		t.Errorf("the owner %s was not followed in its repository: %s", owner, got)
 	}
-
-	if rec, _ := resume(repo); account(rec) != "held@x.com" {
-		t.Errorf("a picker resume in the repository went to %s", account(rec))
-	}
-	if _, ok := f.st.Load().Owner(sessB); ok {
-		t.Error("following the owner wrote a re-home")
-	}
-	if rec, _ := resume(outside); account(rec) == "held@x.com" {
-		t.Error("a picker resume outside the repository stayed on the held account")
-	}
-	if rec, ok := f.st.Load().Owner(sessB); !ok || rec.Account == "held@x.com" {
-		t.Errorf("the picker's move was not recorded: %+v", rec)
-	}
-	if last := f.log()[len(f.log())-1]; last.Reason != placement.ReasonMoved {
-		t.Errorf("the picker's move logged as %q", last.Reason)
+	if again, _ := f.st.Load().Owners()[sessB]; again != first {
+		t.Errorf("following the owner rewrote its record: %+v → %+v", first, again)
 	}
 }

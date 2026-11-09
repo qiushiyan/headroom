@@ -11,58 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
-	"github.com/qiushiyan/headroom/internal/launchlog"
-	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
 )
-
-// A resume that is refused starts nothing, so it must leave nothing behind: no
-// load for the next launch to count, no line in the log, no "last account".
-func TestARefusedResumeLeavesNoPlacement(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	// A sessions section that will not validate: re-homes cannot be written.
-	writeJSON(t, filepath.Join(f.cfg.AccountsRoot, "state.json"), `{"version":1,"sessions":{"hollow":{"account":"","atMs":5}}}`)
-	proj := filepath.Join(f.cfg.Home, "proj")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	set := accounts.Discover(f.cfg)
-	ui, _, _ := f.picker(set)
-	s := &sessions.Session{ID: sessA, CWD: proj, DirOK: true, Owner: "a@x.com", OwnerState: sessions.OwnerHistory}
-	ui.listing.Sessions = []*sessions.Session{s}
-	ui.rows = ui.listing.Sessions
-
-	keepWorkingDir(t)
-	rec := rearm(ui)
-	if done, _ := ui.commitResume(true); done || rec.called {
-		t.Fatalf("x with re-homes unwritable: done %v, exec called %v", done, rec.called)
-	}
-	if n := len(f.st.Load().Placements().Recent); n != 0 {
-		t.Errorf("a refused resume left %d placement(s) as load", n)
-	}
-	if recs := f.log(); len(recs) != 0 {
-		t.Errorf("a refused resume was logged as a launch: %+v", recs)
-	}
-
-	// The same picker, the next attempt: an ordinary resume on the owner is
-	// the one launch that happened, counted once.
-	keepWorkingDir(t)
-	rec = rearm(ui)
-	if done, code := ui.commitResume(false); !done || code != 0 || !rec.called {
-		t.Fatalf("enter after the refusal: (%v, %d) — %s", done, code, ui.message)
-	}
-	if dir, _ := envValue(rec.env, "CLAUDE_CONFIG_DIR"); filepath.Base(dir) != "a@x.com" {
-		t.Errorf("resumed on %q", dir)
-	}
-	if n := len(f.st.Load().Placements().Recent); n != 1 {
-		t.Errorf("%d placements after one committed resume", n)
-	}
-	if recs := f.log(); len(recs) != 1 || recs[0].Chosen != "a@x.com" {
-		t.Errorf("log = %+v", recs)
-	}
-}
 
 // loginFixture is a boardFixture whose accounts are judged by the real readers:
 // credentials from each dir's .credentials.json (the stub Keychain finds
@@ -141,10 +92,8 @@ func TestPlacementReadsThePrimarysFileBackedCredential(t *testing.T) {
 	if got.code != 0 || got.account(f.cfg) != "a@x.com" {
 		t.Fatalf("launched on %s:\n%s", got.account(f.cfg), got.stderr)
 	}
-	for _, c := range f.log()[0].Candidates {
-		if c.Name == "qiushi" && c.Excluded != "login expired" {
-			t.Errorf("the primary's file-backed credential was not read: excluded %q", c.Excluded)
-		}
+	if note := dryNote(f.launch("--dry-run").stdout, "qiushi"); !strings.Contains(note, "excluded: login expired") {
+		t.Errorf("the primary's file-backed credential was not read: %q", note)
 	}
 }
 
@@ -195,7 +144,7 @@ func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
 
 	cmd := exec.Command(bin, "launch", "--", "-p", "hello")
 	cmd.Env = append(os.Environ(),
-		"HEADROOM_HOME="+home, "HEADROOM_ACCOUNTS_ROOT="+cfg.AccountsRoot, "HEADROOM_PRIMARY_NAME=primary",
+		"HEADROOM_HOME="+home, "HEADROOM_PRIMARY_NAME=primary",
 		"HEADROOM_USAGE_URL="+srv.URL, "PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"))
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
@@ -237,56 +186,6 @@ func TestTheDetachedRefreshOutlivesTheLaunch(t *testing.T) {
 	}
 }
 
-// What a launch owes the next one belongs to the launch, not to the surface
-// that started it: the picker's launch says where it went and what bookkeeping
-// it missed, and one the rule placed leaves a refresh behind it, exactly as
-// `headroom launch` does.
-func TestAPickerLaunchIsAnnouncedAndLeavesARefresh(t *testing.T) {
-	f := newAutoFixture(t, "a@x.com", "b@x.com")
-	f.observe("qiushi", 50, 50, 3*time.Minute)
-	f.observe("a@x.com", 0, 5, 3*time.Minute)
-	f.observe("b@x.com", 0, 30, 3*time.Minute)
-	// A log that cannot be appended to: the launch still starts, and says so.
-	if err := os.Mkdir(launchlog.Path(f.cfg.AccountsRoot), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	proj := filepath.Join(f.cfg.Home, "proj")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	set := accounts.Discover(f.cfg)
-	resume := func(owner string, state sessions.OwnerState) string {
-		t.Helper()
-		ui, rec, errw := f.picker(set)
-		ui.listing.Sessions = []*sessions.Session{{ID: sessA, CWD: proj, DirOK: true, Owner: owner, OwnerState: state}}
-		ui.rows = ui.listing.Sessions
-		keepWorkingDir(t)
-		done, _ := ui.commitResume(false)
-		if !done || !rec.called {
-			t.Fatalf("resume: done %v, exec called %v — %s", done, rec.called, ui.message)
-		}
-		return errw.String()
-	}
-
-	stderr := resume("", sessions.OwnerNone)
-	for _, want := range []string{"headroom sessions: a@x.com · auto", "headroom sessions: launch log not written"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("the picker's launch did not say %q:\n%s", want, stderr)
-		}
-	}
-	if *f.refreshes != 1 {
-		t.Errorf("%d refreshes started by a resume the rule placed, want 1", *f.refreshes)
-	}
-
-	// A resume that follows its owner chose nothing: no refresh for it.
-	if stderr := resume("b@x.com", sessions.OwnerHistory); !strings.Contains(stderr, "headroom sessions: b@x.com") {
-		t.Errorf("a resume on the owner was not announced:\n%s", stderr)
-	}
-	if *f.refreshes != 1 {
-		t.Errorf("%d refreshes after a resume on the owner, want still 1", *f.refreshes)
-	}
-}
-
 // A launch that records where a session goes also clears the records of
 // sessions whose transcripts are gone — whichever surface it came from. Left
 // to the picker's `x` alone, an agent that names a new session id every run
@@ -314,16 +213,16 @@ func TestALaunchThatRecordsASessionSweepsTheGoneOnes(t *testing.T) {
 		t.Fatalf("launch: %s", got.stderr)
 	}
 	snap := f.st.Load()
-	if _, ok := snap.Owner(sessA); !ok {
+	if _, ok := snap.Owners()[sessA]; !ok {
 		t.Fatal("the launch did not record its own session")
 	}
-	if _, ok := snap.Owner(gone); ok {
+	if _, ok := snap.Owners()[gone]; ok {
 		t.Error("a re-home whose transcript is gone survived a launch that wrote one")
 	}
-	if _, ok := snap.Owner(kept); !ok {
+	if _, ok := snap.Owners()[kept]; !ok {
 		t.Error("a re-home whose transcript exists was swept")
 	}
-	if _, ok := snap.Owner(young); !ok {
+	if _, ok := snap.Owners()[young]; !ok {
 		t.Error("a re-home too young to have a transcript yet was swept")
 	}
 }

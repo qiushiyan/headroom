@@ -38,29 +38,23 @@ func launchConfig(t *testing.T) config.Scope {
 // says otherwise: the wrong-account incident was a tmux server started inside
 // a managed session routing every "primary" launch to that session's account.
 // An inherited CLAUDE_CONFIG_DIR is stripped for the primary and replaced by
-// exactly one for an extra, and a home that spells its primary out names that
-// dir — which a re-pointed home does not refuse, since the refusal exists for
-// selection by absence. Arguments after `--` reach the vendor unchanged. A
+// exactly one for an extra. Arguments after `--` reach the vendor unchanged. A
 // named launch that names a session records nothing about it: it was told
 // where to go, and a re-home written onto the name would steer the session's
 // next automatic turn.
 func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 	for _, c := range []struct {
-		name     string
-		explicit bool // the home spells its primary out, and HEADROOM_HOME re-points it
-		args     []string
-		dirs     func(cfg config.Scope) []string
+		name string
+		args []string
+		dirs func(cfg config.Scope) []string
 	}{
-		{"the primary, named", false, []string{"--account", "qiushi", "--", "--resume", sessA},
+		{"the primary, named", []string{"--account", "qiushi", "--", "--resume", sessA},
 			func(config.Scope) []string { return nil }},
-		{"an extra, named", false, []string{"--account", "yan@planlab.ai", "--", "--resume", sessA},
+		{"an extra, named", []string{"--account", "yan@planlab.ai", "--", "--resume", sessA},
 			func(cfg config.Scope) []string { return []string{filepath.Join(cfg.AccountsRoot, "yan@planlab.ai")} }},
-		{"a spelled-out primary under a re-pointed home", true, []string{"--account", "qiushi"},
-			func(cfg config.Scope) []string { return []string{cfg.PrimaryDir()} }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := launchConfig(t)
-			cfg.PrimaryExplicit, cfg.PrimaryRelocated = c.explicit, c.explicit
 			t.Setenv("CLAUDE_CONFIG_DIR", "/leaked/other-account")
 			got := launchOn(t, cfg, quietPlace(), c.args...)
 			if got.code != 0 || !got.called {
@@ -76,44 +70,10 @@ func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 			if !slices.Equal(got.args, rest) {
 				t.Errorf("vendor args = %q, want %q", got.args, rest)
 			}
-			if rec, ok := state.Open(cfg).Load().Owner(sessA); ok {
+			if rec, ok := state.Open(cfg).Load().Owners()[sessA]; ok {
 				t.Errorf("a launch told where to go re-homed the session it named: %+v", rec)
 			}
 		})
-	}
-}
-
-// resolve's one line is a protocol a shell wrapper parses: the canonical name,
-// TAB, the real config dir, TAB, the kind. The primary resolves to its real
-// dir, never an empty sentinel, and the kind is what the wrapper's preflight
-// keys on — re-deriving primary-vs-extra from path prefixes is exactly what a
-// HEADROOM_* root override silently breaks. What the framing cannot carry
-// refuses: a TAB or newline would split the line. (An empty selector, a
-// caller's expansion bug that would otherwise answer with the recorded
-// account, is the command line's to refuse: cmd/headroom's TestGrammar.)
-func TestResolveProtocol(t *testing.T) {
-	cfg := launchConfig(t)
-	for _, name := range []string{"tab\tname", "new\nline"} {
-		if err := os.MkdirAll(filepath.Join(cfg.AccountsRoot, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, c := range []struct {
-		name     string
-		selector string
-		code     int
-		out      string
-	}{
-		{"no name", "", 1, ""},
-		{"the primary", "qiushi", 0, "qiushi\t" + cfg.PrimaryDir() + "\tprimary\n"},
-		{"an extra", "yan@planlab.ai", 0, "yan@planlab.ai\t" + filepath.Join(cfg.AccountsRoot, "yan@planlab.ai") + "\textra\n"},
-		{"a name with a TAB", "tab\tname", 1, ""},
-		{"a name with a newline", "new\nline", 1, ""},
-	} {
-		got := call(func(std Streams) error { return Resolve(std, cfg, c.selector) })
-		if got.code != c.code || got.stdout != c.out {
-			t.Errorf("%s: exit %d, %q; want exit %d, %q", c.name, got.code, got.stdout, c.code, c.out)
-		}
 	}
 }
 
@@ -213,4 +173,15 @@ func TestAFailedExecSaysSo(t *testing.T) {
 	if failed.code != 1 || !strings.Contains(failed.stderr, "exec claude: permission denied") {
 		t.Fatalf("exit %d: %s", failed.code, failed.stderr)
 	}
+}
+
+// configDirs is every CLAUDE_CONFIG_DIR a child environment carries.
+func configDirs(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			out = append(out, v)
+		}
+	}
+	return out
 }
