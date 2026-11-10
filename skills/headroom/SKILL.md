@@ -25,7 +25,10 @@ shell's `x-<name>`) — quote that spelling.
   document.
 - **Health lines, relayed as written**: *not logged in* / *login expired*
   → `headroom login <name>`. *access token stale* → any session on that
-  account refreshes it; only *login expired* calls for a login. Red `(dir
+  account refreshes it; only *login expired* calls for a login. *login
+  kept in the Keychain* → this session cannot read that account's login (an
+  ssh session, or a locked Keychain): `security unlock-keychain` here, and
+  never a login from here, which its other sessions would ignore. Red `(dir
   says …!)` → the dir was logged in as the wrong account; `headroom login
   <name>` and approve as that email.
 - **Stale figures** keep their severity colours; their caption states the age.
