@@ -18,35 +18,24 @@ import (
 // response that no longer parses is the vendor's, and the closing summary must
 // not confuse the two.
 func checkOwnState(snap state.Snapshot, r *report) {
-	for _, doc := range snap.Documents() {
-		name := "state"
-		if doc.Name != "" {
-			name = "state(" + doc.Name + ")"
-		}
-		if doc.ReadOnly {
-			// Not a failure: a newer headroom wrote it, and this binary
-			// correctly refuses to rewrite what it cannot fully understand.
-			// The other document, if there is one, is still this binary's
-			// to judge.
-			r.skip(fmt.Sprintf("%s: schema %d understood", name, doc.Version),
-				fmt.Sprintf("written by a newer headroom (this one writes %d) — it is being read, never written",
-					state.Version))
-			continue
-		}
-		for _, p := range doc.Problems {
-			r.own(false, fmt.Sprintf("state[%s]: section readable", p.Section), p.Detail)
-		}
-		if len(doc.Problems) == 0 {
-			r.ok(name + ": every section readable")
-		}
-		if doc.ReHomes {
-			r.own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
-				"explicit re-homes are being ignored and cannot be rewritten")
-		}
-		if doc.Ledger {
-			auditResponses(snap, r)
-		}
+	if snap.ReadOnly() {
+		// Not a failure: a newer headroom wrote it, and this binary correctly
+		// refuses to rewrite what it cannot fully understand.
+		r.skip(fmt.Sprintf("state: schema %d understood", snap.Version()),
+			fmt.Sprintf("written by a newer headroom (this one writes %d) — it is being read, never written",
+				state.Version))
+		return
 	}
+	problems := snap.Problems()
+	for _, p := range problems {
+		r.own(false, fmt.Sprintf("state[%s]: section readable", p.Section), p.Detail)
+	}
+	if len(problems) == 0 {
+		r.ok("state: every section readable")
+	}
+	r.own(snap.OwnersReadable(), "state[sessions]: re-home records readable",
+		"explicit re-homes are being ignored and cannot be rewritten")
+	auditResponses(snap, r)
 }
 
 // auditResponses re-reads every stored usage response.

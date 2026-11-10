@@ -153,14 +153,11 @@ func TestCheckRouting(t *testing.T) {
 		// A relocated home re-points what headroom observes but not what a
 		// primary launch would use, which the vendor resolves against the real
 		// home: launch refuses the primary, for either vendor, and check says
-		// so. A primary spelled out by its dir names the tree described.
+		// so.
 		{name: "relocated home", setup: func(t *testing.T, cfg *config.Scope) { cfg.PrimaryRelocated = true },
 			wantFail: []string{"home: HEADROOM_HOME re-points the primary headroom describes … `claude`"}},
 		{name: "relocated home, Codex", vendor: config.Codex, setup: func(t *testing.T, cfg *config.Scope) { cfg.PrimaryRelocated = true },
 			wantFail: []string{"home: HEADROOM_HOME re-points the primary headroom describes … `codex`"}},
-		{name: "relocated home, primary spelled out", setup: func(t *testing.T, cfg *config.Scope) {
-			cfg.PrimaryRelocated, cfg.PrimaryExplicit = true, true
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -323,6 +320,54 @@ func TestRequestVerdictsSeparateStateFailureAndVendorEvidence(t *testing.T) {
 			}
 			if vendor := r.fails - r.ownFails; vendor != tc.vendor || r.ownFails != tc.own || r.unknowns != tc.unknown {
 				t.Fatalf("verdicts: vendor=%d own=%d inconclusive=%d", vendor, r.ownFails, r.unknowns)
+			}
+		})
+	}
+}
+
+// The session window is counted over the responses the rule would count as
+// measured: all carrying it is an ok line, any lacking it a note that fails
+// nothing, and a response that is old, empty or names no limit is no evidence
+// either way.
+func TestCheckSessionWindows(t *testing.T) {
+	now := time.Now()
+	const with = `{"limits":[{"kind":"session","percent":3},{"kind":"weekly_all","percent":40}]}`
+	const without = `{"limits":[{"kind":"weekly_all","percent":40},{"kind":"weekly_scoped","percent":7}]}`
+	rec := func(body string, age time.Duration) state.AuditRecord {
+		return state.AuditRecord{Name: "a", FetchedAtMS: now.Add(-age).UnixMilli(), Body: []byte(body)}
+	}
+	for _, tc := range []struct {
+		name string
+		recs []state.AuditRecord
+		ok   string // an ok line carrying this
+		note string // a note carrying this
+	}{
+		{name: "every response carries it", recs: []state.AuditRecord{rec(with, time.Minute), rec(with, 2*time.Minute)},
+			ok: "usage: every fresh response carries a five-hour session window (2)"},
+		{name: "one carries it", recs: []state.AuditRecord{rec(with, time.Minute), rec(without, time.Minute), rec(without, time.Minute)},
+			note: "usage: 1 of 3 fresh responses carry a five-hour session window"},
+		{name: "none carries it", recs: []state.AuditRecord{rec(without, time.Minute), rec(without, time.Minute)},
+			note: "usage: 0 of 2 fresh responses carry a five-hour session window"},
+		// What the vendor sent an hour ago is not what it sends now.
+		{name: "old figures are no evidence", recs: []state.AuditRecord{rec(without, time.Hour), rec(with, time.Minute)},
+			ok: "every fresh response carries a five-hour session window (1)"},
+		{name: "nothing fresh", recs: []state.AuditRecord{rec(without, time.Hour), {Name: "never read"}}},
+		{name: "no limits at all", recs: []state.AuditRecord{rec(`{"limits":[]}`, time.Minute)}},
+		{name: "a body that does not parse", recs: []state.AuditRecord{rec(`{"limits":"bad"}`, time.Minute)}},
+		{name: "stamped in the future", recs: []state.AuditRecord{rec(without, -time.Hour)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, out := testReport()
+			checkSessionWindows(tc.recs, config.Claude, now, r)
+			oks, _, _ := printed(out)
+			text := out.String()
+			switch {
+			case tc.ok != "" && !hasLine(oks, tc.ok), tc.note != "" && !strings.Contains(text, " --   "+tc.note),
+				tc.ok == "" && tc.note == "" && text != "":
+				t.Errorf("printed %q, want ok %q note %q", text, tc.ok, tc.note)
+			}
+			if r.fails != 0 || r.unknowns != 0 {
+				t.Errorf("a fact failed the run: fails=%d unknowns=%d", r.fails, r.unknowns)
 			}
 		})
 	}
@@ -507,7 +552,7 @@ func soundClaudeTree(t *testing.T, home string) (config.Scope, func(path, body s
 	if err := os.MkdirAll(project, 0755); err != nil {
 		t.Fatal(err)
 	}
-	write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
+	write(filepath.Join(cfg.StoreDir(), "-project", "session.jsonl"), fmt.Sprintf("{\"type\":\"user\",\"sessionId\":\"session\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n", project), 0600)
 	return cfg, write
 }
 
@@ -546,52 +591,24 @@ func TestCheckRegistryStatus(t *testing.T) {
 	}
 }
 
-// The session store's drift assertions. History with lines but no parseable
-// claim means attribution silently fell back to the current account. A
-// registry record that does not parse leaves liveness incomplete, and r and dd
-// then refuse what they cannot prove closed. A store where no transcript
-// titles, or none names a cwd its store dir was named after, means those
-// record shapes moved. A transcript larger than the tail budget must resolve
-// through the tail to what a full parse resolves: a rename beyond the budget,
-// with newer prompts inside it, renders the wrong title while "some title
-// exists" still passes.
+// The session records' drift assertions. History with lines but no parseable
+// claim means attribution silently fell back to placing a named session like
+// a new one. A registry record that does not parse leaves liveness
+// incomplete: busy load goes uncounted, and removal refuses what it cannot
+// prove closed.
 func TestCheckSessionStore(t *testing.T) {
-	const tailLine = "sessions: the adaptive tail reader resolves the same title/cwd/model as a full parse"
-	transcript := func(cwd, rename string) string {
-		var b strings.Builder
-		if rename != "" {
-			fmt.Fprintf(&b, "{\"type\":\"custom-title\",\"sessionId\":\"s\",\"customTitle\":%q}\n", rename)
-		}
-		for b.Len() <= sessions.TailBudget {
-			fmt.Fprintf(&b, "{\"type\":\"user\",\"sessionId\":\"s\",\"cwd\":%q,\"message\":{\"role\":\"user\",\"content\":%q}}\n", cwd, strings.Repeat("x", 1000))
-		}
-		fmt.Fprintf(&b, "{\"type\":\"assistant\",\"sessionId\":\"s\",\"cwd\":%q,\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":\"hi\"}}\n", cwd)
-		return b.String()
-	}
-	// No title record, no prompt string, and a cwd the store dir was not named
-	// after: what every transcript looks like once those fields move.
-	const drifted = `{"type":"user","sessionId":"s","workingDir":"/project","message":{"role":"user","content":[{"type":"tool_result"}]}}` + "\n"
 	for _, tc := range []struct {
 		name, history, registry string
-		rename, body            string // body replaces the generated transcript
 		wantOK                  string
 		wantFail                []string
 	}{
 		{name: "history that parses", history: `{"sessionId":"s","timestamp":1}` + "\n", wantOK: "history[primary]"},
 		{name: "history with lines but no parseable claim", history: `{"display":"a prompt"}` + "\n", wantFail: []string{"history[primary]: prompt records carry sessionId + timestamp"}},
 		{name: "a registry record that does not parse", registry: `{"sessionId":"s","pid":`, wantFail: []string{"registry: live-session records carry sessionId + pid + startedAt"}},
-		{name: "a large transcript the tail resolves", wantOK: tailLine},
-		{name: "a rename beyond the tail budget", rename: "renamed long ago", wantFail: []string{tailLine}},
-		{name: "title and cwd records drifted", body: drifted, wantFail: []string{"sessions: title/prompt records parse", "sessions: cwd records verify"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cfg := claudeScope(home, "qiushi")
-			project := filepath.Join(home, "project")
-			body := tc.body
-			if body == "" {
-				body = transcript(project, tc.rename)
-			}
 			write := func(path, body string) {
 				t.Helper()
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -601,7 +618,6 @@ func TestCheckSessionStore(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			write(filepath.Join(cfg.StoreDir(), sessions.Munge(project), "s.jsonl"), body)
 			if tc.history != "" {
 				write(filepath.Join(cfg.PrimaryDir(), "history.jsonl"), tc.history)
 			}
@@ -609,7 +625,7 @@ func TestCheckSessionStore(t *testing.T) {
 				write(filepath.Join(cfg.PrimaryDir(), "sessions", "7.json"), tc.registry)
 			}
 			r, out := testReport()
-			checkSessionStore(cfg, accounts.Discover(cfg).Accounts, state.Open(cfg).Load(), nil, r)
+			checkSessionStore(accounts.Discover(cfg).Accounts, nil, r)
 			oks, fails, _ := printed(out)
 			if tc.wantOK != "" && !hasLine(oks, tc.wantOK) {
 				t.Errorf("no ok line %q in:\n%s", tc.wantOK, out)
@@ -675,142 +691,30 @@ func TestRunJudgesRegistryStatusOverVerifiedLiveSessions(t *testing.T) {
 	}
 }
 
-// A login, history or registry linked between dirs makes two dirs one login,
-// and an account dir that belongs to two homes would run one home's sessions
-// on the other's: both are headroom's own state, and both fail.
-func TestCheckHomesFailsOnSharedLoginsAndDirs(t *testing.T) {
-	base := t.TempDir()
-	owner := config.ForHome(filepath.Join(base, "owner")).Claude
-	second := config.ForHome(filepath.Join(base, "second")).Claude
-	second.PrimaryExplicit, second.LedgerRoot = true, owner.AccountsRoot
-	for _, dir := range []string{filepath.Join(owner.AccountsRoot, "a@x.com"), filepath.Join(second.AccountsRoot, "b@x.com"), second.PrimaryDir()} {
+// A login, history or registry linked between dirs makes two dirs one login:
+// headroom's own state, and a failure.
+func TestCheckLoginsFailsOnALinkedLogin(t *testing.T) {
+	cfg := config.ForHome(t.TempDir()).Claude
+	for _, dir := range []string{filepath.Join(cfg.AccountsRoot, "a@x.com"), filepath.Join(cfg.AccountsRoot, "b@x.com")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	run := func() (passed, failed []string, own int) {
-		st := state.Open(second)
-		if err := st.Register(time.Now()); err != nil {
-			t.Fatal(err)
-		}
-		if err := state.Open(owner).Register(time.Now()); err != nil {
-			t.Fatal(err)
-		}
 		r, out := testReport()
-		checkHomes(accounts.Discover(second), st.Load(), r)
+		checkLogins(accounts.Discover(cfg), r)
 		passed, failed, _ = printed(out)
 		return passed, failed, r.ownFails
 	}
-	passed, failed, _ := run()
-	if len(failed) != 0 {
-		t.Fatalf("a clean second home failed: %v", failed)
+	if passed, failed, _ := run(); len(failed) != 0 || !hasLine(passed, "logins: every account dir keeps its own login") {
+		t.Fatalf("clean dirs: passed %v, failed %v", passed, failed)
 	}
-	joined := strings.Join(passed, "\n")
-	for _, want := range []string{"never by absence", "ledger: 1 other home(s)", "another home's", "logins:", "homes: no account dir belongs to two homes"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("no %q line in:\n%s", want, joined)
-		}
-	}
-
-	// A login linked from another dir.
-	if err := os.Symlink(filepath.Join(owner.AccountsRoot, "a@x.com", ".credentials.json"), filepath.Join(second.AccountsRoot, "b@x.com", ".credentials.json")); err != nil {
-		t.Fatal(err)
-	}
-	// And one of the other home's account dirs adopted as this home's.
-	if err := os.Symlink(filepath.Join(owner.AccountsRoot, "a@x.com"), filepath.Join(second.AccountsRoot, "a@x.com")); err != nil {
+	if err := os.Symlink(filepath.Join(cfg.AccountsRoot, "a@x.com", ".credentials.json"), filepath.Join(cfg.AccountsRoot, "b@x.com", ".credentials.json")); err != nil {
 		t.Fatal(err)
 	}
 	_, failed, own := run()
-	if !hasLine(failed, "logins: … .credentials.json is a link") {
-		t.Errorf("a linked login did not fail: %v", failed)
-	}
-	if !hasLine(failed, "homes: no account dir belongs to two homes") {
-		t.Errorf("a dir shared by two homes did not fail: %v", failed)
-	}
-	if own != len(failed) {
-		t.Errorf("%d of %d failures are headroom's own: %v", own, len(failed), failed)
-	}
-}
-
-// Each of a shared home's two files is audited on its own terms: one written
-// by a newer headroom is read and left alone, and must not silence a damaged
-// section in the other, which this binary understands.
-func TestEachDocumentIsAuditedOnItsOwn(t *testing.T) {
-	base := t.TempDir()
-	owner := config.ForHome(filepath.Join(base, "owner")).Claude
-	second := config.ForHome(filepath.Join(base, "second")).Claude
-	second.LedgerRoot = owner.AccountsRoot
-	for _, dir := range []string{owner.AccountsRoot, second.AccountsRoot} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write := func(root, doc string) {
-		if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(doc), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	audit := func() (failed, skipped []string) {
-		r, out := testReport()
-		checkOwnState(state.Open(second).Load(), r)
-		_, failed, skipped = printed(out)
-		return
-	}
-
-	write(second.AccountsRoot, `{"version":999}`)
-	write(owner.AccountsRoot, `{"version":1,"accounts":"not a ledger"}`)
-	failed, skipped := audit()
-	if !hasLine(failed, "ledger accounts") {
-		t.Errorf("a newer home file hid the damaged ledger: failed %v, skipped %v", failed, skipped)
-	}
-
-	write(second.AccountsRoot, `{"version":1,"sessions":{"x":{}}}`)
-	write(owner.AccountsRoot, `{"version":999}`)
-	failed, skipped = audit()
-	if !hasLine(failed, "sessions") {
-		t.Errorf("a newer ledger hid this home's damaged re-homes: failed %v, skipped %v", failed, skipped)
-	}
-}
-
-// Only a home that spends against this ledger today can share a dir with this
-// one: a registration whose home has since left is no longer judged.
-func TestCheckHomesJudgesOnlyCurrentMembers(t *testing.T) {
-	base := t.TempDir()
-	owner := config.ForHome(filepath.Join(base, "owner")).Claude
-	second := config.ForHome(filepath.Join(base, "second")).Claude
-	third := config.ForHome(filepath.Join(base, "third")).Claude
-	second.LedgerRoot, third.LedgerRoot = owner.AccountsRoot, owner.AccountsRoot
-	for _, dir := range []string{owner.AccountsRoot, filepath.Join(second.AccountsRoot, "b@x.com"), third.AccountsRoot} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The third home has adopted one of the second home's dirs.
-	if err := os.Symlink(filepath.Join(second.AccountsRoot, "b@x.com"), filepath.Join(third.AccountsRoot, "b@x.com")); err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range []config.Scope{second, third} {
-		if err := state.Open(s).Register(time.Now()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	shareDirs := func() bool {
-		r, out := testReport()
-		checkHomes(accounts.Discover(second), state.Open(second).Load(), r)
-		_, failed, _ := printed(out)
-		return hasLine(failed, "belongs to two homes")
-	}
-	if err := os.WriteFile(third.LedgerFile(), []byte(owner.AccountsRoot+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !shareDirs() {
-		t.Fatal("a dir shared with a home on this ledger did not fail")
-	}
-	if err := os.Remove(third.LedgerFile()); err != nil {
-		t.Fatal(err)
-	}
-	if shareDirs() {
-		t.Error("a home that left the ledger is still judged")
+	if !hasLine(failed, "logins: … .credentials.json is a link") || own != len(failed) {
+		t.Errorf("a linked login: failed %v, %d of them headroom's own", failed, own)
 	}
 }
 

@@ -1,6 +1,6 @@
 ---
 name: headroom-setup
-description: Set up headroom for several Claude Code or Codex subscriptions — install, add and log in each account, share config, keep sessions machine-global, retire an account, shell launchers.
+description: Set up headroom for several Claude Code or Codex subscriptions — install, add and log in each account, share config, keep sessions machine-global, give a program its own sessions on headless tokens, retire an account, shell launchers.
 disable-model-invocation: true
 ---
 
@@ -65,35 +65,36 @@ reports the disagreement. Codex homes are retired by hand: `accounts remove
 --vendor codex` refuses, naming the directory to delete once no `codex`
 process runs.
 
-## A second home on this machine
+## A program that runs its own sessions
 
-For a second consumer of Claude Code under the same OS user but its own
-`HOME` — an automated pipeline running headless sessions — that holds its
-own logins of the same subscriptions. Every command runs as that home
-(`HOME=<its home>` in front):
+For a program that starts `claude` under a config dir of its own, or under
+another `HOME` — a pipeline, an eval runner. It spends the subscriptions
+through headless tokens held by this home, never through logins of its own,
+which would be a second set to renew.
 
-1. `headroom accounts ledger <the first home's accounts root>` — both homes
-   then share each subscription's request budget, figures and load. Then,
-   as the first home (its own `HOME`), `headroom accounts ledger` once, so
-   it is registered before its next launch. Done when either listing names
-   both homes.
-2. `headroom accounts add <email> --share-config` per subscription — the
-   config comes from that home's own `~/.claude`; logins, history and
-   sessions stay per dir.
-3. Hand the user, per subscription: `HOME=<its home> headroom launch
-   --account <email>`, then `/login` as that email. Under another `HOME` no
-   login keychain is searched, so the login lands in the dir's
-   `.credentials.json`, which the home's unattended processes can read.
-4. The tool's launcher prefix: `headroom launch --auto --`.
+1. Hand the user, per account the program may spend: `headroom headless
+   mint <email>`. It needs a terminal; the approval opens in the account's
+   Chrome profile (over ssh, at the printed URL with the code pasted back).
+   The token is stored in a file only the user can read and is never
+   printed.
+2. The program, per session: `headroom headless place` — JSON naming the
+   account and a placement id, exit 3 when every account it could take is
+   near a limit; `headroom headless token <account>` into
+   `CLAUDE_CODE_OAUTH_TOKEN`; then `headroom headless started <placement>
+   <pid>` with the session's process (a launcher that execs `claude`
+   reports its own pid). Under another `HOME` it sets `HEADROOM_HOME` to
+   this home first. The repo's docs/specs/headless.md is the program's
+   contract.
 
-Done when `headroom check`, run as that home, reports no FAIL and its
-`ledger:` line counts the other home.
+Done when `headroom headless`, run from the program's environment, shows
+each account with its token and when it ends.
 
 ## Sessions are machine-global
 
 `accounts add` links each account's `projects/` to `~/.claude/projects`, so
-`headroom sessions` from any account lists every conversation and resumes
-each on the account that last drove it. Accounts seeded this way are done.
+every account sees every conversation: `headroom launch -- --resume <id>`
+from the session's project continues it on the account that last drove it,
+and `--account <name>` moves it. Accounts seeded this way are done.
 
 An account dir that predates headroom with a *real* `projects/` directory
 holds sessions only it can see, and `headroom launch` refuses it. Fold them
@@ -106,8 +107,8 @@ hand them to the user to reconcile. Only once nothing is left under
 `<dir>/projects`: `rmdir <dir>/projects && ln -s ~/.claude/projects
 <dir>/projects`. Done when `headroom check` passes topology and
 `headroom launch --account <email>` starts. Folded-in sessions carry no
-ownership evidence, so the picker places them like new sessions until one
-is re-homed (`x` on its row).
+ownership evidence, so a resume places each like a new session; the
+account it runs on then owns it.
 
 Every account's Claude Code cleanup sweep prunes that one store with its own
 `settings.json`'s `cleanupPeriodDays`, so the shortest wins. Once a second
@@ -127,8 +128,8 @@ running.
 
 ## Retire a subscription
 
-`headroom accounts remove <email>` (bare, it offers a picker of the
-removable accounts) — refuses while that account has a live session or an
+`headroom accounts remove <email>` (bare, it names the removable accounts
+and refuses) — refuses while that account has a live session or an
 unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the
 account's own Keychain item and dir, scrubs `.order` and its reservation.
 Transcripts survive.
@@ -143,9 +144,9 @@ the routing. A wrapper passes names and flags and nothing else:
 `CLAUDE_CONFIG_DIR` and every check stay in `headroom launch`,
 re-resolved from PATH at each keystroke, while a shell function is frozen
 at shell init. Codex gets the same pair over `headroom launch --vendor
-codex` and `HEADROOM_CODEX_LAUNCHER_FORMAT`. The starter set (`x`, `xa`, `xacc` — the board, passed
-`--compact` for one row per account — `xl` for the last account used, and
-`xs` with the cd that outlives the session) and `HEADROOM_LAUNCHER_FORMAT`, which makes the board
+codex` and `HEADROOM_CODEX_LAUNCHER_FORMAT`. The starter set (`x` for the least-loaded account, `xa <account>`
+for one session there, `xacc` for the board passed `--compact`, one row per
+account) and `HEADROOM_LAUNCHER_FORMAT`, which makes the board
 advertise those names, are in the repo's docs/REFERENCE.md § Shell integration
 (github.com/qiushiyan/headroom/blob/main/docs/REFERENCE.md#shell-integration);
 copy them into the

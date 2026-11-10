@@ -14,27 +14,17 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
-	"github.com/qiushiyan/headroom/internal/state"
 )
 
 // launchLine is the one line a launch prints before the vendor starts: the
 // account, how it was decided, and — when the rule decided — the figures it
 // decided on, each said as what it is. automatic says the rule chose; ref and
-// owner are the session the launch is for and the account that last drove it;
-// others is how much of the chosen account's load other homes put there.
-func launchLine(d placement.Decision, automatic bool, ref Session, owner, others string, now time.Time) string {
+// owner are the session the launch is for and the account that last drove it.
+func launchLine(d placement.Decision, automatic bool, ref Session, owner string, now time.Time) string {
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
-		switch d.Reason {
-		case placement.ReasonLast:
-			parts = append(parts, "the last account used")
-		case placement.ReasonOwner:
-			parts = append(parts, "this session's account")
-		default:
-			parts = append(parts, d.Reason)
-		}
-		return strings.Join(parts, " · ")
+		return strings.Join(append(parts, d.Reason), " · ")
 	}
 	parts = append(parts, "auto")
 	switch {
@@ -59,11 +49,10 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner, others
 		}
 	} else {
 		parts = append(parts, figures(c, now)...)
-		load := fmt.Sprintf("load %d", c.Load)
-		if others != "" {
-			load += " (" + others + ")"
-		}
-		parts = append(parts, load)
+		parts = append(parts, fmt.Sprintf("load %d", c.Load))
+	}
+	if left := expiredLogins(d); left != "" {
+		parts = append(parts, left)
 	}
 	line := strings.Join(parts, " · ")
 	if d.RunnerUp != "" {
@@ -72,17 +61,25 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner, others
 	return line
 }
 
-// elsewhere says how much of a counted account's busy sessions and recent
-// launches came from homes other than this one, by name: "2 from
-// steward-home". "" when none did.
-func elsewhere(c placement.Counted, home string, labels state.HomeLabels) string {
-	var parts []string
-	for _, sh := range c.Elsewhere(home) {
-		if n := sh.Busy + sh.Pending; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d from %s", n, render.Sanitize(labels.Of(sh.Home))))
+// expiredLogins says how many accounts the rule could not consider because
+// their login has expired, and the command that renews them. An automatic
+// launch is the line a person reads every day, and an account left out this
+// way is quota nobody spends: the board and the dry run say so too, but only
+// when they are opened.
+func expiredLogins(d placement.Decision) string {
+	n := 0
+	for _, c := range d.Candidates {
+		if c.Excluded == loginExpired {
+			n++
 		}
 	}
-	return strings.Join(parts, ", ")
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "1 account left out, login expired: run headroom login"
+	}
+	return fmt.Sprintf("%d accounts left out, login expired: run headroom login", n)
 }
 
 // figure is one counted percentage said as what it rests on: measured, a lower
@@ -137,9 +134,7 @@ func shortLabel(label string) string {
 }
 
 // writeDryRun prints the whole table a launch would choose from: one row per
-// account, with what was counted and why an account was left out. busy and
-// pending count every home sharing the ledger; a note says whose were not
-// this home's.
+// account, with what was counted and why an account was left out.
 func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, f facts) {
 	if d.Chosen == "" {
 		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
@@ -150,7 +145,7 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 		}
 		fmt.Fprintf(w, "headroom launch --dry-run: would start %s on %s (%s)\n", binary, d.Chosen, how)
 	}
-	fmt.Fprintf(w, "rule %s — nothing was recorded, logged or started\n\n", d.Rule)
+	fmt.Fprint(w, "nothing was recorded, logged or started\n\n")
 
 	nameW := len("account")
 	for _, c := range d.Candidates {
@@ -173,7 +168,7 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 			week = Cell(c.Week.Counted, c.Week.Basis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, f.home, f.labels, f.standing(c.Name)))
+			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, f.standing(c.Name)))
 	}
 }
 
@@ -200,16 +195,13 @@ func Cell(counted int, basis placement.Basis) string {
 	return figure(counted, basis)
 }
 
-func dryRunNote(c placement.Counted, now time.Time, home string, labels state.HomeLabels, standing string) string {
+func dryRunNote(c placement.Counted, now time.Time, standing string) string {
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
 	}
 	if standing == reservedHere {
 		notes = append(notes, "reserved here")
-	}
-	for _, sh := range c.Elsewhere(home) {
-		notes = append(notes, fmt.Sprintf("%s: %d busy, %d pending", render.Sanitize(labels.Of(sh.Home)), sh.Busy, sh.Pending))
 	}
 	if c.NearLimit {
 		notes = append(notes, fmt.Sprintf("near a limit (%s %d%%)", shortLabel(c.HighestLabel), c.Highest))

@@ -6,7 +6,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -144,32 +143,6 @@ type Scope struct {
 	// home variable being absent, which the vendor resolves against the real
 	// home, so the child would run on a tree the board never described.
 	PrimaryRelocated bool
-
-	// PrimaryExplicit says the primary is launched, probed and read by its
-	// dir spelled out — CLAUDE_CONFIG_DIR set to PrimaryDir — never by the
-	// variable's absence. Set when HOME is not this user's login home: a
-	// second home on one account (an automated pipeline's, say). Spelled out,
-	// Claude Code keeps the dir's .claude.json inside it and keys its
-	// credential on the dir, exactly as for an extra — which is how such a
-	// home has run all along. Absence would read $HOME/.claude.json instead,
-	// another file, and key the credential on the base Keychain item, which is
-	// per OS user and belongs to the login home's primary. (With HOME
-	// overridden, `security` was observed to search no login keychain at all,
-	// so today that item is out of reach and logins land in .credentials.json;
-	// the spelling does not rest on that.) Claude Code only: Codex keeps its
-	// login in the home.
-	PrimaryExplicit bool
-
-	// LedgerRoot is the accounts root whose state.json holds the subscription
-	// ledger this home spends against: the request ledger, the stored usage
-	// responses and the recent launches, all keyed by account identity. ""
-	// means this home's own accounts root, as it always was. A second home
-	// that holds its own logins of the same subscriptions names the first
-	// home's root here (the `.ledger` file in the accounts root), so both homes
-	// ask each subscription once per spacing and count each other's launches.
-	// What belongs to a home alone — its session re-homes — stays in its own
-	// accounts root whatever this says.
-	LedgerRoot string
 }
 
 // Config holds one Scope per vendor. Load is the only door: every directory
@@ -222,19 +195,6 @@ func ForHome(home string) Config {
 	return c
 }
 
-// HomeScope is the vendor's scope for another home on this machine, as that
-// home registered itself in a shared ledger: its home dir, its accounts root
-// and how its primary is selected. It locates that home's account dirs so
-// their live sessions can be counted; nothing launched is ever built from it.
-func HomeScope(v Vendor, home, accountsRoot string, explicit bool) Scope {
-	s := ForHome(home).Scope(v)
-	s.AccountsRoot = accountsRoot
-	if v == Claude {
-		s.PrimaryExplicit = explicit
-	}
-	return s
-}
-
 // Load resolves the configuration, refusing relative path overrides outright.
 //
 // The refusal is load-bearing, not pedantry: verified against the 2.1.220
@@ -266,18 +226,12 @@ func Load() (Config, error) {
 	c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated = relocated, relocated
 
 	for _, o := range []struct {
-		scope                          *Scope
-		root, name, launcher, usageURL string
+		scope                    *Scope
+		name, launcher, usageURL string
 	}{
-		{&c.Claude, "HEADROOM_ACCOUNTS_ROOT", "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL"},
-		{&c.Codex, "HEADROOM_CODEX_ACCOUNTS_ROOT", "HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL"},
+		{&c.Claude, "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL"},
+		{&c.Codex, "HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL"},
 	} {
-		if v := os.Getenv(o.root); v != "" {
-			if !filepath.IsAbs(v) {
-				return Config{}, relativeErr(o.root, v)
-			}
-			o.scope.AccountsRoot = v
-		}
 		if v := os.Getenv(o.name); v != "" {
 			o.scope.PrimaryName = v
 		}
@@ -292,95 +246,12 @@ func Load() (Config, error) {
 		}
 	}
 
-	// Distinct roots are what keep the two vendors' `.reserved`, `.order` and
-	// state.json apart; one location under two names would have each vendor
-	// reading the other's reservations and ledger.
-	if sameLocation(c.Claude.AccountsRoot, c.Codex.AccountsRoot) {
-		return Config{}, fmt.Errorf("the Claude Code accounts root (%s) and the Codex accounts root (%s) name the same location — each vendor keeps its own .reserved, .order and state.json, so the two roots must differ", c.Claude.AccountsRoot, c.Codex.AccountsRoot)
-	}
-
 	c.Codex.Present = isDir(c.Codex.PrimaryDir()) || isDir(c.Codex.AccountsRoot)
-
-	// A home that is not this user's login home spells its primary out; see
-	// Scope.PrimaryExplicit. Unknown login home: today's behavior.
-	if login := loginHome(); login != "" && !SameDir(realHome, login) {
-		c.Claude.PrimaryExplicit = true
-	}
-	root, err := readLedger(c.Claude, c.Codex)
-	if err != nil {
-		return Config{}, err
-	}
-	c.Claude.LedgerRoot = root
 	return c, nil
-}
-
-// loginHome is the OS user's own home directory, from the user database —
-// never $HOME, which is what a second home overrides. "" when it cannot be
-// read. A variable so a test can name one.
-var loginHome = func() string {
-	u, err := user.Current()
-	if err != nil {
-		return ""
-	}
-	return u.HomeDir
-}
-
-// SameDir reports whether two paths name one directory, by file identity
-// when both exist and by spelling otherwise.
-func SameDir(a, b string) bool {
-	ai, errA := os.Stat(a)
-	bi, errB := os.Stat(b)
-	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	return os.SameFile(ai, bi)
 }
 
 func relativeErr(name, v string) error {
 	return fmt.Errorf("%s=%q is not absolute — a relative config-dir path would make claude run as the primary while writing state beside the cwd; spell it absolute", name, v)
-}
-
-// sameLocation reports whether two roots name one directory. It only
-// compares: an accepted spelling is never rewritten.
-//
-// Identity is the filesystem's, not the string's. Each root is walked up to
-// its nearest existing ancestor; the two name one location when those
-// ancestors are the same file (so a symlink anywhere above, and a spelling
-// that differs only in case on a filesystem that folds it, both count) and
-// the components still missing below them match. The missing components are
-// compared case-insensitively: whether the filesystem would fold them cannot
-// be known before they exist, and refusing a pair of roots that differ only
-// by case costs a rename, while accepting one that folds puts both vendors'
-// .reserved and state.json in one directory.
-func sameLocation(a, b string) bool {
-	aDir, aRest := nearestExisting(filepath.Clean(a))
-	bDir, bRest := nearestExisting(filepath.Clean(b))
-	if !strings.EqualFold(aRest, bRest) {
-		return false
-	}
-	ai, errA := os.Stat(aDir)
-	bi, errB := os.Stat(bDir)
-	if errA != nil || errB != nil {
-		return aDir == bDir
-	}
-	return os.SameFile(ai, bi)
-}
-
-// nearestExisting splits path into its deepest existing ancestor and the
-// components below it that do not exist yet.
-func nearestExisting(path string) (dir, rest string) {
-	dir = path
-	for {
-		if _, err := os.Stat(dir); err == nil {
-			return dir, rest
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return dir, rest
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
-	}
 }
 
 func isDir(path string) bool {
@@ -400,13 +271,7 @@ func (s Scope) OrderFile() string { return filepath.Join(s.AccountsRoot, ".order
 // PrimaryMeta is the .claude.json of the default ~/.claude account, which
 // Claude Code keeps at ~/.claude.json — not inside the config dir. Codex
 // keeps its identity inside the home, in auth.json.
-func (s Scope) PrimaryMeta() string {
-	if s.PrimaryExplicit {
-		// Spelled out, the primary keeps it inside its dir, like an extra.
-		return filepath.Join(s.PrimaryDir(), ".claude.json")
-	}
-	return filepath.Join(s.Home, ".claude.json")
-}
+func (s Scope) PrimaryMeta() string { return filepath.Join(s.Home, ".claude.json") }
 
 // RequirePresent is why a command acting on this vendor cannot: the vendor
 // was not found on this machine. Only Codex can be absent, and `accounts
@@ -421,9 +286,8 @@ func (s Scope) RequirePresent() error {
 
 // PrimaryLaunchRefused reports that a primary launch must refuse: the home is
 // re-pointed and the primary would be selected by absence, which the vendor
-// resolves against the real home. A primary spelled out by its dir names the
-// tree the board describes, so it launches.
-func (s Scope) PrimaryLaunchRefused() bool { return s.PrimaryRelocated && !s.PrimaryExplicit }
+// resolves against the real home.
+func (s Scope) PrimaryLaunchRefused() bool { return s.PrimaryRelocated }
 
 // PrimaryDir is the primary account's state dir. Accounts carry "" for it
 // (the vendor's home variable absent), so readers of per-account files

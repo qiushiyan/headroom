@@ -1,5 +1,5 @@
 #!/bin/sh
-# PTY harness for the picker — the behavior `go test` can't reach: real
+# PTY harness for the board — the behavior `go test` can't reach: real
 # raw-mode terminal sessions, keys and quitting through a pty, and
 # signal-time terminal restoration. Driven with expect(1) (ships with
 # macOS); `make test-pty` runs it.
@@ -19,77 +19,37 @@ trap 'rm -rf "$work"' EXIT
 HEADROOM_BIN="$work/headroom"
 (cd "$repo" && go build -o "$HEADROOM_BIN" ./cmd/headroom)
 
-# A fake accounts root with two extra accounts. The usage URL points at a
-# closed local port: fetches fail instantly and no token leaves the machine,
-# so the picker renders deterministic status lines with no network.
-export HEADROOM_ACCOUNTS_ROOT="$work/accounts"
+# HEADROOM_HOME re-points the primary config dir, both accounts roots and the
+# session store into the sandbox, so no case reads the real machine's
+# accounts or sessions. The usage URLs point at a closed local port: fetches
+# fail instantly and no token leaves the machine, so the board renders
+# deterministic status lines with no network. The Codex root does not exist
+# until the two-vendor block creates it, so until then Codex is absent and
+# every frame is the single-vendor one.
+export HEADROOM_HOME="$work/home"
+accounts_root="$HEADROOM_HOME/.claude-accounts"
+codex_root="$HEADROOM_HOME/.codex-accounts"
 export HEADROOM_PRIMARY_NAME=primary
 export HEADROOM_USAGE_URL="http://127.0.0.1:1/usage"
-# The same for Codex, from the first invocation on: a shell that exports
-# HEADROOM_CODEX_ACCOUNTS_ROOT would otherwise lend its real root — which
-# HEADROOM_HOME does not override — to every case below, against the live
-# usage URL. The fixture root does not exist until the two-vendor block
-# creates it, so until then Codex is absent and every frame is the
-# single-vendor one.
-export HEADROOM_CODEX_ACCOUNTS_ROOT="$work/codex-accounts"
 export HEADROOM_CODEX_USAGE_URL="http://127.0.0.1:1/usage"
 unset HEADROOM_CODEX_PRIMARY_NAME HEADROOM_CODEX_LAUNCHER_FORMAT HEADROOM_LAUNCHER_FORMAT
 unset CODEX_HOME CODEX_SQLITE_HOME CODEX_API_KEY CODEX_ACCESS_TOKEN
 # One account carries an accountUuid (every real dir on this machine does —
 # it is what the request ledger keys on) and one deliberately does not, so the
 # degraded dir-name path stays exercised too.
-mkdir -p "$HEADROOM_ACCOUNTS_ROOT/a@x.com" "$HEADROOM_ACCOUNTS_ROOT/b@x.com"
+mkdir -p "$accounts_root/a@x.com" "$accounts_root/b@x.com"
 printf '{"oauthAccount":{"emailAddress":"a@x.com","accountUuid":"11111111-aaaa-4bbb-8ccc-dddddddddddd"}}' \
-    >"$HEADROOM_ACCOUNTS_ROOT/a@x.com/.claude.json"
+    >"$accounts_root/a@x.com/.claude.json"
 printf '{"oauthAccount":{"emailAddress":"b@x.com"}}' \
-    >"$HEADROOM_ACCOUNTS_ROOT/b@x.com/.claude.json"
+    >"$accounts_root/b@x.com/.claude.json"
 export HEADROOM_BIN
 export STTY_OUT="$work/stty.out"
 export HEADROOM_PID_FILE="$work/headroom.pid"
 
-# A session-store fixture for the resume surface. HEADROOM_HOME re-points
-# the primary config dir and the projects store into the sandbox — without
-# it, a resume test would list the real machine's transcripts and the
-# delete test would delete one.
-export HEADROOM_HOME="$work/home"
-proj="$work/p1"
-mkdir -p "$proj"
-sid="11111111-2222-3333-4444-555555555555"
-store="$HEADROOM_HOME/.claude/projects/$(printf '%s' "$proj" | tr '/.' '--')"
-mkdir -p "$store"
-cat >"$store/$sid.jsonl" <<EOF
-{"type":"user","sessionId":"$sid","cwd":"$proj","message":{"role":"user","content":"hello fixture"}}
-{"type":"ai-title","aiTitle":"fixture session","sessionId":"$sid"}
-EOF
-printf '{"display":"hello","sessionId":"%s","timestamp":1000}\n' "$sid" \
-    >"$HEADROOM_HOME/.claude/history.jsonl"
+mkdir -p "$HEADROOM_HOME/.claude/projects"
 
-# More sessions than one screen holds, all older than the first fixture (it
-# must stay row 1 for resume_write), so resume_preview has a bottom entry to
-# expand at the viewport's edge.
-proj2="$work/p2"
-mkdir -p "$proj2"
-store2="$HEADROOM_HOME/.claude/projects/$(printf '%s' "$proj2" | tr '/.' '--')"
-mkdir -p "$store2"
-i=0
-while [ "$i" -lt 14 ]; do
-    fsid="00000000-0000-4000-8000-$(printf '%012d' "$i")"
-    prompt="filler prompt $i"
-    if [ "$i" -eq 13 ]; then
-        prompt="bottom preview marker"
-    fi
-    cat >"$store2/$fsid.jsonl" <<EOF2
-{"type":"user","sessionId":"$fsid","cwd":"$proj2","message":{"role":"user","content":"$prompt"}}
-{"type":"ai-title","aiTitle":"filler $i","sessionId":"$fsid"}
-EOF2
-    touch -t "2026010112$(printf '%02d' $((30 - i)))" "$store2/$fsid.jsonl"
-    i=$((i + 1))
-done
-export RESUME_OUT="$work/resume.out"
-
-# The exec-success fixture: an extra account with valid topology owning one
-# session, and a stub claude that records the config dir and argv it
-# received. Every case uses fixture auth and credential commands; a real
+# The exec-success fixture: an extra account with valid topology, and a stub
+# claude that records the config dir and argv it received. Every case uses fixture auth and credential commands; a real
 # terminal never requires real account credentials.
 mkdir -p "$work/stub"
 cat >"$work/stub/claude" <<'EOS'
@@ -110,24 +70,14 @@ EOS
 chmod +x "$work/stub/claude" "$work/stub/security"
 export PATH="$work/stub:$PATH"
 export STUB_DIR="$work/stub"
-sid2="99999999-8888-7777-6666-555555555555"
-cat >"$store2/$sid2.jsonl" <<EOF3
-{"type":"user","sessionId":"$sid2","cwd":"$proj2","message":{"role":"user","content":"exec me"}}
-{"type":"ai-title","aiTitle":"exec fixture target","sessionId":"$sid2"}
-EOF3
-# Older than the first fixture: row 1 belongs to resume_write/resume_delete,
-# and sessions_exec reaches this one by filter, never by position.
-touch -t 202601011220 "$store2/$sid2.jsonl"
-ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/a@x.com/projects"
-printf '{"display":"exec me","sessionId":"%s","timestamp":2000}\n' "$sid2" \
-    >"$HEADROOM_ACCOUNTS_ROOT/a@x.com/history.jsonl"
+ln -s "$HEADROOM_HOME/.claude/projects" "$accounts_root/a@x.com/projects"
 
 fail=0
 run() {
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/.current" "$STTY_OUT" "$RESUME_OUT" "$HEADROOM_PID_FILE"
+    rm -f "$accounts_root/.current" "$STTY_OUT" "$HEADROOM_PID_FILE"
     # Each case starts from an unclaimed budget, or the board would open
     # inside a quiet period the previous case paid for.
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
+    rm -f "$accounts_root/state.json"
     if expect -f "$here/$1.exp" >"$work/$1.log" 2>&1; then
         echo "ok   $1"
     else
@@ -169,7 +119,7 @@ fi
 
 # ESC closes the board and writes nothing.
 run accounts_cancel
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+if [ -e "$accounts_root/.current" ]; then
     echo "FAIL accounts_cancel: closing must write nothing"
     fail=1
 fi
@@ -180,7 +130,7 @@ run accounts_refresh
 # The compact layout draws its column header and one row per account and quits
 # clean — the same loop under a second presentation.
 run accounts_compact
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+if [ -e "$accounts_root/.current" ]; then
     echo "FAIL accounts_compact: quit must write nothing"
     fail=1
 fi
@@ -188,8 +138,8 @@ fi
 # The board marks the next account; enter and a, the keys that once recorded
 # routing, write nothing.
 run accounts_auto
-if [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
-    echo "FAIL accounts_auto: enter or a wrote .current ('$(cat "$HEADROOM_ACCOUNTS_ROOT/.current")')"
+if [ -e "$accounts_root/.current" ]; then
+    echo "FAIL accounts_auto: enter or a wrote .current ('$(cat "$accounts_root/.current")')"
     fail=1
 fi
 
@@ -198,18 +148,18 @@ fi
 # HEADROOM_HOME and b@x.com has no sessions link, so both must be left out by
 # name rather than chosen. The stub claude prints the config dir it was given.
 for n in c d e f; do
-    mkdir -p "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"
+    mkdir -p "$accounts_root/$n@x.com"
     printf '{"oauthAccount":{"emailAddress":"%s@x.com","accountUuid":"2222222%s-aaaa-4bbb-8ccc-dddddddddddd"}}' "$n" "$n" \
-        >"$HEADROOM_ACCOUNTS_ROOT/$n@x.com/.claude.json"
-    ln -s "$HEADROOM_HOME/.claude/projects" "$HEADROOM_ACCOUNTS_ROOT/$n@x.com/projects"
+        >"$accounts_root/$n@x.com/.claude.json"
+    ln -s "$HEADROOM_HOME/.claude/projects" "$accounts_root/$n@x.com/projects"
 done
-rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+rm -f "$accounts_root/state.json" "$accounts_root/launches.jsonl"
 
 # A dry run changes nothing: no state file, no log.
 dry_out=$("$HEADROOM_BIN" launch --dry-run 2>&1) && dry_code=0 || dry_code=$?
 if [ "$dry_code" != 0 ] || ! printf '%s\n' "$dry_out" | grep -q 'would start claude on a@x.com' ||
     ! printf '%s\n' "$dry_out" | grep -q 'b@x.com.*excluded' ||
-    [ -e "$HEADROOM_ACCOUNTS_ROOT/state.json" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl" ]; then
+    [ -e "$accounts_root/state.json" ] || [ -e "$accounts_root/launches.jsonl" ]; then
     echo "FAIL launch-dry-run: exit $dry_code, or it left something behind"
     printf '%s\n' "$dry_out" | sed 's/^/     /'
     fail=1
@@ -233,14 +183,15 @@ if [ "$spread" != 5 ] || ! grep -q 'auto' "$work/auto.0.err"; then
 else
     echo "ok   launch-auto-spread"
 fi
-# Every launch is in the log, and the log reads back.
-if [ "$("$HEADROOM_BIN" launches | grep -c 'auto/')" != 5 ] ||
-    [ "$("$HEADROOM_BIN" launches --json -n 0 | grep -c '"recorded":true')" != 5 ]; then
-    echo "FAIL launches: the log does not hold the five launches"
-    "$HEADROOM_BIN" launches | sed 's/^/     /'
+# Every launch is one line in the log, whole, though they were appended
+# together.
+log="$accounts_root/launches.jsonl"
+if [ "$(grep -c '"mode":"auto"' "$log" 2>/dev/null)" != 5 ] || [ "$(wc -l <"$log" | tr -d ' ')" != 5 ]; then
+    echo "FAIL launch-log: the log does not hold the five launches, one line each"
+    sed 's/^/     /' "$log" 2>/dev/null
     fail=1
 else
-    echo "ok   launches"
+    echo "ok   launch-log"
 fi
 # A named session keeps its account across turns: the first turn's id is
 # placed and recorded, and the second turn follows it wherever the load is.
@@ -264,8 +215,8 @@ else
     echo "ok   board-auto"
 fi
 # Back to the fixture every other case expects.
-for n in c d e f; do rm -rf "$HEADROOM_ACCOUNTS_ROOT/$n@x.com"; done
-rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jsonl"
+for n in c d e f; do rm -rf "$accounts_root/$n@x.com"; done
+rm -f "$accounts_root/state.json" "$accounts_root/launches.jsonl"
 
 # Two vendors. Codex is absent from every other case — its directories do not
 # exist under the fixture home, so those frames are what they always were —
@@ -273,12 +224,12 @@ rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json" "$HEADROOM_ACCOUNTS_ROOT/launches.jso
 # are unsigned fixtures and the usage URL is a closed port.
 b64() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
 jwt() { printf '%s.%s.sig' "$(b64 '{"alg":"none"}')" "$(b64 "$1")"; }
-mkdir -p "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com" "$HEADROOM_HOME/.codex/sessions"
-ln -s "$HEADROOM_HOME/.codex/sessions" "$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/sessions"
+mkdir -p "$codex_root/cx@x.com" "$HEADROOM_HOME/.codex/sessions"
+ln -s "$HEADROOM_HOME/.codex/sessions" "$codex_root/cx@x.com/sessions"
 id_token=$(jwt '{"email":"cx@x.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro","chatgpt_account_id":"acct-cx","chatgpt_user_id":"user-cx"}}')
 access_token=$(jwt '{"exp":4102444800}')
 printf '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"%s","access_token":"%s","refresh_token":"rt","account_id":"acct-cx"},"last_refresh":"2026-09-13T08:00:00Z"}' \
-    "$id_token" "$access_token" >"$HEADROOM_CODEX_ACCOUNTS_ROOT/cx@x.com/auth.json"
+    "$id_token" "$access_token" >"$codex_root/cx@x.com/auth.json"
 
 # Off a terminal, two vendors print under a heading each, and --json is still
 # one document with a vendor on every account.
@@ -308,14 +259,14 @@ fi
 
 # Tab switches pages; enter and a on the Codex page write neither vendor's
 # .current.
-rm -f "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" "$HEADROOM_CODEX_ACCOUNTS_ROOT/state.json"
+rm -f "$codex_root/.current" "$codex_root/state.json"
 run accounts_tab
-if [ -e "$HEADROOM_CODEX_ACCOUNTS_ROOT/.current" ] || [ -e "$HEADROOM_ACCOUNTS_ROOT/.current" ]; then
+if [ -e "$codex_root/.current" ] || [ -e "$accounts_root/.current" ]; then
     echo "FAIL accounts_tab: a key on the Codex page wrote a .current"
     fail=1
 fi
 # Codex goes absent again for everything below.
-rm -rf "$HEADROOM_CODEX_ACCOUNTS_ROOT" "$HEADROOM_HOME/.codex"
+rm -rf "$codex_root" "$HEADROOM_HOME/.codex"
 
 # SIGTERM mid-session must leave the terminal in canonical echoing mode.
 run accounts_sigterm
@@ -344,7 +295,7 @@ fi
 # The emulator itself archives one pre-resize screen per resize, so after
 # resizing the assertion is a bound, not zero.
 if command -v tmux >/dev/null 2>&1; then
-    rm -f "$HEADROOM_ACCOUNTS_ROOT/state.json"
+    rm -f "$accounts_root/state.json"
     tmux_sock="$work/tmux.sock"
     tmx() { tmux -S "$tmux_sock" "$@"; }
     # The pane runs the picker directly (exec, no shell lingering), and every
@@ -384,111 +335,21 @@ if command -v tmux >/dev/null 2>&1; then
     fi
     tmx kill-server 2>/dev/null || true
 
-    # The session picker fills the alternate screen exactly; a frame whose
-    # last row ended in a newline scrolled the header off on every draw.
-    # Only the screen shows that, not the bytes, so this reads the pane.
-    tmx new-session -d -x 100 -y 12 -s picker "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN' sessions"
-    sleep 3
-    top=$(tmx capture-pane -t picker -p 2>/dev/null | head -1)
-    case "$top" in
-    "resume ·"*) echo "ok   sessions-header" ;;
-    *)
-        echo "FAIL sessions-header: the picker's first row is not its header:"
-        tmx capture-pane -t picker -p 2>/dev/null | sed 's/^/     /'
-        fail=1
-        ;;
-    esac
-    tmx kill-server 2>/dev/null || true
-
-    # A pane too short for the picker's chrome, and one too narrow for its
-    # layout: each frame still fits the screen, so after redraws (a selection
-    # move forces several) the header is still the first row. The alternate
-    # screen keeps no scrollback, so the first row is the evidence.
-    for geom in "100 4" "15 12"; do
-        set -- $geom
-        tmx new-session -d -x "$1" -y "$2" -s small "PATH='$STUB_DIR':\$PATH exec '$HEADROOM_BIN' sessions"
-        sleep 2
-        tmx send-keys -t small j j k 2>/dev/null || true
-        sleep 1
-        top=$(tmx capture-pane -t small -p 2>/dev/null | head -1)
-        case "$top" in
-        "resume ·"*) echo "ok   sessions-${1}x${2}" ;;
-        *)
-            echo "FAIL sessions-${1}x${2}: a frame overflowed the pane; first row:"
-            tmx capture-pane -t small -p 2>/dev/null | sed 's/^/     /'
-            fail=1
-            ;;
-        esac
-        tmx kill-server 2>/dev/null || true
-    done
 else
     echo "skip scrollback (tmux not installed)"
 fi
 
-# The session picker lists the fixture store; --json needs no terminal.
-if ! "$HEADROOM_BIN" sessions --json | grep -q "$sid"; then
-    echo "FAIL sessions-json: fixture session missing from listing"
-    fail=1
-else
-    echo "ok   sessions-json"
-fi
-
-# The retired spelling: exit 2, actionable stderr, and nothing on stdout a
+# A retired verb is an unknown word: exit 2 and nothing on stdout a
 # positional reader could consume — a stale shell function is exactly who
-# still calls it.
-tomb_out=$("$HEADROOM_BIN" resume 2>/dev/null) && tomb_code=0 || tomb_code=$?
-if [ "$tomb_code" != 2 ] || [ -n "$tomb_out" ]; then
-    echo "FAIL resume-tombstone: exit $tomb_code stdout '$tomb_out', want 2 and empty"
-    fail=1
-else
-    echo "ok   resume-tombstone"
-fi
-
-# Enter under the harness's re-pointed HEADROOM_HOME refuses into the picker
-# (the fixture session's owner is the primary), and the advisory cd file —
-# created at flag parse — stays empty: empty is the shell's "do not cd".
-run resume_write
-if [ ! -e "$RESUME_OUT" ] || [ -s "$RESUME_OUT" ]; then
-    echo "FAIL resume_write: cd file missing or non-empty after a refusal"
-    fail=1
-fi
-
-# Enter on a session owned by an extra account with valid topology: the
-# picker becomes claude — here the stub, which prints the routing it
-# received. Pins the whole exec path through a real terminal: owner
-# resolution, topology pass, chdir, environment, --resume placement, and
-# the cd file carrying the entered dir.
-run sessions_exec
-if [ "$(cat "$RESUME_OUT" 2>/dev/null)" != "$proj2" ]; then
-    echo "FAIL sessions_exec: cd file should carry the entered dir:"
-    cat "$RESUME_OUT" 2>/dev/null | sed 's/^/     /'
-    fail=1
-fi
-
-# q cancels: the cd file stays empty, so the shell does not cd.
-run resume_cancel
-run resume_preview
-if [ -s "$RESUME_OUT" ]; then
-    echo "FAIL resume_cancel: cancel must leave the cd file empty"
-    fail=1
-fi
-
-# SIGTERM inside the alt-screen session must still restore the terminal.
-run resume_sigterm
-if ! grep -qE '(^|[[:space:]])icanon' "$STTY_OUT" 2>/dev/null ||
-    grep -qE '(^|[[:space:]])-icanon' "$STTY_OUT" 2>/dev/null ||
-    grep -qE '(^|[[:space:]])-echo([[:space:]]|$)' "$STTY_OUT" 2>/dev/null; then
-    echo "FAIL resume_sigterm: terminal left raw after SIGTERM"
-    cat "$STTY_OUT" 2>/dev/null || true
-    fail=1
-fi
-
-# dd + y removes the transcript — from the fixture store, proving the
-# HEADROOM_HOME isolation that makes this test safe to run at all.
-run resume_delete
-if [ -e "$store/$sid.jsonl" ]; then
-    echo "FAIL resume_delete: transcript still present"
-    fail=1
-fi
+# still calls one.
+for verb in resume sessions resolve launches; do
+    out=$("$HEADROOM_BIN" "$verb" 2>/dev/null) && code=0 || code=$?
+    if [ "$code" != 2 ] || [ -n "$out" ]; then
+        echo "FAIL retired-$verb: exit $code stdout '$out', want 2 and empty"
+        fail=1
+    else
+        echo "ok   retired-$verb"
+    fi
+done
 
 exit $fail

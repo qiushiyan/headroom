@@ -84,12 +84,19 @@ func (b Blob) PlanLabel() string {
 // Parse applies the credential contract to a raw blob. ok is false when the
 // blob is not JSON or carries no access token — the "badblob" state, which
 // on a real system means Claude Code changed its credential format.
+//
+// One shape without a token is the vendor's own and not drift: when a login
+// ends, Claude Code keeps the item, empties both tokens and leaves
+// refreshTokenExpiresAt as it was. So a blob with no token is still returned
+// as decoded, and its passed refresh expiry is the same positive evidence it
+// is beside a token (ReloginRequired). What is not JSON decodes to nothing,
+// both expiries absent, and proves nothing.
 func Parse(raw string) (Blob, bool) {
 	var outer struct {
 		ClaudeAiOauth map[string]any `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal([]byte(raw), &outer); err != nil || outer.ClaudeAiOauth == nil {
-		return Blob{}, false
+		return Blob{ExpiresState: tag.None, RefreshState: tag.None}, false
 	}
 	o := outer.ClaudeAiOauth
 	expires, expiresState := asEpochMS(o["expiresAt"])
@@ -103,10 +110,7 @@ func Parse(raw string) (Blob, bool) {
 		SubscriptionType: asStringDefault(o["subscriptionType"], "?"),
 		RateLimitTier:    asString(o["rateLimitTier"]),
 	}
-	if b.Token == "" {
-		return Blob{}, false
-	}
-	return b, true
+	return b, b.Token != ""
 }
 
 // readKeychain fetches the raw blob from the Keychain item under the

@@ -11,7 +11,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/state"
 )
 
 // checkRouting audits the launch-routing state: the reservations and the
@@ -107,23 +106,15 @@ func checkRouting(set accounts.Set, environ []string, r *report) {
 	}
 }
 
-// checkHomes audits what a second home on this machine rests on: how this
-// home's primary is selected, that no dir shares another's login, which ledger
-// this home spends against, and that no account dir belongs to two homes.
-// Every failure here is headroom's own state — a dir it seeded, a file it
-// reads — never the vendor's.
-func checkHomes(set accounts.Set, snap state.Snapshot, r *report) {
+// checkLogins audits that no dir shares another's login. A login file linked
+// between two dirs makes them one login, and a linked history or registry puts
+// one account's sessions under another's name: every entry no share mode links
+// (accounts.PerDirEntries) but the store link, which is a link by design. Only
+// dirs headroom launches by their dir are judged: the primary keeps
+// ~/.claude.json outside its dir, where it is the vendor's. A failure here is
+// headroom's own state — a dir it seeded — never the vendor's.
+func checkLogins(set accounts.Set, r *report) {
 	scope := set.Scope
-	if scope.PrimaryExplicit {
-		r.ok(fmt.Sprintf("home: HOME is not this user's login home — the primary is launched by its dir (%s), never by absence", scope.PrimaryDir()))
-	}
-
-	// A login file linked between two dirs makes them one login, and a linked
-	// history or registry puts one account's sessions under another's name:
-	// every entry no share mode links (accounts.PerDirEntries) but the store
-	// link, which is a link by design. Only dirs headroom launches by their
-	// dir are judged: the login home's primary keeps ~/.claude.json outside
-	// its dir, where it is the vendor's.
 	var linked []string
 	for _, a := range set.Accounts {
 		if a.ConfigDir == "" {
@@ -141,37 +132,6 @@ func checkHomes(set accounts.Set, snap state.Snapshot, r *report) {
 	}
 	r.own(len(linked) == 0, "logins: every account dir keeps its own login, history and session registry",
 		fmt.Sprintf("%s is a link — a login shared between dirs is one login under two names; remove the link and log that dir in again", strings.Join(linked, ", ")))
-
-	var shared []string
-	mine := map[string]os.FileInfo{}
-	for _, a := range set.Accounts {
-		if fi, err := os.Stat(a.Dir()); err == nil {
-			mine[a.Dir()] = fi
-		}
-	}
-	homes := snap.OtherHomes(scope)
-	for _, h := range homes {
-		for _, a := range h.Set.Accounts {
-			fi, err := os.Stat(a.Dir())
-			if err != nil {
-				continue
-			}
-			for dir, ofi := range mine {
-				if os.SameFile(fi, ofi) {
-					shared = append(shared, fmt.Sprintf("%s (also %s's)", dir, h.Root))
-				}
-			}
-		}
-	}
-	if snap.Shared() || len(homes) > 0 {
-		whose := "this home's own"
-		if snap.Shared() {
-			whose = "another home's"
-		}
-		r.ok(fmt.Sprintf("ledger: %d other home(s) spend against this ledger (%s) — their sessions and launches count here", len(homes), whose))
-		r.own(len(shared) == 0, "homes: no account dir belongs to two homes",
-			strings.Join(shared, ", ")+" — a launch in one home would run on the other's dir")
-	}
 }
 
 // checkReservations audits `.reserved`, when there is one, through the reader

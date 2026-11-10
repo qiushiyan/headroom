@@ -1,7 +1,6 @@
 // Package render draws what headroom shows a person: the accounts board in
 // both of its layouts (Board — the block per account and the compact row),
-// the session picker's rows and preview, and the cell-width text handling
-// both rest on. It decides no facts: it spells the ones accountstate and
+// and the cell-width text handling it rests on. It decides no facts: it spells the ones accountstate and
 // sessions hand it, and the callers own the terminal — clipping, framing and
 // the in-place redraw.
 package render
@@ -348,9 +347,8 @@ func (p Palette) join(c clauses, kinds ...clauseKind) string {
 	return strings.Join(parts, p.Dim+" · "+p.Rst)
 }
 
-// Age is the one relative-time vocabulary: the board's "observed … ago", the
-// session picker's row stamps and the launch surfaces' figure ages all say
-// how old something is the same way.
+// Age is the one relative-time vocabulary: the board's "observed … ago" and
+// the launch surfaces' figure ages say how old something is the same way.
 func Age(sec int64) string {
 	switch {
 	case sec < 1:
@@ -414,26 +412,14 @@ func (p Palette) accountBlock(v accountstate.Facts, now int64, width int) []stri
 }
 
 // loadText is the load clause: the account's busy sessions and recent
-// launches, from every home that shares the ledger, with another home's share
-// named — "3 busy, 1 launched (steward-home: 2 busy, 1 launched)". "" when
-// there are none, or the surface did not read them: an idle account says
-// nothing, as it always has. It explains a mark rather than changing a
-// choice, so it is the last clause of a caption.
+// launches — "3 busy, 1 launched". "" when there are none, or the surface did
+// not read them: an idle account says nothing, as it always has. It explains a
+// mark rather than changing a choice, so it is the last clause of a caption.
 func loadText(l *accountstate.Load) string {
 	if l == nil || l.Busy+l.Launched == 0 {
 		return ""
 	}
-	t := loadCounts(l.Busy, l.Launched)
-	var others []string
-	for _, h := range l.Elsewhere() {
-		if c := loadCounts(h.Busy, h.Launched); c != "" {
-			others = append(others, Sanitize(h.Label)+": "+c)
-		}
-	}
-	if len(others) > 0 {
-		t += " (" + strings.Join(others, "; ") + ")"
-	}
-	return t
+	return loadCounts(l.Busy, l.Launched)
 }
 
 func loadCounts(busy, launched int) string {

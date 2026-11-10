@@ -9,57 +9,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 )
 
-// secondHome is a home that is not the user's login home: its primary is
-// spelled out, and its own logins sit in its own dirs.
-func secondHome(t *testing.T) config.Scope {
-	t.Helper()
-	s := config.ForHome(t.TempDir()).Claude
-	s.PrimaryExplicit = true
-	return s
-}
-
-// Spelled out, the primary is still the primary — it owns the store and is
-// never removed — but everything that reads or
-// launches it names its dir: the identity inside the dir, the Keychain item
-// keyed on the dir, CLAUDE_CONFIG_DIR set to the dir.
-func TestASecondHomesPrimaryIsSpelledOut(t *testing.T) {
-	cfg := secondHome(t)
-	if err := os.MkdirAll(cfg.PrimaryDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// The login home keeps its primary's identity at ~/.claude.json; a second
-	// home's primary keeps it inside its dir, where Claude Code writes it once
-	// CLAUDE_CONFIG_DIR is set. A file at the second home's ~/.claude.json is
-	// not this primary's and must not be read as it.
-	write := func(path, email, uuid string) {
-		if err := os.WriteFile(path, []byte(`{"oauthAccount":{"emailAddress":"`+email+`","accountUuid":"`+uuid+`"}}`), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(filepath.Join(cfg.PrimaryDir(), ".claude.json"), "yan@planlab.ai", "u-yan")
-	write(filepath.Join(cfg.Home, ".claude.json"), "owner@x.com", "u-owner")
-
-	set := Discover(cfg)
-	p := set.Accounts[0]
-	if !p.IsPrimary() || p.ConfigDir != cfg.PrimaryDir() || p.Dir() != cfg.PrimaryDir() {
-		t.Fatalf("primary = %+v", p)
-	}
-	if p.Email != "yan@planlab.ai" || p.AccountID != "u-yan" || p.Name != "yan" {
-		t.Errorf("primary identity read from the wrong file: %q %q %q", p.Email, p.AccountID, p.Name)
-	}
-	if err := VerifyTopology(p); err != nil {
-		t.Errorf("the primary owns the store; topology: %v", err)
-	}
-	if a, err := set.Select("yan"); err != nil || a.ConfigDir != cfg.PrimaryDir() {
-		t.Errorf("the primary by name = %+v %v, want the spelled-out primary", a, err)
-	}
-	// The second home's own sessions inherit its primary's dir: that is its
-	// ordinary environment, not an anomaly to announce.
-	if !set.KnownDir(cfg.PrimaryDir()) {
-		t.Error("a second home's own primary dir read as unexplained")
-	}
-}
-
 // No share mode links a login between two dirs: not the whitelist, and not a
 // config package that happens to hold a login, a history or a registry.
 func TestNoLoginIsLinkedBetweenDirs(t *testing.T) {
@@ -70,7 +19,7 @@ func TestNoLoginIsLinkedBetweenDirs(t *testing.T) {
 		"every entry": func(cfg config.Scope) SeedOptions { return SeedOptions{ShareFrom: cfg.PrimaryDir()} },
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg := secondHome(t)
+			cfg := config.ForHome(t.TempDir()).Claude
 			src := cfg.PrimaryDir()
 			for _, d := range []string{"skills", "sessions", "projects"} {
 				if err := os.MkdirAll(filepath.Join(src, d), 0o755); err != nil {

@@ -1,9 +1,8 @@
 package launchop
 
 // What a placement reads before the rule chooses: discovery, the stored
-// observations, the session registries of this home and of every home that
-// shares its ledger, the headless runs, and — for an automatic choice — the
-// credentials; then which accounts may be chosen, by the caller's own policy —
+// observations, this home's session registries, the headless runs recorded
+// against its accounts root, and — for an automatic choice — the credentials; then which accounts may be chosen, by the caller's own policy —
 // an ordinary launch's preparation and positive evidence, or a headless
 // caller's eligibility. A launch, the board's mark and a headless placement
 // all read through here, so they cannot hold two opinions of one account.
@@ -22,7 +21,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
@@ -61,11 +59,9 @@ type candidate struct {
 // facts is everything one placement read. The discovered set travels with
 // what was built from it, as everywhere else.
 type facts struct {
-	set    accounts.Set
-	snap   state.Snapshot
-	home   string // this home's accounts root, as the ledger names it
-	labels state.HomeLabels
-	cands  []candidate
+	set   accounts.Set
+	snap  state.Snapshot
+	cands []candidate
 
 	refs     []sessions.AccountRef
 	evidence map[string]sessions.ProcessEvidence
@@ -98,14 +94,6 @@ type reservations struct {
 func readReservations(scope config.Scope) reservations {
 	held, err := accounts.ReadReservations(scope)
 	return reservations{held, err}
-}
-
-// keeps says a reservation keeps the account from work in project, or that
-// nothing can say it does not: an unreadable `.reserved` never releases an
-// account.
-func (r reservations) keeps(ref, project string) bool {
-	s, _ := standing(r.held, ref, project)
-	return r.err != nil || s == reservedElsewhere
 }
 
 // How a reservation stands to one launch, as the launch log spells it.
@@ -157,13 +145,6 @@ func (f facts) find(name string) (candidate, bool) {
 	return candidate{}, false
 }
 
-// owner resolves the session a launch names to the account that last drove
-// it: "" when there is no evidence, or none that names an account still here.
-func (f facts) owner(id string) string {
-	name, _ := sessions.OwnerOf(id, f.refs, f.evidence[id], f.snap.Owners())
-	return name
-}
-
 // source is one account as a surface holds it: who it is, the quota it
 // spends, and the newest observation that surface has of it.
 type source struct {
@@ -196,18 +177,6 @@ func gather(set accounts.Set, st *state.Store, res reservations, env []string, d
 	return build(set, st, snap, diskSources(set, snap, now), res, env, dir, automatic, now, deps)
 }
 
-// OtherHomes is the other homes spending against this home's ledger today,
-// located by their registrations there. Their accounts are read for one
-// thing — the sessions running on them, counted against the same
-// subscriptions — and are never candidates and never owners.
-func OtherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
-	if scope.Vendor != config.Claude {
-		// Codex has no registry headroom can read.
-		return nil
-	}
-	return snap.OtherHomes(scope)
-}
-
 // observe is what every placement reads of the accounts, whoever decides
 // which of them may be chosen: each one's figures, the busy sessions on its
 // subscription and the headless runs still working on it, and — with
@@ -216,10 +185,9 @@ func OtherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 // against are the ledger's, read by the rule itself.
 //
 // Busy sessions are the subscription's, not the dir's: two dirs on one
-// account, in this home or in another home sharing the ledger, spend one
-// quota, so every verified-live busy session on that account counts on each
-// candidate that spends it — and so does every headless run whose process
-// still runs.
+// account spend one quota, so every verified-live busy session on that
+// account counts on each candidate that spends it — and so does every
+// headless run whose process still runs.
 //
 // Who may be chosen is each caller's own policy over these facts, and none is
 // set here: an ordinary launch's is its preparation and positive evidence
@@ -228,8 +196,7 @@ func OtherHomes(scope config.Scope, snap state.Snapshot) []accounts.Home {
 // launch in dir, which each policy composes as keptOut.
 func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []source, res reservations, dir string, credentials bool, deps Deps) facts {
 	scope := set.Scope
-	f := facts{set: set, snap: snap, home: st.Home(), labels: snap.HomeLabels(), cands: make([]candidate, len(src))}
-	f.reservedErr = res.err
+	f := facts{set: set, snap: snap, cands: make([]candidate, len(src)), reservedErr: res.err}
 	project := sessions.RepoKey(dir)
 
 	var blobs []string
@@ -244,13 +211,13 @@ func observe(set accounts.Set, st *state.Store, snap state.Snapshot, src []sourc
 	for _, s := range src {
 		keys[s.acct.Name] = s.key.ID()
 	}
-	load := readSessionLoad(set, keys, f.home, OtherHomes(scope, snap), snap.Runs(), deps.Probe)
+	load := readSessionLoad(set, keys, snap.Runs(), deps.Probe)
 	f.refs, f.evidence, f.gone = load.refs, load.evidence, load.gone
 
 	for i, s := range src {
 		c := candidate{acct: s.acct, key: s.key, obs: s.obs,
-			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()], Statuses: load.statuses[s.key.ID()]}
-		c.ObservedAt, c.Source, c.Limits = limitsOf(scope.Vendor, s.obs)
+			Name: s.acct.Name, Ref: s.acct.Ref(), Key: s.key.ID(), Busy: load.busy[s.key.ID()]}
+		c.ObservedAt, c.Limits = limitsOf(scope.Vendor, s.obs)
 		c.standing, c.reserved = standing(res.held, s.acct.Ref(), project)
 		if blobs != nil {
 			c.cred = blobs[i]
@@ -299,10 +266,8 @@ func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source,
 
 // sessionLoad is what the vendors' registries say is running right now: per
 // subscription key, the sessions reported as working and every live session's
-// status word, each from a claim verified by its own process — in this home
-// and in every other home that shares the ledger. The refs and the evidence
-// are this home's alone: they decide a session's owner, and another home's
-// sessions are never this home's to route.
+// status word, each from a claim verified by its own process. The refs and the
+// evidence decide a session's owner.
 //
 // Headless runs join them: a process a headless caller started and reported
 // is working for as long as it runs, so a verified-live run is a busy session
@@ -311,55 +276,39 @@ func build(set accounts.Set, st *state.Store, snap state.Snapshot, src []source,
 // are the runs proven over.
 type sessionLoad struct {
 	busy     map[string][]placement.Proc
-	statuses map[string][]string
 	refs     []sessions.AccountRef
 	evidence map[string]sessions.ProcessEvidence
 	gone     []state.Run
 }
 
-// readSessionLoad reads every account's registry, this home's and the other
-// homes', with the headless runs, and inspects every claim in one pass — one
-// sample per pid answers liveness, load and ownership alike. keys maps this
-// home's account names to their subscription keys; another home's account
-// counts only when its identity says which subscription it is, since its dir
-// name is that home's to choose. Codex has no registry headroom can read: its
-// accounts carry no busy sessions, and an empty read there is not evidence of
-// idleness.
-func readSessionLoad(set accounts.Set, keys map[string]string, home string, others []accounts.Home, runs []state.Run, probe sessions.PIDProbe) sessionLoad {
-	out := sessionLoad{busy: map[string][]placement.Proc{}, statuses: map[string][]string{}}
+// readSessionLoad reads every account's registry, with the headless runs, and
+// inspects every claim in one pass — one sample per pid answers liveness,
+// load and ownership alike. keys maps account names to their subscription
+// keys. Codex has no registry headroom can read: its accounts carry no busy
+// sessions, and an empty read there is not evidence of idleness.
+func readSessionLoad(set accounts.Set, keys map[string]string, runs []state.Run, probe sessions.PIDProbe) sessionLoad {
+	out := sessionLoad{busy: map[string][]placement.Proc{}}
 	if set.Scope.Vendor != config.Claude {
 		return out
 	}
-	// A claimant is whose a claim is: the subscription it spends, the home
-	// that reported it, and whether it is one of this home's own accounts,
-	// whose live claims alone are evidence of a session's owner.
+	// A claimant is whose a claim is: the subscription it spends, and whether
+	// it is an account's own, whose live claims alone are evidence of a
+	// session's owner — a headless run is load, and only load.
 	type claimant struct {
-		key, home string
-		own       bool
+		key string
+		own bool
 	}
 	who := map[string]claimant{}
 	var claims []sessions.RegistryEntry
 	out.refs = Refs(set)
 	for _, a := range set.Accounts {
-		who[a.Name] = claimant{keys[a.Name], home, true}
+		who[a.Name] = claimant{keys[a.Name], true}
 		claims = append(claims, sessions.ReadRegistry(a.Name, a.Dir()).Entries...)
 	}
-	for _, o := range others {
-		for _, a := range o.Set.Accounts {
-			if a.AccountID == "" {
-				continue
-			}
-			// A label no account of this home can carry: the registry reader
-			// stamps it on every entry, and it is mapped back here.
-			label := o.Root + "\x00" + a.Name
-			who[label] = claimant{key: state.KeyFor(a).ID(), home: o.Root}
-			claims = append(claims, sessions.ReadRegistry(label, a.Dir()).Entries...)
-		}
-	}
 	for i, r := range runs {
-		// Labelled like another home's accounts, mapped back below.
+		// A label no account can carry, mapped back below.
 		label := fmt.Sprintf("\x00run\x00%d", i)
-		who[label] = claimant{key: r.Key, home: r.Home}
+		who[label] = claimant{key: r.Key}
 		claims = append(claims, runEntry(label, r))
 	}
 	evidence, live := sessions.InspectClaims(claims, probe)
@@ -368,16 +317,13 @@ func readSessionLoad(set accounts.Set, keys map[string]string, home string, othe
 	for _, e := range live {
 		c := who[e.Account]
 		if _, seen := out.evidence[e.SessionID]; c.own && !seen {
-			// Another home's session is never this home's to route, even under
-			// an id this home also holds: there it is load, and only load.
 			out.evidence[e.SessionID] = sessions.ProcessEvidence{State: sessions.Live, Account: e.Account}
 		}
 		if c.key == "" {
 			continue
 		}
-		out.statuses[c.key] = append(out.statuses[c.key], statusWord(e))
 		if e.Busy() {
-			out.busy[c.key] = append(out.busy[c.key], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS, Home: c.home})
+			out.busy[c.key] = append(out.busy[c.key], placement.Proc{PID: e.PID, StartedMS: e.StartedAtMS})
 		}
 	}
 	return out
@@ -421,9 +367,9 @@ func retiredRuns(runs []state.Run, evidence map[string]sessions.ProcessEvidence)
 // limitsOf turns an observation into the rows the rule counts: the ones that
 // bound ordinary work on the account, with the session window marked. Which
 // rows those are is the usage package's to say.
-func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt int64, src string, limits []placement.Limit) {
+func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt int64, limits []placement.Limit) {
 	if obs == nil {
-		return 0, "", nil
+		return 0, nil
 	}
 	session := usage.SessionWindow(vendor, obs.Rows)
 	for j, r := range obs.Rows {
@@ -439,21 +385,12 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
 		})
 	}
-	return obs.ObservedAt, obs.Source.Name(), limits
+	return obs.ObservedAt, limits
 }
 
-// statusWord is a live session's status as the vendor wrote it. Absent and
-// unreadable are said as such: neither is "idle".
-func statusWord(e sessions.RegistryEntry) string {
-	switch {
-	case e.Status != "":
-		return e.Status
-	case e.StatusState == tag.Bad:
-		return "(unreadable)"
-	default:
-		return "(none)"
-	}
-}
+// loginExpired is avoidReason's word for the one exclusion a person ends by
+// logging in. The launch line counts the accounts that carry it.
+const loginExpired = "login expired"
 
 // avoidReason is why an automatic choice must not land on this account, or "".
 // Positive evidence only — see build.
@@ -466,8 +403,10 @@ func avoidReason(a accounts.Account, obs *accountstate.Observation, raw string, 
 	case a.Scope.Vendor == config.Claude && a.Readable && a.Email == "":
 		return "not logged in"
 	}
-	if blob, ok := creds.Parse(raw); ok && blob.ReloginRequired(now.UnixMilli()) {
-		return "login expired"
+	// Whether the blob holds a token is not asked: a login the vendor ended
+	// has none, and its passed refresh expiry is the evidence (creds.Parse).
+	if blob, _ := creds.Parse(raw); blob.ReloginRequired(now.UnixMilli()) {
+		return loginExpired
 	}
 	if obs != nil && obs.Allowance.State == usage.AllowanceBlocked {
 		return "blocked by the vendor"
@@ -487,16 +426,4 @@ func readCredsParallel(accts []accounts.Account, read func(accounts.Account) str
 	}
 	wg.Wait()
 	return out
-}
-
-// record is a placement's line in the launch log: the decision and every
-// input the rule read, and how each reserved account stood to the launch —
-// which the rule never sees, so that it cannot prefer an account for it.
-func (f facts) record(d placement.Decision, ledger placement.Ledger, intent placement.Intent, now time.Time) launchlog.Record {
-	rec := launchlog.New(d, f.rule(), ledger, intent, now)
-	rec.Vendor = string(f.set.Scope.Vendor)
-	for i, c := range rec.Candidates {
-		rec.Candidates[i].Reservation = f.standing(c.Name)
-	}
-	return rec
 }

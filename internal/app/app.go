@@ -1,6 +1,5 @@
-// Package app holds headroom's surfaces: the board, the session picker, the
-// launch, login, headless placement, the account set, the logs and the
-// documents. Each is one typed entry taking its streams, its options and the
+// Package app holds headroom's surfaces: the board, the launch, login,
+// headless placement, the account set and the documents. Each is one typed entry taking its streams, its options and the
 // edges it reaches through; cmd/headroom translates argv into one of them.
 // Any per-account problem becomes that account's own status, rendered for it
 // alone — accounts fail independently.

@@ -7,7 +7,6 @@ exit 0
   "account": "a@x.com",
   "placement": "<id>",
   "reason": "owner",
-  "rule": "load-2",
   "token_ends_at": "<time>",
   "retry_at": null,
   "accounts": [
@@ -36,9 +35,9 @@ exit 0
       "account": "a@x.com",
       "eligible": true,
       "near_limit": false,
-      "load": 3,
+      "load": 2,
       "busy": 0,
-      "pending": 3,
+      "pending": 2,
       "observed_at": "<time>",
       "stale": false,
       "session": {

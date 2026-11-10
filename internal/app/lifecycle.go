@@ -20,9 +20,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/headless"
-	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/sessions"
-	"github.com/qiushiyan/headroom/internal/tui"
 )
 
 // AddOptions are a new account: its email, and what of a config to link
@@ -79,19 +77,13 @@ func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
 		// holds: this dir gets its own at its first login.
 		fmt.Fprintf(out, "  kept per dir, not linked: %s\n", strings.Join(seeded.Kept, ", "))
 	}
-	// A second home's dir is logged in from that home: the launch must run
-	// under its HOME, or it resolves the login home's accounts instead.
-	under := ""
-	if cfg.PrimaryExplicit {
-		under = "HOME=" + cfg.Home + " "
-	}
 	if cfg.Vendor == config.Codex {
 		// Codex has no in-session /login: logging in is one command, in the
 		// engine's own spelling — a wrapper's argument passing is not
 		// headroom's to know.
-		fmt.Fprintf(out, "next: %sheadroom launch --vendor codex --account %s -- login   and log in as %s\n", under, name, name)
+		fmt.Fprintf(out, "next: headroom launch --vendor codex --account %s -- login   and log in as %s\n", name, name)
 	} else {
-		fmt.Fprintf(out, "next: %sheadroom launch --account %s   then /login as %s\n", under, name, name)
+		fmt.Fprintf(out, "next: headroom launch --account %s   then /login as %s\n", name, name)
 	}
 	fmt.Fprintf(out, "      (the board warns if the login does not match the dir name; new accounts sort last until listed in %s)\n", cfg.OrderFile())
 	return nil
@@ -105,16 +97,13 @@ type removeDeps struct {
 	deleteKeychain func(configDir string) (bool, error)
 	stdin          io.Reader
 	interactive    bool
-	// pick chooses among the removable candidates when the command was
-	// given no name, and confirms the choice; ok=false is a cancel.
-	pick func(cands []removeCandidate) (name string, ok bool)
 }
 
 // AccountsRemove removes one extra account: its Keychain item and its dir,
 // refused while a session is live on it or its liveness cannot be verified,
-// after a confirmation unless yes. A bare removal on a terminal picks from
-// what is removable. Codex accounts are never
-// removed: headroom cannot tell whether a codex session is running on a home.
+// after a confirmation unless yes. A bare removal names what is removable and
+// refuses. Codex accounts are never removed: headroom cannot tell whether a
+// codex session is running on a home.
 func AccountsRemove(std Streams, term Terminal, cfg config.Scope, name string, yes bool, probe sessions.PIDProbe) error {
 	if cfg.Vendor == config.Codex {
 		return codexRemoveRefusal(cfg, name)
@@ -123,13 +112,9 @@ func AccountsRemove(std Streams, term Terminal, cfg config.Scope, name string, y
 		probe:          probe,
 		deleteKeychain: creds.DeleteKeychainItem,
 		stdin:          std.In,
-		// Both ends, as the board requires: the picker draws on stdout and
-		// the y/N prompt is printed there, so a redirected stdout with a
-		// tty stdin would wait on a question nobody can see.
+		// Both ends: the y/N prompt is printed on stdout, so a redirected
+		// stdout with a tty stdin would wait on a question nobody can see.
 		interactive: term.In && term.Out,
-		pick: func(cands []removeCandidate) (string, bool) {
-			return pickRemovable(std, term, cands)
-		},
 	})
 }
 
@@ -194,85 +179,6 @@ func (c removeCandidate) describe() string {
 	}
 }
 
-// pickRemovable is the terminal picker behind a bare `headroom accounts
-// remove`: the candidates as a list, up/down/enter, any cancel key aborts.
-// Enter asks "remove X?" as one more keypress *inside the same raw session*
-// — the cooked-mode line prompt cannot follow a closed tui session, because
-// the terminal's reader goroutine stays blocked on stdin and would swallow
-// the reply. In that second step Enter (or y) confirms and esc/n/q cancel:
-// the row was already chosen with Enter, so the second Enter is an explicit
-// re-affirmation, not the trap "any other key cancels" made of it; cancel
-// stays one key away and an unrelated key is ignored rather than read as
-// either answer. ok=true means the user has confirmed. The frame draws in
-// place on stdout like the board and stays on screen.
-func pickRemovable(std Streams, term Terminal, cands []removeCandidate) (string, bool) {
-	t, err := tui.Open()
-	if err != nil {
-		fmt.Fprintf(std.Err, "headroom accounts remove: %v\n", err)
-		return "", false
-	}
-	defer t.Close()
-	p := render.NewPalette(true)
-	fp := &framePrinter{out: std.Out, size: term.Size}
-	t.OnClose(fp.finish)
-	sel := 0
-	width := 0
-	for _, c := range cands {
-		if n := len(c.Name); n > width {
-			width = n
-		}
-	}
-	confirming := false
-	draw := func() {
-		var lines []string
-		if confirming {
-			lines = append(lines, p.Bold+"remove "+cands[sel].Name+"?"+p.Rst+p.Dim+"  enter/y confirm · esc/n cancel"+p.Rst)
-		} else {
-			lines = append(lines, p.Bold+"remove which account?"+p.Rst+p.Dim+"  ↑/↓ move · enter choose · esc cancel"+p.Rst)
-		}
-		for i, c := range cands {
-			prefix := "  "
-			if i == sel {
-				prefix = p.Bold + "▶ " + p.Rst
-			}
-			lines = append(lines, fmt.Sprintf("%s%-*s  %s%s%s", prefix, width, c.Name, p.Dim, c.describe(), p.Rst))
-		}
-		if confirming {
-			lines = append(lines, p.Dim+"deletes its dir and Keychain item; transcripts survive"+p.Rst)
-		}
-		w, h := fp.geometry()
-		fp.print(lines, w, h)
-	}
-	draw()
-	for k := range t.Events() {
-		if confirming {
-			switch {
-			case k.Kind == tui.KeyEnter, k == tui.Key{Kind: tui.KeyRune, Rune: 'y'}, k == tui.Key{Kind: tui.KeyRune, Rune: 'Y'}:
-				return cands[sel].Name, true
-			case isCancelKey(k), k == tui.Key{Kind: tui.KeyRune, Rune: 'n'}, k == tui.Key{Kind: tui.KeyRune, Rune: 'N'}:
-				return "", false
-			}
-			continue
-		}
-		switch {
-		case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
-			if sel > 0 {
-				sel--
-			}
-		case k.Kind == tui.KeyDown || k == tui.Key{Kind: tui.KeyRune, Rune: 'j'}:
-			if sel < len(cands)-1 {
-				sel++
-			}
-		case isCancelKey(k):
-			return "", false
-		case k.Kind == tui.KeyEnter:
-			confirming = true
-		}
-		draw()
-	}
-	return "", false
-}
-
 // removable says what a removal could name: the candidates, or why there
 // are none to name.
 func removable(cands []removeCandidate, err error) string {
@@ -293,21 +199,10 @@ func removable(cands []removeCandidate, err error) string {
 func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps removeDeps) error {
 	out := std.Out
 	if name == "" {
-		// Bare invocation on a terminal: choose from what is removable.
-		// Off a terminal there is nobody to choose, so it is a usage error
-		// that at least names the choices.
+		// Removal names its object up front: a usage error that names the
+		// choices.
 		cands, err := removeCandidates(cfg)
-		if !deps.interactive || len(cands) == 0 || err != nil {
-			return usagef("name the account to remove — %s", removable(cands, err))
-		}
-		chosen, ok := deps.pick(cands)
-		if !ok {
-			return errors.New("aborted")
-		}
-		name = chosen
-		// The picker confirmed; from here the path is --yes's: every
-		// refusal, then the gate once, immediately before the Keychain step.
-		yes = true
+		return usagef("name the account to remove — %s", removable(cands, err))
 	}
 	// The primary is not removable: it is Claude Code's default dir, not an
 	// entry in the accounts root, and its name is not a dir name at all.
@@ -336,8 +231,8 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 		return err
 	}
 
-	// Gate: a session this dir is driving right now. Same rule as the
-	// picker's dd — verified live refuses, and so does "could not verify":
+	// Gate: a session this dir is driving right now. Verified live refuses,
+	// and so does "could not verify":
 	// deleting a config dir under a running claude orphans its login state.
 	// Strict read: a registry file that does not parse, or a sessions/ dir
 	// that cannot be listed, is "could not verify", not "nothing there".
@@ -427,7 +322,7 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 	if err := accounts.SetReservation(cfg, name, nil); err != nil {
 		left = append(left, fmt.Sprintf("its reservation (%v) — headroom accounts reserve %s --clear", err, name))
 	}
-	fmt.Fprintln(out, "transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed")
+	fmt.Fprintln(out, "transcripts are machine-global and survive; a session it drove is placed like a new one when it is next resumed")
 	if len(left) > 0 {
 		return fmt.Errorf("%s is removed, but not everything of it was cleared: %s", name, strings.Join(left, "; "))
 	}

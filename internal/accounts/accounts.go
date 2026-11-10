@@ -27,9 +27,7 @@ type Account struct {
 	Scope config.Scope
 
 	// ConfigDir is the value the vendor's home variable takes for this
-	// account: "" = the primary, selected by the variable's absence. In a
-	// home that spells its primary out (config.Scope.PrimaryExplicit) the
-	// primary carries its dir here too, and is still the primary.
+	// account: "" = the primary, selected by the variable's absence.
 	ConfigDir string
 	Name      string // dir basename (the email), or PrimaryName(scope, email) for the primary
 	Email     string // what the vendor's identity document reports as logged in ("" = none)
@@ -54,13 +52,10 @@ type Account struct {
 	Meta Meta
 }
 
-// IsPrimary reports the role: the home's own default dir, which owns the
-// canonical session store, is the share source and is never removed. How it
-// is selected is ConfigDir's business — by absence, or spelled out in a home
-// that is not the user's login home.
-func (a Account) IsPrimary() bool {
-	return a.ConfigDir == "" || (a.Scope.PrimaryExplicit && a.ConfigDir == a.Scope.PrimaryDir())
-}
+// IsPrimary reports the role: the home's own default dir, selected by the
+// vendor's home variable being absent, which owns the canonical session
+// store, is the share source and is never removed.
+func (a Account) IsPrimary() bool { return a.ConfigDir == "" }
 
 // Dir is the account's real config dir. ConfigDir is "" for a primary
 // selected by absence — the value CLAUDE_CONFIG_DIR takes — so per-account
@@ -132,11 +127,6 @@ func Discover(cfg config.Scope) Set {
 	accts := make([]Account, 0, len(dirs))
 	for _, d := range dirs {
 		a := Account{Scope: cfg, ConfigDir: d}
-		if d == "" && cfg.PrimaryExplicit {
-			// A second home's primary is spelled out wherever it is used —
-			// launch, probe, credential and identity — never left to absence.
-			a.ConfigDir = cfg.PrimaryDir()
-		}
 		a.readIdentity()
 		if d == "" {
 			a.Name = PrimaryName(cfg, a.Email)
@@ -410,8 +400,8 @@ func (s Set) Select(name string) (Account, error) {
 	return Account{}, fmt.Errorf("%q names %d accounts (an extra dir shares the primary's name) — rename %s", name, len(matches), matches[1].ConfigDir)
 }
 
-// PrimaryRef is how the records headroom keeps — re-homes, --last,
-// `.reserved`, headless tokens — name the primary. An extra is recorded by
+// PrimaryRef is how the records headroom keeps — re-homes, `.reserved`,
+// headless tokens — name the primary. An extra is recorded by
 // its dir's name, which never changes; the primary's name can (a pin, a new
 // login), so it is recorded by a token no extra can have: discovery skips
 // every name that starts with a dot.

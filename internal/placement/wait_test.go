@@ -89,7 +89,7 @@ func TestWhenRoomReturns(t *testing.T) {
 // for the rest of its span once the process has gone.
 func TestAnAttachedPlacementCountsOnce(t *testing.T) {
 	var ledger Ledger
-	ledger.RecordAs("p1", "uuid:a", "a", "a", 0, "/h", now.Add(-time.Minute))
+	ledger.Record("p1", "uuid:a", "a", 0, now.Add(-time.Minute))
 	a := acct("a", 0, 0)
 	if c := chosen(t, []Candidate{a}, ledger, Intent{}).Candidates[0]; c.Pending != 1 || c.Load != 1 {
 		t.Fatalf("placed: pending %d load %d", c.Pending, c.Load)
@@ -100,7 +100,7 @@ func TestAnAttachedPlacementCountsOnce(t *testing.T) {
 	if p, ok := ledger.Attach("p1", 4242, now); !ok || p.Key != "uuid:a" || p.PID != 4242 {
 		t.Fatalf("attach: %+v %v", p, ok)
 	}
-	a.Busy = []Proc{{PID: 4242, StartedMS: now.Add(-50 * time.Second).UnixMilli(), Home: "/h"}}
+	a.Busy = []Proc{{PID: 4242, StartedMS: now.Add(-50 * time.Second).UnixMilli()}}
 	if c := chosen(t, []Candidate{a}, ledger, Intent{}).Candidates[0]; c.Busy != 1 || c.Pending != 0 || c.Load != 1 {
 		t.Errorf("running: busy %d pending %d load %d", c.Busy, c.Pending, c.Load)
 	}

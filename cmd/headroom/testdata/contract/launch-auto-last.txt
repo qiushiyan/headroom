@@ -1,7 +1,0 @@
-$ headroom launch --auto --last --
-exit 2
---- stdout
---- stderr
-headroom: error: --auto and --last can't be used together
-Usage: headroom launch [<args> ...] [flags]
-Run "headroom launch --help" for details.

@@ -100,8 +100,8 @@ func (f *framePrinter) print(lines []string, width, height int) {
 // clipped to width and cleared before it is written, and every row but the
 // last ending in a newline. The last carries none — a newline after it would
 // scroll a frame of exactly the screen's height by one row on every draw,
-// and its top row with it. Both full-screen surfaces draw through it: the
-// board moving up over its previous frame, the session picker from home.
+// and its top row with it. The board draws through it, moving up over its
+// previous frame.
 func writeRows(b *strings.Builder, lines []string, width int) {
 	for i, s := range lines {
 		s = render.Clip(s, width)

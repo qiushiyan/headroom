@@ -18,6 +18,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -154,14 +155,52 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 	// theirs, for every assertion that reads them.
 	snap := st.Load()
 	checkOwnState(snap, r)
+	checkSessionWindows(snap.Audit(), snap.Vendor(), time.Now(), r)
 	// Deliberately outside checkOwnState: these depend on .reserved and the
 	// process environment, not on state.json, so a state document written by
 	// a newer headroom (which rightly short-circuits the state audit) must
 	// not silence them.
 	checkRouting(set, environ, r)
-	checkHomes(set, snap, r)
+	checkLogins(set, r)
 	checkRetention(set, r)
-	checkSessionStore(scope, accts, snap, probe, r)
+	checkSessionStore(accts, probe, r)
+}
+
+// checkSessionWindows says how many of the usage responses headroom holds
+// fresh carry the vendor's short window, the five-hour session row a bare
+// launch is ranked on first. A response without one still parses — the vendor
+// sends the row or leaves it out — so nothing else here would say that it had
+// stopped arriving, and the rule would go on ranking by what is left with
+// nobody the wiser. It is a fact and never a failure: a response may lack the
+// window for the vendor's own reasons, and the rule is sound without it.
+//
+// Only a response the rule itself would count as measured is evidence: one
+// older than placement.StaleAfter says what the vendor sent then, and one
+// with no rows at all names no limit to miss a window among.
+func checkSessionWindows(recs []state.AuditRecord, vendor config.Vendor, now time.Time, r *report) {
+	fresh, with := 0, 0
+	for _, rec := range recs {
+		age := now.UnixMilli() - rec.FetchedAtMS
+		if len(rec.Body) == 0 || age < 0 || age > placement.StaleAfter.Milliseconds() {
+			continue
+		}
+		reading, err := usage.Parse(vendor, rec.Body)
+		if err != nil || len(reading.Rows) == 0 {
+			continue
+		}
+		fresh++
+		if usage.SessionWindow(vendor, reading.Rows) >= 0 {
+			with++
+		}
+	}
+	switch {
+	case fresh == 0:
+	case with == fresh:
+		r.ok(fmt.Sprintf("usage: every fresh response carries a five-hour session window (%d)", fresh))
+	default:
+		r.note(fmt.Sprintf("usage: %d of %d fresh responses carry a five-hour session window — "+
+			"an account without one is ranked on busy sessions and recent launches, then the weekly tie-break", with, fresh))
+	}
 }
 
 // hasMeta reports an account whose .claude.json Claude Code has written; an

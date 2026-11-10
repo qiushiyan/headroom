@@ -53,25 +53,15 @@ type jsonAccount struct {
 	Attempt     jsonAttempt `json:"attempt"` // about the request, never the account
 
 	// Load is what an automatic launch counts on the account beyond its
-	// figures: busy sessions and recent launches, from every home sharing
-	// the ledger, split by home. null when the surface did not read it —
-	// `limits` never does, since it spawns nothing.
+	// figures: busy sessions and recent launches. null when the surface did
+	// not read it — `limits` never does, since it spawns nothing.
 	Load *jsonLoad `json:"load"`
 }
 
 type jsonLoad struct {
-	Value    int            `json:"value"`    // what an automatic launch ranks by: session usage in steps of ten, plus busy, plus launched
-	Busy     int            `json:"busy"`     // verified-live sessions the vendor reports as working
-	Launched int            `json:"launched"` // launches of the last fifteen minutes not yet among them
-	Homes    []jsonHomeLoad `json:"homes"`    // whose they are; empty when there are none
-}
-
-type jsonHomeLoad struct {
-	Home     string `json:"home"`  // the home's accounts root
-	Label    string `json:"label"` // what a person calls it
-	This     bool   `json:"this"`  // the home this document was made in
-	Busy     int    `json:"busy"`
-	Launched int    `json:"launched"`
+	Value    int `json:"value"`    // what an automatic launch ranks by: session usage in steps of ten, plus busy, plus launched
+	Busy     int `json:"busy"`     // verified-live sessions the vendor reports as working, and running headless sessions
+	Launched int `json:"launched"` // launches of the last fifteen minutes not yet among them
 }
 
 type jsonUsage struct {
@@ -148,9 +138,9 @@ func jsonDocument(boards []round.View, generatedAt time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		// 8: no `current` or `mode`, on the envelope or an account — every
 		// bare launch places itself, so no account is the one it targets.
-		// 7: `load` on every account — busy sessions and recent launches,
-		// split by the home they came from, since a second home on the machine
-		// may hold logins of the same subscriptions and share the ledger.
+		// `load` carries no `homes`: no read consumer split it, and one home's
+		// load is all there is.
+		// 7: `load` on every account — busy sessions and recent launches.
 		// 6: automatic placement. `mode` is keyed by vendor, and under "auto"
 		// that vendor's `current` is "" with no account marked current — an
 		// empty current no longer means corrupt routing state on its own.
@@ -196,11 +186,7 @@ func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
 			a.Attempt.NextEligibleAt = &ts
 		}
 		if v.Load != nil {
-			l := &jsonLoad{Value: v.Load.Value, Busy: v.Load.Busy, Launched: v.Load.Launched, Homes: []jsonHomeLoad{}}
-			for _, h := range v.Load.Homes {
-				l.Homes = append(l.Homes, jsonHomeLoad{Home: h.Home, Label: h.Label, This: h.This, Busy: h.Busy, Launched: h.Launched})
-			}
-			a.Load = l
+			a.Load = &jsonLoad{Value: v.Load.Value, Busy: v.Load.Busy, Launched: v.Load.Launched}
 		}
 		if v.Obs != nil {
 			u := &jsonUsage{

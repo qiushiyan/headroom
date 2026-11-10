@@ -44,13 +44,3 @@ func Span(d time.Duration) string {
 	}
 	return "1 minute"
 }
-
-// LogWhen is one of the logs' RFC3339 instants as the launch surfaces print
-// it: the local date and minute. A time that does not parse is printed as it
-// stands.
-func LogWhen(s string) string {
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.Local().Format("01-02 15:04")
-	}
-	return s
-}

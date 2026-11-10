@@ -2,26 +2,22 @@ package check
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
-	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/sessions"
-	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
-// checkSessionStore verifies the contracts the session picker stands on:
-// prompt history attributes sessions to accounts, transcripts carry their own
-// titles and a verifiable cwd within the tail budget, the live-session
-// registry parses (it is what stops `dd` from deleting an open transcript),
-// and headroom's saved re-homes are readable. Shapes, never census numbers —
-// counts are wrong the day after they're written down.
-func checkSessionStore(cfg config.Scope, accts []accounts.Account, snap state.Snapshot, probe sessions.PIDProbe, r *report) {
+// checkSessionStore verifies the vendor records a launch reads about
+// sessions: prompt history attributes a session to the account that drove
+// it, and the live-session registry parses (it is busy load, and it is what
+// keeps `accounts remove` from deleting an account a session runs on).
+// Shapes, never census numbers — counts are wrong the day after they're
+// written down.
+func checkSessionStore(accts []accounts.Account, probe sessions.PIDProbe, r *report) {
 	// history.jsonl: the attribution source. Absent or empty is a fresh
 	// account, not drift; present with lines but zero parseable claims means
 	// the shape moved and affinity is silently routing everything to the
@@ -37,7 +33,7 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account, snap state.Sn
 	}
 
 	// The live-session registry: when claim files exist, they must parse,
-	// or every open session silently reads as deletable.
+	// or every open session silently reads as idle.
 	regFiles, regProblems := 0, 0
 	var claims []sessions.RegistryEntry
 	for _, a := range accts {
@@ -57,60 +53,6 @@ func checkSessionStore(cfg config.Scope, accts []accounts.Account, snap state.Sn
 			fmt.Sprintf("%d registry read problems — liveness is incomplete", regProblems))
 	}
 	checkRegistryStatus(running, r)
-
-	// Transcripts, through the same collector the picker uses. Per-file
-	// absence of a title is ordinary (print-mode sessions); a store where
-	// *nothing* titles or *nothing* cwd-verifies means the record shapes
-	// drifted.
-	listing := sessions.Collect(sessions.Input{
-		ProjectsDir: cfg.StoreDir(),
-		CWD:         cfg.Home,
-		Owners:      snap.Owners(),
-	})
-	if len(listing.Sessions) == 0 {
-		r.skip("sessions: not tested", "store is empty")
-		return
-	}
-	titled, cwdOK := 0, 0
-	for _, s := range listing.Sessions {
-		if s.Tail.Title() != "" {
-			titled++
-		}
-		if s.CWD != "" {
-			cwdOK++
-		}
-	}
-	r.check(titled > 0, "sessions: title/prompt records parse via shared contract",
-		"no transcript yields a title — record shapes drifted")
-	r.check(cwdOK > 0, "sessions: cwd records verify against store dir names",
-		"no transcript's cwd munges to its dir — resume targets are gone")
-
-	// The tail budget is the assertion most likely to actually fire, and
-	// it must test the whole claim: for every transcript larger than the
-	// budget, the tail-derived title *and* cwd must equal what a
-	// full-file parse resolves — a custom rename beyond the budget with
-	// a newer last-prompt inside it renders the wrong title while "some
-	// title exists" still passes. The comparison runs through the shared
-	// parser, never a substring scan: transcripts about these tools
-	// quote the record types verbatim in message bodies, and a raw
-	// needle match reads that as a title (it did, on this very repo's
-	// own sessions).
-	over := 0
-	for _, s := range listing.Sessions {
-		if s.Size <= sessions.TailBudget {
-			continue // the tail pass already saw the whole file
-		}
-		data, err := os.ReadFile(s.Path)
-		if err != nil {
-			continue
-		}
-		full := sessions.ParseTail(data, filepath.Base(s.StoreDir), true)
-		if full.Title() != s.Tail.Title() || full.CWD != s.CWD || full.Model != s.Tail.Model {
-			over++
-		}
-	}
-	r.check(over == 0, "sessions: the adaptive tail reader resolves the same title/cwd/model as a full parse",
-		fmt.Sprintf("%d transcript(s) resolve differently — a record drifted out of the reader's reach", over))
 }
 
 // checkRegistryStatus verifies the one registry field automatic placement

@@ -5,6 +5,10 @@ record of the decision. The design as it stands lives in `DESIGN.md` § A
 second vendor: Codex — read that, not this, for what is true today. Written
 against `main` at 8c00fdf, codex-cli 0.155.0, macOS.
 
+`resolve --vendor codex`, `headroom sessions` and
+`HEADROOM_CODEX_ACCOUNTS_ROOT` (§ Summary, § Design — API) are retired by
+`docs/specs/what-is-used.md`.
+
 ## Summary
 
 Current: headroom shows quota for, and launches, the Claude Code accounts on one machine.

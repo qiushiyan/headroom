@@ -5,5 +5,5 @@ exit 0
 headroom launch: p · auto · 5h 12% · week 40%, resets in 4.2d · load 1 (next: a@x.com)
 --- vendor
 claude --dangerously-skip-permissions --settings {"fastMode":true}
-CLAUDE_CONFIG_DIR=$BASE/home/.claude
+CLAUDE_CONFIG_DIR=<unset>
 ---

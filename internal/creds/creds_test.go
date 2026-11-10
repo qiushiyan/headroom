@@ -221,6 +221,36 @@ func TestParseExpiryTags(t *testing.T) {
 	}
 }
 
+// A login the vendor ended keeps its item with both tokens emptied and the
+// refresh expiry it had (the shape Claude Code left on the author's machine).
+// It is no spendable credential, and its passed expiry still calls for a
+// login: dropping the decoded fields with the token sent automatic launches
+// to accounts the board showed as not logged in.
+func TestParseKeepsAnEndedLoginsExpiry(t *testing.T) {
+	now := time.Now().UnixMilli()
+	ended := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,
+		"refreshTokenExpiresAt":%d,"loginEnded":"time_limit","subscriptionType":"max"}}`, now-1000)
+	b, ok := Parse(ended)
+	if ok || b.TokenUsable(now) {
+		t.Errorf("an ended login is not a spendable credential: %+v ok=%v", b, ok)
+	}
+	if !b.ReloginRequired(now) {
+		t.Errorf("a passed refresh expiry beside no token must still call for a login: %+v", b)
+	}
+	// No token and nothing dated proves nothing, and neither does what did
+	// not decode: a zero Blob would read as an expiry in 1970.
+	for name, raw := range map[string]string{
+		"no token, no expiry": `{"claudeAiOauth":{"accessToken":""}}`,
+		"not json":            `nope`,
+		"no oauth object":     `{"other":{}}`,
+		"empty":               ``,
+	} {
+		if b, ok := Parse(raw); ok || b.ReloginRequired(now) {
+			t.Errorf("%s: must not call for a login: %+v ok=%v", name, b, ok)
+		}
+	}
+}
+
 // What `security` answers decides how the item is read: found is present,
 // exit 44 — the real command's "could not be found" — is absent, and any
 // other failure or no answer in time is unknown with what it said, never

@@ -23,7 +23,6 @@ import (
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/launch"
-	"github.com/qiushiyan/headroom/internal/launchlog"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -49,12 +48,6 @@ type Request struct {
 	Set    accounts.Set
 	Store  *state.Store
 	Intent placement.Intent
-	Mode   string // how the account came to be decided: auto, named, last, picker
-
-	// Resume is a session a surface chose — the picker's row — and decides
-	// the intent in place of Intent. nil for a launch that names its session,
-	// if any, in its VendorArgs.
-	Resume *Resume
 
 	// VendorArgs are a launch's pass-through arguments, for a launch that
 	// names its session there. An automatic Claude Code launch reads them
@@ -69,15 +62,6 @@ type Request struct {
 	Now     time.Time
 }
 
-// Resume is a session chosen for a launch, with the account its evidence says
-// last drove it ("" for none). Move asks for the session to be moved off that
-// account: the picker's override.
-type Resume struct {
-	ID    string
-	Owner string
-	Move  bool
-}
-
 // Plan is a request with the facts gathered for it, not yet decided.
 type Plan struct {
 	req   Request
@@ -86,40 +70,26 @@ type Plan struct {
 
 	// What Gather derived about the session: the session the launch is for,
 	// whose Record id is re-homed when the launch puts it somewhere other
-	// than its owner; whether the launch exists to move it, and is refused if
-	// that cannot be recorded; and the account that last drove it.
-	session    Session
-	mustReHome bool
-	owner      string
+	// than its owner, and the account that last drove it.
+	session Session
+	owner   string
 }
 
 // Gather reads what the request's placement needs from the disk: every
 // account's figures and load, which of them an ordinary launch may run on,
-// and how the launch stands to the session it is for — the one a surface
-// chose (Request.Resume), or one an automatic launch names in its arguments
-// (Request.VendorArgs). Nothing is written.
+// and how the launch stands to a session an automatic launch names in its
+// arguments. Nothing is written.
 func Gather(req Request, deps Deps) *Plan {
 	p := &Plan{deps: deps}
-	res := readReservations(req.Set.Scope)
-	if r := req.Resume; r != nil {
-		req.Intent = resumeIntent(req, *r, res)
-		p.session, p.owner, p.mustReHome = Session{Route: r.ID}, r.Owner, r.Move
-		if r.Move || req.Intent.Owner != "" {
-			// The rule may take the session off its owner, and then the next
-			// resume has to find it there.
-			p.session.Record = r.ID
-		}
-	}
 	automatic := req.Intent.Kind == placement.Auto
-	req.Intent.Home = req.Store.Home()
-	f := gather(req.Set, req.Store, res, req.Environ, req.CWD, automatic, req.Now, deps)
-	if req.Resume == nil && len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
+	f := gather(req.Set, req.Store, readReservations(req.Set.Scope), req.Environ, req.CWD, automatic, req.Now, deps)
+	if len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
 		// A launch that names a session follows the account that last drove
 		// it, so its prompt cache and its checkpoints stay usable. Only Claude
 		// Code has an owner to ask about.
 		p.session = SessionOf(req.VendorArgs)
 		if p.session.Route != "" {
-			p.owner = f.owner(p.session.Route)
+			p.owner = sessions.OwnerOf(p.session.Route, f.refs, f.evidence[p.session.Route], f.snap.Owners())
 			req.Intent.Owner = p.owner
 		}
 	}
@@ -127,27 +97,13 @@ func Gather(req Request, deps Deps) *Plan {
 	return p
 }
 
-// resumeIntent says how a resume's account is decided: enter follows the
-// session's owner, and everything else asks the rule. A session with no
-// owner is placed like a new one — the owner evidence names none for a
-// session nothing attributes, or whose owner is gone — and the override
-// moves the session to the least-loaded of the *other* accounts — moving means
-// somewhere other than where it is. An owner a reservation keeps from the
-// session's directory — or one nothing can say is not kept, `.reserved` being
-// unreadable — is the one owner enter does not follow: choosing a session is
-// not naming an account, so the rule decides, as it does for a launch that
-// names the session by id.
-func resumeIntent(req Request, r Resume, res reservations) placement.Intent {
-	owned := r.Owner != ""
-	switch {
-	case r.Move:
-		return placement.Intent{Exclude: r.Owner}
-	case owned && res.keeps(req.Set.RefOf(r.Owner), sessions.RepoKey(req.CWD)):
-		return placement.Intent{Owner: r.Owner}
-	case owned:
-		return placement.Intent{Kind: placement.Forced, Account: r.Owner, Reason: placement.ReasonOwner}
+// modeOf is how a launch's account came to be decided, as the dry run and the
+// launch log say it: named when the caller forced one, auto when the rule chose.
+func modeOf(i placement.Intent) string {
+	if i.Kind == placement.Forced {
+		return "named"
 	}
-	return placement.Intent{}
+	return "auto"
 }
 
 // preflight is every refusal a launch can know before it writes anything, and
@@ -156,10 +112,10 @@ func resumeIntent(req Request, r Resume, res reservations) placement.Intent {
 // a session's owner — that cannot be launched at all refuses with its own
 // preparation error, said the way it always was.
 //
-// A forced refusal never reaches the store: Place registers the home, prunes
-// and commits even when its rule refuses, and a launch that cannot start must
-// leave nothing behind. What can still refuse afterwards is the store's own
-// decision under its lock, and a re-home that must be written.
+// A forced refusal never reaches the store: Place prunes and commits even
+// when its rule refuses, and a launch that cannot start must leave nothing
+// behind. What can still refuse afterwards is the store's own
+// decision under its lock.
 func (p *Plan) preflight() error {
 	req, f := p.req, p.facts
 	if req.Intent.Kind == placement.Auto && f.reservedErr != nil {
@@ -189,7 +145,7 @@ func (p *Plan) Preview(w io.Writer, binary string) (chosen bool, err error) {
 		return false, err
 	}
 	d := placement.Choose(p.facts.rule(), p.facts.snap.Placements(), p.req.Intent, p.req.Now)
-	writeDryRun(w, binary, d, p.req.Mode, p.req.Now, p.facts)
+	writeDryRun(w, binary, d, modeOf(p.req.Intent), p.req.Now, p.facts)
 	return d.Chosen != "", nil
 }
 
@@ -211,19 +167,15 @@ func (p *Plan) Commit() (*Launch, error) {
 		return nil, err
 	}
 	cands := f.rule()
-	l := state.Launch{Candidates: cands, Intent: req.Intent, PID: os.Getpid(), Now: req.Now, Gone: f.gone}
-	live := func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
-	switch {
-	case p.mustReHome:
-		l.Session = state.MoveSession(p.session.Record, live)
-	case p.session.Record != "":
-		l.Session = state.RouteSession(p.session.Record, live)
+	l := state.Launch{
+		Candidates: cands, Intent: req.Intent, PID: os.Getpid(), Now: req.Now,
+		Session: p.session.Record, Gone: f.gone,
+	}
+	if p.session.Record != "" {
+		l.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
 	}
 	placed, placeErr := req.Store.Place(l)
-	if p.mustReHome && placeErr != nil {
-		return nil, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", placeErr)
-	}
-	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, rehomed: placed.ReHomed(), home: f.home, labels: f.labels}
+	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, rehomed: placed.Route.Written()}
 	if out.decision.Chosen == "" {
 		return nil, errors.New(out.decision.Refusal)
 	}
@@ -236,7 +188,7 @@ func (p *Plan) Commit() (*Launch, error) {
 	// from the store's own answer: a launch that owed its session a re-home
 	// and wrote none says so whatever the reason, since its next turn is then
 	// placed afresh.
-	missed, unrouted := placed.Load.Missed(), placed.Route.Missed()
+	missed, unrouted := placeErr, placed.Route.Missed()
 	switch {
 	case missed != nil && unrouted != nil:
 		out.notes = append(out.notes, fmt.Sprintf("placement and session routing not recorded (%v) — the next launch will not count this one, and this session's next turn is placed afresh", missed))
@@ -245,13 +197,17 @@ func (p *Plan) Commit() (*Launch, error) {
 	case unrouted != nil:
 		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", unrouted))
 	}
-	rec := f.record(out.decision, placed.Ledger, req.Intent, req.Now)
-	rec.PID, rec.CWD, rec.Mode, rec.Recorded = os.Getpid(), req.CWD, req.Mode, placed.Recorded()
-	rec.Session = p.session.Route
-	if missed != nil {
-		rec.Problem = missed.Error()
+	line := logLine{
+		Vendor: string(scope.Vendor), Mode: modeOf(req.Intent), Reason: out.decision.Reason, Chosen: out.decision.Chosen,
+		CWD: req.CWD, Session: p.session.Route, PID: os.Getpid(),
 	}
-	if err := launchlog.Append(scope.AccountsRoot, rec); err != nil {
+	if missed != nil {
+		line.Problem = missed.Error()
+	}
+	if req.Intent.Kind == placement.Auto {
+		line.rested(out.decision, req.Now)
+	}
+	if err := appendLog(scope.AccountsRoot, line, req.Now); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
 	}
 	if req.Intent.Kind == placement.Auto && worthRefreshing(f, req.Now) {
@@ -275,15 +231,7 @@ type Launch struct {
 	// notes are the bookkeeping that did not happen, worded for the person:
 	// the launch proceeds regardless, and says so.
 	notes []string
-
-	// home and labels say whose load is whose: this home's accounts root,
-	// and every home's name.
-	home   string
-	labels state.HomeLabels
 }
-
-// Account is the account the launch was placed on.
-func (l *Launch) Account() accounts.Account { return l.account }
 
 // Prepared is the vendor process the launch runs: its resolved path, argv[0]
 // and environment, built from the decision alone.
@@ -292,9 +240,7 @@ func (l *Launch) Prepared() launch.Prepared { return l.prepared }
 // Stands is what the launch left on disk that outlives a vendor that could
 // not be started, as a clause for the surface's error: "" when nothing a
 // person must know of does, else "; re-home remains recorded for <account>".
-// Read from what the store wrote, never from what the launch meant to do: a
-// session moved because its owner is kept for other work leaves a re-home as
-// the picker's override does.
+// Read from what the store wrote, never from what the launch meant to do.
 func (l *Launch) Stands() string {
 	if !l.rehomed {
 		return ""
@@ -310,8 +256,7 @@ func (l *Launch) Announce(w io.Writer, prefix string) {
 	for _, notice := range l.prepared.Notices {
 		fmt.Fprintln(w, prefix+notice)
 	}
-	c, _ := l.decision.Find(l.decision.Chosen)
-	fmt.Fprintln(w, prefix+launchLine(l.decision, l.req.Intent.Kind == placement.Auto, l.session, l.owner, elsewhere(c, l.home, l.labels), l.req.Now))
+	fmt.Fprintln(w, prefix+launchLine(l.decision, l.req.Intent.Kind == placement.Auto, l.session, l.owner, l.req.Now))
 	for _, note := range l.notes {
 		fmt.Fprintln(w, prefix+note)
 	}

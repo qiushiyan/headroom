@@ -6,16 +6,14 @@ Codex CLI logins, each keyed to its own home. It answers "which account has
 headroom left?" and lets the user act on the answer (the account board,
 `accounts`: live and self-refreshing on a terminal with a page per vendor,
 one frame off it, one row per account under `--compact`, a versioned document
-under `--json`), answers "which session do I get back into, and on which
-account?" (`sessions`, Claude Code only — see The session surface below),
-turns the chosen account into a running session (`launch`/`resolve` — see
-The launch surface), renews the logins that end soon in one pass, or one
+under `--json`), turns the chosen account into a running session — a new one,
+or one continued on the account that last drove it (`launch` — see The launch
+surface and Sessions), renews the logins that end soon in one pass, or one
 account's across commands that each return for an approver elsewhere
-(`login` — see Renewing logins), keeps one picture of each subscription's load when a
-second home on the machine holds logins of the same subscriptions (see A
-second home), and proves its own assumptions still hold (`check`).
-This file records the mental model and the vendor contracts — the things the
-code can't say about itself.
+(`login` — see Renewing logins), hands a program that runs its own sessions a
+token and a placement (`headless` — see Headless tokens), and proves its own
+assumptions still hold (`check`). This file records the mental model and the
+vendor contracts — the things the code can't say about itself.
 
 Most of this file is written about Claude Code, the vendor the model was
 built on. The mechanisms it describes — discovery, the claim ledger, the
@@ -39,9 +37,9 @@ Everything derives from that tree:
   cwd-relative dir while credentials come from the *default* Keychain item,
   so the child runs as the primary under a stray state dir — the 2026-08-03
   stale-wrapper incident's mechanism. headroom therefore only ever
-  constructs absolute dirs: `config.Load` refuses relative `HEADROOM_*`
-  overrides (and never rewrites an accepted spelling — the Keychain hash is
-  keyed on it), and `launch.Extra` refuses a relative dir at construction.
+  constructs absolute dirs: `config.Load` refuses a relative `HEADROOM_HOME`
+  (and never rewrites an accepted spelling — the Keychain hash is keyed on
+  it), and `launch.Extra` refuses a relative dir at construction.
   A second door into the same chimera, found while auditing the first:
   `CLAUDE_SECURESTORAGE_CONFIG_DIR` redirects the *credential* lookup
   independently of the config dir (verified 2.1.220 by experiment — with it
@@ -80,36 +78,31 @@ Everything derives from that tree:
   record names it — see The one file headroom writes) keeps accounts for
   repositories, written by `accounts reserve` and read strictly: damage
   refuses every automatic choice rather than releasing an account — see
-  Automatic placement. `.ledger` (optional, Claude Code only) names the
-  accounts root whose ledger this home spends against — see A second home.
-  `.order`, `.reserved` and `.ledger` stay outside `state.json` on purpose;
-  see The one file headroom writes. Nothing records where a bare launch goes: the rule decides it at
-  every launch.
+  Automatic placement. Both stay outside `state.json` on purpose; see The one
+  file headroom writes. Nothing records where a bare launch goes: the rule
+  decides it at every launch.
 
 Read-only means read-only *against Claude Code*: headroom never writes the
-Keychain, never refreshes a token, and never writes vendor login or quota
-state — Claude Code owns all of it. `login` is no exception: it runs Claude
-Code's own login command, and Claude Code stores what results. What it writes is its own:
-one `state.json` holding non-secret request timestamps, the usage
-responses it fetched itself, session re-homes, the record of recent
-launches and the headless runs, `launches.jsonl` and `usage.jsonl`, the
-launch log and the usage log nothing routes by (see Judging placement),
-`headless.json`, the one file that holds secrets — the headless tokens, mode
-0600 (see Headless tokens) — the `.login` directory, readable by the user
-alone, where each account dir's login lock, handed-off sign-in and running
-vendor login are kept (see Renewing logins), and, only when asked to,
-`.ledger` and `.reserved`. Three documented
-exceptions, every one an explicit user command naming its object and refused
-while a session is live or liveness is unverifiable: the session picker's `r`
-appends one vendor-format `custom-title` record (exactly what the native
-Ctrl+R rename writes) and `dd` deletes a transcript, both against the shared
-store; and `accounts remove` deletes the removed account's Keychain item
-(`creds.DeleteKeychainItem`, the one Keychain write in the codebase, reached
-from no observation path). That last one is deliberate: removing an account
-is not a read, the user's expectation of "remove" includes the login, and a
-usable token left behind for a config dir that no longer exists is the worse
-outcome. Nothing in it touches any *other* account's item — the service name
-is derived from the removed dir's spelling alone.
+Keychain, never refreshes a token, and never writes vendor login, quota or
+session state — Claude Code owns all of it. `login` is no exception: it runs
+Claude Code's own login command, and Claude Code stores what results. What it
+writes is its own: one `state.json` per accounts root holding non-secret
+request timestamps, the usage responses it fetched itself, session re-homes,
+the record of recent launches and the headless runs; `launches.jsonl`, the
+launch log nothing reads (see The launch log); `headless.json`, the one file
+that holds secrets — the headless tokens, mode 0600 (see Headless tokens);
+the `.login` directory, readable by the user alone, where each account dir's
+login lock, handed-off sign-in and running vendor login are kept (see
+Renewing logins); and, only when asked to, `.reserved`. One documented
+exception, an explicit user command naming its object and refused while a
+session is live or liveness is unverifiable: `accounts remove` deletes the
+removed account's Keychain item (`creds.DeleteKeychainItem`, the one
+Keychain write in the codebase, reached from no observation path). That is
+deliberate: removing an account is not a read, the user's expectation of
+"remove" includes the login, and a usable token left behind for a config dir
+that no longer exists is the worse outcome. Nothing in it touches any *other*
+account's item — the service name is derived from the removed dir's spelling
+alone.
 
 ### The account lifecycle
 
@@ -142,7 +135,7 @@ verifier's error messages name something that exists on every install:
   vendor-perishable, but nothing load-bearing rides on it, which is why
   `check` does not verify it — except `settings.json`, whose
   `cleanupPeriodDays` prunes the shared store: `check` requires every
-  account sharing the store to read one (§ The session surface, on
+  account sharing the store to read one (§ Sessions: what a launch reads, on
   retention). Whatever the share mode, the entries that are never
   configuration (`accounts.PerDirEntries`: for Claude Code
   `.credentials.json`, `.claude.json`, `history.jsonl`, `sessions/` and the
@@ -153,37 +146,28 @@ verifier's error messages name something that exists on every install:
   A dir that fails half-way is left in place and named: it is inert
   (discovery lists it, launch refuses it on topology) and deleting a
   directory to tidy up is not seeding's call.
-- **`accounts remove [<email | name.lock>]`** names its object up front —
-  the argument, or, bare on a terminal, a picker over the removable
-  candidates (every extra plus any `.lock` debris; the primary is never
-  offered) whose enter asks "remove X?" as one more key *inside the same
-  raw session*, because a cooked-mode reply after the tui closed would be
-  swallowed by its still-blocked stdin reader — there Enter or `y`
-  confirms (the row was already chosen with Enter; a second Enter is
-  re-affirmation, not a trap), `n` or any of the board's cancel keys
-  (esc, `q`, ctrl-c, ctrl-d) cancels, other keys are ignored; a name nothing answers to
-  prints the candidate list. Then it runs its refusals before anything
-  irreversible: not the primary (Claude Code's own default dir has
-  no entry in the accounts root); `accounts.CheckRemovable` — form, and the
-  one refusal that guards data: a `projects/` that is a *real directory*
-  holds sessions never migrated into the store, and `RemoveAll` would take
-  them with the account; the liveness gate consumes `sessions.ReadRegistry`
-  problems and `sessions.InspectClaims` evidence — an unreadable claim or registry
-  directory refuses removal, as does any live or unverifiable session;
-  then confirmation — `y/N` on a terminal, `--yes` off one, and refusal
-  without either; a picker choice arrives
-  already confirmed and takes `--yes`'s path — and the gate once more
-  after the reply, since the prompt may have stayed open while a session
-  started. Then the Keychain item — deleted once `security` says it exists,
-  and an item it cannot answer for stops the removal with the dir in place,
-  since a token left behind is what removal exists to prevent — then the
-  dir (including any file-backed
-  `.credentials.json`; `os.RemoveAll` does not
-  follow symlinks, so the `projects/` link goes and the store behind it
-  stays — pinned by test), then every `.order` line discovery reads as that
-  account, a trailing comment included, and its reservation. Transcripts survive
-  (they are the machine's); the picker shows the dead owner as degraded
-  until each is re-homed.
+- **`accounts remove <email | name.lock>`** names its object up front: bare,
+  it names the removable candidates (every extra plus any `.lock` debris; the
+  primary is never one) and refuses, on a terminal too. Then it runs its
+  refusals before anything irreversible: not the primary (Claude Code's own
+  default dir has no entry in the accounts root); `accounts.CheckRemovable` —
+  form, and the one refusal that guards data: a `projects/` that is a *real
+  directory* holds sessions never migrated into the store, and `RemoveAll`
+  would take them with the account; the liveness gate consumes
+  `sessions.ReadRegistry` problems and `sessions.InspectClaims` evidence — an
+  unreadable claim or registry directory refuses removal, as does any live or
+  unverifiable session; then confirmation — `y/N` on a terminal, `--yes` off
+  one, and refusal without either — and the gate once more after the reply,
+  since the prompt may have stayed open while a session started. Then the
+  Keychain item — deleted once `security` says it exists, and an item it
+  cannot answer for stops the removal with the dir in place, since a token
+  left behind is what removal exists to prevent — then the dir (including
+  any file-backed `.credentials.json`; `os.RemoveAll` does not follow
+  symlinks, so the `projects/` link goes and the store behind it stays —
+  pinned by test), then every `.order` line discovery reads as that account,
+  a trailing comment included, its headless token and its reservation.
+  Transcripts survive (they are the machine's); a session the removed
+  account drove is placed like a new one at its next resume.
 
 `claude auth status` is used for its answer only. It may or may not refresh a
 token as a side effect; headroom neither relies on that nor invokes it hoping
@@ -357,11 +341,16 @@ contract. What the shape rests on, measured on 2.1.311:
 
 ### Headless tokens
 
-A caller that runs sessions under a config dir of its own (a skill-eval
-runner) cannot be handed an account dir, and must not be lent its login: a
-login refreshed from a dir that does not hold its lock is a login two
-processes refresh. `headroom headless` gives it a token per account instead,
-and a placement; the caller starts the session itself. The commands and the
+A caller that runs sessions under a config dir of its own cannot be handed an
+account dir, and must not be lent its login: a login refreshed from a dir
+that does not hold its lock is a login two processes refresh. `headroom
+headless` gives it a token per account instead, and a placement; the caller
+starts the session itself. Two callers do: the skill-eval runner, and
+planlab's steward, a pipeline that runs under a `HOME` of its own and
+reaches this home's headroom with `HEADROOM_HOME` (its launcher prefix
+places, takes the token, reports its own pid and execs `claude`). A second
+set of logins for such a caller would be a second monthly renewal cycle for
+every subscription it spends; a token lasts a year. The commands and the
 document a caller reads are in `docs/specs/headless.md`, the dated record of
 the decision. What it rests on, measured on 2.1.296:
 
@@ -384,6 +373,10 @@ the decision. What it rests on, measured on 2.1.296:
   in, with no identity — a made-up token reads the same. The account is the
   profile it was approved in; `mint` records the dir's identity at that
   moment, and a placement excludes the account once its dir names another.
+- **A token outranks a stored login.** A config dir holding a login, an
+  expired one included, answers `authMethod: "oauth_token"` once
+  `CLAUDE_CODE_OAUTH_TOKEN` is set (measured on 2.1.319), so a caller's own
+  config dir can keep whatever login it once had.
 
 A placement is the automatic launch's rule over the accounts that hold a
 token and that the caller has not excluded, both decided inside the locked
@@ -391,10 +384,11 @@ step that records the choice, so nothing is placed on an account the caller
 would veto. One intent the launch never sets, `CanWait`, refuses when every
 account left is near a limit and says when the first has room again, instead
 of taking the least spent: an eval can wait; the owner's sessions on that
-account cannot. The caller reports the session's process, and that *run*,
-kept in the subscription ledger, is a busy session of its subscription on
-every surface for as long as its pid runs with its recorded start — the
-registry claim's verification, on a record the caller supplies.
+account cannot. The caller reports the session's process — a launcher that
+execs the vendor reports its own pid, which the exec keeps along with its
+start — and that *run*, kept in `state.json`, is a busy session of its
+subscription on every surface for as long as its pid runs with its recorded
+start: the registry claim's verification, on a record the caller supplies.
 
 A token leaves `headless.json` only through `headless token <account>`: no
 listing, document, log or `state.json` record carries one. A token file that
@@ -444,11 +438,11 @@ reverse-engineered and perishable:
   a valid newer state schema leave evidence incomplete. Corrupt headroom
   state is an own-state failure, distinguished from vendor drift in both the
   details and closing verdict. A configuration headroom refuses — a
-  relative override, a `.ledger` naming nothing usable — is an own-state
-  FAIL, never INCONCLUSIVE: every launch is refusing on it. A home that
-  shares another's ledger has two files, and each is audited on its own
-  terms: one written by a newer headroom is read and left alone without
-  silencing a damaged section in the other. A claim failure
+  relative `HEADROOM_HOME` — is an own-state FAIL, never INCONCLUSIVE:
+  every launch is refusing on it. So is a home re-pointed by
+  `HEADROOM_HOME`, from which a primary launch refuses: `check` is run as
+  the home it describes, never from a process that only reaches it, such as
+  a headless caller. A claim failure
   marks the API untested; a completion failure leaves received vendor
   evidence available to check.
   FAIL takes precedence when a run also has inconclusive assertions. Every
@@ -530,7 +524,7 @@ one rule — a row may not collapse what the block keeps apart:
 - **A layout is only a layout.** Both run the same rounds, honour the same
   claim and commit the same choice, and one renderer function produces the
   whole board — header and one line group per account — for both, so the
-  picker and the one-shot print can neither compute a column nor disagree
+  live board and the one-shot print can neither compute a column nor disagree
   about one. Off a terminal, or on one that is not interactive, the print
   wraps rather than clips: there is no redraw to protect.
 
@@ -562,35 +556,27 @@ headless runs.
   denies, rather than falling through to "try anyway". A completion carries
   the generation its claim was issued under, so a slow request that outlived
   its claim is dropped instead of overwriting a newer answer.
-- **One store per accounts root, one ledger per set of homes.** Each vendor's
+- **One store per accounts root, under one lock.** Each vendor's
   `state.json` sits under its own accounts root beside its own `.order` and
   `.reserved`, so nothing in Claude Code's files is re-keyed by Codex existing,
-  and the store a body was read from says which vendor's parser reads it. A
-  file holds two halves with different owners: the *subscription ledger* —
-  the request ledger, the responses, the recent launches, the headless runs
-  and the homes that spend against it — is about quota, keyed by account identity; the
-  *re-homes* are about one home's sessions, naming that home's accounts. A
-  home alone keeps both in its one file. A second home that holds logins of
-  the same subscriptions keeps its re-homes in its own file and spends
-  against the first home's ledger (see A second home); this is the one place
-  the rule bends, and it bends for the ledger only. `config.Load` refuses two
-  roots that name one location, judged by the filesystem and not the string:
-  each root's nearest existing ancestor must be a different file, or the
-  components still missing below them must differ — compared without case,
-  since whether the filesystem folds a name cannot be known before it exists.
-  A symlink anywhere above, and `Accounts` beside `accounts` on a case-folding
-  volume, are both one location.
+  and the store a body was read from says which vendor's parser reads it. Both
+  roots derive from `HEADROOM_HOME` (`$HOME` unless set) as `.claude-accounts`
+  and `.codex-accounts`, so they can never name one location. Every write
+  takes the file's one lock, so a launch's load and its session's re-home land
+  in one write. A headless caller that runs under another `HOME` reaches this
+  file through `HEADROOM_HOME` and the same lock: its placements and runs are
+  this home's load.
 - **A record names an account by its dir, never by what it is called.**
   What a person or a launch writes about an account — `.reserved`, the
-  re-homes, `--last`, headless tokens — names an extra by its dir and the
+  re-homes, headless tokens — names an extra by its dir and the
   primary `.primary` (`accounts.PrimaryRef`), which discovery never gives a
   dir. The primary's name is the one that can change: a pin
   (`HEADROOM_PRIMARY_NAME`, `HEADROOM_CODEX_PRIMARY_NAME`) or a new login
   renames it. So a name is what a person types and reads, translated at the
   edges (`Set.RefOf`, `Set.NameOf`), and shells holding different pins read
   one set of records; a record that kept the name would strand on every
-  rename and chase it on every run. The launch and usage logs keep names:
-  they are history, joined on the account key.
+  rename and chase it on every run. The launch log keeps names: it is
+  history.
 - **The ledger keys on the account's own UUID**, from `.claude.json`, falling
   back to the dir name only when that file parsed and reported none. The
   budget is per account, so two config dirs logged into the same account share
@@ -627,16 +613,12 @@ headless runs.
   cooldown and stored answer of an account sitting right there.
 - **Launches are recorded beside the ledger, and are as disposable.** The
   `placements` section holds the launches of the last fifteen minutes — the
-  load a new launch must count — the newest launch per subscription, which
-  breaks ties, and the newest launch per home, which answers `--last`. Load
-  is keyed like the ledger, by the account's identity, because two dirs on
-  one account spend one quota; `--last` is keyed by home, because an account
-  name is one home's — two homes name their dirs by the same emails. Every
-  launch carries the home that made it, and launches recorded before homes
-  shared a ledger read as the ledger's own home's. A
-  section that will not decode is set aside and the record starts empty: that
-  costs a few launches their view of each other and nothing else. A binary
-  from before the section existed carries it through its writes untouched.
+  load a new launch must count — and the newest launch per subscription,
+  which breaks ties. Load is keyed like the ledger, by the account's
+  identity, because two dirs on one account spend one quota. A section that
+  will not decode is set aside and the record starts empty: that costs a few
+  launches their view of each other and nothing else. A binary from before
+  the section existed carries it through its writes untouched.
 - **`.reserved` and `.order` stay out of it.** `.reserved` is a person's
   statement with its own failure policy — damage refuses every automatic
   choice, visibly — while this document's ledger section is disposable and
@@ -644,10 +626,10 @@ headless runs.
   ledger's corruption policy or the ledger under the reservation's. `.order`
   is configuration a human edits, comments included.
 
-A `legacy_import` section in an older file is the checkpoint of a retired
-one-time upgrade from `.owners` and `.throttle`; nothing reads it, and like
-any section this binary does not decode it is carried through writes
-untouched.
+Sections nothing reads — `legacy_import`, the checkpoint of a one-time
+upgrade from `.owners` and `.throttle`, and `members`, a registry of homes
+that once shared one file — are carried through writes untouched, like any
+section this binary does not decode.
 
 `internal/refresh` owns the live-request operation for the board and checker:
 credential and identity eligibility, claims, fetches, interpretation and
@@ -762,67 +744,38 @@ case matters most, because the model-scoped weekly is routinely the binding
 limit while the all-models figure sits far lower, and a scoped row
 mislabeled as all-models would read calm at the exact moment work stops.
 
-## The session surface
+## Sessions: what a launch reads
 
 Session transcripts are machine-global — every account's `projects/`
 symlinks to `~/.claude/projects` (`accounts add` creates that topology) — so
-one picker over that tree sees every conversation regardless of account.
-`headroom sessions` is that picker. Its vendor contracts, all reverse-
-engineered from the 2.1.220 store and all perishable:
+any account can continue any conversation: `claude --resume <id>` from the
+session's project, on whichever account the launch decides. headroom reads
+the transcripts for nothing but their ids. What a launch needs about a
+session is who drove it, whether it is running, and whether its record may
+be swept; its vendor contracts, reverse-engineered and perishable:
 
-- **Transcripts describe themselves, from the tail.** Titles live *inside*
-  each `<uuid>.jsonl` as repeated `ai-title` records (latest wins) and
-  `custom-title` records (user rename; outranks), previews as `last-prompt`
-  records, and the newest assistant record's `message.model` names the model
-  that last drove the session (`"<synthetic>"` marks vendor error
-  placeholders, never a model, and is skipped); there is no session index
-  file. The first pass reads
-  `sessions.TailBudget` (64KB) from EOF — measured to resolve everything
-  for almost every transcript — and when the cwd or the model is still
-  unresolved (a session can end in one message bigger than the budget,
-  and a window starting inside it skips it as a partial line) the window
-  widens until both resolve or the file is exhausted: a resumable row
-  rendered "dir gone" is the picker lying, and a silently blank model is
-  the same lie smaller. `check` asserts the tail resolves the same title,
-  cwd and model as a full-file parse for every oversized transcript —
-  the assertion that fires the day a load-bearing record drifts out of
-  reach. Listability is structural: top-level `<uuid>.jsonl` files are
-  sessions, each identified by its filename — what `claude --resume <id>`
-  opens — whatever id its records carry; `<uuid>/` closure dirs hold
-  subagent transcripts and are not.
-- **The cd target is verified, never de-munged.** `claude --resume <id>`
-  resolves only from the session's owning project dir, and the vendor names
-  a store dir by turning every UTF-16 unit outside `[a-zA-Z0-9]` into `-`,
-  cutting a name over 200 characters and suffixing a 32-bit hash of the
-  whole cwd in base 36 (2.1.318's helper, which `sessions.Munge` reproduces
-  and is tested against) — lossily. The resume target is therefore the newest recorded
-  `cwd`/`relocatedCwd` whose munge *equals* the store dir name. No verifiable cwd → the row says so and refuses to resume (worktree
-  churn deletes project dirs constantly; a third of the store's rows point
-  at dirs that no longer exist, and guessing would resume into the wrong
-  project). `dd` is the honest follow-up for those.
 - **Owner = the newest account claim headroom can observe or was explicitly
   given** — transcripts carry no account identity, so "the account that
   drove this session" is evidence, not ground truth, and the contract says
-  so. Three sources, one precedence: a *verified* live-registry claim (that
-  account runs it now) beats everything; otherwise the newest of the explicit
-  re-home and each account's newest `history.jsonl` prompt for that session
-  id — all timestamps from this machine's clock, on one axis, never
-  re-stamped. Attribution parses the decoded `sessionId`
-  field, never substrings: prompt bodies quote other sessions' UUIDs.
-  `enter` resumes on the owner and writes no re-home — the launch itself
-  becomes vendor evidence. The override key re-homes: it records the one
-  fact the vendor never will ("the user pointed this session here before
-  prompting") and is superseded by any newer evidence. An automatic launch
-  that places a session it was given by id writes the same record, for the
-  same reason: a print-mode session leaves no prompt history at all, so
-  without it each later turn would be placed afresh. The sweep that retires
-  re-homes of deleted transcripts leaves a record younger than ten minutes
-  alone — a first turn's id is known before the vendor has written a line.
-  Degradation is visible: no evidence, a re-home to a deleted account, or a
-  same-instant conflict each ask the placement rule under their own tag, as
-  a new session would — never the primary, which no evidence chose. The
-  override moves the session to the least-loaded of the *other* accounts,
-  since moving means somewhere other than where it is.
+  so (`sessions.OwnerOf`). Three sources, one precedence: a *verified*
+  live-registry claim (that account runs it now) beats everything;
+  otherwise the newest of the explicit re-home and each account's newest
+  `history.jsonl` prompt for that session id — all timestamps from this
+  machine's clock, on one axis, never re-stamped. Attribution parses the
+  decoded `sessionId` field, never substrings: prompt bodies quote other
+  sessions' UUIDs. No evidence, a newest re-home to an account that is gone,
+  or two accounts claiming the same instant each name no owner, and the
+  launch places the session as it would a new one — never on the primary,
+  which no evidence chose.
+- **A re-home is the one fact the vendor never records.** An automatic
+  launch that places a session it was given by id somewhere other than its
+  owner writes one: a print-mode session leaves no prompt history at all, so
+  without it each later turn would be placed afresh. Any newer evidence
+  supersedes it. The sweep that retires re-homes of deleted transcripts runs
+  inside the same lock, from a listing of the store taken there, concludes
+  nothing from a listing that failed anywhere, and leaves a record younger
+  than ten minutes alone — a first turn's id is known before the vendor has
+  written a line.
 - **Retention is one setting, read per account.** Claude Code's cleanup
   sweep deletes transcripts older than the `cleanupPeriodDays` in its config
   dir's `settings.json` (30 when unset), and through the store link every
@@ -837,63 +790,30 @@ engineered from the 2.1.220 store and all perishable:
   (the default is the vendor's to change, and a lower one prunes every
   account's history at once). A primary alone shares nothing and is only
   reported. The value itself is the user's policy, printed on the ok line,
-  never judged. Proving cross-account resume end to end would take a real request
-  on two accounts and leave a transcript in the store, so `check` does not:
-  the topology line is the static proof, and every resume from the picker
-  exercises the rest.
-- **Liveness is pid + start instant, and it gates the mutations.** Each
-  account dir's `sessions/<pid>.json` registers a running session. A claim
-  counts only when the pid is alive *and* its kernel start time matches the
-  registry's `startedAt` within tolerance — pids recycle. (Epoch ms, not
-  the `procStart` string: that one is UTC-rendered while `ps` speaks local
+  never judged. Proving cross-account resume end to end would take a real
+  request on two accounts and leave a transcript in the store, so `check`
+  does not: the topology line is the static proof, and every resume on
+  another account exercises the rest.
+- **Liveness is pid + start instant.** Each account dir's
+  `sessions/<pid>.json` registers a running session. A claim counts only
+  when the pid is alive *and* its kernel start time matches the registry's
+  `startedAt` within tolerance — pids recycle. (Epoch ms, not the
+  `procStart` string: that one is UTC-rendered while `ps` speaks local
   time, so string equality fails everywhere but UTC.) The same record
   carries `status` — `busy` or `idle` on 2.1.286, `shell` seen once — which
   the reader passes through verbatim; only `busy` is given a meaning, by
-  placement, and no other word is thereby "idle". Live and
-  unverifiable sessions refuse `dd` and `r`; deleting an open transcript
-  loses the conversation to an unlinked inode. Registry decoding returns
-  claims plus read problems. Each PID is sampled once per collection, so
-  ownership and liveness agree. Proven absence or a recycled PID clears a
-  claim; failed inspection stays unknown. An unreadable registry directory
-  leaves session liveness unknown. A damaged record with a session ID guards
-  that session; a nameless damaged record blocks account removal and appears
-  in `check`, without attributing it to unrelated transcripts.
-- **headroom decides, enters, and becomes the session; the shell may cd
-  after.** The TUI runs on `/dev/tty` (alternate screen, restored in the
-  same signal path as raw mode); enter re-checks liveness and the dir,
-  resolves the account through the same validated `launch.Target` the
-  launch surface uses, verifies topology and the relocated-home rule,
-  resolves the `claude` executable *before* changing directory (a relative
-  PATH entry in the project must never supply the binary), then restores
-  the terminal, chdirs to the verified cwd, repairs `PWD` in the child
-  environment, and execs `claude --resume <id>` with the caller's `--`
-  flags ahead of the picker's own. No routing decision leaves the process.
-  Requires real stdin/stdout terminals — a captured stdout would hand
-  claude a pipe — and refuses `--resume`/`--continue` as pass-through
-  flags: the picker chooses the session. The one thing only the parent
-  shell can do — make its own `cd` stick once the session ends — is served
-  by `--cd-file <abs path>`: created (or truncated) at flag parse, written
-  with the entered dir only after a successful chdir, `Sync`ed before the
-  exec. A newline-containing cwd is refused only when this file is requested.
-  The contract is exactly two states: empty means "no launch was
-  committed — do not cd" (cancel and every refusal), non-empty means "this
-  dir was entered" (regardless of how claude then exited). Nothing
-  routing-relevant is representable in it, and deleting the flag changes
-  no routing — it is advisory by construction. A write failure is one
-  stderr line, never a refusal. The picker itself does no network I/O
-  and spends none of the usage budget; a resume is a launch like any other
-  (see Automatic placement), so one the rule places leaves the same
-  detached refresh behind it.
-- **`resume` is a tombstone, permanently.** The predecessor printed a
-  `dir\tid\taccount` line for the wrapper to recombine, and a shell
-  function loaded before the account-name protocol misread the third field
-  as a config-dir path — the 2026-08-03 incident. The verb changed with
-  the contract (see The launch surface on why a renamed verb, not a
-  version tag), and the old spelling now exits 2 with an actionable
-  stale-shell message and nothing on stdout, `--json` included: one name,
-  one meaning, across binary generations. The arm is kept indefinitely —
-  "no shell still runs the old wrapper" is unobservable, and the cost is a
-  case and a string.
+  placement, and no other word is thereby "idle". Each pid is sampled once
+  per reading, so ownership, load and liveness agree. Proven absence or a
+  recycled pid clears a claim; failed inspection stays unknown. Removal is
+  the mutation liveness gates: a live or unverifiable session refuses it, a
+  damaged record refuses it whether or not it names a session, and so does
+  a registry directory that cannot be listed; `check` names each.
+
+A verb retired from the command line is an unknown word: clikit refuses it
+before any configuration is read, with exit 2 and nothing on stdout, so a
+stale shell function that still calls `sessions`, `resume`, `resolve` or
+`launches` stops instead of reading a reply it would misparse. Those names
+are never rebound to a new meaning (The launch surface says why).
 
 ## The launch surface
 
@@ -912,30 +832,28 @@ primary as the target. The invariant, and the reason `internal/launch` exists:
   `CLAUDE_CONFIG_DIR` is stripped; exactly one is set for a
   non-primary account; the primary is selected by the variable being
   *absent* — the only behavior verified against the binary (present-but-
-  empty is unverified territory and is never produced) — except in a home
-  that is not the user's login home, whose primary is spelled out like an
-  extra (see A second home). The decision crosses
+  empty is unverified territory and is never produced). The decision crosses
   the seam only as a validated target ("primary plus a dir" and "extra
   without one" are unrepresentable), and auth's per-account probes build
   their environments through the same constructor, so a polluted shell can
   neither re-route a launch nor make every health answer come from one
   login.
-- **`headroom launch [--auto | --last | --account <name>] [--dry-run] [--
-  args]`** decides the account — bare or `--auto`, the rule's (see Automatic
-  placement); a name, that account for this launch alone — then execs
+- **`headroom launch [--account <name>] [--dry-run] [-- args]`** decides
+  the account — bare, the rule's (see Automatic placement); a name, that
+  account for this launch alone — then execs
   `claude`, preserving stdio, signals and exit status by replacement rather
   than proxying. Nothing records a choice for later launches. A recorded
   default was tried: whether a board's enter or a flag set it, a pin made by
   mistake silently took every later bare `x` out of placement, and naming an
-  account per launch covers every deliberate use. Both launch entry points
-  call `launch.Prepare` before anything is written: routing,
+  account per launch covers every deliberate use. A launch calls
+  `launch.Prepare` before anything is written: routing,
   relocated-primary refusal (a primary selected by absence under a
   re-pointed `HEADROOM_HOME`), shared topology, executable path and child
   environment are resolved together. If process replacement fails after
   persistence, a re-home remains recorded and the error says so.
 - **The shared-sessions topology is headroom's invariant, verified at
-  launch.** The session surface's whole model — one picker over one
-  machine-global store — holds only while every extra account's `projects/`
+  launch.** Continuing a session on another account — the whole point of
+  one machine-global store — holds only while every extra account's `projects/`
   is a symlink resolving (by inode, not path spelling) to the canonical
   store; a violation forks session history silently. So `launch` verifies it
   before every extra-account exec and refuses with the exact end state
@@ -944,14 +862,6 @@ primary as the target. The invariant, and the reason `internal/launch` exists:
   cannot disagree), and creation belongs to `accounts add`: a launch that
   quietly repaired topology would hide exactly the state the refusal exists
   to surface.
-  **`headroom resolve <name>`** prints
-  `canonical-name<TAB>config-dir<TAB>kind` (kind: `primary`|`extra`) for
-  shell preflight: the dir so personal checks can run against it, the kind
-  so *which* preflight applies is headroom's classification — a wrapper
-  that re-derives it by prefix-matching its own idea of the accounts root
-  silently skips its checks whenever a `HEADROOM_*` override moves the real
-  one. Resolve is advice, not a capability: launch revalidates whatever
-  comes back.
 - **Selection fails closed.** A name nothing answers to, or two accounts
   answer to, refuses with an actionable message; an empty one is a caller's
   expansion bug and the command line refuses it. The old shell fallback
@@ -999,8 +909,7 @@ layer is init-frozen — a zsh function loaded at shell start lives for
 weeks, and no code shipped today reaches it — while the binary is
 re-resolved from PATH at every invocation.** Anything whose staleness can
 misroute, mutate, or misparse therefore lives on the binary side; the
-frozen side gets names, personal flags, and the one thing only a parent
-shell can do (make a `cd` stick). The same asymmetry decides how protocols
+frozen side gets names and personal flags. The same asymmetry decides how protocols
 may evolve: a version tag inside a line only helps a reader new enough to
 check it, so a breaking change to a wrapper-facing surface ships as a
 *renamed verb* — argv is the one channel where the binary can observe a
@@ -1025,7 +934,7 @@ and it lasts one launch.
   session window — the vendor's shortest limit, five hours for Claude Code —
   ranks accounts as *load*: its usage in steps of ten points, plus one step
   per busy session and one per launch of the last fifteen minutes — on that
-  subscription, in any home that shares the ledger. Any limit
+  subscription, a headless caller's included. Any limit
   at 80% or above sets an account aside while another has room. Weekly room
   breaks ties, then the least recently placed account. The first draft of
   this rule folded both windows into one figure ("the most room on the
@@ -1034,8 +943,11 @@ and it lasts one launch.
   account. Counting usage in steps, and busy sessions in the same unit, keeps
   a one-point difference from outranking forty points of weekly room, and an
   account at 9% with five busy sessions from beating one at 11% with none.
-  The constants are policy, not measurement, and the rule's name travels in
-  every log line.
+  The constants are policy, not measurement. The vendor may leave the session
+  window out of a response, which still parses: such an account is ranked on
+  its busy sessions and recent launches alone, weekly room then decides most
+  launches, and `check` counts the fresh responses that carry the window so
+  that its absence is seen.
 - **Weekly room matters as much as the five-hour window.** Over thirty days of
   transcripts on the author's machine, messages about the model-scoped weekly
   limit appeared on four days and messages about the five-hour limit on one.
@@ -1064,8 +976,8 @@ and it lasts one launch.
   bound because it says so and counts its own launch against it. The time
   such a weekly window has left is the next renewal its schedule names:
   Claude Code renews weekly windows every seven days at a fixed instant,
-  spent or not (`usage.Period`) — observed on every reset in the owner's
-  launch log, not asserted by `check` — and an idle account's figures can
+  spent or not (`usage.Period`) — observed on every reset the owner's
+  readings held, not asserted by `check` — and an idle account's figures can
   be days old, so counting its renewed week whole from now would rank it
   behind room that in fact lasts longer. Codex windows start with the next
   request, so a passed or unstarted one counts its whole stated window, and
@@ -1113,12 +1025,10 @@ and it lasts one launch.
   `~/dev/itell-cms` is not inside `~/dev/itell`. What fails closes: a directory
   gone leaves its account launchable only by name, because a missing path is
   not permission, and a `.reserved` that cannot be read refuses every automatic
-  choice and leaves a launch that names its account alone. Naming and
-  `--last` are the person's word and are obeyed anywhere, but choosing a session
-  is not naming an account: outside the repositories a resume moves off the
-  account and records the move, in the picker too, whose owner is otherwise
-  forced. A reservation is a home's, and binds no other home's login of that
-  subscription.
+  choice and leaves a launch that names its account alone. Naming is the
+  person's word and is obeyed anywhere, but resuming a session is not naming
+  an account: outside the repositories a resume moves off the account and
+  records the move.
 - **The board's mark and the launch are one judgment.** `← next` and a launch
   build their candidates in one place (`launchop`'s `Mark` and `Gather`), from
   the same credential reader and the same exclusions, so the row the board marks is
@@ -1134,51 +1044,41 @@ and it lasts one launch.
   reservation makes the choice depend on the directory, so the mark speaks for
   a launch from where the board was opened. The same counting
   gives every row its load on the board and in `--json` (schema 8): busy
-  sessions and recent launches, with another home's share named, so the
-  owner sees what the other home is running on each subscription.
+  sessions, a headless caller's running sessions among them, and recent
+  launches.
 - **Choosing and recording are one store operation.** `state.Place` reads the
   recent launches, calls the rule and records the result inside one locked
   section, which is `Claim`'s shape applied to launches: two launches started
   together cannot both see an account as empty. The rule is imported and
   called by the store, so no caller hands a function into the lock. Every
-  launch that can start goes through it — a named one or a resume on its
-  owner with the account forced — because a session started by name is load an automatic
-  one must count.
-- **A launch is one operation, whoever asks for it.** `headroom launch` and
-  the session picker each build a request and commit it through `launchop`'s
-  plan; the picker hands over the row it chose (`Request.Resume`), and the
-  plan decides the intent from it as it does for a session a launch names in
-  its arguments. It refuses first whatever is known before a write — a named account
-  that cannot be launched, a reservation that cannot be read — since
-  `state.Place` registers the home and prunes even when its rule refuses, and
-  a launch that cannot start must leave nothing behind; then it places and
-  logs, and the surface announces the
-  outcome and execs. What the launch means for a session travels into
-  `state.Place` with it, so the load and the session's re-home
-  are one write: both land or neither does. The picker's `x` is the one
-  launch that depends on its bookkeeping — the re-home is what routes the
-  session's next turn — so it is refused when the re-home cannot be written,
-  and a refusal leaves no placement and no log line. A surface that ran
-  those steps itself could refuse after recording, and a move that never
-  happened would count as load and answer `--last`. What a launch owes the
-  next one is decided there as well: a launch the rule placed leaves the
-  refresh behind it, and a launch that records a session sweeps the re-homes
-  whose transcripts are gone. Left to the surfaces, a resume the picker
-  places would refresh nothing, and an agent that names a new session id on
-  every run would grow the file until somebody pressed `x`. A surface keeps
+  launch that can start goes through it, a named one included, because a
+  session started by name is load an automatic one must count.
+- **A launch is one operation.** `headroom launch` builds a request and
+  commits it through `launchop`'s plan, which, for an automatic launch,
+  decides the intent from a session the launch names in its arguments; a
+  named launch reads nothing there and records no re-home. It refuses first
+  whatever is known before a write — a named account that cannot be
+  launched, a reservation that cannot be read — since `state.Place` prunes
+  even when its rule refuses, and a launch that cannot start must leave
+  nothing behind; then it places and logs, and the surface announces the
+  outcome and execs.
+  What the launch means for a session travels into `state.Place` with it, so
+  the load and the session's re-home are one write: both land or neither
+  does. What a launch owes the next one is decided there as well: a launch
+  the rule placed leaves the refresh behind it, and a launch that records a
+  session sweeps the re-homes whose transcripts are gone, so an agent that
+  names a new session id on every run never grows the file. A surface keeps
   its terminal, its working directory and the exec.
 - **Every launch says where it went, and what its figures rest on.** One line
-  on stderr before the vendor starts, on every path — automatic, named,
-  `--last`, the picker — because a line that appears on some paths
-  teaches nothing about the others. A figure from an old observation is
+  on stderr before the vendor starts, automatic or named, because a line that
+  appears on some paths teaches nothing about the others. A figure from an old observation is
   printed as a bound (`≥12%`), a window whose reset has passed as
   `window ended`, a percent that does not parse as `?%`: the rule counts
   each of those differently from a measured figure, and the line must not
   print them as one. The weekly figure carries the time it has left
   (`week 7%, resets in 1.9d`), since that decides ties; the dry-run table
   prints a renewal projected from a schedule as `≈6.5d`, never as the
-  vendor's countdown, and `headroom launches` keeps the time each launch's
-  week had left.
+  vendor's countdown.
 - **A launch counts for a fixed span.** Fifteen minutes, whether or not its
   process is still alive and whatever was observed since: a short job that has
   exited still spent what the figures have not caught up with, and an
@@ -1216,183 +1116,26 @@ the shortest window of its main rate limit as the session window, its
 allowance as the block, and launches as the only load. It has no registry to
 read and no session ownership, so `resume` is placed like a new session.
 
-### Judging placement
+### The launch log
 
-The rule's constants are policy, and a policy is changed by seeing what it
-did. Two logs make that possible, and `headroom launches --eval`
-(`internal/eval`, pure over what the logs hold) reads them: what each launch
-was shown and chose, and what every account's windows did afterwards.
-
-- **The logs explain; they are never an input.** No routing, claim or
-  rendering reads either file, so deleting one, corrupting it or holding its
-  lock changes nothing headroom does. Both are append-only lines on their own
-  lock (`internal/jsonl`): appenders hold it shared and the pruner holds it
-  exclusively, since a prune rewrites the file and a line appended to the old
-  one meanwhile would be lost; an append waits a quarter of a second for a
-  prune and then gives the line up, and one that follows a torn line starts
-  on a new one. A file is bounded by age once it grows past its size bound,
-  and only its head is read to decide whether a rewrite would drop anything —
-  lines are appended in time order, so the oldest are there — and a rewrite
-  waits until the oldest line is a tenth of the retention past it, so a file
-  in its steady state is not rewritten on every append.
-- **A launch line is the decision's whole input.** `launches.jsonl`, per
-  home, holds every candidate as counted and as the rule was handed it: its
-  subscription key, its busy processes, its last placement to the
-  millisecond and, beside what the rule read, how its reservation stood to
-  the launch; the record of recent launches the rule read (`state.Place` returns it before recording the
-  launch), the intent, and the decision's millisecond. So any rule can be run
-  over a line again, one that counts load differently included, and a replay
-  reads neither `.reserved` nor the repository. Version 1 lines carried counts, names and seconds
-  only; they are rebuilt from those and marked inexact wherever that could
-  decide.
-- **A usage line is a reading, decoded.** `refresh` appends each reading it
-  receives to `usage.jsonl` beside the subscription ledger — the ledger
-  root's, so both homes' readings of a subscription land in one file — after
-  recording it in the store, and a line that cannot be written costs the line
-  alone. It holds the parser's decoded rows with their identity and drift
-  marks, never the body: the vendor's parser stays the only reader of vendor
-  bodies, and the vendor helpers (`usage.SessionWindow`, `General`, `Period`)
-  read a logged row at report time as they read a live one. A reading
-  identical to the last one the same process logged is skipped until that
-  line is fifteen minutes old, so an open board does not write a line a
-  minute per account and a longer gap between an account's lines is time
-  nobody observed it.
-- **A window is charged to whoever put work in it.** Readings group into
-  windows by limit and reset, and every launch joins one window per limit:
-  the one open at it, or the one that opens within the fifteen minutes a
-  launch counts as load, since a window that starts with a request opens a
-  moment after the launch that made it. A window whose length nothing states
-  begins no earlier than the previous window's reset and at most six hours
-  before its own. Each outcome — the chosen account's window after a launch,
-  a window that reached 80%, a weekly renewal — counts under the rule of the
-  newest automatic launch into that window, whichever home made it, and
-  under *unplaced* when only named or resumed work went there (pinned work,
-  in logs older than placement on every bare launch). Time
-  across every account is reported beside them and owned by no rule: the
-  logs say which launches went into a window, never which rule a moment
-  belongs to, and charging time to the rule in force would charge it for
-  windows named launches filled.
-- **Every figure says which way it bounds.** A percent never falls within a
-  window, so a window near its limit stays near until its reset; the last
-  reading before a renewal is usage at least that, and the room it left at
-  most the rest. Another account had room only on a fresh reading or a
-  session window that has ended since an older one — an old reading of a
-  window still open is a lower bound and shows none — and never on a reserved
-  account, whose eligibility says something about one launch's repository and
-  not about the account, so a window of its own work can show less room than
-  it had. The outcomes are what
-  happened, never what another choice would have caused: a replayed choice's
-  window is shown as observed, with the launch elsewhere.
-- **A rule that decides differently has a new name.** The replay of a line
-  decided by the rule it runs must agree, so an input the line does not carry
-  shows as a disagreement and so does a rule changed under its old name. On
-  a line with its whole input on record such a disagreement is a *fault*,
-  said before the report's table, because the rule's column then mixes the
-  rule that made those lines with the one carrying its name. Lines frozen when a rule was named
-  (`internal/eval/testdata/<rule>.jsonl`) are replayed by the suite, and a
-  rule with no frozen lines fails it.
-
-## A second home
-
-The machine can carry a second consumer of Claude Code under the same OS user:
-an automated pipeline with its own `HOME`, started by LaunchDaemons with no
-terminal and no login Keychain, running many headless sessions through a
-launcher prefix. It holds its own logins of the same subscriptions the owner
-holds, in its own dirs, with its own settings, skills and session store —
-and nothing of the owner's may reach its sessions, nor the reverse. What the
-two must share is the picture of each subscription: its request budget, its
-figures and its load, because the quota is the subscription's and both homes
-spend it.
-
-- **The unit is the subscription.** Every fact about quota is already keyed
-  by the account's identity — the UUID in `.claude.json` — because two dirs on
-  one account spend one budget. Two homes' dirs on one account are the same
-  case one level up, so nothing about the key changes: the second home spends
-  against the first home's ledger. A claim from either home is the claim the
-  other is denied by (one request per subscription per spacing, whoever asks
-  first, with that home's own token), a response either bought is the figure
-  both place on, and a launch from either is load on the subscription for
-  both.
-- **A second accounts root that spends against the first's ledger.** The
-  second home is an ordinary home — its `HOME`, its primary, its accounts root,
-  its `.order`, `.reserved`, launch log and session store — whose accounts root
-  holds `.ledger`, one line naming the first home's accounts root. `headroom
-  accounts ledger <root>` writes it by the rule `config.Load` reads it with:
-  absolute, an existing directory, not the Codex root, and a ledger of its
-  own — a root whose `.ledger` names somewhere else is a pointer, and roots
-  naming each other would each spend against the other's file while both
-  read as shared. Naming one's own root removes the file. A file that breaks
-  the rule refuses every command, the way a relative override does: a home
-  that meant to share and quietly kept its own ledger would ask every
-  subscription twice and pile launches onto accounts the other home is
-  filling, silently. It is a file and not a variable because the second
-  home's processes start from several places (plists, ssh, sessions
-  dispatching sessions), and a variable lost on one path forks the ledger on
-  that path alone; a file in the accounts root travels with `HOME`. Two other shapes lose on the re-homes: a profile kept
-  in the owner's configuration is unreachable from a process that has only
-  its own `HOME`, and one shared file holding both homes' re-homes would mix
-  records named by account names that both homes spell alike — and each
-  home's sweep sees only its own store.
-- **What is shared and what is not.** The ledger root's `state.json` holds the
-  request ledger, the stored responses, the placements, the headless runs and
-  the member homes, and its `usage.jsonl` every reading either home fetched.
-  Each home's own `state.json` holds its re-homes, and its launch log, its
-  registries, its prompt history and its headless tokens are its own; `launches --eval` reads every member home's
-  launch log beside the ledger's usage log. A session picker lists its
-  own store, routes by its own re-homes and sweeps only those; ownership is
-  never inferred from another home's registry. `--last` means this home's last
-  launch.
-- **Choosing and recording are still one locked operation.** `state.Place`
-  takes the ledger's lock and then the home's, always in that order — it is
-  the only operation that holds two, so nothing can wait on it in reverse —
-  and decides with both held. The two writes are two atomic renames, ordered
-  so that a refusal leaves nothing: a move that depends on its re-home (the
-  picker's `x`) writes the re-home first and refuses if it fails; any other
-  launch writes its placement first. Each partial outcome is one the design
-  already tolerates and says out loud — load without routing is an unreadable
-  sessions section's note, routing without load a busy lock's.
-- **Each home registers where it lives.** A request or a launch records its
-  home in the ledger — accounts root, home dir, how its primary is selected —
-  written only when that changes or is a day old, so a claim that permits
-  nothing stays a read; `accounts ledger` registers at once, so a home that
-  has just joined is counted before its first launch. From that record
-  another home discovers its account dirs and reads their live-session
-  registries, one process sample per pid across both homes, and counts each
-  busy session against the subscription its dir is logged into. Those dirs
-  are never candidates, never owners and never swept; a dir whose identity
-  cannot be read is not attributed at all, since its name is its home's to
-  choose. A registration says where a home lives, never that it still
-  shares: that is what the home's own `.ledger` says now
-  (`accounts.OtherHomes`, the one resolver placement and `check` both use),
-  so a home that leaves stops counting at once, and its record drops out
-  when nobody has seen it for the retention period.
-- **A second home spells its primary out.** When `HOME` is not the user's
-  login home (from the user database, never from `HOME` itself), the primary
-  is launched, probed and read with `CLAUDE_CONFIG_DIR` set to its dir, like an
-  extra: Claude Code then keeps that dir's `.claude.json` inside it and keys
-  its credential on the dir — which is exactly how such a home has run all
-  along. Selection by absence there would read `$HOME/.claude.json`, another
-  file, and key the credential on the base Keychain item, which is per OS user
-  and belongs to the login home's primary. Observed on the author's laptop
-  (macOS 26, Darwin 25.5), not yet on the machine the second home runs on:
-  with `HOME` overridden, `security` searches no login keychain — only the
-  System keychain — so that item is out of reach today and logins made under
-  the second home's `HOME` land in `.credentials.json`; the spelling does not
-  rest on that. The child environment is still a function of the decision:
-  for that primary the decision is a dir. Its own sessions inherit that dir,
-  so it is a known value there, not a notice.
-- **Load says whose it is.** Every surface that shows load names another
-  home's share by the home dir's name: the launch line (`load 3 (2 from
-  steward-home)`), `--dry-run`'s note, the launch log's per-candidate
-  `homes`, the board's `sessions:` clause, and `load.homes` in `--json`.
-- **Bounds.** Only Claude Code homes share a ledger: Codex placement for a
-  second home is not built, and Codex has no registry to read. Both homes
-  run a binary that knows homes: one that does not, rewriting the ledger,
-  carries the member homes through as an unknown section but drops the
-  per-home tags inside the placements, which costs `--last` and the
-  attribution of those launches, never their load. A dir without an identity
-  keys by its name (`dir:<name>`), which both homes may spell alike; such a
-  dir has no login, so it has no budget to confuse.
+`launches.jsonl`, beside each vendor's `state.json`, holds one line per
+launch and per headless placement: when, the vendor, how the account was
+decided (`auto`, `named`, `headless`) and the rule's word for its choice,
+the account, the working directory, the session the launch named, the pid
+and any bookkeeping that failed. A choice the rule made also carries what it
+rested on, derived from the decision: `age_s`, the age of the chosen
+account's figures; `tied`, the accounts at its load, so past one the
+tie-break decided; `excluded`, the accounts it could not consider. It explains and no code reads it — a person
+reads it with `jq` — so it is appended with `O_APPEND` and never rewritten,
+takes no lock, and a line that cannot be written is a note on the launch,
+never a refusal. Deleting it or tearing its last line changes nothing
+headroom does. It is unbounded: at the busiest machine's rate it grows a few
+megabytes a year, and the questions it answers — which launches went where,
+which surfaces are used at all, how often the tie-break decides — need weeks
+of it. Lines under an earlier `v` carry other fields and lack those three;
+every version has the rest. The rule's
+constants are changed by reading this log and the board, and a change to
+what the rule chooses is held by the placement tests, never by a replay.
 
 ## A second vendor: Codex
 
@@ -1408,7 +1151,8 @@ others: identity at discovery, access (health and the request candidate) at
 preparation, and the usage body through `usage.Parse(vendor, body)`, which
 live interpretation, replay and `check` all share. What a vendor supports as a
 command is decided in the command that owns it, in plain sight: the Codex
-removal refusal, Claude Code-only sessions, each vendor's group of checks.
+removal refusal, Claude Code-only login and headless tokens, each vendor's
+group of checks.
 
 The alternatives this beats: a data-only descriptor cannot say how identity,
 health and credentials are read, so those rules leak into callers behind
@@ -1429,7 +1173,7 @@ Verified on codex-cli 0.155.0 unless marked; as perishable as every contract
 here.
 
 - **Isolation.** `CODEX_HOME` selects the whole state dir (default
-  `~/.codex`); logging in under a second home leaves the first's login
+  `~/.codex`); logging in under another home leaves the first's login
   byte-identical. A missing path is a hard error and a relative one is
   canonicalized against the cwd, so headroom only ever hands it an absolute
   dir. The Codex desktop app shares `~/.codex`; headroom never writes that
@@ -1508,7 +1252,7 @@ here.
   The launch constructor strips all of them with `CODEX_HOME`, and a
   credential's value never reaches a notice or a `check` line.
 - **One shared session store.** With only `sessions/` symlinked to
-  `~/.codex/sessions`, a second home resumes the first's sessions, builds its
+  `~/.codex/sessions`, another home resumes the first's sessions, builds its
   own index by backfill and finds sessions created later; a session created
   under one account, encrypted reasoning included, continues under another.
   That is the topology `accounts add --vendor codex` seeds and launch
@@ -1527,9 +1271,9 @@ here.
   registry; Codex has none headroom can read, and an empty read is not proof
   of inactivity. The command refuses outright, with and without `--yes`, and
   names the directory to delete by hand.
-- **No Codex rows in `headroom sessions`.** Resuming across accounts is the
-  vendor's own picker over the shared store, so no session reader, ownership
-  model or re-home exists for Codex.
+- **No session ownership.** Resuming across accounts is the vendor's own
+  `resume` over the shared store, so no owner evidence or re-home exists for
+  Codex, and a Codex resume is placed like a new session.
 - **Only the file credential store.** A keyring login reads as not logged in.
   `check` runs `codex login status` per home, through the launch environment
   constructor, and reports a login with no `auth.json` as an undetermined
@@ -1546,15 +1290,13 @@ here.
 
 The vendor set is closed at `claude` and `codex`. `config.Load` resolves one
 `Scope` per vendor — paths, binary, usage URL, request spacing, launcher
-format, environment policy, presence — and refuses accounts roots that alias
-each other. `accounts.Discover(scope)` returns a `Set` that owns `Select`,
+format, environment policy, presence — every path derived from one home
+(`HEADROOM_HOME`, else `$HOME`). `accounts.Discover(scope)` returns a `Set` that owns `Select`,
 `Has` and `KnownDir`; an `Account` carries its scope, so no operation
 takes a scope beside an account. The set travels with whatever was built from
 it — a round, the page that shows it, the disk snapshot — and is never rebuilt
 from a scope plus a list. Each vendor keeps its own `.order`, `.reserved`
-and `state.json` under its own accounts root; a second home names another root's
-ledger in its `.ledger`, which `config` reads and writes by one rule
-(`internal/config/ledger.go`; see A second home).
+and `state.json` under its own accounts root.
 
 - **The command line** is `cmd/headroom`: Kong structs on clikit
   (`github.com/qiushiyan/clikit`), one declaration per command holding its
@@ -1564,14 +1306,14 @@ ledger in its `.ledger`, which `config` reads and writes by one rule
   into one typed call into `internal/app` and maps the returned error to a
   status. How help renders, how an argv error reads and which errors are usage
   errors are clikit's: a change there is a clikit release and a `go.mod` bump,
-  reviewed through the golden help pages. Two inputs bypass the grammar.
+  reviewed through the golden help pages. One input bypasses the grammar:
   `main` hands the `$BROWSER` call to `app.Open` before argv is parsed (see
-  Renewing logins), and the retired `resume` is a hidden command that takes
-  anything, `--help` included.
+  Renewing logins).
 - **Surfaces** are `internal/app`: one typed entry per surface — `Board`,
-  `Sessions`, `Launch`, `Login`, `HeadlessPlace`, `AccountsRemove`, … — each
+  `Launch`, `Login`, `HeadlessPlace`, `AccountsRemove`, … — each
   taking its streams (`Streams`), the terminal facts it reads (`Terminal`,
-  stdin and stdout apart: the board needs both, mint only stdin) and the
+  stdin and stdout apart: the board and remove's y/N need both, mint only
+  stdin) and the
   edges it crosses as values: `launchop.Deps` (credential reader, process
   probe, detached refresh), `round.Deps` (credential reader, health probe),
   an `ExecFunc`. No package-level seam and no write to the process's own
@@ -1583,15 +1325,13 @@ ledger in its `.ledger`, which `config` reads and writes by one rule
   and `Attempt`, and its read has no credential, probe or HTTP dependency.
   `refresh` owns credential and identity eligibility, durable request
   claims, parallel fetches, response interpretation and completion
-  recording — the store's, and each reading's line in the usage log
-  (`usagelog`). A candidate binds its ledger key, vendor, prepared request
+  recording. A candidate binds its ledger key, vendor, prepared request
   and expected identity behind unexported fields, and `Start` refuses a
   candidate of the other vendor. `state` owns the request ledger, stored
-  bodies, placements, member homes and re-homes; `Place` is the one
-  operation that writes both of a second home's files, the ledger's lock
-  first. `render` decides an account's notes once (`clauses`) and lays them
-  out in the block and the compact row, and draws the session rows; JSON
-  serialization stays with the surfaces.
+  bodies, placements, headless runs and re-homes, one document under one
+  lock. `render` decides an account's notes once (`clauses`) and lays them
+  out in the block and the compact row; JSON serialization stays with the
+  surfaces.
 - **A round** is `internal/round`: one vendor's discovery, facts on disk,
   access (health and a request candidate — the second place vendor
   documents are read), claim, fetches and results. `Prepare` is the local
@@ -1604,25 +1344,25 @@ ledger in its `.ledger`, which `config` reads and writes by one rule
   results are routed and rounds started. Selection survives rediscovery by
   account name. Off a terminal the board prints one frame (`app/board.go`);
   `--json` serializes the same rounds.
-- **Sessions.** `internal/sessions` collects transcripts, history and
-  registry evidence, with one process sample per collection supplying both
-  liveness and ownership; mutations re-inspect at action time.
-  `app/sessions.go` owns the command's entry and collection,
-  `app/sessions_picker.go` the picker's state, `app/session_actions.go`
-  the resume it hands to `launchop` and the mutation effects.
+- **Sessions.** `internal/sessions` reads what a launch weighs about
+  sessions: the live registry and its claims' verification (`InspectClaims`,
+  one process sample per pid), prompt history and the owner rule over it
+  (`OwnerOf`), the transcript ids the re-home sweep consults, and the
+  repository a directory belongs to (`RepoKey`). It reads no transcript
+  content.
 - **Placement.** `placement` is the rule: one pure function over candidates,
   recent launches and an intent, with no clock, file or network of its own.
   `internal/launchop` owns a placement from request to record. `Gather`
   observes what every placement weighs once — stored observations, the
-  session registries of this home and of every home spending against its
-  ledger today (one inspection of every claim, one process sample per pid,
-  owner evidence from this home's claims alone) and, when the rule will
+  accounts' session registries and the headless runs (one inspection of
+  every claim, one process sample per pid, owner evidence from the
+  accounts' own claims alone) and, when the rule will
   choose, credentials — and builds the candidates. The `Plan` it returns
   previews (the dry run, through the same refusals) or commits: preflight
   refuses what is known before any write, then `state.Place` (the placement and a session's re-home in one locked
-  section), the launch log line, and for an automatic choice the detached
-  refresh. `headroom launch` and the session picker both commit through it,
-  keeping only their terminal, working directory, announcement and exec.
+  section), the launch log line (`log.go`), and for an automatic choice the
+  detached refresh. `headroom launch` commits through it, keeping only its
+  terminal, working directory, announcement and exec.
   `Mark` is the same gathering for the board's `← next` and load figures, and
   `PlaceHeadless` and `Started` are the protocol for a headless caller, with
   its own eligibility and no exec. `accounts.ReadReservations` is the one
@@ -1651,11 +1391,10 @@ ledger in its `.ledger`, which `config` reads and writes by one rule
   `writeRows` (`app/frame.go`).
 
 Dependencies: the standard library, `golang.org/x/term` (raw-mode terminal
-control for the two pickers), and clikit with Kong for the command line —
-no TUI framework, no cgo. The interactive surfaces share terminal lifetime,
-decoding and row emission, with their own frame policies. Every drawn line
-is one physical row: vendor text — account labels, model names, session
-titles and prompts — is sanitized where it is rendered, and a screen's last
+control for the board), and clikit with Kong for the command line — no TUI
+framework, no cgo. Every drawn line is one physical row: vendor text —
+account labels, model names — is sanitized where it is rendered, and a
+screen's last
 row carries no newline, since one more would scroll a frame of exactly the
 screen's height by a row on every draw. The Keychain is read by exec'ing
 `security(1)`, which keeps builds trivial. Parsing is pure functions
@@ -1679,9 +1418,9 @@ status and vendor argv with `testdata/contract/`; a pin changes only with
 what its consumers read (`HEADROOM_CONTRACT_UPDATE=1` rewrites them, apart
 from the help pages so that accepting one can never rewrite the other).
 `grammar_test.go` runs the App in process: every argv refusal exits 2 having
-started nothing and changed nothing in the home, what argv decodes to, help
-and the tombstone under a configuration headroom refuses, and a missing
-vendor. `TestHelpPages` pins every help page (`make golden` accepts a
+started nothing and changed nothing in the home — a retired verb or flag
+among them — what argv decodes to, help and a retired verb's refusal under a
+configuration headroom refuses, and a missing vendor. `TestHelpPages` pins every help page (`make golden` accepts a
 change). Surfaces below it are tested through their typed entries, `round`
 and `launchop` through their own interfaces.
 
@@ -1691,8 +1430,9 @@ contending handles on the real lock — and the launch path through the exec
 seam with credentials and the process table injected. The detached refresh
 is the exception: it is exercised through the built binary against a local
 endpoint that stalls, since the property is that the launch returns first
-and a process that outlived it records the answer. The launch operation's
-tests drive both of its callers, `launch` and the session picker.
+and a process that outlived it records the answer. The launch log is held by
+the launch tests: one line per launch and placement, an unwritable log a
+note and never a refusal, and a deleted or torn log changing no choice.
 Operation tests exercise request preparation,
 local HTTP and the real store together, so sent credentials, received facts,
 refusal backoff and persistence are tested through the callers' interface.
@@ -1730,57 +1470,31 @@ script(1) against a stub `setup-token`: the
 scratch dir, gone after; headroom as `$BROWSER`; the token stored 0600 and
 never in the output. The scanner is a table over reads cut at every size.
 
-A second home is tested at each tier. The store's tests drive a handle on
-each home's root over the real lock: a claim from either denies the other, a
-launch's load lands in the shared ledger and its re-home in its own home,
-each home's sweep leaves the other's records, a refused move leaves the
-ledger untouched, each half-written outcome is reported as the half that
-landed, and launches from both homes started together spread evenly. The
-launch operation's tests build two homes logged into the same subscriptions:
-each counts the other's busy sessions and recent launches, a home that left
-stops counting at once, each subscription is asked once across both homes'
-refresh rounds, no launch resolves the other home's dir whatever it
-inherits, each picker lists its own store, and the owner's board and
-`--json` name the other home's load. `check` audits each of a sharing home's
-files on its own and judges only current members. Through the built binary,
-a launch with `HOME` at the second home, no terminal on any stream and a
-launchd-sized environment runs both of a session's turns on one of that
-home's dirs, records its load in the owner's ledger and its routing in its
-own file; a refresh killed mid-request leaves the shared store readable,
-unlocked and askable after one spacing; and one sent SIGTERM — mid-request
-or mid credential read — stops within a second, having claimed nothing it
-could not complete.
+The detached refresh is held through the built binary too, under a
+launchd-sized environment: one killed mid-request leaves the store readable,
+unlocked and askable after one spacing, and one sent SIGTERM — mid-request or
+mid credential read — stops within a second, having claimed nothing it could
+not complete.
 
-The evaluation is tested as a pure function over constructed logs, both
-vendors', with totals a reader can redo by hand, and through the command over
-a real launch, a second home and an unreadable log. The guard on its replay
-is a table of decisions whose every input matters — busy processes, recent
-launches, aliases of one subscription, a millisecond tie, an owner, a move —
-each logged and replayed, beside the frozen lines of the current rule.
-
-`make test-pty` (`test/pty/`) covers what Go tests cannot observe: actual picker
-interaction, selection, refresh scheduling, scrollback and terminal lifetime,
-and — read from a tmux pane, since the alternate screen keeps no scrollback —
-the session picker's header holding the first row of a full, a short and a
-narrow pane.
-Automatic placement is exercised there through the real binary: five launches
-started together reach five accounts, a session named on its first turn
+`make test-pty` (`test/pty/`) covers what Go tests cannot observe: the
+board's interaction, selection, refresh scheduling, scrollback and terminal
+lifetime, read through a real pty. Automatic placement is exercised there
+through the real binary: five launches started together reach five
+accounts, each one line in the launch log, a session named on its first turn
 resumes on the same account, the board marks one account's row, and no key
-on the board writes routing.
-Both vendors' accounts roots and usage URLs are fixture values from the
-harness's first command, because `HEADROOM_HOME` does not override an accounts
-root a caller's shell exports. Codex's fixture root does not exist until its
-block creates it — so every frame before that is the single-vendor one — and
-Codex is present for one block that pins the two-vendor print,
-tab switching, and keys on the Codex page writing nothing.
-Successful session launch must hand the child the restored terminal mode;
-signals must restore it before exit. The harness uses fixture `claude` and
-`security` commands and redirects account and transcript state into a temporary
-home. Signal cases address the recorded fixture child PID. An outer shell
-checks terminal state after exit; the tmux scrollback case skips when tmux is
-absent. The dotfiles repo's `zsh/.config/zsh/tests/claude-launch.test.zsh`
-tests its shell wrappers against this checkout's binary and a recording
-`claude` stub.
+on the board writes routing. Each retired verb exits 2 with nothing on
+stdout. The harness sets `HEADROOM_HOME`, from which both accounts roots
+derive, and points both usage URLs at a closed port. Codex's fixture root
+does not exist until its block creates it — so every frame before that is
+the single-vendor one — and Codex is present for one block that pins the
+two-vendor print, tab switching, and keys on the Codex page writing nothing.
+Signals must restore the terminal before exit. The harness uses fixture
+`claude` and `security` commands and redirects account and session state
+into a temporary home. Signal cases address the recorded fixture child PID.
+An outer shell checks terminal state after exit; the tmux scrollback case
+skips when tmux is absent. The dotfiles repo's
+`zsh/.config/zsh/tests/claude-launch.test.zsh` tests its shell wrappers
+against this checkout's binary and a recording `claude` stub.
 
 ## Status
 

@@ -39,7 +39,6 @@ func TestContracts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(share, "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cdFile := filepath.Join(w.base, "cwd")
 	for _, c := range []struct {
 		name  string
 		args  []string
@@ -57,9 +56,6 @@ func TestContracts(t *testing.T) {
 		{"accounts", []string{"accounts"}, ""},
 		{"accounts-compact", []string{"accounts", "--compact"}, ""},
 		{"accounts-compact-codex", []string{"accounts", "--compact", "--vendor", "codex"}, ""},
-		{"resolve", []string{"resolve", "a@x.com"}, ""},
-		{"resolve-codex", []string{"resolve", "--vendor", "codex", "c@x.com"}, ""},
-		{"sessions-json", []string{"sessions", "--json"}, ""},
 		{"headless-list", []string{"headless"}, ""},
 		{"headless-json", []string{"headless", "--json"}, ""},
 		{"login-dry-run", []string{"login", "--dry-run"}, ""},
@@ -71,18 +67,9 @@ func TestContracts(t *testing.T) {
 		{"launch-named", []string{"launch", "--account", "a@x.com", "--"}, ""},
 		{"launch-named-dashdash", []string{"launch", "--account", "a@x.com", "--", "--", "--fast"}, ""},
 		{"launch-bare", []string{"launch", "--", "--dangerously-skip-permissions", "--settings", `{"fastMode":true}`}, ""},
-		{"launch-auto", []string{"launch", "--auto", "--", "-p", "--output-format", "stream-json", "--verbose",
-			"--resume", "12345678-1234-4123-8123-123456789abc"}, ""},
 		{"launch-codex-named", []string{"launch", "--vendor", "codex", "--account", "c@x.com", "--", "resume", "--all"}, ""},
 		{"launch-codex-bare", []string{"launch", "--vendor", "codex", "--"}, ""},
 		{"launch-codex-exec", []string{"launch", "--vendor", "codex", "--", "exec", "--json", "hello"}, ""},
-		{"launches", []string{"launches"}, ""},
-		{"launches-json", []string{"launches", "--json"}, ""},
-		{"launches-n", []string{"launches", "-n", "2"}, ""},
-		{"launches-eval-json", []string{"launches", "--eval", "--json"}, ""},
-
-		// The session picker needs a terminal; the cd file says nothing was entered.
-		{"sessions-no-terminal", []string{"sessions", "--cd-file", cdFile, "--", "--dangerously-skip-permissions"}, ""},
 
 		// Headless placement, as the eval runner drives it.
 		{"headless-place", []string{"headless", "place", "--prefer", "a@x.com", "--exclude", "b@x.com"}, ""},
@@ -96,32 +83,21 @@ func TestContracts(t *testing.T) {
 		{"accounts-add-share-after", []string{"accounts", "add", "f@x.com", "--share-config"}, ""},
 		{"accounts-remove-yes", []string{"accounts", "remove", "--yes", "f@x.com"}, ""},
 		{"accounts-remove-no-terminal", []string{"accounts", "remove"}, ""},
-		{"accounts-ledger", []string{"accounts", "ledger"}, ""},
-		{"accounts-ledger-own", []string{"accounts", "ledger", w.claude.AccountsRoot}, ""},
 
 		// Refusals a caller can meet.
-		{"resume-tombstone", []string{"resume", "--json"}, ""},
-		{"resume-help", []string{"resume", "--help"}, ""},
-		{"resume-version", []string{"resume", "--version"}, ""},
 		{"launch-empty-account", []string{"launch", "--account", "", "--"}, ""},
 		{"launch-unknown-flag", []string{"launch", "--resume", "abc"}, ""},
-		{"launch-auto-last", []string{"launch", "--auto", "--last", "--"}, ""},
 		{"launch-remember", []string{"launch", "--account", "a@x.com", "--remember", "--"}, ""},
-		{"resolve-bare", []string{"resolve"}, ""},
 		{"check-argument", []string{"check", "extra"}, ""},
 		{"unknown-command", []string{"lauch"}, ""},
 		{"accounts-board-flag-before-remove", []string{"accounts", "--compact", "remove", "--yes", "a@x.com"}, ""},
-		{"json-before-command", []string{"--json", "sessions"}, ""},
+		{"json-before-command", []string{"--json", "limits"}, ""},
 		{"launch-words-without-dashdash", []string{"launch", "fix", "it"}, ""},
-		{"launches-eval-n-default", []string{"launches", "--eval", "-n", "20"}, ""},
-		{"launches-eval-n-zero", []string{"launches", "--eval", "-n", "0"}, ""},
-		{"launches-since-without-eval", []string{"launches", "--since", "7d"}, ""},
 		{"login-within-negative", []string{"login", "--dry-run", "--within", "-1"}, ""},
 		{"headless-place-comma", []string{"headless", "place", "--dry-run", "--exclude", "a@x.com,b@x.com"}, ""},
 		{"headless-place-empty", []string{"headless", "place", "--exclude", ""}, ""},
 		{"accounts-remove-empty", []string{"accounts", "remove", ""}, ""},
 		{"accounts-vendor-before-add", []string{"accounts", "--vendor", "codex", "add", "g@x.com"}, ""},
-		{"accounts-ledger-codex", []string{"accounts", "ledger", "--vendor", "codex"}, ""},
 
 		// The plan as an agent reads it, and a handed-off sign-in end to end,
 		// last: the renewal changes a@x.com's login. (docs/specs/login-handoff.md)
@@ -203,29 +179,26 @@ func newWorld(t *testing.T) *world {
 	w := &world{base: base, home: filepath.Join(base, "home"), stubs: filepath.Join(base, "stubs"), record: filepath.Join(base, "record")}
 	cfg := config.ForHome(w.home)
 	w.claude, w.codex = cfg.Claude, cfg.Codex
-	// HOME is not this user's login home, so the binary spells the primary
-	// out and reads its identity inside its dir, as a second home does.
-	w.claude.PrimaryExplicit = true
 	w.codex.Present = true
 
 	aged := time.Now().Add(-time.Hour).UnixMilli()
 	far := time.Now().Add(25 * 24 * time.Hour).UnixMilli()
-	claudeLogin := func(dir, email string) {
-		write(t, filepath.Join(dir, ".claude.json"), fmt.Sprintf(`{"oauthAccount":{"emailAddress":%q,"accountUuid":"uuid-%s"}}`, email, email))
+	claudeLogin := func(meta, dir, email string) {
+		write(t, meta, fmt.Sprintf(`{"oauthAccount":{"emailAddress":%q,"accountUuid":"uuid-%s"}}`, email, email))
 		write(t, filepath.Join(dir, ".credentials.json"),
 			fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"tok-%s","expiresAt":%d,"refreshTokenExpiresAt":%d,"subscriptionType":"max"}}`, email, aged, far))
 	}
 	if err := os.MkdirAll(filepath.Join(w.claude.PrimaryDir(), "projects"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	claudeLogin(w.claude.PrimaryDir(), "p@x.com")
+	claudeLogin(w.claude.PrimaryMeta(), w.claude.PrimaryDir(), "p@x.com")
 	for _, email := range []string{"a@x.com", "b@x.com"} {
 		seeded, err := accounts.Seed(w.claude, email, accounts.SeedOptions{})
 		dir := seeded.Dir
 		if err != nil {
 			t.Fatal(err)
 		}
-		claudeLogin(dir, email)
+		claudeLogin(filepath.Join(dir, ".claude.json"), dir, email)
 	}
 
 	codexLogin := func(dir string, n int, email string) {

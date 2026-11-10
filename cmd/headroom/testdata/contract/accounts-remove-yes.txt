@@ -3,5 +3,5 @@ exit 0
 --- stdout
 no Keychain item (Claude Code-credentials-<dir-hash>) — never logged in, or already gone
 removed $BASE/home/.claude-accounts/f@x.com
-transcripts are machine-global and survive; the session picker shows this owner as degraded until each is re-homed
+transcripts are machine-global and survive; a session it drove is placed like a new one when it is next resumed
 --- stderr
