@@ -183,13 +183,13 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	err := s.update(s.ledger, claimWait, func(d *doc) error {
 		d.register(s.member, now)
 		d.sweepStale(now)
-		if d.badAccounts {
+		if d.held[secAccounts] {
 			// No readable ledger. "Eligible" is then a guess, and a live
 			// cooldown is exactly when that guess is worst — so the unreadable
 			// bytes are set aside (never dropped: `check` reports them) and
 			// every account starts quiet. This self-heals in one cooldown
 			// rather than bricking until someone deletes the file.
-			d.setAside("accounts", &d.badAccounts)
+			d.setAside(secAccounts)
 			for i, k := range keys {
 				r := d.accounts[k.ID()]
 				r.Name = k.Name
@@ -252,7 +252,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, at time.Time) (time.Time, error) {
 	var next time.Time
 	err := s.update(s.ledger, completeWait, func(d *doc) error {
-		if d.badAccounts {
+		if d.held[secAccounts] {
 			return ErrCorrupt
 		}
 		id := k.ID()
@@ -310,7 +310,7 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 // with no record yet. Swept by its zero attempt time, that quiet period would
 // end at the very next claim.
 func (d *doc) sweepStale(now time.Time) {
-	if d.badAccounts {
+	if d.held[secAccounts] {
 		return
 	}
 	cutoff := now.Add(-retention).UnixMilli()
@@ -339,21 +339,9 @@ type Launch struct {
 	PID        int // the launching process's own, which the exec keeps
 	Now        time.Time
 
-	// Session is the explicit id of the session this launch is for, "" when it
-	// is for none. Its routing is recorded as a re-home when the launch puts it
-	// anywhere but Intent.Owner; a launch that follows the owner writes none.
-	Session string
-
-	// MustReHome says the launch exists to move the session — the picker's
-	// override — so the re-home is written whoever the owner was, and a launch
-	// whose re-home cannot be written is not recorded at all: the caller
-	// refuses it, and nothing is left behind for the next launch to count.
-	MustReHome bool
-
-	// Live lists the transcripts that exist, for sweeping re-homes whose
-	// sessions are gone. It runs inside the lock, for Enumerator's reason, and
-	// only when this launch writes a re-home.
-	Live Enumerator
+	// Session is what the launch means for the session it is for; the zero
+	// value is a launch for none.
+	Session SessionRecord
 
 	// ID names a headless placement, whose caller starts the session itself
 	// and reports its process to Started; PID is then 0 until it does.
@@ -365,6 +353,67 @@ type Launch struct {
 	// among them, so it cannot be dropped by a reader that never saw it.
 	Gone []Run
 }
+
+// SessionRecord is what a launch means for one session's routing: which
+// session, whether the launch exists to move it, and how to list the
+// transcripts that still exist. Built by RouteSession or MoveSession; the zero
+// value records nothing.
+type SessionRecord struct {
+	id   string
+	move bool
+	live Enumerator
+}
+
+// RouteSession is a launch for the session with this explicit id. Its routing
+// is recorded as a re-home when the launch puts it anywhere but the account
+// that last drove it (Intent.Owner); a launch that follows the owner writes
+// none. An empty id is a launch for no session.
+//
+// live lists the transcripts that exist, for sweeping re-homes whose sessions
+// are gone. It runs inside the lock, for Enumerator's reason, and only when
+// this launch writes a re-home; nil sweeps nothing.
+func RouteSession(id string, live Enumerator) SessionRecord {
+	return SessionRecord{id: id, live: live}
+}
+
+// MoveSession is a launch that exists to move the session — the picker's
+// override — so the re-home is written whoever the owner was, and a launch
+// whose re-home cannot be written is not recorded at all: the caller refuses
+// it, and nothing is left behind for the next launch to count. Place refuses
+// a move that names no session.
+func MoveSession(id string, live Enumerator) SessionRecord {
+	return SessionRecord{id: id, move: true, live: live}
+}
+
+// ID is the session's id, "" for a launch that is for none.
+func (r SessionRecord) ID() string { return r.id }
+
+// Moves reports that the launch exists to move the session.
+func (r SessionRecord) Moves() bool { return r.move }
+
+// routes reports whether a launch that chose this account owes the session a
+// re-home: it is for a session, and it moves it or put it somewhere other
+// than its owner.
+func (r SessionRecord) routes(chosen, owner string) bool {
+	return r.id != "" && (r.move || chosen != owner)
+}
+
+// Effect is what became of one of a launch's two writes — its load, or its
+// session's re-home. The zero value is a write the launch did not call for.
+type Effect struct {
+	written bool
+	missed  error
+}
+
+// Written reports that the write is on disk.
+func (e Effect) Written() bool { return e.written }
+
+// Missed is why a write the launch called for is not on disk; nil when it is,
+// or when the launch called for none.
+func (e Effect) Missed() error { return e.missed }
+
+func wrote() Effect           { return Effect{written: true} }
+func missed(err error) Effect { return Effect{missed: err} }
 
 // Run is one headless session's process: a caller that starts its own
 // session on a placement reports the process, which spends the placed
@@ -395,7 +444,7 @@ func validRuns(runs []Run) bool {
 // aside a section that would not decode; whatever it changes dirties the
 // document.
 func (d *doc) sweepRuns(gone []Run, now time.Time) {
-	d.setAside("runs", &d.badRuns)
+	d.setAside(secRuns)
 	old := now.Add(-runKeep).UnixMilli()
 	kept := d.runs[:0]
 	for _, r := range d.runs {
@@ -408,30 +457,34 @@ func (d *doc) sweepRuns(gone []Run, now time.Time) {
 	d.runs = kept
 }
 
-// Placed is Place's answer. The decision is always there; the flags say what
-// reached disk.
+// Placed is Place's answer. The decision is always there; Load and Route say
+// what reached disk, each on its own: when the ledger is another home's file
+// they are two writes, and either can land without the other.
 type Placed struct {
 	Decision placement.Decision
-	Recorded bool // the launch is in the record the next placement reads
 
 	// Ledger is the record of launches the decision was made on, as the rule
 	// read it — before this launch was added to it — for the launch log, which
 	// keeps every input so a rule can be run over the line again.
 	Ledger placement.Ledger
 
-	// RecordErr says why the launch is not in the record although Place
-	// returned no error: the ledger is another home's file, the re-home this
+	// Load is the launch in the record the next placement reads. Missed with
+	// no error from Place: the ledger is another home's file, the re-home this
 	// launch depended on was written first, and the ledger's write then
 	// failed. The launch goes ahead — it is routed — and misses only its load.
-	RecordErr error
+	Load Effect
 
-	// ReHomed reports that the session's routing was recorded. SessionErr says
-	// why it was not when it should have been and the launch did not depend on
-	// it: an unreadable sessions section is never written over, here as
-	// everywhere.
-	ReHomed    bool
-	SessionErr error
+	// Route is the session's re-home. Missed when the launch owed one and did
+	// not depend on it: an unreadable sessions section is never written over,
+	// here as everywhere.
+	Route Effect
 }
+
+// Recorded reports that the launch is in the record the next placement reads.
+func (p Placed) Recorded() bool { return p.Load.Written() }
+
+// ReHomed reports that the session's routing was recorded.
+func (p Placed) ReHomed() bool { return p.Route.Written() }
 
 // Place chooses the account for one launch and records the choice, in one
 // locked section.
@@ -468,15 +521,21 @@ func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
 	now := l.Now
 	l.Intent.Home = s.root
+	if l.Session.move && l.Session.id == "" {
+		// Nothing was decided, read or written: a move of no session is a
+		// caller's mistake, and recording its load would count a launch that
+		// cannot be what it says.
+		return out, errors.New("a launch that moves a session names none")
+	}
 	err := s.updatePair(placeWait, func(led, home *doc, homeErr error) (bool, error) {
-		if l.MustReHome && (homeErr != nil || home.badSessions) {
+		if l.Session.move && (homeErr != nil || home.held[secSessions]) {
 			// Re-homes are user decisions. Writing a fresh section over bytes
 			// that merely failed to decode would destroy them for good.
 			return false, cmp.Or(homeErr, ErrCorrupt)
 		}
 		// Disposable, like the request ledger: an unreadable record of
 		// launches is set aside and starts from nothing.
-		led.setAside("placements", &led.badPlacements)
+		led.setAside(secPlacements)
 		if led.placements.Prune(now, retention) {
 			led.dirty = true
 		}
@@ -495,18 +554,18 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		}
 		led.placements.RecordAs(l.ID, chosen.Key, chosen.Name, chosen.Ref, l.PID, s.root, now)
 		led.dirty = true
-		out.Recorded = true
-		if l.Session == "" || (!l.MustReHome && chosen.Name == l.Intent.Owner) {
+		out.Load = wrote()
+		if !l.Session.routes(chosen.Name, l.Intent.Owner) {
 			return false, nil
 		}
-		if homeErr != nil || home.badSessions {
-			out.SessionErr = cmp.Or(homeErr, ErrCorrupt)
+		if homeErr != nil || home.held[secSessions] {
+			out.Route = missed(cmp.Or(homeErr, ErrCorrupt))
 			return false, nil
 		}
-		if l.Live != nil {
+		if l.Session.live != nil {
 			// The sweep runs before the write, so the record this very call
 			// writes can never be swept by it.
-			if exists, ok := l.Live(); ok {
+			if exists, ok := l.Session.live(); ok {
 				young := now.Add(-rehomeGrace).UnixMilli()
 				for sid, rec := range home.sessions {
 					if !exists[sid] && rec.AtMS < young {
@@ -515,31 +574,40 @@ func (s *Store) Place(l Launch) (Placed, error) {
 				}
 			}
 		}
-		home.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
+		home.sessions[l.Session.id] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
 		home.dirty = true
-		out.ReHomed = true
-		return l.MustReHome, nil
+		out.Route = wrote()
+		return l.Session.move, nil
 	})
 	var partial pairErr
 	switch {
 	case errors.As(err, &partial) && partial.homeWritten:
 		// The re-home this launch depended on is written; its load is not.
-		out.Recorded, out.RecordErr = false, partial.err
+		out.Load = missed(partial.err)
 		return out, nil
 	case errors.As(err, &partial):
 		// The placement is written; the session's routing is not.
-		out.ReHomed, out.SessionErr = false, partial.err
+		out.Route = missed(partial.err)
 		return out, nil
 	case err != nil:
+		// Nothing was recorded. The decision is made again from an unlocked
+		// read, and both writes it would have owed are missed for one reason.
 		ledger := s.Load().Placements()
 		out = Placed{Decision: placement.Choose(l.Candidates, ledger, l.Intent, now), Ledger: ledger}
+		if chosen, ok := out.Decision.Find(out.Decision.Chosen); ok && out.Decision.Chosen != "" {
+			out.Load = missed(err)
+			if l.Session.routes(chosen.Name, l.Intent.Owner) {
+				out.Route = missed(err)
+			}
+		}
 		return out, err
 	}
 	return out, nil
 }
 
 // ErrNotPlaced is Started's answer for an id no recent placement carries: it
-// was never placed, or it has stopped counting and been pruned.
+// was never placed, or it has stopped counting — whether or not a later
+// placement has pruned it yet.
 var ErrNotPlaced = errors.New("no recent placement has that id")
 
 // Started records the process a headless caller started on its placement: the
@@ -550,10 +618,10 @@ var ErrNotPlaced = errors.New("no recent placement has that id")
 func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now time.Time) (Run, error) {
 	var out Run
 	err := s.update(s.ledger, claimWait, func(d *doc) error {
-		if d.badPlacements {
+		if d.held[secPlacements] {
 			return ErrCorrupt
 		}
-		p, ok := d.placements.Attach(id, pid)
+		p, ok := d.placements.Attach(id, pid, now)
 		if !ok {
 			return ErrNotPlaced
 		}
@@ -598,7 +666,7 @@ func writable(d *doc) error {
 	switch {
 	case d.readOnly():
 		return ErrReadOnly
-	case d.unreadable:
+	case d.cond == condUnreadable:
 		// Something is in that file and nobody could read it. Writing a fresh
 		// document here is how re-homes get destroyed by an I/O blip.
 		return ErrUnreadable
@@ -647,7 +715,8 @@ func (s *Store) updatePair(wait time.Duration, fn func(led, home *doc, homeErr e
 		homeErr = writable(home)
 	}
 	if homeErr != nil {
-		home = &doc{root: s.root, sessions: map[string]sessions.OwnerRec{}, badSessions: true}
+		home = &doc{root: s.root, sessions: map[string]sessions.OwnerRec{}, cond: condUnreadable}
+		home.held[secSessions] = true
 	}
 	homeFirst, err := fn(led, home, homeErr)
 	if err != nil {
@@ -725,10 +794,41 @@ func commitDoc(d *doc) error {
 		return err
 	}
 	path := statePath(d.root)
-	if d.corruptDoc {
+	if d.cond == condNotJSON {
 		// Unreadable, but not this code's to destroy: whatever is in there is
-		// the only copy, and someone may want to look at it.
-		_ = os.Rename(path, path+".unreadable")
+		// the only copy, and someone may want to look at it. Kept first, and
+		// replaced only once it is.
+		if err := keepAside(path); err != nil {
+			return fmt.Errorf("%s is not valid JSON and could not be kept aside, so it was not replaced: %w", path, err)
+		}
 	}
 	return atomicfile.Write(path, "state-*.json", data)
+}
+
+// keepAside gives the file at path a second name beside it — path.unreadable,
+// or the first of path.unreadable.2, .3, … that nothing holds — so the write
+// that then replaces path destroys nothing. A link, not a rename: an earlier
+// file kept aside is never written over, and a name already holding these very
+// bytes (a write that failed after keeping them) is not taken twice.
+func keepAside(path string) error {
+	cur, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	for n := 1; n <= 1000; n++ {
+		aside := path + ".unreadable"
+		if n > 1 {
+			aside = fmt.Sprintf("%s.unreadable.%d", path, n)
+		}
+		switch err := os.Link(path, aside); {
+		case err == nil:
+			return nil
+		case !errors.Is(err, os.ErrExist):
+			return err
+		}
+		if kept, err := os.Stat(aside); err == nil && os.SameFile(cur, kept) {
+			return nil
+		}
+	}
+	return errors.New("every name it could be kept under is taken")
 }

@@ -161,6 +161,43 @@ type Problem struct {
 	Detail  string
 }
 
+// condition is what reading the file itself came to, before any section is
+// looked at. It is evidence, set once by read and never changed: what a write
+// may do about it is decided where the write is (commitDoc, writable).
+type condition int
+
+const (
+	// condAbsent: no file yet, which is an empty store.
+	condAbsent condition = iota
+	// condDecoded: the envelope is JSON, and each section answers for itself.
+	condDecoded
+	// condNotJSON: the envelope would not decode, so no section could be
+	// recovered from it. The next write keeps the bytes aside and starts a
+	// fresh document.
+	condNotJSON
+	// condUnreadable: the file is there and could not be read — a permission,
+	// I/O or filesystem failure rather than anything about its contents.
+	// There is then nothing to reason from and nothing this code may
+	// overwrite.
+	condUnreadable
+)
+
+// section names one of the document's sections this binary decodes.
+type section int
+
+const (
+	secAccounts section = iota
+	secSessions
+	secPlacements
+	secRuns
+	secMembers
+	nSections
+)
+
+var sectionNames = [nSections]string{"accounts", "sessions", "placements", "runs", "members"}
+
+func (s section) String() string { return sectionNames[s] }
+
 // doc is one decode of the file. Sections are kept both raw and typed: the
 // raw map is what gets written back, so a section this binary could not decode
 // survives a write by a section it could.
@@ -176,48 +213,54 @@ type doc struct {
 	// the request ledger — a section that will not decode is set aside and the
 	// record starts empty, which costs a few launches their view of each other
 	// and nothing else.
-	placements    placement.Ledger
-	badPlacements bool
+	placements placement.Ledger
 
 	// runs are the headless sessions' processes: a caller that starts its
 	// session itself, on a placement, reports the process (Started), and it
 	// counts as busy on the placed subscription for as long as it runs.
 	// Disposable like the placements: a section that will not decode is set
 	// aside at the next write and the record starts empty.
-	runs    []Run
-	badRuns bool
+	runs []Run
 
 	// members are the homes that spend against this ledger, keyed by accounts
 	// root: where each keeps its account dirs, so another home can read their
 	// live-session registries and count those sessions against the same
 	// subscriptions. Disposable: a home re-registers at its next request or
 	// launch.
-	members    map[string]Member
-	badMembers bool
+	members map[string]Member
 
-	// A section that failed to decode is empty above and true here, and the
-	// empty value is what a set-aside section is rebuilt from. The two
-	// failures are handled differently on purpose: the ledger is disposable,
-	// so it is quarantined and rebuilt conservatively, while re-homes are user
-	// decisions, so they are never written over.
-	badAccounts bool
-	badSessions bool
+	// cond is what reading the file came to; held is each section's standing
+	// with a write. The two answer different questions, and has is the one
+	// place they are combined for a reader.
+	cond condition
+
+	// held marks a section whose typed value above is empty because what was
+	// on disk could not be used, and which a write must therefore not treat
+	// as an ordinary empty section. What that costs is the section's owner's
+	// to say, at the operation that writes it: the request ledger is
+	// quarantined and rebuilt with every account quiet (Claim), the
+	// placements, runs and members are set aside and begun again, and the
+	// re-homes — a person's decisions — are never written over.
+	//
+	// Under condNotJSON only the request ledger is held: the whole file is
+	// kept aside at the commit, so the other sections do start empty, while
+	// the ledger still owes its conservative silence. Under condUnreadable
+	// every section is held, and nothing is written at all.
+	held [nSections]bool
 
 	// dirty gates the write: a run where every account was inside its quiet
 	// period changes nothing, and rewriting the file to say so would be pure
 	// contention.
 	dirty bool
 
-	// corruptDoc means the envelope itself would not decode, so the next write
-	// moves the old bytes aside instead of overwriting them.
-	corruptDoc bool
-
-	// unreadable means the file exists and could not be read — a permission,
-	// I/O or filesystem failure rather than anything about its contents. There
-	// is then nothing to reason from and nothing this code may overwrite.
-	unreadable bool
-
 	problems []Problem
+}
+
+// has reports that a reader may take the section's typed value as what the
+// file holds: the file was read whole and the section decoded. An empty
+// section then means nothing was recorded, never that nothing could be read.
+func (d *doc) has(s section) bool {
+	return (d.cond == condAbsent || d.cond == condDecoded) && !d.held[s]
 }
 
 func (d *doc) readOnly() bool { return d.version > Version }
@@ -271,11 +314,13 @@ func read(accountsRoot string) *doc {
 			// conflated: the first means "nothing has happened yet" and the
 			// second means "something is there and I cannot see it", and only
 			// one of them makes it safe to write a fresh document.
-			// Both sections are marked unavailable rather than empty: nothing
-			// in there was read, so claiming the re-homes are readable would
-			// be a second falsehood on top of the first.
-			d.unreadable = true
-			d.badAccounts, d.badSessions = true, true
+			// Every section is held rather than empty: nothing in there was
+			// read, so claiming the re-homes are readable would be a second
+			// falsehood on top of the first.
+			d.cond = condUnreadable
+			for sec := range d.held {
+				d.held[sec] = true
+			}
 			d.problems = append(d.problems, Problem{"document", err.Error() +
 				" — nothing is being written until it can be read"})
 			return d
@@ -283,17 +328,19 @@ func read(accountsRoot string) *doc {
 		// No document yet: an empty store.
 		return d
 	}
+	d.cond = condDecoded
 	if err := json.Unmarshal(data, &d.raw); err != nil {
 		// The outer document is not JSON at all, so no section can be recovered
 		// from it — per-section tolerance only works while the envelope holds.
-		// The bytes are still moved aside rather than overwritten (commit does
-		// it), the ledger stays conservative until a claim rebuilds it, and
-		// `check` reports the whole thing.
+		// No reader takes any section of it as read (has). The bytes are kept
+		// aside before anything replaces them (commit does it), the ledger
+		// stays conservative until a claim rebuilds it, and `check` reports
+		// the whole thing.
 		d.raw = map[string]json.RawMessage{}
-		d.badAccounts = true
-		d.corruptDoc = true
+		d.cond = condNotJSON
+		d.held[secAccounts] = true
 		d.problems = append(d.problems, Problem{"document",
-			"not valid JSON — kept as state.json.unreadable; the ledger rebuilds conservatively"})
+			"not valid JSON — no section of it is read; the next write keeps it beside it as state.json.unreadable and the ledger rebuilds conservatively"})
 		return d
 	}
 
@@ -309,27 +356,27 @@ func read(accountsRoot string) *doc {
 		d.problems = append(d.problems, Problem{"version", "unreadable"})
 	}
 	if !decoded("accounts", &d.accounts) {
-		d.accounts, d.badAccounts = map[string]accountRec{}, true
+		d.accounts, d.held[secAccounts] = map[string]accountRec{}, true
 		d.problems = append(d.problems, Problem{"accounts", "unreadable — quarantined; the request ledger rebuilds conservatively"})
 	}
 	// Validated whole: a section that decodes *around* a hollow record would
 	// have check report it readable while routing silently ignores what it
 	// holds.
 	if !decoded("sessions", &d.sessions) || !validOwners(d.sessions) {
-		d.sessions, d.badSessions = map[string]sessions.OwnerRec{}, true
+		d.sessions, d.held[secSessions] = map[string]sessions.OwnerRec{}, true
 		d.problems = append(d.problems, Problem{"sessions", "unreadable — session re-homes are unavailable and will not be overwritten"})
 	}
 	if !decoded("placements", &d.placements) {
-		d.placements, d.badPlacements = placement.Ledger{}, true
+		d.placements, d.held[secPlacements] = placement.Ledger{}, true
 		d.problems = append(d.problems, Problem{"placements", "unreadable — set aside at the next launch; placement starts from an empty record"})
 	}
 	if !decoded("runs", &d.runs) || !validRuns(d.runs) {
-		d.runs, d.badRuns = nil, true
+		d.runs, d.held[secRuns] = nil, true
 		d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
 	}
 	d.adoptHomeless()
 	if !decoded("members", &d.members) {
-		d.members, d.badMembers = map[string]Member{}, true
+		d.members, d.held[secMembers] = map[string]Member{}, true
 		d.problems = append(d.problems, Problem{"members", "unreadable — set aside at the next request; every home registers again"})
 	}
 	for root, m := range d.members {
@@ -388,7 +435,7 @@ func (d *doc) register(m Member, now time.Time) {
 		// A home that cannot be located is no use to the others.
 		return
 	}
-	d.setAside("members", &d.badMembers)
+	d.setAside(secMembers)
 	for root, cur := range d.members {
 		if root != m.Root && cur.SeenAtMS < now.Add(-retention).UnixMilli() {
 			delete(d.members, root)
@@ -528,7 +575,7 @@ func (s Snapshot) Observation(k Key, now time.Time) (Observation, bool) {
 //
 // A deadline further out than the maximum cooldown is clamped (see deadline).
 func (s Snapshot) NextEligible(k Key, now time.Time) time.Time {
-	if s.d.badAccounts || s.d.readOnly() {
+	if !s.d.has(secAccounts) || s.d.readOnly() {
 		// Nothing here can be trusted to say an account is eligible, and
 		// guessing "eligible" is the guess that generates traffic.
 		return now.Add(ceiling(s.spacing))
@@ -579,11 +626,12 @@ func (s Snapshot) Placements() placement.Ledger { return s.d.placements.Clone() 
 // it still runs is the reader's to verify, by its pid and start instant.
 func (s Snapshot) Runs() []Run { return slices.Clone(s.d.runs) }
 
-// OwnersReadable reports whether the sessions section decoded. False means
-// routing falls back to derived evidence, which the resume picker says out
-// loud on open and `check` reports — rather than silently behaving as though
-// no session was ever re-homed.
-func (s Snapshot) OwnersReadable() bool { return !s.h.badSessions }
+// OwnersReadable reports whether this home's re-homes were read: its file
+// could be read whole and the sessions section decoded. False means routing
+// falls back to derived evidence, which the resume picker says out loud on
+// open and `check` reports — rather than silently behaving as though no
+// session was ever re-homed.
+func (s Snapshot) OwnersReadable() bool { return s.h.has(secSessions) }
 
 // AuditRecord is one ledger entry laid open for `check`. Nothing else reads
 // the store this way: the surfaces ask about one account at a time and get
@@ -642,21 +690,21 @@ func (d *doc) marshal() ([]byte, error) {
 	// is gone — emptied, where its rule says empty means absent — leaves the
 	// file. One that did not decode is not touched: its raw bytes above go
 	// back as they were read.
-	put := func(section string, bad, gone bool, val any) {
+	put := func(sec section, gone bool, val any) {
 		switch {
-		case bad || err != nil:
+		case d.held[sec] || err != nil:
 			// Carried raw, or the write has already failed.
 		case gone:
-			delete(out, section)
+			delete(out, sec.String())
 		default:
-			out[section], err = json.Marshal(val)
+			out[sec.String()], err = json.Marshal(val)
 		}
 	}
-	put("accounts", d.badAccounts, false, d.accounts)
-	put("sessions", d.badSessions, false, d.sessions)
-	put("members", d.badMembers, len(d.members) == 0, d.members)
-	put("runs", d.badRuns, len(d.runs) == 0, d.runs)
-	put("placements", d.badPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0, d.placements)
+	put(secAccounts, false, d.accounts)
+	put(secSessions, false, d.sessions)
+	put(secMembers, len(d.members) == 0, d.members)
+	put(secRuns, len(d.runs) == 0, d.runs)
+	put(secPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0 && len(d.placements.ByHome) == 0, d.placements)
 	if err != nil {
 		return nil, err
 	}
@@ -667,16 +715,17 @@ func (d *doc) marshal() ([]byte, error) {
 // move aside under a name nothing reads, and the document is marked for the
 // write that rebuilds the section from the empty value read left in its
 // place — so nothing that was there is destroyed. Only the disposable ledger's
-// sections are ever set aside; the re-homes are human decisions, never
-// written over. A section that decoded is left alone.
-func (d *doc) setAside(section string, bad *bool) {
-	if !*bad {
+// sections are ever set aside, each by the operation that knows what rebuilding
+// it owes; the re-homes are human decisions, never written over. A section
+// that decoded is left alone.
+func (d *doc) setAside(sec section) {
+	if !d.held[sec] {
 		return
 	}
-	if b, ok := d.raw[section]; ok {
-		d.raw[fmt.Sprintf("%s_unreadable", section)] = b
-		delete(d.raw, section)
+	if b, ok := d.raw[sec.String()]; ok {
+		d.raw[fmt.Sprintf("%s_unreadable", sec)] = b
+		delete(d.raw, sec.String())
 	}
-	*bad = false
+	d.held[sec] = false
 	d.dirty = true
 }

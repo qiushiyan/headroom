@@ -411,6 +411,66 @@ func TestAnOwnerNearALimitIsLeftAndTheMoveIsRecorded(t *testing.T) {
 	}
 }
 
+// What a launch says it left behind is what the store wrote. A session an
+// automatic launch moved has its re-home on disk before the vendor starts, so
+// an exec that then fails says the re-home stands; a launch that wrote none
+// says nothing of one; and a move whose record could not be written is said
+// before the vendor starts, since the session's next turn is then placed
+// afresh.
+func TestAFailedExecSaysWhatTheLaunchRecorded(t *testing.T) {
+	fixture := func(t *testing.T) autoFixture {
+		f := newAutoFixture(t, "full@x.com", "room@x.com")
+		f.observe("qiushi", 50, 50, time.Minute)
+		f.observe("full@x.com", 10, 91, time.Minute)
+		f.observe("room@x.com", 0, 5, time.Minute)
+		if err := rehome(f.st, sessA, "full@x.com", time.Now().Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	failing := func(f autoFixture, args ...string) ran {
+		rec := &execRecord{err: os.ErrPermission}
+		return call(func(std Streams) error { return Launch(std, f.cfg, launchOptions(t, args...), f.edges, rec.exec) })
+	}
+
+	t.Run("a moved session", func(t *testing.T) {
+		f := fixture(t)
+		got := failing(f, "--", "--resume", sessA)
+		if rec, _ := f.st.Load().Owner(sessA); rec.Account != "room@x.com" {
+			t.Fatalf("the move was not recorded: %+v", rec)
+		}
+		if got.code != 1 || !strings.Contains(got.stderr, "exec claude: permission denied; re-home remains recorded for room@x.com") {
+			t.Errorf("exit %d: %s", got.code, got.stderr)
+		}
+	})
+	t.Run("no session", func(t *testing.T) {
+		f := fixture(t)
+		if got := failing(f); got.code != 1 || strings.Contains(got.stderr, "re-home") {
+			t.Errorf("exit %d: %s", got.code, got.stderr)
+		}
+	})
+	t.Run("a move nothing recorded", func(t *testing.T) {
+		f := fixture(t)
+		statePath := filepath.Join(f.cfg.AccountsRoot, "state.json")
+		held, err := os.OpenFile(statePath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatal(err)
+		}
+		defer syscall.Flock(int(held.Fd()), syscall.LOCK_UN)
+		got := failing(f, "--", "--resume", sessA)
+		if !strings.Contains(got.stderr, "session moved from full@x.com") || !strings.Contains(got.stderr, "placement and session routing not recorded") {
+			t.Errorf("a move that was not recorded must say so: %s", got.stderr)
+		}
+		if strings.Contains(got.stderr, "re-home remains recorded") {
+			t.Errorf("a re-home that was never written was said to stand: %s", got.stderr)
+		}
+	})
+}
+
 // A verified live claim outranks every record: that account is driving the
 // session at this instant.
 func TestALiveClaimOutranksAReHome(t *testing.T) {
@@ -818,7 +878,7 @@ func rehome(st *state.Store, id, account string, at time.Time) error {
 	_, err := st.Place(state.Launch{
 		Candidates: []placement.Candidate{{Name: account, Ref: account, Key: "test:" + account}},
 		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
-		Session:    id, MustReHome: true, Now: at,
+		Session:    state.MoveSession(id, nil), Now: at,
 	})
 	return err
 }

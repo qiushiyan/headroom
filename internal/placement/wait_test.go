@@ -94,10 +94,10 @@ func TestAnAttachedPlacementCountsOnce(t *testing.T) {
 	if c := chosen(t, []Candidate{a}, ledger, Intent{}).Candidates[0]; c.Pending != 1 || c.Load != 1 {
 		t.Fatalf("placed: pending %d load %d", c.Pending, c.Load)
 	}
-	if _, ok := ledger.Attach("nope", 7); ok {
+	if _, ok := ledger.Attach("nope", 7, now); ok {
 		t.Error("attached an id nobody placed")
 	}
-	if p, ok := ledger.Attach("p1", 4242); !ok || p.Key != "uuid:a" || p.PID != 4242 {
+	if p, ok := ledger.Attach("p1", 4242, now); !ok || p.Key != "uuid:a" || p.PID != 4242 {
 		t.Fatalf("attach: %+v %v", p, ok)
 	}
 	a.Busy = []Proc{{PID: 4242, StartedMS: now.Add(-50 * time.Second).UnixMilli(), Home: "/h"}}

@@ -18,7 +18,7 @@ func rehome(st *state.Store, id, account string, at time.Time, live state.Enumer
 	_, err := st.Place(state.Launch{
 		Candidates: []placement.Candidate{{Name: account, Ref: account, Key: "uuid:" + account}},
 		Intent:     placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
-		Session:    id, MustReHome: true, Live: live, Now: at,
+		Session:    state.MoveSession(id, live), Now: at,
 	})
 	return err
 }

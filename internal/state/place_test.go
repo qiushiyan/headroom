@@ -15,7 +15,7 @@ import (
 
 // place is one ordinary launch: the positional spelling these tests read best in.
 func place(s *Store, cands []placement.Candidate, intent placement.Intent, pid int, session string, now time.Time) (Placed, error) {
-	return s.Place(Launch{Candidates: cands, Intent: intent, PID: pid, Session: session, Now: now})
+	return s.Place(Launch{Candidates: cands, Intent: intent, PID: pid, Session: RouteSession(session, nil), Now: now})
 }
 
 // rehome moves a session to an account the way the picker's override does: a
@@ -23,7 +23,7 @@ func place(s *Store, cands []placement.Candidate, intent placement.Intent, pid i
 func rehome(s *Store, id, account string, at time.Time, live Enumerator) error {
 	_, err := s.Place(Launch{
 		Candidates: idle(account), Intent: placement.Intent{Kind: placement.Forced, Account: account, Reason: "test"},
-		Session: id, MustReHome: true, Live: live, Now: at,
+		Session: MoveSession(id, live), Now: at,
 	})
 	return err
 }
@@ -55,8 +55,8 @@ func TestPlaceIsChooseAndRecord(t *testing.T) {
 			s := Open(rootScope(root))
 			<-start
 			p, err := place(s, cands, placement.Intent{}, 1000+i, "", now)
-			if err != nil || !p.Recorded {
-				t.Errorf("place %d: recorded=%v err=%v", i, p.Recorded, err)
+			if err != nil || !p.Recorded() {
+				t.Errorf("place %d: recorded=%v err=%v", i, p.Recorded(), err)
 			}
 			got[i] = p.Decision.Chosen
 		}(i)
@@ -113,8 +113,8 @@ func TestAChoiceWithNoRefIsNotRecorded(t *testing.T) {
 	root := t.TempDir()
 	s := Open(rootScope(root))
 	cands := []placement.Candidate{{Name: "a", Key: "uuid:a"}}
-	if p, err := place(s, cands, placement.Intent{}, 1000, "s1", time.Now()); err == nil || p.Recorded {
-		t.Fatalf("recorded=%v err=%v", p.Recorded, err)
+	if p, err := place(s, cands, placement.Intent{}, 1000, "s1", time.Now()); err == nil || p.Recorded() {
+		t.Fatalf("recorded=%v err=%v", p.Recorded(), err)
 	}
 	if _, ok := s.Load().Placements().Newest(root); ok {
 		t.Error("a choice with no ref was recorded as --last")
@@ -125,7 +125,7 @@ func TestPlaceForcedAndLast(t *testing.T) {
 	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	cands := idle("a", "b")
-	if p, err := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 1, "", now); err != nil || p.Decision.Chosen != "" || p.Recorded {
+	if p, err := place(s, cands, placement.Intent{Kind: placement.LastUsed}, 1, "", now); err != nil || p.Decision.Chosen != "" || p.Recorded() {
 		t.Fatalf("last with nothing recorded: %+v %v", p, err)
 	}
 	// Named on a, the account the rule would otherwise take first.
@@ -142,7 +142,7 @@ func TestPlaceForcedAndLast(t *testing.T) {
 	}
 	// A refused choice records nothing.
 	before := s.Load().Placements()
-	if p, _ := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "nobody"}, 5, "", now.Add(3*time.Second)); p.Recorded {
+	if p, _ := place(s, cands, placement.Intent{Kind: placement.Forced, Account: "nobody"}, 5, "", now.Add(3*time.Second)); p.Recorded() {
 		t.Fatal("a refusal was recorded")
 	}
 	if after := s.Load().Placements(); len(after.Recent) != len(before.Recent) {
@@ -173,8 +173,8 @@ func TestPlaceUnderAHeldLockStillChooses(t *testing.T) {
 
 	start := time.Now()
 	p, err := place(s, cands, placement.Intent{}, 2, "", now.Add(time.Second))
-	if err != ErrBusy || p.Recorded {
-		t.Fatalf("recorded=%v err=%v, want unrecorded and ErrBusy", p.Recorded, err)
+	if err != ErrBusy || p.Recorded() {
+		t.Fatalf("recorded=%v err=%v, want unrecorded and ErrBusy", p.Recorded(), err)
 	}
 	if p.Decision.Chosen != "b" {
 		t.Fatalf("chose %q: the unlocked read still shows the launch on a", p.Decision.Chosen)
@@ -201,7 +201,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 		t.Fatalf("problems = %+v", probs)
 	}
 	p, err := place(s, idle("a", "b"), placement.Intent{}, 1, "new-session", time.Now())
-	if err != nil || !p.Recorded || !p.ReHomed {
+	if err != nil || !p.Recorded() || !p.ReHomed() {
 		t.Fatalf("place over an unreadable placements section: %+v %v", p, err)
 	}
 	raw := readRaw(t, root)
@@ -228,7 +228,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	}
 	s = Open(rootScope(root))
 	p, err = place(s, idle("a"), placement.Intent{}, 1, "new-session", time.Now())
-	if err != nil || !p.Recorded || p.ReHomed || p.SessionErr != ErrCorrupt {
+	if err != nil || !p.Recorded() || p.ReHomed() || p.Route.Missed() != ErrCorrupt {
 		t.Fatalf("place beside an unreadable sessions section: %+v %v", p, err)
 	}
 	if got := compact(t, readRaw(t, root)["sessions"]); got != `{"s1":{"account":"","atMs":5}}` {
@@ -244,7 +244,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	}
 	s = Open(rootScope(root))
 	p, err = place(s, idle("a", "b"), placement.Intent{}, 1, "", time.Now())
-	if err != ErrReadOnly || p.Recorded || p.Decision.Chosen != "b" {
+	if err != ErrReadOnly || p.Recorded() || p.Decision.Chosen != "b" {
 		t.Fatalf("newer schema: %+v %v", p, err)
 	}
 	if after, _ := os.ReadFile(filepath.Join(root, "state.json")); string(after) != doc {
@@ -258,10 +258,51 @@ func TestPlaceFollowingTheOwnerWritesNoReHome(t *testing.T) {
 	s := Open(rootScope(t.TempDir()))
 	now := time.Now()
 	p, err := place(s, idle("a", "b"), placement.Intent{Owner: "b"}, 1, "sess", now)
-	if err != nil || p.Decision.Chosen != "b" || p.ReHomed {
+	if err != nil || p.Decision.Chosen != "b" || p.ReHomed() {
 		t.Fatalf("%+v %v", p, err)
 	}
 	if _, ok := s.Load().Owner("sess"); ok {
 		t.Fatal("following the owner recorded a re-home")
+	}
+}
+
+// A move names its session. One that names none is a caller's mistake, and is
+// refused before anything is decided or written: recorded, it would count as
+// load for a launch that cannot be what it says.
+func TestAMoveOfNoSessionIsRefusedUnwritten(t *testing.T) {
+	root := t.TempDir()
+	s := Open(rootScope(root))
+	p, err := s.Place(Launch{Candidates: idle("a", "b"), PID: 1, Now: time.Now(), Session: MoveSession("", nil)})
+	if err == nil || p.Recorded() || p.ReHomed() {
+		t.Fatalf("placed %+v, %v", p, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "state.json")); !os.IsNotExist(err) {
+		t.Errorf("the refusal wrote the document (%v)", err)
+	}
+}
+
+// A launch that could record nothing says which of its two writes it owed: its
+// load always, and its session's re-home when it put the session somewhere
+// other than its owner.
+func TestAnUnrecordedLaunchSaysWhatItOwed(t *testing.T) {
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":999}`)
+	s := Open(rootScope(root))
+	owed := func(session, owner string) Placed {
+		p, err := s.Place(Launch{Candidates: idle("a", "b"), Intent: placement.Intent{Owner: owner}, PID: 1, Now: time.Now(), Session: RouteSession(session, nil)})
+		if err != ErrReadOnly {
+			t.Fatalf("err = %v", err)
+		}
+		return p
+	}
+	if p := owed("", ""); p.Load.Missed() != ErrReadOnly || p.Route.Missed() != nil {
+		t.Errorf("no session: %+v", p)
+	}
+	if p := owed("s1", ""); p.Load.Missed() != ErrReadOnly || p.Route.Missed() != ErrReadOnly {
+		t.Errorf("a session with no owner to follow: %+v", p)
+	}
+	chosen := owed("", "").Decision.Chosen
+	if p := owed("s1", chosen); p.Decision.Chosen != chosen || p.Route.Missed() != nil {
+		t.Errorf("a session that stayed on its owner owed no re-home: %+v", p)
 	}
 }

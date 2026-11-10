@@ -14,7 +14,6 @@
 package launchop
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -212,18 +211,19 @@ func (p *Plan) Commit() (*Launch, error) {
 		return nil, err
 	}
 	cands := f.rule()
-	l := state.Launch{
-		Candidates: cands, Intent: req.Intent, PID: os.Getpid(), Now: req.Now,
-		Session: p.session.Record, MustReHome: p.mustReHome, Gone: f.gone,
-	}
-	if p.session.Record != "" {
-		l.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
+	l := state.Launch{Candidates: cands, Intent: req.Intent, PID: os.Getpid(), Now: req.Now, Gone: f.gone}
+	live := func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
+	switch {
+	case p.mustReHome:
+		l.Session = state.MoveSession(p.session.Record, live)
+	case p.session.Record != "":
+		l.Session = state.RouteSession(p.session.Record, live)
 	}
 	placed, placeErr := req.Store.Place(l)
 	if p.mustReHome && placeErr != nil {
 		return nil, fmt.Errorf("re-home not recorded (%v) — enter resumes without it", placeErr)
 	}
-	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, home: f.home, labels: f.labels}
+	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, rehomed: placed.ReHomed(), home: f.home, labels: f.labels}
 	if out.decision.Chosen == "" {
 		return nil, errors.New(out.decision.Refusal)
 	}
@@ -232,17 +232,21 @@ func (p *Plan) Commit() (*Launch, error) {
 	chosen, _ := f.find(out.decision.Chosen)
 	out.prepared, out.account = chosen.prepared, chosen.acct
 
-	// RecordErr: the re-home this launch depended on is written, and the
-	// shared ledger's write failed after it.
-	missed := cmp.Or(placeErr, placed.RecordErr)
-	if missed != nil {
+	// What did not reach disk is said as what the launch owed and missed, read
+	// from the store's own answer: a launch that owed its session a re-home
+	// and wrote none says so whatever the reason, since its next turn is then
+	// placed afresh.
+	missed, unrouted := placed.Load.Missed(), placed.Route.Missed()
+	switch {
+	case missed != nil && unrouted != nil:
+		out.notes = append(out.notes, fmt.Sprintf("placement and session routing not recorded (%v) — the next launch will not count this one, and this session's next turn is placed afresh", missed))
+	case missed != nil:
 		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", missed))
-	}
-	if placed.SessionErr != nil {
-		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
+	case unrouted != nil:
+		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", unrouted))
 	}
 	rec := f.record(out.decision, placed.Ledger, req.Intent, req.Now)
-	rec.PID, rec.CWD, rec.Mode, rec.Recorded = os.Getpid(), req.CWD, req.Mode, placed.Recorded
+	rec.PID, rec.CWD, rec.Mode, rec.Recorded = os.Getpid(), req.CWD, req.Mode, placed.Recorded()
 	rec.Session = p.session.Route
 	if missed != nil {
 		rec.Problem = missed.Error()
@@ -266,6 +270,7 @@ type Launch struct {
 	decision placement.Decision
 	account  accounts.Account
 	prepared launch.Prepared
+	rehomed  bool // the session's re-home is on disk
 
 	// notes are the bookkeeping that did not happen, worded for the person:
 	// the launch proceeds regardless, and says so.
@@ -283,6 +288,19 @@ func (l *Launch) Account() accounts.Account { return l.account }
 // Prepared is the vendor process the launch runs: its resolved path, argv[0]
 // and environment, built from the decision alone.
 func (l *Launch) Prepared() launch.Prepared { return l.prepared }
+
+// Stands is what the launch left on disk that outlives a vendor that could
+// not be started, as a clause for the surface's error: "" when nothing a
+// person must know of does, else "; re-home remains recorded for <account>".
+// Read from what the store wrote, never from what the launch meant to do: a
+// session moved because its owner is kept for other work leaves a re-home as
+// the picker's override does.
+func (l *Launch) Stands() string {
+	if !l.rehomed {
+		return ""
+	}
+	return "; re-home remains recorded for " + l.account.Name
+}
 
 // Announce says, before the vendor starts, where the launch is going and why,
 // and what bookkeeping was missed on the way. Every launch says it, whichever

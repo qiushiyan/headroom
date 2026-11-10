@@ -321,6 +321,88 @@ func TestUnreadableDocumentIsKept(t *testing.T) {
 	readRaw(t, root) // the replacement is a valid document
 }
 
+// A file that is not JSON gives a reader no section at all: the re-homes in it
+// are not "none recorded", and the picker and check must be able to say so.
+// The write that recovers it — any write, a launch that must re-home included,
+// since the whole file is kept aside and not written over — starts afresh.
+func TestADocumentThatIsNotJSONHasNoReadableSection(t *testing.T) {
+	root := t.TempDir()
+	const broken = `{"sessions": {"old": {"account":"a","at_ms": 1}}, broken`
+	writeDoc(t, root, broken)
+	s := Open(rootScope(root))
+	snap := s.Load()
+	if snap.OwnersReadable() {
+		t.Error("re-homes nobody could read were reported readable")
+	}
+	for sec := section(0); sec < nSections; sec++ {
+		if snap.d.has(sec) {
+			t.Errorf("%s reads as held by a file that is not JSON", sec)
+		}
+	}
+
+	p, err := s.Place(Launch{Candidates: idle("a", "b"), PID: 1, Now: time.Now(), Session: MoveSession("new", nil)})
+	if err != nil || !p.ReHomed() {
+		t.Fatalf("a move over a file that is not JSON: %+v, %v", p, err)
+	}
+	kept, err := os.ReadFile(filepath.Join(root, "state.json.unreadable"))
+	if err != nil || string(kept) != broken {
+		t.Errorf("the bytes were not kept aside: %q, %v", kept, err)
+	}
+	if after := s.Load(); !after.OwnersReadable() || len(after.Owners()) != 1 {
+		t.Errorf("the fresh document: readable %v, owners %v", after.OwnersReadable(), after.Owners())
+	}
+}
+
+// A file kept aside earlier is never written over by the next one, and a file
+// that cannot be kept is not replaced.
+func TestKeepingAFileAsideWritesOverNothing(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "state.json.unreadable"), "the first one kept")
+	writeDoc(t, root, `{ the second`)
+	s := Open(rootScope(root))
+	if _, err := s.Claim([]Key{key("a")}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "state.json.unreadable")); string(b) != "the first one kept" {
+		t.Errorf("the earlier file was written over: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "state.json.unreadable.2")); string(b) != `{ the second` {
+		t.Errorf("the second file was not kept: %q", b)
+	}
+
+	// Nowhere to keep it: the directory takes no new name. The claim then
+	// denies, and the bytes stay where they were.
+	root = t.TempDir()
+	writeDoc(t, root, `{ nowhere to go`)
+	write(t, filepath.Join(root, "state.json.lock"), "")
+	if err := os.Chmod(root, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(root, 0o700) })
+	out, err := Open(rootScope(root)).Claim([]Key{key("a")}, time.Now())
+	if err == nil || out[0].Permit {
+		t.Errorf("a claim over a file that could not be kept: %+v, %v", out, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "state.json")); string(b) != `{ nowhere to go` {
+		t.Errorf("the file was replaced without being kept: %q", b)
+	}
+}
+
+// A file that could not be read gives no section either, and every one of
+// them is held from a write — which writable refuses anyway.
+func TestAFileThatCannotBeReadHoldsEverySection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "state.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snap := Open(rootScope(root)).Load()
+	for sec := section(0); sec < nSections; sec++ {
+		if snap.d.has(sec) || !snap.d.held[sec] {
+			t.Errorf("%s: has %v, held %v", sec, snap.d.has(sec), snap.d.held[sec])
+		}
+	}
+}
+
 // An older binary must never rewrite a newer schema: it would silently
 // truncate everything it did not understand.
 func TestNewerSchemaIsReadOnly(t *testing.T) {

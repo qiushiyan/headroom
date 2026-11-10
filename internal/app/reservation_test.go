@@ -262,3 +262,25 @@ func TestAResumeLeavesAHeldOwnerOutsideItsRepositories(t *testing.T) {
 		t.Errorf("the picker's move logged as %q", last.Reason)
 	}
 }
+
+// Enter re-homes too when the session's owner is kept for other work, and an
+// exec that then fails says the re-home stands — read from what the launch
+// wrote, since the key pressed was not the override.
+func TestAFailedResumeOffAHeldOwnerSaysItsReHomeStands(t *testing.T) {
+	f, _, _, outside := reservedFixture(t)
+	ui, _, _ := f.picker(accounts.Discover(f.cfg))
+	ui.listing.Sessions = []*sessions.Session{{ID: sessB, CWD: outside, DirOK: true, Owner: "held@x.com", OwnerState: sessions.OwnerHistory}}
+	ui.rows = ui.listing.Sessions
+	keepWorkingDir(t)
+	ui.exec = (&execRecord{err: os.ErrPermission}).exec
+	if done, code := ui.commitResume(false); !done || code != 1 {
+		t.Fatalf("commit: %v %d %s", done, code, ui.message)
+	}
+	rec, ok := f.st.Load().Owner(sessB)
+	if !ok || rec.Account == "held@x.com" {
+		t.Fatalf("the move was not recorded: %+v", rec)
+	}
+	if said := ui.failed.Error(); !strings.Contains(said, "re-home remains recorded for "+rec.Account) {
+		t.Errorf("the error does not say the re-home stands: %s", said)
+	}
+}

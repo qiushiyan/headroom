@@ -121,7 +121,7 @@ func Launch(std Streams, scope config.Scope, opts LaunchOptions, place launchop.
 	out.Announce(std.Err, "headroom launch: ")
 	p := out.Prepared()
 	if err := exec(p.Path, p.Binary, opts.Args, p.Env); err != nil {
-		return fmt.Errorf("exec %s: %v", p.Binary, err)
+		return fmt.Errorf("exec %s: %v%s", p.Binary, err, out.Stands())
 	}
 	return nil
 }

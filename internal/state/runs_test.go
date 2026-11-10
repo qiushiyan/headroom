@@ -15,8 +15,8 @@ import (
 func placeHeadless(t *testing.T, s *Store, id string, cands []placement.Candidate, now time.Time) Placed {
 	t.Helper()
 	p, err := s.Place(Launch{Candidates: cands, Intent: placement.Intent{CanWait: true}, ID: id, Now: now})
-	if err != nil || !p.Recorded {
-		t.Fatalf("place %s: recorded=%v err=%v", id, p.Recorded, err)
+	if err != nil || !p.Recorded() {
+		t.Fatalf("place %s: recorded=%v err=%v", id, p.Recorded(), err)
 	}
 	return p
 }
@@ -54,6 +54,36 @@ func TestAStartedSessionIsAttachedToItsPlacement(t *testing.T) {
 
 	if _, err := s.Started("nobody", 1, started.UnixMilli(), nil, now); !errors.Is(err, ErrNotPlaced) {
 		t.Fatalf("an unknown placement: %v", err)
+	}
+}
+
+// A placement has one lifetime. Past it, `started` finds no placement whether
+// or not a later launch has pruned the record: the answer must not turn on
+// what else happened to run in between.
+func TestAStartedSessionFindsNoPlacementPastItsSpan(t *testing.T) {
+	for _, pruned := range []bool{false, true} {
+		s := Open(rootScope(t.TempDir()))
+		now := time.Now()
+		placeHeadless(t, s, "p1", idle("a", "b"), now)
+		late := now.Add(placement.PendingFor + time.Millisecond)
+		if pruned {
+			if _, err := place(s, idle("a", "b"), placement.Intent{}, 77, "", late.Add(-time.Microsecond)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.Started("p1", 4242, late.UnixMilli(), nil, late); !errors.Is(err, ErrNotPlaced) {
+			t.Errorf("pruned in between %v: started past the span answered %v", pruned, err)
+		}
+		if runs := s.Load().Runs(); len(runs) != 0 {
+			t.Errorf("pruned in between %v: a run was recorded on an expired placement: %+v", pruned, runs)
+		}
+	}
+	// On the last millisecond of its span it is still there.
+	s := Open(rootScope(t.TempDir()))
+	now := time.Now()
+	placeHeadless(t, s, "p1", idle("a", "b"), now)
+	if _, err := s.Started("p1", 4242, now.UnixMilli(), nil, now.Add(placement.PendingFor)); err != nil {
+		t.Errorf("at the end of its span: %v", err)
 	}
 }
 

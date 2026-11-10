@@ -72,7 +72,7 @@ func TestALaunchsLoadIsSharedAndItsReHomeIsNot(t *testing.T) {
 	const sid = "aaaaaaaa-1111-4111-8111-111111111111"
 
 	p, err := place(h.second, idle("a", "b"), placement.Intent{}, 42, sid, now)
-	if err != nil || !p.Recorded || !p.ReHomed {
+	if err != nil || !p.Recorded() || !p.ReHomed() {
 		t.Fatalf("second home's launch: %+v %v", p, err)
 	}
 	led := h.owner.Load().Placements()
@@ -130,7 +130,7 @@ func TestEachHomeSweepsOnlyItsOwnReHomes(t *testing.T) {
 	none := func() (map[string]bool, bool) { return map[string]bool{}, true }
 
 	// The second home's launch sweeps against its own (empty) store.
-	if _, err := h.second.Place(Launch{Candidates: idle("a"), Session: fresh, Live: none, Now: time.Now()}); err != nil {
+	if _, err := h.second.Place(Launch{Candidates: idle("a"), Session: RouteSession(fresh, none), Now: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := h.owner.Load().Owner(ownerSession); !ok {
@@ -144,7 +144,7 @@ func TestEachHomeSweepsOnlyItsOwnReHomes(t *testing.T) {
 	if err := rehome(h.second, secondSession, "a", old, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.owner.Place(Launch{Candidates: idle("a"), Session: fresh, Live: none, Now: time.Now()}); err != nil {
+	if _, err := h.owner.Place(Launch{Candidates: idle("a"), Session: RouteSession(fresh, none), Now: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := h.second.Load().Owner(secondSession); !ok {
@@ -162,7 +162,7 @@ func TestARefusedMoveLeavesTheLedgerUntouched(t *testing.T) {
 	write(t, filepath.Join(h.secondRoot, "state.json"), `{"version":1,"sessions":{"x":{}}}`)
 	_, err := h.second.Place(Launch{
 		Candidates: idle("a"), Intent: placement.Intent{Kind: placement.Forced, Account: "a", Reason: "test"},
-		Session: "44444444-4444-4444-8444-444444444444", MustReHome: true, Now: time.Now(),
+		Session: MoveSession("44444444-4444-4444-8444-444444444444", nil), Now: time.Now(),
 	})
 	if err == nil {
 		t.Fatal("a move whose re-home cannot be written was not refused")
@@ -174,7 +174,7 @@ func TestARefusedMoveLeavesTheLedgerUntouched(t *testing.T) {
 	// An ordinary launch from that home still records its load, and says
 	// its routing was not written.
 	p, err := place(h.second, idle("a"), placement.Intent{}, 7, "55555555-5555-4555-8555-555555555555", time.Now())
-	if err != nil || !p.Recorded || p.ReHomed || p.SessionErr == nil {
+	if err != nil || !p.Recorded() || p.ReHomed() || p.Route.Missed() == nil {
 		t.Errorf("ordinary launch: %+v %v", p, err)
 	}
 }
@@ -273,8 +273,8 @@ func TestLaunchesFromTwoHomesAllLand(t *testing.T) {
 				s = h.second
 				sid = "66666666-6666-4666-8666-6666666666" + itoa(int64(10+i))
 			}
-			if p, err := place(s, idle("a", "b", "c"), placement.Intent{}, 100+i, sid, now); err != nil || !p.Recorded {
-				t.Errorf("launch %d: %+v %v", i, p.Recorded, err)
+			if p, err := place(s, idle("a", "b", "c"), placement.Intent{}, 100+i, sid, now); err != nil || !p.Recorded() {
+				t.Errorf("launch %d: %+v %v", i, p.Recorded(), err)
 			}
 		}(i)
 	}
@@ -328,7 +328,7 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		}
 		readOnly(t, h.secondRoot)
 		p, err := place(h.second, idle("a"), placement.Intent{}, 9, sid, time.Now())
-		if err != nil || !p.Recorded || p.ReHomed || p.SessionErr == nil || p.RecordErr != nil {
+		if err != nil || !p.Recorded() || p.ReHomed() || p.Route.Missed() == nil || p.Load.Missed() != nil {
 			t.Fatalf("placed %+v, %v — want the load recorded and the routing reported missing", p, err)
 		}
 		if len(h.owner.Load().Placements().Recent) != 1 {
@@ -352,9 +352,9 @@ func TestAPairWhoseSecondWriteFailsSaysWhichHalfLanded(t *testing.T) {
 		readOnly(t, h.ownerRoot)
 		p, err := h.second.Place(Launch{
 			Candidates: idle("a"), Intent: placement.Intent{Kind: placement.Forced, Account: "a", Reason: "test"},
-			Session: sid, MustReHome: true, Now: time.Now(),
+			Session: MoveSession(sid, nil), Now: time.Now(),
 		})
-		if err != nil || p.Recorded || !p.ReHomed || p.RecordErr == nil {
+		if err != nil || p.Recorded() || !p.ReHomed() || p.Load.Missed() == nil {
 			t.Fatalf("placed %+v, %v — want the move routed and its load reported missing", p, err)
 		}
 		if rec, ok := h.second.Load().Owner(sid); !ok || rec.Account != "a" {

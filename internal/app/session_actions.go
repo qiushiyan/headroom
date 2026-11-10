@@ -64,10 +64,9 @@ func (actions *sessionActions) resume(s *sessions.Session, override bool) (bool,
 
 	actions.beforeLaunch()
 	out.Announce(actions.errw, "headroom sessions: ")
-	recorded := ""
-	if override {
-		recorded = "; re-home remains recorded for " + out.Account().Name
-	}
+	// What the launch wrote, not what the key meant: enter re-homes too when
+	// the session's owner is kept for other work.
+	recorded := out.Stands()
 	if err := os.Chdir(s.CWD); err != nil {
 		return true, fmt.Errorf("cd %s: %v%s", s.CWD, err, recorded)
 	}
