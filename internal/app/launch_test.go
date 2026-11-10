@@ -77,6 +77,29 @@ func TestALaunchNamesExactlyItsAccount(t *testing.T) {
 	}
 }
 
+// A launch from a shell inside another Claude Code session — a tmux pane whose
+// server that session started, an agent's own shell — starts a session of its
+// own: the marks the ancestor left are gone from the child, so it keeps a
+// transcript and a registry entry and sends its own label, and the launch says
+// nothing about them, since every shell inside a session carries them.
+func TestALaunchInsideASessionStartsItsOwn(t *testing.T) {
+	cfg := launchConfig(t)
+	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+	got := launchOn(t, cfg, quietPlace(), "--account", "yan@planlab.ai")
+	if got.code != 0 || !got.called {
+		t.Fatalf("exit %d, exec called %v: %s", got.code, got.called, got.stderr)
+	}
+	for _, name := range []string{"CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT"} {
+		if v, ok := envValue(got.env, name); ok {
+			t.Errorf("%s=%s reached the child", name, v)
+		}
+	}
+	if strings.Contains(got.stderr, "CLAUDE_CODE_") {
+		t.Errorf("the launch reported a session marker:\n%s", got.stderr)
+	}
+}
+
 // A launch that cannot run refuses before it writes anything: before the
 // placement the store would record, and before exec. Each row
 // breaks one thing preparation checks; a dry run refuses it the same way, on

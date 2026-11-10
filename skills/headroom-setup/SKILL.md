@@ -132,7 +132,8 @@ running.
 and refuses) — refuses while that account has a live session or an
 unmigrated `projects/`, asks `y/N` (`--yes` in scripts), deletes the
 account's own Keychain item and dir, scrubs `.order` and its reservation.
-Transcripts survive.
+Transcripts survive. Exit 1 after `removed <dir>` means a cleanup was left:
+the error names it and the command that clears it.
 Done when `headroom` no longer lists the account. The same command clears
 stranded
 `<name>.lock` debris.

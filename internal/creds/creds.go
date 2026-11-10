@@ -218,27 +218,84 @@ const (
 	SourceFile
 )
 
-// ReadRaw resolves the credential for an account. keychainKey is ConfigDir
+// Reading is one read of an account's stored login: the blob, and where it
+// came from. A read that came back empty, or from the file, has not said
+// where the login sessions use is kept: Access answers that, with what the
+// Keychain says of the account's item.
+type Reading struct {
+	Raw    string
+	Source Source
+	// FileErr is why a .credentials.json that is there could not be read;
+	// nil when it was read, or when there is none.
+	FileErr error
+}
+
+// Read resolves the credential for an account. keychainKey is ConfigDir
 // (empty for the primary); dir is the real directory, including for the
 // primary. A present Keychain item takes precedence over the file.
 //
 // The Keychain read is a `security` process, which can stall where the
 // Keychain does, and is killed when ctx ends. A cancelled read reads nothing —
 // not even the file a killed Keychain read would otherwise fall through to.
-func ReadRaw(ctx context.Context, keychainKey, dir string) (string, Source) {
+func Read(ctx context.Context, keychainKey, dir string) Reading {
 	if ctx.Err() != nil {
-		return "", SourceNone
+		return Reading{}
 	}
-	raw, source := "", SourceNone
+	var r Reading
 	if blob := readKeychain(ctx, keychainKey); blob != "" {
-		raw, source = blob, SourceKeychain
+		r.Raw, r.Source = blob, SourceKeychain
 	} else if data, err := os.ReadFile(filepath.Join(dir, ".credentials.json")); err == nil {
-		raw, source = string(data), SourceFile
+		r.Raw, r.Source = string(data), SourceFile
+	} else if !errors.Is(err, os.ErrNotExist) {
+		r.FileErr = err
 	}
 	if ctx.Err() != nil {
-		return "", SourceNone
+		return Reading{}
 	}
-	return raw, source
+	return r
+}
+
+// ReadRaw is Read for a caller that asks only for the blob and its source.
+func ReadRaw(ctx context.Context, keychainKey, dir string) (string, Source) {
+	r := Read(ctx, keychainKey, dir)
+	return r.Raw, r.Source
+}
+
+// Access says how a read stands to the login every session of the account
+// uses. It is the one rule the board, `check` and `login` share; what each
+// does about an answer is its own.
+type Access int
+
+const (
+	// Served: this read is that login, or its absence. It came from the
+	// Keychain, or the account has no Keychain item and the file store is
+	// where its sessions read too.
+	Served Access = iota
+	// Withheld: the account's login is a Keychain item, and this read did not
+	// come from it — the Keychain is sealed (an ssh session) or locked. What
+	// was read, a file's login or nothing, is not what a session that can
+	// read the Keychain uses, so it says nothing about the account.
+	Withheld
+	// Unplaced: nothing established where the login is kept — `security`
+	// could not say whether the item exists, or the credential file is there
+	// and could not be read. Never read as absence.
+	Unplaced
+)
+
+// Access judges the read against what the Keychain says of the account's
+// item (KeychainItem). said is why an Unplaced read is so, "" otherwise.
+func (r Reading) Access(item Item, itemSaid string) (access Access, said string) {
+	switch {
+	case r.Source == SourceKeychain:
+		return Served, ""
+	case item == ItemPresent:
+		return Withheld, ""
+	case item == ItemUnknown:
+		return Unplaced, itemSaid
+	case r.Source == SourceNone && r.FileErr != nil:
+		return Unplaced, r.FileErr.Error()
+	}
+	return Served, ""
 }
 
 func username() string {

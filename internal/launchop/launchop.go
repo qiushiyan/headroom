@@ -175,7 +175,7 @@ func (p *Plan) Commit() (*Launch, error) {
 		l.Live = func() (map[string]bool, bool) { return sessions.TranscriptIDs(scope.StoreDir()) }
 	}
 	placed, placeErr := req.Store.Place(l)
-	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision}
+	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, rehomed: placed.Route.Written()}
 	if out.decision.Chosen == "" {
 		return nil, errors.New(out.decision.Refusal)
 	}
@@ -184,12 +184,18 @@ func (p *Plan) Commit() (*Launch, error) {
 	chosen, _ := f.find(out.decision.Chosen)
 	out.prepared, out.account = chosen.prepared, chosen.acct
 
-	missed := placeErr
-	if missed != nil {
+	// What did not reach disk is said as what the launch owed and missed, read
+	// from the store's own answer: a launch that owed its session a re-home
+	// and wrote none says so whatever the reason, since its next turn is then
+	// placed afresh.
+	missed, unrouted := placeErr, placed.Route.Missed()
+	switch {
+	case missed != nil && unrouted != nil:
+		out.notes = append(out.notes, fmt.Sprintf("placement and session routing not recorded (%v) — the next launch will not count this one, and this session's next turn is placed afresh", missed))
+	case missed != nil:
 		out.notes = append(out.notes, fmt.Sprintf("placement not recorded (%v) — the next launch will not count this one", missed))
-	}
-	if placed.SessionErr != nil {
-		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", placed.SessionErr))
+	case unrouted != nil:
+		out.notes = append(out.notes, fmt.Sprintf("session routing not recorded (%v) — run headroom check", unrouted))
 	}
 	line := logLine{
 		Vendor: string(scope.Vendor), Mode: modeOf(req.Intent), Reason: out.decision.Reason, Chosen: out.decision.Chosen,
@@ -220,6 +226,7 @@ type Launch struct {
 	decision placement.Decision
 	account  accounts.Account
 	prepared launch.Prepared
+	rehomed  bool // the session's re-home is on disk
 
 	// notes are the bookkeeping that did not happen, worded for the person:
 	// the launch proceeds regardless, and says so.
@@ -229,6 +236,17 @@ type Launch struct {
 // Prepared is the vendor process the launch runs: its resolved path, argv[0]
 // and environment, built from the decision alone.
 func (l *Launch) Prepared() launch.Prepared { return l.prepared }
+
+// Stands is what the launch left on disk that outlives a vendor that could
+// not be started, as a clause for the surface's error: "" when nothing a
+// person must know of does, else "; re-home remains recorded for <account>".
+// Read from what the store wrote, never from what the launch meant to do.
+func (l *Launch) Stands() string {
+	if !l.rehomed {
+		return ""
+	}
+	return "; re-home remains recorded for " + l.account.Name
+}
 
 // Announce says, before the vendor starts, where the launch is going and why,
 // and what bookkeeping was missed on the way. Every launch says it, whichever

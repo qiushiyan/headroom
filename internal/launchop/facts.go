@@ -378,7 +378,10 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 		}
 		limits = append(limits, placement.Limit{
 			Kind: r.Kind, Label: r.Label, Percent: r.Percent,
-			Bad: r.PercentState == tag.Bad, ResetAt: r.ResetAt, Window: r.WindowSeconds,
+			// A figure the rule cannot bound is no room: a percent that did
+			// not parse, and one of two rows claiming the same limit, since
+			// nothing says which of them is the limit.
+			Bad: r.PercentState == tag.Bad || r.Shared, ResetAt: r.ResetAt, Window: r.WindowSeconds,
 			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
 		})
 	}

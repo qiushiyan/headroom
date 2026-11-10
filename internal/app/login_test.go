@@ -123,24 +123,24 @@ func (w *loginWorld) deps() loginDeps {
 
 // readCred is what creds.ReadRaw finds: the Keychain item while the Keychain
 // answers, else the dir's file.
-func (w *loginWorld) readCred(a accounts.Account) (string, creds.Source) {
+func (w *loginWorld) readCred(a accounts.Account) creds.Reading {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.keychain[a.Name] {
 		if !w.sealed && !w.locked {
 			if raw, ok := w.raw[a.Name]; ok {
-				return raw, creds.SourceKeychain
+				return creds.Reading{Raw: raw, Source: creds.SourceKeychain}
 			}
 		}
 		if raw, ok := w.stray[a.Name]; ok {
-			return raw, creds.SourceFile
+			return creds.Reading{Raw: raw, Source: creds.SourceFile}
 		}
-		return "", creds.SourceNone
+		return creds.Reading{}
 	}
 	if raw, ok := w.raw[a.Name]; ok {
-		return raw, creds.SourceFile
+		return creds.Reading{Raw: raw, Source: creds.SourceFile}
 	}
-	return "", creds.SourceNone
+	return creds.Reading{}
 }
 
 // set changes the world under its lock.

@@ -60,9 +60,20 @@ type picker struct {
 	fp      *framePrinter
 	layout  render.Layout
 	lastKey time.Time // presence
+
+	// now is the board's clock, the one its pages read too; nil is the wall
+	// clock.
+	now func() time.Time
 }
 
 func (ui *picker) page() *page { return ui.pages[ui.visible] }
+
+func (ui *picker) clock() time.Time {
+	if ui.now != nil {
+		return ui.now()
+	}
+	return time.Now()
+}
 
 func runPicker(std Streams, term Terminal, scopes []config.Scope, layout render.Layout, deps BoardDeps) error {
 	t, err := tui.Open()
@@ -119,16 +130,13 @@ func (ui *picker) step(ctx context.Context, tick <-chan time.Time, keys <-chan t
 	}
 	select {
 	case u, open := <-ui.pages[0].updates:
-		ui.pages[0].receive(u, open, time.Now())
+		ui.pages[0].receive(u, open)
 	case u, open := <-second:
-		ui.pages[1].receive(u, open, time.Now())
+		ui.pages[1].receive(u, open)
 	case <-tick:
-		if pg := ui.page(); pg.due(ui.lastKey) {
-			// A round due because it was armed is still the user's ask.
-			pg.startRound(ctx, pg.armed)
-		}
+		ui.page().tick(ctx, ui.lastKey)
 	case k := <-keys:
-		ui.lastKey = time.Now()
+		ui.lastKey = ui.clock()
 		pg := ui.page()
 		switch {
 		case k.Kind == tui.KeyUp || k == tui.Key{Kind: tui.KeyRune, Rune: 'k'}:
@@ -159,7 +167,7 @@ func (ui *picker) show(ctx context.Context, i int) {
 }
 
 func (ui *picker) draw() {
-	now := time.Now()
+	now := ui.clock()
 	pg := ui.page()
 	pg.markAt(now)
 	// One geometry reading builds and prints the frame: a resize landing
@@ -240,21 +248,8 @@ func (ui *picker) tabBar() string {
 func (ui *picker) status(now time.Time, scrolls bool) string {
 	pg := ui.page()
 	var parts []string
-	switch {
-	case pg.updates != nil && pg.armed:
-		parts = append(parts, "refreshing… · queued")
-	case pg.updates != nil:
-		parts = append(parts, "refreshing…")
-	case pg.armed:
-		parts = append(parts, "queued · refresh in "+until(pg.lastLocal.Add(refreshFloor), now))
-	case pg.ack != "" && now.Before(pg.ackUntil):
-		parts = append(parts, pg.ack)
-	case pg.nextAt.IsZero():
-		// no round has completed yet
-	case time.Since(ui.lastKey) >= presenceWindow:
-		parts = append(parts, "paused — r to refresh")
-	default:
-		parts = append(parts, "next refresh in "+until(pg.nextAt, now))
+	if s := pg.refreshStatus(ui.lastKey); s != "" {
+		parts = append(parts, s)
 	}
 	if pg.scope.PrimaryLaunchRefused() {
 		// launch refuses the primary under a relocated home (the board is

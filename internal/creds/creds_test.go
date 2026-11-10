@@ -2,6 +2,7 @@ package creds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -306,5 +307,52 @@ func TestDeleteKeychainItem(t *testing.T) {
 		if deleted != c.deleted || (err != nil) != c.err {
 			t.Errorf("%s: deleted %v, err %v", c.name, deleted, err)
 		}
+	}
+}
+
+// One rule says how a read stands to the login an account's sessions use, for
+// the board, check and login alike. A read from the Keychain is that login
+// whatever else is said; otherwise an item that exists means the login was
+// withheld, and an item nobody could answer for — or a file that is there and
+// unreadable — means nobody knows. Only an account with no item is judged on
+// what the file gave.
+func TestAccess(t *testing.T) {
+	denied := errors.New("permission denied")
+	for _, c := range []struct {
+		name string
+		read Reading
+		item Item
+		want Access
+		said string
+	}{
+		{"read from the Keychain", Reading{Raw: "x", Source: SourceKeychain}, ItemPresent, Served, ""},
+		{"read from the Keychain, item unanswered", Reading{Raw: "x", Source: SourceKeychain}, ItemUnknown, Served, ""},
+		{"nothing read, no item", Reading{}, ItemAbsent, Served, ""},
+		{"a file, no item", Reading{Raw: "x", Source: SourceFile}, ItemAbsent, Served, ""},
+		{"nothing read, an item", Reading{}, ItemPresent, Withheld, ""},
+		{"a file beside an item", Reading{Raw: "x", Source: SourceFile}, ItemPresent, Withheld, ""},
+		{"nothing read, item unanswered", Reading{}, ItemUnknown, Unplaced, "security: no"},
+		{"a file, item unanswered", Reading{Raw: "x", Source: SourceFile}, ItemUnknown, Unplaced, "security: no"},
+		{"a file that would not open, no item", Reading{FileErr: denied}, ItemAbsent, Unplaced, "permission denied"},
+	} {
+		if got, said := c.read.Access(c.item, "security: no"); got != c.want || said != c.said {
+			t.Errorf("%s: %v %q, want %v %q", c.name, got, said, c.want, c.said)
+		}
+	}
+}
+
+// A credential file that is there and cannot be read is not an account with
+// no login.
+func TestReadKeepsAFileItCouldNotOpen(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no security: nothing comes from a Keychain
+	dir := t.TempDir()
+	if r := Read(context.Background(), dir, dir); r.Raw != "" || r.Source != SourceNone || r.FileErr != nil {
+		t.Errorf("no file: %+v", r)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".credentials.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r := Read(context.Background(), dir, dir); r.Source != SourceNone || r.FileErr == nil {
+		t.Errorf("a file that cannot be read: %+v", r)
 	}
 }

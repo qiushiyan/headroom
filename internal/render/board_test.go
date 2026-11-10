@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -131,16 +133,31 @@ func TestCompactCellLayersAlign(t *testing.T) {
 }
 
 // Two rows claiming one identity is something the vocabulary cannot carry;
-// choosing either percent would present a guess as a figure.
-func TestCompactDuplicateIdentityIsNotAFigure(t *testing.T) {
+// choosing either percent would present a guess as a figure. The parse tags
+// both (usage.Row.Shared), and each layout only spells that: the compact row
+// has no column to put either in, the block keeps what each reported, and
+// both say drift — so the board never sends a person to a check that passes.
+func TestDuplicateIdentityIsDriftInBothLayouts(t *testing.T) {
 	now := time.Now().Unix()
-	views := []accountstate.Facts{{Label: "a@x.com", Obs: fresh(now, session(12, now+3600), session(80, now+3600))}}
-	line := bare(NewPalette(true).Board(views, now, LayoutCompact, 0).Groups[0][0])
-	if !strings.Contains(line, "?%") || strings.Contains(line, "12%") || strings.Contains(line, "80%") {
-		t.Fatalf("duplicate identity rendered a figure: %q", line)
+	reset := time.Unix(now+3600, 0).UTC().Format(time.RFC3339)
+	reading, err := usage.Parse(config.Claude, fmt.Appendf(nil,
+		`{"limits":[{"kind":"session","group":"session","percent":12,"resets_at":%q},{"kind":"session","group":"session","percent":80,"resets_at":%q},{"kind":"weekly_all","group":"weekly","percent":30,"resets_at":%q}]}`,
+		reset, reset, reset))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(line, "drift") {
-		t.Fatalf("duplicate identity left no drift caption: %q", line)
+	views := []accountstate.Facts{{Label: "a@x.com", Obs: accountstate.FromReading(reading, now, accountstate.SourceLive)}}
+
+	compact := bare(NewPalette(true).Board(views, now, LayoutCompact, 0).Groups[0][0])
+	if strings.Contains(compact, "12%") || strings.Contains(compact, "80%") || !strings.Contains(compact, "30%") {
+		t.Errorf("compact: a duplicated identity rendered a figure, or its neighbour lost its own: %q", compact)
+	}
+	if !strings.Contains(compact, "drift") {
+		t.Errorf("compact: no drift caption: %q", compact)
+	}
+	block := bare(strings.Join(NewPalette(true).Board(views, now, LayoutBlocks, 0).Groups[0], "\n"))
+	if !strings.Contains(block, "drift") || !strings.Contains(block, "12%") || !strings.Contains(block, "80%") {
+		t.Errorf("block: %q", block)
 	}
 }
 
@@ -518,5 +535,48 @@ func TestCompactHeadingsGiveWayBeforeNames(t *testing.T) {
 	}
 	if clipped := bare(Clip(b.Groups[0][0], 80)); !strings.Contains(clipped, "stale") {
 		t.Errorf("80 columns lost the staleness signal: %q", clipped)
+	}
+}
+
+// An account whose login this session could not reach is told apart from one
+// that is logged out, in both layouts: "/login" from here would store a login
+// its other sessions never read.
+func TestALoginOutOfReachIsNotSaidAsLoggedOut(t *testing.T) {
+	now := time.Now().Unix()
+	for login, want := range map[accountstate.LoginReach]string{
+		accountstate.LoginWithheld: "login kept in the Keychain, which this session cannot read",
+		accountstate.LoginUnplaced: "could not tell where its login is kept",
+	} {
+		v := accountstate.Facts{Label: "a@x.com", Health: accountstate.HealthUnknown, Login: login}
+		for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
+			b := NewPalette(false).Board([]accountstate.Facts{v}, now, layout, 0)
+			text := strings.Join(b.Groups[0], "\n")
+			if !strings.Contains(text, want) || strings.Contains(text, "/login") || strings.Contains(text, "not logged in") {
+				t.Errorf("layout %v, login %v: %q", layout, login, text)
+			}
+		}
+	}
+}
+
+// An answer with no limits to report reads the same whether this run asked or
+// a run a moment ago did, and like a fresh answer with figures it says nothing
+// about its own age: the same observation must not caption itself two ways.
+func TestAFreshEmptyAnswerSaysTheSameLiveAndReplayed(t *testing.T) {
+	now := time.Now().Unix()
+	empty := func(src accountstate.Source) *accountstate.Observation {
+		return &accountstate.Observation{ObservedAt: now - 5, Source: src}
+	}
+	for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
+		lines := func(v accountstate.Facts) string {
+			return strings.Join(NewPalette(false).Board([]accountstate.Facts{v}, now, layout, 0).Groups[0], "\n")
+		}
+		live := lines(accountstate.Facts{Label: "a@x.com", Obs: empty(accountstate.SourceLive), Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}})
+		replayed := lines(accountstate.Facts{Label: "a@x.com", Obs: empty(accountstate.SourceStore), Attempt: accountstate.Attempt{State: accountstate.AttemptDeferred}})
+		if live != replayed {
+			t.Errorf("layout %v: live %q, replayed %q", layout, live, replayed)
+		}
+		if strings.Count(live, "no limits reported") != 1 || strings.Contains(live, "observed") {
+			t.Errorf("layout %v: %q", layout, live)
+		}
 	}
 }

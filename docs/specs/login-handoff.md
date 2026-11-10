@@ -108,6 +108,10 @@ ended `failed` or `unknown` ends its `problem` with `(the holder's log:
 account's next `start`. `url` is present only while `awaiting_code`.
 `reused` appears on `start` only. A finished sign-in's document stays
 readable through `status` until the next `start` of that account.
+`finished_at` is when the holder saw the sign-in end. One whose holder went
+away (`holder_gone`, `outcome_unknown`) has no end anybody saw, so its
+`finished_at` stays `null` — from `status`, and after the `start`, `cancel`
+or batch login that settles its record.
 
 Reasons:
 
@@ -160,9 +164,10 @@ login can still be read where it was read at `start`; otherwise exit 3, state
 sent code is never sent again: the holder marks the sign-in `exchanging`
 before writing it, waits up to 60 seconds for the vendor, and reads the
 login back as `headroom login` does. Exit 0 `renewed`. Exit 3 whenever this
-call sent nothing and the sign-in is not over: a refused code, and a finish
-that finds a code already `exchanging` — ask `status`. Exit 1 for every other
-end; `outcome_unknown` calls for the plan before a new `start`. `finish` on a
+call sent nothing and the sign-in is not over: a refused code, a finish
+that finds a code already `exchanging` — ask `status` — and a holder of
+another build, whose sign-in is printed as recorded (`protocol`). Exit 1 for
+every other end; `outcome_unknown` calls for the plan before a new `start`. `finish` on a
 sign-in already over prints its document (exit 0 if it renewed, 1 otherwise)
 and sends nothing. A lost answer prints `no_reply`: the code may have been
 sent — ask `status`, never `start`.
@@ -217,7 +222,10 @@ account's last handed-off sign-in as `status` would print its state, with
 its `reason` and when it ended in `signin_reason` and `signin_finished_at`;
 `signin` is `null` when the record cannot be read. The text plan names one
 that ended without a renewal on its account's line: `· last sign-in Oct 27
-(2h ago): wrong_account`. An agent's unattended pass is read back there.
+(2h ago): wrong_account`. One whose holder went away has no end to date it
+by, so `signin_finished_at` is `null` and the line dates it by its start:
+`· last sign-in started Oct 27 (2h ago): holder_gone`. An agent's unattended
+pass is read back there.
 
 ### The batch
 
@@ -249,10 +257,13 @@ like a subcommand.
   builds a URL of its own.
 - **The record** `<key>.json` is the document plus what only the holder
   needs: the holder's pid and start instant and the sign-in's state. The
-  holder writes it whole on each transition, and a transition is taken only
-  once it is on disk: a code goes out only after `exchanging` is written,
-  so a dead holder's record never says no code was sent when one was. An
-  unreadable record is an error, never a sign-in that was not started.
+  holder writes it whole on each transition, through `signin.Signin`, which
+  owns which step may follow which and what a record of each state carries.
+  A code is authorized only by `exchanging` on disk, so a dead holder's
+  record never says no code was sent when one was; an ending is what
+  happened whether or not it could be saved, and one that could not be
+  leaves the record at the last step it could. An unreadable record is an
+  error, never a sign-in that was not started.
 - **The vendor is registered from its launch** in `<key>.vendor` (pid and
   `ps` start), by whoever runs it — a holder, before any URL, or the batch —
   and forgotten once reaped. A vendor runs only while registered: one whose
@@ -274,7 +285,8 @@ like a subcommand.
   `start`, `cancel` or batch login of the account holds the lock, finds the
   vendor registered, and ends it when that pid still runs with its recorded
   start — after the exchange bound when the record says a code may be in
-  flight — then settles a record left live. A `start` whose holder dies
+  flight — then settles a record left live, undated: finding it does not
+  say when its holder went. A `start` whose holder dies
   before it is ready does so itself, still holding the lock. `status` and
   `finish` report such a sign-in from its record: `holder_gone` before a
   code was sent, `outcome_unknown` after. A holder that takes a call and
@@ -375,6 +387,15 @@ Each case runs hermetically: a temp home, stub `claude` and `security`.
     nowhere in what it prints.
 31. The plan line and document name a last sign-in that ended without a
     renewal, and only that.
+32. A sign-in its holder left is named in the plan line, dated by its
+    start, and in the document with `signin_finished_at` `null`; `status`
+    prints `finished_at` `null` before and after a `cancel` settles it.
+33. `finish` against a holder of another build exits 3 with the state as
+    recorded, `awaiting_code` or `exchanging`: nothing was sent and the
+    sign-in is not over.
+34. A sign-in's steps through `signin.Signin`: a second code is never
+    authorized, an `exchanging` that cannot be written leaves it waiting,
+    and an ending that cannot be saved is still returned as the ending.
 
 ## Verification
 

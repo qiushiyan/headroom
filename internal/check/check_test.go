@@ -431,6 +431,14 @@ func TestRunVerdicts(t *testing.T) {
 			f.write(f.cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"},
 			  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"a previous login","utilization":{"limits":[]}}}`, 0600)
 		}, want: ExitFail, fail: "cache[primary]: Claude Code's cached usage parses via shared contract", phrase: drift},
+		// Two rows claiming one identity: the board says drift and sends its
+		// reader here, so this must fail too — through the one parse the
+		// board replays the cache through.
+		{name: "cache names one limit twice", status: 200, setup: func(t *testing.T, f fixture) {
+			f.write(f.cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"},
+			  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"fixture","utilization":{"limits":[
+			    {"kind":"session","group":"session","percent":12},{"kind":"session","group":"session","percent":80}]}}}`, 0600)
+		}, want: ExitFail, fail: "cache[primary]: Claude Code's cached usage parses via shared contract", phrase: drift},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -460,27 +468,44 @@ func TestRunVerdicts(t *testing.T) {
 }
 
 func TestRunPrimaryCredentialSource(t *testing.T) {
+	// What `security` says of the primary's item: no item (exit 44, as the
+	// real one answers), an item whose secret this session is refused, and no
+	// usable answer at all.
+	const (
+		noItem   = "#!/bin/sh\nexit 44\n"
+		withheld = "#!/bin/sh\ncase \"$*\" in *-w*) echo 'User interaction is not allowed.' >&2; exit 36;; esac\nexit 0\n"
+		noAnswer = "#!/bin/sh\necho 'SecKeychainSearchCopyNext: -25308' >&2\nexit 1\n"
+	)
+	const fixture = `{"claudeAiOauth":{"accessToken":"fixture"}}`
 	for _, tc := range []struct {
-		name, credential string
-		status           int
-		wantCode         int
-		wantLine         string
+		name, security, credential string
+		status                     int
+		wantCode                   int
+		wantLine                   string
 	}{
-		{"file only", `{"claudeAiOauth":{"accessToken":"fixture"}}`, 200, ExitPass, "credential[primary]: .credentials.json (no keychain item)"},
+		{"file only", noItem, fixture, 200, ExitPass, "credential[primary]: .credentials.json (no keychain item)"},
 		// The 401 re-check reads the primary's real dir, as the first read
 		// did: the token there is unchanged, so the rejection is drift — not
 		// an unreadable credential that would leave it untested.
-		{"file only, token rejected", `{"claudeAiOauth":{"accessToken":"fixture"}}`, 401, ExitFail, "api[primary]: HTTP 401 — unexpected status"},
-		{"neither", "", 200, ExitFail, "credential[primary]: no credential source — not logged in"},
+		{"file only, token rejected", noItem, fixture, 401, ExitFail, "api[primary]: HTTP 401 — unexpected status"},
+		{"neither", noItem, "", 200, ExitFail, "credential[primary]: no credential source — not logged in"},
+		// A login kept in a Keychain item this session was not given is not
+		// "not logged in", and a file beside it is not the login sessions
+		// use: neither is a failed assumption, and neither is asked about.
+		{"item withheld", withheld, "", 200, ExitInconclusive, "credential[primary]: not tested — its login is a Keychain item this session was not given"},
+		{"item withheld, a file beside it", withheld, fixture, 200, ExitInconclusive, "credential[primary]: not tested — its login is a Keychain item this session was not given"},
+		{"security has no answer", noAnswer, "", 200, ExitInconclusive, "credential[primary]: not tested — could not tell where its login is kept (security: SecKeychainSearchCopyNext: -25308)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cfg, write := soundClaudeTree(t, home)
-			write(filepath.Join(os.Getenv("PATH"), "security"), "#!/bin/sh\nexit 1\n", 0755)
+			write(filepath.Join(os.Getenv("PATH"), "security"), tc.security, 0755)
 			if tc.credential != "" {
 				write(filepath.Join(cfg.PrimaryDir(), ".credentials.json"), tc.credential, 0600)
 			}
+			asked := false
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				asked = true
 				w.WriteHeader(tc.status)
 				w.Write([]byte(`{"limits":[]}`))
 			}))
@@ -491,11 +516,13 @@ func TestRunPrimaryCredentialSource(t *testing.T) {
 			if code != tc.wantCode || !strings.Contains(out.String(), tc.wantLine) {
 				t.Fatalf("exit=%d want=%d, missing %q:\n%s", code, tc.wantCode, tc.wantLine, out.String())
 			}
+			if tc.wantCode == ExitInconclusive && asked {
+				t.Error("the endpoint was asked with a login that is not the one the account's sessions use")
+			}
 		})
 	}
 }
 
-// soundClaudeTree builds a Claude Code fixture every assertion passes on —
 // stub claude and security on PATH, a logged-in primary, a registry, history
 // and one transcript — and hands back its scope and a file writer. The usage
 // URL is the caller's to set.

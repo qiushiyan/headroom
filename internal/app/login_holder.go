@@ -120,20 +120,17 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 		v.Stop()
 		return fail(reasonScreenChanged, "the URL claude auth login printed is not the sign-in it opened (state "+statePrefix(state)+" printed, "+statePrefix(opened)+" opened) — has Claude Code changed its login screen? Nothing was started")
 	}
-	now := deps.now()
 	self := signin.Proc{PID: os.Getpid()}
 	self.Start, _ = deps.ps(self.PID)
-	rec := signin.Record{
-		Account: acct.Name, Email: row.email, State: signin.Awaiting, URL: url,
-		StartedMS: now.UnixMilli(), ExpiresMS: now.Add(deps.bounds.awaiting).UnixMilli(),
-		SigninState: state, Holder: self, Log: paths.Log(),
-	}
-	if err := signin.Write(paths.Record(), rec); err != nil {
+	s, err := signin.Begin(paths.Record(), signin.Record{
+		Account: acct.Name, Email: row.email, URL: url, SigninState: state, Holder: self, Log: paths.Log(),
+	}, deps.now(), deps.bounds.awaiting)
+	if err != nil {
 		v.Stop()
 		return fail(reasonHolderFailed, err.Error())
 	}
-	publish(rec)
-	return serveSignin(ln, v, rec, acct, row, paths, deps, logw)
+	publish(s.Record())
+	return serveSignin(ln, v, s, acct, row, deps, logw)
 }
 
 // awaitSigninURL reads the vendor's screen until it prints the sign-in URL,
@@ -173,11 +170,12 @@ func awaitOpener(path string, wait time.Duration) string {
 	}
 }
 
-// serveSignin answers the socket until the sign-in ends, and records each
-// step before it is acted on: `exchanging` is written before the code goes
-// to the vendor, so a holder that dies mid-exchange leaves a record that
-// says the outcome is unknown, never one that invites a second code.
-func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct accounts.Account, row *loginRow, paths signin.Paths, deps handoffDeps, logw io.Writer) error {
+// serveSignin answers the socket until the sign-in ends. It drives the vendor
+// and the clock; the sign-in's steps are s's (signin.Signin), which is where
+// each is recorded before it is acted on: `exchanging` is written before the
+// code goes to the vendor, so a holder that dies mid-exchange leaves a record
+// that says the outcome is unknown, never one that invites a second code.
+func serveSignin(ln *net.UnixListener, v vendorRun, s *signin.Signin, acct accounts.Account, row *loginRow, deps handoffDeps, logw io.Writer) error {
 	done := make(chan struct{})
 	defer close(done)
 	conns := make(chan net.Conn)
@@ -239,21 +237,14 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 			return nil
 		}
 	}
-	// record makes r the sign-in only once it is on disk: a step a dead
-	// holder's record would not show is a step not taken.
-	record := func(r signin.Record) error {
-		if err := signin.Write(paths.Record(), r); err != nil {
+	// end ends the sign-in as e and answers the finish or cancel waiting on
+	// it. The outcome is this one whether or not it could be saved: a record
+	// that could not be written keeps the last step it could, status will
+	// read that, and the answer says so.
+	end := func(e signin.Ending) error {
+		r, err := s.End(e, deps.now())
+		if err != nil {
 			fmt.Fprintf(logw, "headroom: the sign-in record could not be written: %v\n", err)
-			return err
-		}
-		rec = r
-		return nil
-	}
-	end := func(r signin.Record) error {
-		r.URL, r.FinishedMS = "", deps.now().UnixMilli()
-		if err := record(r); err != nil {
-			// The outcome is still this one; the record keeps the last step it
-			// could, and status will read that.
 			note := fmt.Sprintf("its record could not be saved (%v), so status will not show this outcome", err)
 			if r.Problem == "" {
 				r.Problem = note
@@ -266,32 +257,34 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 		}
 		return nil
 	}
-	ended := func(state, reason, problem string) signin.Record {
-		r := rec
-		r.State, r.Reason, r.Problem = state, reason, problem
-		return r
-	}
 	// stop ends a sign-in no code reached: the vendor, then the record.
 	stop := func(reason, problem string) error {
 		v.Stop()
 		waitExit()
-		return end(ended(signin.Failed, reason, problem))
+		return end(signin.EndFailed(reason, problem))
+	}
+	// refuse answers a call that changes nothing: the sign-in as it stands,
+	// with why the call was not acted on.
+	refuse := func(c net.Conn, reason, problem string) {
+		r := s.Record()
+		r.Reason, r.Problem = reason, problem
+		signin.Answer(c, signin.Reply{Record: r})
 	}
 	// verdict reads the login back as the batch does. runErr is the vendor's
 	// own failure, nil when headroom ended a vendor that went quiet.
-	verdict := func(runErr error) signin.Record {
+	verdict := func(runErr error) signin.Ending {
 		if runErr != nil && last != "" {
 			runErr = fmt.Errorf("%s (%v)", last, runErr)
 		}
 		blob, msg, reason := judgeLogin(row, before, beforeOK, runErr, deps.login)
 		if msg != "" {
-			return ended(signin.Failed, reason, msg+" — headroom login start "+acct.Name+" begins a new sign-in")
+			return signin.EndFailed(reason, msg+" — headroom login start "+acct.Name+" begins a new sign-in")
 		}
-		r := ended(signin.Renewed, "", "")
+		var ends int64
 		if blob.RefreshState == tag.OK {
-			r.LoginEndsMS = blob.RefreshExpiresMS
+			ends = blob.RefreshExpiresMS
 		}
-		return r
+		return signin.EndRenewed(ends)
 	}
 
 	for {
@@ -306,32 +299,32 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 		case err := <-exited:
 			exited = nil
 			drain()
-			r := verdict(err)
-			if rec.State == signin.Awaiting && r.State == signin.Failed {
+			e := verdict(err)
+			if s.State() == signin.Awaiting && !e.Renewed() {
 				// It ended by itself before any code reached it.
-				r.Reason, r.Problem = reasonVendorEnded, "claude auth login ended before any code was sent"
+				problem := "claude auth login ended before any code was sent"
 				if last != "" {
-					r.Problem += ": " + last
+					problem += ": " + last
 				}
-				r.Problem += " — headroom login start " + acct.Name + " begins a new sign-in"
+				e = signin.EndFailed(reasonVendorEnded, problem+" — headroom login start "+acct.Name+" begins a new sign-in")
 			}
-			return end(r)
+			return end(e)
 
 		case <-bound.C:
-			if rec.State == signin.Awaiting {
+			if s.State() == signin.Awaiting {
 				return stop(reasonExpired, fmt.Sprintf("no code came within %s of the start — headroom login start %s begins afresh", deps.bounds.awaiting, acct.Name))
 			}
 			v.Stop()
 			waitExit()
 			drain()
-			r := verdict(nil)
-			if r.Reason == notRenewed {
-				r.Problem = fmt.Sprintf("claude auth login had the code for %s without finishing, and the stored login did not change", deps.bounds.exchange)
+			e := verdict(nil)
+			if e.Reason() == notRenewed {
+				e = signin.EndFailed(notRenewed, fmt.Sprintf("claude auth login had the code for %s without finishing, and the stored login did not change", deps.bounds.exchange))
 			}
-			return end(r)
+			return end(e)
 
 		case <-sig:
-			if rec.State == signin.Exchanging {
+			if s.State() == signin.Exchanging {
 				continue // the exchange is bounded; its answer is owed
 			}
 			return stop(reasonCancelled, "the holder was stopped before any code was sent")
@@ -339,7 +332,7 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 		case c := <-conns:
 			req, err := signin.ReadRequest(c, 5*time.Second)
 			if errors.Is(err, signin.ErrProtocol) {
-				signin.Answer(c, signin.Reply{Record: rec, Error: signin.ErrProtocol.Error()})
+				signin.Answer(c, signin.Reply{Record: s.Record(), Error: signin.ErrProtocol.Error()})
 				continue
 			}
 			if err != nil {
@@ -348,42 +341,33 @@ func serveSignin(ln *net.UnixListener, v vendorRun, rec signin.Record, acct acco
 			}
 			switch req.Op {
 			case signin.OpStatus:
-				signin.Answer(c, signin.Reply{Record: rec})
+				signin.Answer(c, signin.Reply{Record: s.Record()})
 
 			case signin.OpCancel:
-				if rec.State == signin.Exchanging {
-					r := rec
-					r.Reason, r.Problem = reasonExchanging, "a code is being exchanged and cannot be called back — headroom login status "+acct.Name+" says how it ends"
-					signin.Answer(c, signin.Reply{Record: r})
+				if s.State() == signin.Exchanging {
+					refuse(c, reasonExchanging, "a code is being exchanged and cannot be called back — headroom login status "+acct.Name+" says how it ends")
 					continue
 				}
 				waiting = c
 				return stop(reasonCancelled, "cancelled by headroom login cancel")
 
 			case signin.OpFinish:
-				if rec.State != signin.Awaiting {
-					r := rec
-					r.Reason, r.Problem = reasonExchanging, "a code is already being exchanged; nothing more was sent — headroom login status "+acct.Name+" says how it ends"
-					signin.Answer(c, signin.Reply{Record: r})
+				if s.State() != signin.Awaiting {
+					refuse(c, reasonExchanging, "a code is already being exchanged; nothing more was sent — headroom login status "+acct.Name+" says how it ends")
 					continue
 				}
-				raw, reason, problem := judgeSubmission(req.Code, rec, acct, deps.login)
+				raw, reason, problem := judgeSubmission(req.Code, s.Record(), acct, deps.login)
 				if reason != "" {
-					r := rec
-					r.Reason, r.Problem = reason, problem
-					signin.Answer(c, signin.Reply{Record: r})
+					refuse(c, reason, problem)
+					continue
+				}
+				if err := s.BeginExchange(); err != nil {
+					fmt.Fprintf(logw, "headroom: the sign-in record could not be written: %v\n", err)
+					refuse(c, reasonRecordFailed, "the sign-in's record could not be written ("+err.Error()+"), and a code is sent only once its record shows it; nothing was sent — finish again")
 					continue
 				}
 				// The baseline is taken now: a live session may have
 				// refreshed the account since the start.
-				r := rec
-				r.State = signin.Exchanging
-				if err := record(r); err != nil {
-					r := rec
-					r.Reason, r.Problem = reasonRecordFailed, "the sign-in's record could not be written ("+err.Error()+"), and a code is sent only once its record shows it; nothing was sent — finish again"
-					signin.Answer(c, signin.Reply{Record: r})
-					continue
-				}
 				before, beforeOK = creds.Parse(raw)
 				if err := v.Send(strings.TrimSpace(req.Code)); err != nil {
 					fmt.Fprintf(logw, "headroom: the code could not be written to claude auth login: %v\n", err)
@@ -415,15 +399,14 @@ func judgeSubmission(code string, rec signin.Record, acct accounts.Account, deps
 		return "", reasonOtherSignin, fmt.Sprintf("that code is from another sign-in (its state begins %s, this one's %s): send the code from the page of the URL headroom login start printed; nothing was sent",
 			statePrefix(c.State), statePrefix(rec.SigninState))
 	}
-	raw, source := deps.readCred(acct)
-	item, said := deps.keychainItem(acct)
-	switch {
-	case keychainWithheld(item, source):
+	read := deps.readCred(acct)
+	switch access, said := read.Access(deps.keychainItem(acct)); access {
+	case creds.Withheld:
 		return "", reasonKeychainShut, "this session can no longer read " + acct.Name + "'s login in the Keychain, so a new one would be stored where sessions do not read it; nothing was sent — run `security unlock-keychain` here and finish again, or cancel"
-	case item == creds.ItemUnknown:
+	case creds.Unplaced:
 		return "", heldKeychainUnknown, "security could not say whether " + acct.Name + "'s login is in the Keychain (" + said + "); nothing was sent — finish again"
 	}
-	return raw, "", ""
+	return read.Raw, "", ""
 }
 
 // heldProblem is a held account's reason in words, with what opens it.

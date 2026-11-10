@@ -55,7 +55,10 @@ email) *is* the account set — and `~/.codex` plus `~/.codex-accounts` is
 Codex's, with its own `.order`, `.reserved` and `state.json`. Each Claude Code
 account, including the primary, uses the Keychain item for its config dir
 when readable; otherwise headroom reads `.credentials.json` inside the real
-config dir. Headroom calls the same usage endpoint Claude Code's own `/usage`
+config dir. An account whose Keychain item exists but did not hand its login
+to this session — an ssh session's sealed Keychain, or a locked one — shows
+*login kept in the Keychain* with its health unknown: its sessions
+elsewhere use that login, and one made here would be ignored. Headroom calls the same usage endpoint Claude Code's own `/usage`
 screen calls and renders the result. That endpoint budgets roughly one
 request per minute *per account*, so headroom records its requests and
 responses. An early refresh replays headroom's newest answer instead of
@@ -77,7 +80,7 @@ file credential store is read; a keyring login shows as not logged in, and
 `check` exits 0 for PASS, 1 for failed assertions, or 2 for INCONCLUSIVE.
 Failures identify vendor drift or headroom's own state problems, and name the
 vendor. Rate limiting, transport failure, lock contention, a valid newer state
-schema and any Codex 401 are inconclusive. An unclaimed request is marked untested; a received response
+schema, a login the Keychain did not give this session and any Codex 401 are inconclusive. An unclaimed request is marked untested; a received response
 can still be checked when recording it fails. The board likewise keeps its
 endpoint result and figures visible alongside a persistence warning.
 
@@ -195,7 +198,9 @@ and a sign-in never renew one account at once. An account whose login lives
 in a Keychain the session cannot read — an ssh session's, or a locked one —
 is refused at `start`, before any approval. A sign-in that ends without a
 renewal names the holder's log, and the plan names it on the account's line
-(`· last sign-in Oct 27 (2h ago): wrong_account`) until the next `start`.
+(`· last sign-in Oct 27 (2h ago): wrong_account`) until the next `start`; one
+whose holder went away has no end anyone saw, so it reads `last sign-in
+started …` and its `finished_at` is `null`.
 `headroom login start --help` and `finish --help` list every reason;
 [docs/specs/login-handoff.md](specs/login-handoff.md) is the contract.
 

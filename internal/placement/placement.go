@@ -175,12 +175,12 @@ func (l *Ledger) Record(id, key, name string, pid int, now time.Time) {
 // Attach gives the placement named id the process that took it, so that once
 // the process is counted as busy the placement is not counted beside it. It
 // returns the placement, and false when no recent placement has that id.
-func (l *Ledger) Attach(id string, pid int) (Pending, bool) {
+func (l *Ledger) Attach(id string, pid int, now time.Time) (Pending, bool) {
 	if id == "" {
 		return Pending{}, false
 	}
 	for i := range l.Recent {
-		if l.Recent[i].ID == id {
+		if l.Recent[i].ID == id && l.Recent[i].Counts(now) {
 			l.Recent[i].PID = pid
 			return l.Recent[i], true
 		}
@@ -188,14 +188,22 @@ func (l *Ledger) Attach(id string, pid int) (Pending, bool) {
 	return Pending{}, false
 }
 
-// Prune drops what no longer counts: recent launches past PendingFor, and
-// per-account records older than keep. It reports whether anything changed.
+// Counts reports that the launch is still load at now: it was recorded within
+// PendingFor. It is the one lifetime a placement has — what the rule counts,
+// what Prune keeps and what Attach finds — so a placement cannot be over for
+// one of them and current for another, whichever ran last.
+func (p Pending) Counts(now time.Time) bool {
+	return p.AtMS >= now.UnixMilli()-int64(PendingFor/time.Millisecond)
+}
+
+// Prune drops what no longer counts: recent launches past their span
+// (Counts), and per-account records older than keep. It reports whether
+// anything changed.
 func (l *Ledger) Prune(now time.Time, keep time.Duration) bool {
 	changed := false
-	cutoff := now.Add(-PendingFor).UnixMilli()
 	kept := l.Recent[:0]
 	for _, p := range l.Recent {
-		if p.AtMS >= cutoff {
+		if p.Counts(now) {
 			kept = append(kept, p)
 		} else {
 			changed = true
@@ -570,9 +578,8 @@ func count(c Candidate, ledger Ledger, order int, now time.Time) Counted {
 			out.Week = w
 		}
 	}
-	cutoff := nowMS - int64(PendingFor/time.Millisecond)
 	for _, p := range ledger.Recent {
-		if p.Key != c.Key || p.AtMS < cutoff {
+		if p.Key != c.Key || !p.Counts(time.UnixMilli(nowMS)) {
 			continue
 		}
 		if isBusy(p, c.Busy) {

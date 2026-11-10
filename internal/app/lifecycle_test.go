@@ -327,3 +327,46 @@ func addTo(out, errw *bytes.Buffer, cfg config.Scope, args ...string) int {
 	errw.WriteString(r.stderr)
 	return r.code
 }
+
+// Once the dir is gone, what the account left elsewhere is cleared step by
+// step, and a step that fails does not keep the others from running: a re-run
+// finds no account to remove and would never reach them. Here `.order` cannot
+// be rewritten; the headless token and the reservation go all the same, and
+// the error names what is left with what clears it.
+func TestRemovalClearsWhatItCanAfterTheDirIsGone(t *testing.T) {
+	cfg := lifecycleConfig(t)
+	seeded, err := accounts.Seed(cfg, "a@x.com", accounts.SeedOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := headless.Put(cfg.AccountsRoot, "a@x.com", headless.Token{Value: testToken}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SetReservation(cfg, "a@x.com", []string{"/work/a"}); err != nil {
+		t.Fatal(err)
+	}
+	// Something that is not a file sits where .order is read.
+	if err := os.Mkdir(cfg.OrderFile(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := call(func(std Streams) error {
+		return accountsRemove(std, cfg, "a@x.com", true, removeDeps{
+			probe:          func(int) (int64, error) { return 0, os.ErrNotExist },
+			deleteKeychain: func(string) (bool, error) { return true, nil },
+			stdin:          strings.NewReader(""),
+		})
+	})
+	if _, err := os.Lstat(seeded.Dir); err == nil {
+		t.Fatal("the dir was not removed")
+	}
+	if tokens, _ := headless.Read(cfg.AccountsRoot); len(tokens) != 0 {
+		t.Errorf("the headless token outlived a removal whose .order step failed: %v", tokens)
+	}
+	if held, err := accounts.ReadReservations(cfg); err != nil || held.Held("a@x.com") {
+		t.Errorf("the reservation outlived a removal whose .order step failed: %v (%v)", held, err)
+	}
+	if r.code != 1 || !strings.Contains(r.stderr, "a@x.com is removed, but not everything of it was cleared") ||
+		!strings.Contains(r.stderr, cfg.OrderFile()) || strings.Contains(r.stderr, "headless token") {
+		t.Errorf("exit %d: %s", r.code, r.stderr)
+	}
+}

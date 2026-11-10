@@ -165,7 +165,10 @@ verifier's error messages name something that exists on every install:
   any file-backed `.credentials.json`; `os.RemoveAll` does not follow
   symlinks, so the `projects/` link goes and the store behind it stays —
   pinned by test), then every `.order` line discovery reads as that account,
-  a trailing comment included, its headless token and its reservation.
+  a trailing comment included, its headless token and its reservation — each
+  cleared on its own once the dir is gone, since a re-run finds no account
+  to remove: one that fails leaves the others done, and the error names what
+  is left with what clears it.
   Transcripts survive (they are the machine's); a session the removed
   account drove is placed like a new one at its next resume.
 
@@ -249,8 +252,9 @@ click per account.
   answer for — any exit but found or not found (44), or no answer in ten
   seconds — holds the account too: unknown is never read as absent. The
   sealed probe only words the explanation. Accounts with no item are file-backed
-  everywhere and renew normally. `keychainWithheld` is the one rule the
-  plan, the handoff's code check and the read-back share.
+  everywhere and renew normally. `creds.Reading.Access` is the one rule —
+  served, withheld, or unplaced — and the plan, the handoff's code check,
+  the read-back, the board's health and `check` all judge a read by it.
 - **A remote user gets the URL, not a window.** When `SSH_CONNECTION` names
   another machine as the client, the page would open on a screen nobody is
   at, so headroom as `$BROWSER` records the sign-in and opens nothing: the
@@ -312,9 +316,11 @@ contract. What the shape rests on, measured on 2.1.311:
   leaves it waiting. So the holder refuses a code that is not `code#state`
   or carries another state, with no repeat-to-bypass — the URL was
   headroom's own, so another state is another sign-in — and checks the
-  Keychain still gives the login before sending. It records `exchanging`
-  before the code goes out, and a step it cannot record is a step not
-  taken: a dead holder's record never says no code was sent when one was.
+  Keychain still gives the login before sending. `signin.Signin` owns the
+  sign-in's steps: `exchanging` on disk is the authorization to send, so a
+  code that cannot be recorded is not sent and a dead holder's record never
+  says no code was sent when one was, while an ending is what happened
+  whether or not it could be saved.
   The ten-minute wait for a code stops once one is sent; the exchange has
   its own bound, after which a vendor headroom had to end is judged by its
   read-back alone.
@@ -327,13 +333,15 @@ contract. What the shape rests on, measured on 2.1.311:
   its launch, by the holder before any URL and by the batch alike, and runs
   only while registered. Whoever next holds the lock ends a registered
   vendor its dead owner left — by pid and `ps` start, after the exchange
-  bound if a code may be in flight — and settles the record. A holder that
-  takes a call and does not answer in time is slow, not gone.
+  bound if a code may be in flight — and settles the record, undated:
+  nobody saw the holder go, so no surface gives that sign-in a finish time.
+  A holder that takes a call and does not answer in time is slow, not gone.
 - **An unattended pass is read back from the plan.** An ending names the
   holder's log, where the vendor's own words are kept until the account's
   next `start`, and the plan's line and document name each account's last
-  sign-in that did not renew — the one command that shows every account
-  is where the owner learns what an agent did.
+  sign-in that did not renew — one its holder left included, dated by its
+  start — since the one command that shows every account is where the
+  owner learns what an agent did.
 - **A unix socket is the rendezvous**: dialing it says whether a holder is
   alive, and a request carries a protocol version a holder from another
   build refuses before acting. A socket binds at 103 bytes on macOS, so a
@@ -448,7 +456,8 @@ reverse-engineered and perishable:
   FAIL takes precedence when a run also has inconclusive assertions. Every
   request uses the board's budget and storage operation. Its per-account
   `credential[...]` assertion names the selected source and requires a
-  parseable blob; no credential is FAIL (not logged in).
+  parseable blob; no credential is FAIL (not logged in), and a login the
+  Keychain holds and did not give, or that cannot be placed, is untested.
 
 Two deliberate tolerances beyond strict inherited behavior: numeric-epoch
 `resets_at` values are accepted, and timestamps may carry offsets or
@@ -462,7 +471,11 @@ account can have old observations and a refused refresh at the same time.
 
 - **Health** — can Claude Code use this account? Only a new login (`/login`
   in a session, or `headroom login`) fixes a bad answer. Sourced from `claude auth status`, with credential evidence as
-  fallback.
+  fallback. A bad answer counts only when the login sessions use was within
+  reach: when the read did not come from the Keychain and the account's item
+  exists, or `security` cannot say, health is unknown and the caption says
+  where the login is kept, never `/login` — a login made from that session
+  is one its other sessions ignore (see Renewing logins).
 - **Observation** — rows, *always* carrying `ObservedAt` and `Source`. Rows
   never travel without their timestamp; that is what let carried-over data
   pass itself off as current. `Source` separates headroom's own fetch in this
@@ -605,7 +618,10 @@ headless runs.
   decodes *around* a hollow record reads as healthy while routing silently
   ignores it. Sections this binary cannot decode at all are carried through
   writes verbatim, and a document from a newer headroom is read but never
-  rewritten.
+  rewritten. A file that is not JSON gives a reader no section — its
+  re-homes are unreadable, never none — and the write that replaces it
+  first keeps it beside itself under a name nothing holds
+  (`state.json.unreadable`, numbered on), or does not replace it.
 - **Records are bounded by age, never by which accounts a caller could see.**
   Sweeping by absence needs a complete account registry, and no caller can
   promise one: an account's key comes from a vendor file Claude Code rewrites
@@ -737,7 +753,9 @@ the contract. Identity degrades like every other field: a row whose
 identity fields drifted, that lacks the `kind` consumers select by, that is
 scoped without saying to what, or whose known kind contradicts its scope or
 group (a session or all-models row carrying a model, a weekly kind under
-another group) is tagged
+another group), or that shares its identity with another row of the same
+response — tagged at the parse, both rows, so no reader chooses between
+them and placement counts neither as room — is tagged
 `identity_state: "bad"` and counts as drift, so
 `check` fails before a consumer quietly stops matching — the scoped-weekly
 case matters most, because the model-scoped weekly is routinely the binding
@@ -850,7 +868,9 @@ primary as the target. The invariant, and the reason `internal/launch` exists:
   relocated-primary refusal (a primary selected by absence under a
   re-pointed `HEADROOM_HOME`), shared topology, executable path and child
   environment are resolved together. If process replacement fails after
-  persistence, a re-home remains recorded and the error says so.
+  persistence, a re-home remains recorded and the error says so, from what
+  `state.Place` reports it wrote; a launch that owed its session a re-home
+  and wrote none says that before the vendor starts.
 - **The shared-sessions topology is headroom's invariant, verified at
   launch.** Continuing a session on another account — the whole point of
   one machine-global store — holds only while every extra account's `projects/`
@@ -1084,6 +1104,9 @@ and it lasts one launch.
   exited still spent what the figures have not caught up with, and an
   observation taken a second after a launch reflects none of it. Once the
   vendor's registry reports that same process as busy it is counted once.
+  The span is one rule (`placement.Pending.Counts`) for the load, the prune
+  and a headless caller's `started`, which finds no placement past it
+  whether or not anything has pruned the record.
 - **The launch asks no network.** It reads discovery, the stored observations,
   the session registry and credentials, in a few tens of milliseconds. Figures
   are kept fresh for the *next* launch by a detached `headroom refresh` it
@@ -1341,7 +1364,10 @@ and `state.json` under its own accounts root.
   its round, selection, schedule and result channel until the channel closes
   and drains, so a result lands on the page that started it and only the
   visible page starts rounds; `picker.step` (`app/picker.go`) is the one place
-  results are routed and rounds started. Selection survives rediscovery by
+  results are routed and rounds started. A page's schedule moves by its
+  events alone — a round started, the `r` key, the loop's second, a result
+  or its channel closing — on one clock, with the channel the only record
+  of a round in flight. Selection survives rediscovery by
   account name. Off a terminal the board prints one frame (`app/board.go`);
   `--json` serializes the same rounds.
 - **Sessions.** `internal/sessions` reads what a launch weighs about
@@ -1377,7 +1403,8 @@ and `state.json` under its own accounts root.
   vendor's sign-in URL. `app/login_handoff.go` is `start`, `finish`,
   `status` and `cancel`, `app/login_holder.go` the holder's life;
   `internal/signin` owns a dir's sign-in files — the login lock, the start
-  lock, the record, the vendor registration — the vendor login's life under
+  lock, the record and its steps (`Signin`), the vendor registration — the
+  vendor login's life under
   that registration (started, registered or ended, waited for, stopped),
   for the batch and the holder alike, and the socket protocol, knowing
   nothing of accounts. See Renewing logins.

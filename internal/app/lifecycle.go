@@ -304,16 +304,27 @@ func accountsRemove(std Streams, cfg config.Scope, name string, yes bool, deps r
 		return err
 	}
 	fmt.Fprintf(out, "removed %s\n", dir)
+	// The account is gone. What it left elsewhere is tidied step by step,
+	// each on its own: one that fails does not keep the others from running,
+	// since a re-run finds no account to remove and would never reach them.
+	// Whatever is left is named with what clears it by hand.
+	var left []string
+	if err := accounts.ScrubOrder(cfg, name); err != nil {
+		left = append(left, fmt.Sprintf("its line in %s (%v) — delete the line by hand", cfg.OrderFile(), err))
+	}
 	// A secret for an account that no longer exists is no use to anyone.
 	// (Only Claude Code accounts reach here: Codex removal refuses up front.)
 	if forgot, err := headless.Remove(cfg.AccountsRoot, name); err != nil {
-		fmt.Fprintf(std.Err, "headroom accounts remove: its headless token was not forgotten (%v) — headroom headless forget %s\n", err, name)
+		left = append(left, fmt.Sprintf("its headless token (%v) — headroom headless forget %s", err, name))
 	} else if forgot {
 		fmt.Fprintln(out, "forgot its headless token — headroom does not revoke it with the vendor")
 	}
 	if err := accounts.SetReservation(cfg, name, nil); err != nil {
-		fmt.Fprintf(std.Err, "headroom accounts remove: its reservation was not dropped (%v) — headroom accounts reserve %s --clear\n", err, name)
+		left = append(left, fmt.Sprintf("its reservation (%v) — headroom accounts reserve %s --clear", err, name))
 	}
 	fmt.Fprintln(out, "transcripts are machine-global and survive; a session it drove is placed like a new one when it is next resumed")
+	if len(left) > 0 {
+		return fmt.Errorf("%s is removed, but not everything of it was cleared: %s", name, strings.Join(left, "; "))
+	}
 	return nil
 }

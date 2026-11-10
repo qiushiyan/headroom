@@ -22,6 +22,25 @@ type prepareFixture struct {
 	blobs map[string]string
 	auth  map[string]auth.Status
 	store *state.Store
+	// fromFile names the config dirs whose blob comes from the dir's file,
+	// not the Keychain, and items what the Keychain shows of each dir's item:
+	// absent unless said otherwise.
+	fromFile map[string]bool
+	items    map[string]creds.Item
+	asked    map[string]int // how often the Keychain was asked about each dir's item
+}
+
+// read is the fixture's credential read: a blob comes from the Keychain
+// unless its dir is in fromFile, and a dir with none reads nothing.
+func (f prepareFixture) read(a accounts.Account) creds.Reading {
+	raw := f.blobs[a.ConfigDir]
+	switch {
+	case raw == "":
+		return creds.Reading{}
+	case f.fromFile[a.ConfigDir]:
+		return creds.Reading{Raw: raw, Source: creds.SourceFile}
+	}
+	return creds.Reading{Raw: raw, Source: creds.SourceKeychain}
 }
 
 func (f prepareFixture) run(now time.Time) map[string]*row {
@@ -30,7 +49,16 @@ func (f prepareFixture) run(now time.Time) map[string]*row {
 
 func (f prepareFixture) prepare(now time.Time) *Round {
 	return Prepare(context.Background(), f.cfg, f.store, now, Deps{
-		Creds:  func(_ context.Context, a accounts.Account) string { return f.blobs[a.ConfigDir] },
+		Creds: func(_ context.Context, a accounts.Account) creds.Reading { return f.read(a) },
+		Item: func(_ context.Context, a accounts.Account) (creds.Item, string) {
+			if f.asked != nil {
+				f.asked[a.ConfigDir]++
+			}
+			if item, ok := f.items[a.ConfigDir]; ok {
+				return item, "security: said so"
+			}
+			return creds.ItemAbsent, ""
+		},
 		Health: func([]accounts.Account) auth.QueryFunc { return func(dir string) auth.Status { return f.auth[dir] } },
 	})
 }
@@ -76,9 +104,8 @@ func TestPrepareFileBackedPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	list := Prepare(context.Background(), cfg, state.Open(cfg), time.Now(), Deps{Creds: func(ctx context.Context, a accounts.Account) string {
-		raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
-		return raw
+	list := Prepare(context.Background(), cfg, state.Open(cfg), time.Now(), Deps{Creds: func(ctx context.Context, a accounts.Account) creds.Reading {
+		return creds.Read(ctx, a.ConfigDir, a.Dir())
 	}, Health: ProbeHealth}).rows
 	if len(list) == 0 || list[0].View.Plan != "max 20x" || list[0].request == nil {
 		t.Fatalf("primary did not get a usable file-backed credential: %+v", list)
@@ -309,4 +336,84 @@ func claudeScope(home, primary string) config.Scope {
 	s := config.ForHome(home).Claude
 	s.PrimaryName = primary
 	return s
+}
+
+// A bad answer about an account is an answer only when the login its sessions
+// use was within reach. An account whose login is a Keychain item this session
+// was not given reads logged out to Claude Code itself, and a file beside the
+// item is not that login: neither is "not logged in", and neither is asked
+// about. The Keychain is consulted only where it changes what is said.
+func TestALoginOutOfReachIsNotABadAnswer(t *testing.T) {
+	home := t.TempDir()
+	cfg := claudeScope(home, "primary")
+	writeJSON(t, cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary@x.com","accountUuid":"u-primary"}}`)
+	dirs := map[string]string{}
+	for _, name := range []string{"sealed@x.com", "sealedfile@x.com", "unplaced@x.com", "absent@x.com", "fine@x.com", "expired@x.com"} {
+		dir := filepath.Join(cfg.AccountsRoot, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(t, filepath.Join(dir, ".claude.json"), fmt.Sprintf(`{"oauthAccount":{"emailAddress":%q,"accountUuid":"u-%s"}}`, name, name))
+		dirs[name] = dir
+	}
+	now := time.Now()
+	good := `{"claudeAiOauth":{"accessToken":"tok"}}`
+	dead := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"tok","refreshTokenExpiresAt":%d}}`, now.Add(-time.Hour).UnixMilli())
+	loggedOut, loggedIn := auth.Status{Outcome: auth.OutcomeOK}, auth.Status{Outcome: auth.OutcomeOK, LoggedIn: true}
+	f := prepareFixture{
+		cfg: cfg, store: state.Open(cfg), asked: map[string]int{},
+		blobs: map[string]string{
+			"":                       good,
+			dirs["sealedfile@x.com"]: dead,
+			dirs["fine@x.com"]:       good,
+			dirs["expired@x.com"]:    dead,
+		},
+		fromFile: map[string]bool{dirs["sealedfile@x.com"]: true, dirs["fine@x.com"]: true},
+		items: map[string]creds.Item{
+			dirs["sealed@x.com"]:     creds.ItemPresent,
+			dirs["sealedfile@x.com"]: creds.ItemPresent,
+			dirs["unplaced@x.com"]:   creds.ItemUnknown,
+			dirs["fine@x.com"]:       creds.ItemPresent,
+		},
+		auth: map[string]auth.Status{
+			"":                     loggedIn,
+			dirs["sealed@x.com"]:   loggedOut,
+			dirs["unplaced@x.com"]: loggedOut,
+			dirs["absent@x.com"]:   loggedOut,
+			dirs["fine@x.com"]:     loggedIn,
+			// sealedfile and expired: the probe has no answer, and the
+			// credential read decides.
+		},
+	}
+	rows := f.run(now)
+	for name, want := range map[string]struct {
+		health accountstate.Health
+		login  accountstate.LoginReach
+		asked  int
+	}{
+		"primary":          {accountstate.HealthOK, accountstate.LoginReached, 0},
+		"sealed@x.com":     {accountstate.HealthUnknown, accountstate.LoginWithheld, 1},
+		"sealedfile@x.com": {accountstate.HealthUnknown, accountstate.LoginWithheld, 1},
+		"unplaced@x.com":   {accountstate.HealthUnknown, accountstate.LoginUnplaced, 1},
+		"absent@x.com":     {accountstate.HealthNoLogin, accountstate.LoginReached, 1},
+		// Claude Code says it is logged in: a file's login it uses is its
+		// own business, and nobody is asked about the Keychain.
+		"fine@x.com": {accountstate.HealthOK, accountstate.LoginReached, 0},
+		// Read from the Keychain itself, so an expired login is an answer.
+		"expired@x.com": {accountstate.HealthReloginRequired, accountstate.LoginReached, 0},
+	} {
+		d := rows[name]
+		if d == nil {
+			t.Fatalf("no row for %s", name)
+		}
+		if d.View.Health != want.health || d.View.Login != want.login {
+			t.Errorf("%s: health %v, login %v; want %v, %v", name, d.View.Health, d.View.Login, want.health, want.login)
+		}
+		if got := f.asked[d.Acct.ConfigDir]; got != want.asked {
+			t.Errorf("%s: the Keychain was asked %d times, want %d", name, got, want.asked)
+		}
+		if want.login != accountstate.LoginReached && d.request != nil {
+			t.Errorf("%s: a request was prepared on a login out of reach", name)
+		}
+	}
 }

@@ -191,7 +191,9 @@ func General(vendor config.Vendor, r Row) bool {
 // says which vendor it is, and nothing else may guess.
 func Parse(vendor config.Vendor, body []byte) (Reading, error) {
 	if vendor == config.Codex {
-		return parseCodex(body)
+		r, err := parseCodex(body)
+		markShared(r.Rows)
+		return r, err
 	}
 	rows, err := ParseLimits(body)
 	return Reading{Rows: rows}, err

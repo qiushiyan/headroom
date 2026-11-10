@@ -291,13 +291,15 @@ func CheckRemovable(cfg config.Scope, name string) error {
 	return nil
 }
 
-// RemoveDir deletes an extra account's dir (or a stranded `<name>.lock`)
-// and scrubs its `.order` line. It is the filesystem half of removal only:
-// the liveness gate and the Keychain deletion happen before it, in the app
+// RemoveDir deletes an extra account's dir (or a stranded `<name>.lock`),
+// and nothing else: an error means the dir is still there. It is the point of
+// no return of a removal, so it answers for that step alone — what is tidied
+// once the account is gone (ScrubOrder, its headless token, its reservation)
+// is each its own step, and none of them is skipped because another failed.
+// The liveness gate and the Keychain deletion happen before it, in the app
 // layer, because both are edges (process inspection, `security`) and both
-// must precede the point of no return. It re-runs CheckRemovable itself, so
-// a caller that skipped the preflight still cannot delete unmigrated
-// sessions.
+// must precede it. It re-runs CheckRemovable itself, so a caller that skipped
+// the preflight still cannot delete unmigrated sessions.
 //
 // os.RemoveAll does not follow symlinks, so the account's projects/ link
 // goes and the canonical store it points at is untouched — the property the
@@ -307,16 +309,14 @@ func RemoveDir(cfg config.Scope, name string) error {
 	if err := CheckRemovable(cfg, name); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(cfg.AccountsRoot, name)); err != nil {
-		return err
-	}
-	return scrubOrder(cfg, name)
+	return os.RemoveAll(filepath.Join(cfg.AccountsRoot, name))
 }
 
-// scrubOrder drops every line that lists name from .order — read by the same
+// ScrubOrder drops every line that lists name from .order — read by the same
 // orderEntry discovery reads it with — keeping every other byte of the file
-// (comments, spacing) as the human wrote it.
-func scrubOrder(cfg config.Scope, name string) error {
+// (comments, spacing) as the human wrote it. It asks nothing of the account's
+// dir, so it runs as well after the dir is gone as before.
+func ScrubOrder(cfg config.Scope, name string) error {
 	data, err := os.ReadFile(cfg.OrderFile())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

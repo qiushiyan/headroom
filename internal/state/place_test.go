@@ -224,7 +224,7 @@ func TestPlaceDegradesPerSection(t *testing.T) {
 	}
 	s = Open(rootScope(root))
 	p, err = place(s, idle("a"), placement.Intent{}, 1, "new-session", time.Now())
-	if err != nil || p.SessionErr != ErrCorrupt {
+	if err != nil || p.Route.Missed() != ErrCorrupt || p.Route.Written() {
 		t.Fatalf("place beside an unreadable sessions section: %+v %v", p, err)
 	}
 	if n := len(s.Load().Placements().Recent); n != 1 {
@@ -262,5 +262,45 @@ func TestPlaceFollowingTheOwnerWritesNoReHome(t *testing.T) {
 	}
 	if _, ok := s.Load().Owners()["sess"]; ok {
 		t.Fatal("following the owner recorded a re-home")
+	}
+}
+
+// Place says what became of the session's re-home, on its own: written when
+// the launch put the session somewhere other than its owner, not called for
+// when it followed the owner or was for no session, and — when nothing could
+// be recorded at all — missed for that reason exactly where it was owed.
+func TestPlaceSaysWhatBecameOfTheReHome(t *testing.T) {
+	s := Open(rootScope(t.TempDir()))
+	p, err := place(s, idle("a", "b"), placement.Intent{}, 1, "s1", time.Now())
+	if err != nil || !p.Route.Written() || p.Route.Missed() != nil {
+		t.Fatalf("a session with no owner to follow: %+v, %v", p, err)
+	}
+	owner := p.Decision.Chosen
+	if p, err := place(s, idle(owner), placement.Intent{Owner: owner}, 1, "s1", time.Now()); err != nil || p.Route.Written() || p.Route.Missed() != nil {
+		t.Errorf("a session that stayed on its owner: %+v, %v", p, err)
+	}
+	if p, err := place(s, idle("a", "b"), placement.Intent{}, 1, "", time.Now()); err != nil || p.Route.Written() || p.Route.Missed() != nil {
+		t.Errorf("a launch for no session: %+v, %v", p, err)
+	}
+
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":999}`)
+	s = Open(rootScope(root))
+	owed := func(session, owner string) Placed {
+		p, err := place(s, idle("a", "b"), placement.Intent{Owner: owner}, 1, session, time.Now())
+		if err != ErrReadOnly {
+			t.Fatalf("err = %v", err)
+		}
+		return p
+	}
+	if p := owed("", ""); p.Route.Missed() != nil {
+		t.Errorf("nothing recorded, no session: %+v", p)
+	}
+	if p := owed("s1", ""); p.Route.Missed() != ErrReadOnly {
+		t.Errorf("nothing recorded, a session with no owner to follow: %+v", p)
+	}
+	chosen := owed("", "").Decision.Chosen
+	if p := owed("s1", chosen); p.Decision.Chosen != chosen || p.Route.Missed() != nil {
+		t.Errorf("nothing recorded, a session that stayed on its owner owed no re-home: %+v", p)
 	}
 }

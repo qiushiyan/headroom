@@ -142,13 +142,13 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 	}
 	err := s.update(claimWait, func(d *doc) error {
 		d.sweepStale(now)
-		if d.badAccounts {
+		if d.held[secAccounts] {
 			// No readable ledger. "Eligible" is then a guess, and a live
 			// cooldown is exactly when that guess is worst — so the unreadable
 			// bytes are set aside (never dropped: `check` reports them) and
 			// every account starts quiet. This self-heals in one cooldown
 			// rather than bricking until someone deletes the file.
-			d.setAside("accounts", &d.badAccounts)
+			d.setAside(secAccounts)
 			for i, k := range keys {
 				r := d.accounts[k.ID()]
 				r.Name = k.Name
@@ -211,7 +211,7 @@ func (s *Store) Claim(keys []Key, now time.Time) ([]Decision, error) {
 func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, at time.Time) (time.Time, error) {
 	var next time.Time
 	err := s.update(completeWait, func(d *doc) error {
-		if d.badAccounts {
+		if d.held[secAccounts] {
 			return ErrCorrupt
 		}
 		id := k.ID()
@@ -269,7 +269,7 @@ func (s *Store) Complete(k Key, generation int64, outcome Outcome, body []byte, 
 // with no record yet. Swept by its zero attempt time, that quiet period would
 // end at the very next claim.
 func (d *doc) sweepStale(now time.Time) {
-	if d.badAccounts {
+	if d.held[secAccounts] {
 		return
 	}
 	cutoff := now.Add(-retention).UnixMilli()
@@ -347,7 +347,7 @@ func validRuns(runs []Run) bool {
 // aside a section that would not decode; whatever it changes dirties the
 // document.
 func (d *doc) sweepRuns(gone []Run, now time.Time) {
-	d.setAside("runs", &d.badRuns)
+	d.setAside(secRuns)
 	old := now.Add(-runKeep).UnixMilli()
 	kept := d.runs[:0]
 	for _, r := range d.runs {
@@ -360,14 +360,32 @@ func (d *doc) sweepRuns(gone []Run, now time.Time) {
 	d.runs = kept
 }
 
+// Effect is what became of a write a launch may owe: the zero value is one
+// the launch did not call for.
+type Effect struct {
+	written bool
+	missed  error
+}
+
+// Written reports that the write is on disk.
+func (e Effect) Written() bool { return e.written }
+
+// Missed is why a write the launch called for is not on disk; nil when it is,
+// or when the launch called for none.
+func (e Effect) Missed() error { return e.missed }
+
 // Placed is Place's answer. The decision is always there; with no error, a
 // decision that chose an account is in the record the next placement reads.
-// SessionErr says why the session's routing was not recorded when it should
-// have been: an unreadable sessions section is never written over, here as
-// everywhere, and the launch goes ahead.
+//
+// Route is the session's re-home: written, not called for (the launch is for
+// no session, or put it on the account that last drove it), or missed, with
+// why. It is missed when the sessions section could not be read — which is
+// never written over, here as everywhere, and the launch goes ahead — and
+// when Place records nothing at all, so a caller can say what the launch owed
+// its session whichever way the write failed.
 type Placed struct {
-	Decision   placement.Decision
-	SessionErr error
+	Decision placement.Decision
+	Route    Effect
 }
 
 // Place chooses the account for one launch and records the choice, in one
@@ -391,10 +409,14 @@ type Placed struct {
 func (s *Store) Place(l Launch) (Placed, error) {
 	var out Placed
 	now := l.Now
+	// routes reports whether a launch that chose this account owes its
+	// session a re-home: it is for a session, and put it somewhere other
+	// than the account that last drove it.
+	routes := func(chosen string) bool { return l.Session != "" && chosen != l.Intent.Owner }
 	err := s.update(placeWait, func(d *doc) error {
 		// Disposable, like the request ledger: an unreadable record of
 		// launches is set aside and starts from nothing.
-		d.setAside("placements", &d.badPlacements)
+		d.setAside(secPlacements)
 		if d.placements.Prune(now, retention) {
 			d.dirty = true
 		}
@@ -411,11 +433,11 @@ func (s *Store) Place(l Launch) (Placed, error) {
 		}
 		d.placements.Record(l.ID, chosen.Key, chosen.Name, l.PID, now)
 		d.dirty = true
-		if l.Session == "" || chosen.Name == l.Intent.Owner {
+		if !routes(chosen.Name) {
 			return nil
 		}
-		if d.badSessions {
-			out.SessionErr = ErrCorrupt
+		if d.held[secSessions] {
+			out.Route = Effect{missed: ErrCorrupt}
 			return nil
 		}
 		if l.Live != nil {
@@ -431,16 +453,24 @@ func (s *Store) Place(l Launch) (Placed, error) {
 			}
 		}
 		d.sessions[l.Session] = sessions.OwnerRec{Account: chosen.Ref, AtMS: now.UnixMilli()}
+		out.Route = Effect{written: true}
 		return nil
 	})
 	if err != nil {
-		return Placed{Decision: placement.Choose(l.Candidates, s.Load().Placements(), l.Intent, now)}, err
+		// Nothing was recorded. The decision is made again from an unlocked
+		// read, and a re-home it would have owed is missed for that reason.
+		out = Placed{Decision: placement.Choose(l.Candidates, s.Load().Placements(), l.Intent, now)}
+		if chosen, ok := out.Decision.Find(out.Decision.Chosen); ok && out.Decision.Chosen != "" && routes(chosen.Name) {
+			out.Route = Effect{missed: err}
+		}
+		return out, err
 	}
 	return out, nil
 }
 
 // ErrNotPlaced is Started's answer for an id no recent placement carries: it
-// was never placed, or it has stopped counting and been pruned.
+// was never placed, or it has stopped counting — whether or not a later
+// placement has pruned it yet.
 var ErrNotPlaced = errors.New("no recent placement has that id")
 
 // Started records the process a headless caller started on its placement: the
@@ -451,10 +481,10 @@ var ErrNotPlaced = errors.New("no recent placement has that id")
 func (s *Store) Started(id string, pid int, startedMS int64, gone []Run, now time.Time) (Run, error) {
 	var out Run
 	err := s.update(claimWait, func(d *doc) error {
-		if d.badPlacements {
+		if d.held[secPlacements] {
 			return ErrCorrupt
 		}
-		p, ok := d.placements.Attach(id, pid)
+		p, ok := d.placements.Attach(id, pid, now)
 		if !ok {
 			return ErrNotPlaced
 		}
@@ -499,7 +529,7 @@ func writable(d *doc) error {
 	switch {
 	case d.readOnly():
 		return ErrReadOnly
-	case d.unreadable:
+	case d.cond == condUnreadable:
 		// Something is in that file and nobody could read it. Writing a fresh
 		// document here is how re-homes get destroyed by an I/O blip.
 		return ErrUnreadable
@@ -545,10 +575,41 @@ func commitDoc(d *doc) error {
 		return err
 	}
 	path := statePath(d.root)
-	if d.corruptDoc {
+	if d.cond == condNotJSON {
 		// Unreadable, but not this code's to destroy: whatever is in there is
-		// the only copy, and someone may want to look at it.
-		_ = os.Rename(path, path+".unreadable")
+		// the only copy, and someone may want to look at it. Kept first, and
+		// replaced only once it is.
+		if err := keepAside(path); err != nil {
+			return fmt.Errorf("%s is not valid JSON and could not be kept aside, so it was not replaced: %w", path, err)
+		}
 	}
 	return atomicfile.Write(path, "state-*.json", data)
+}
+
+// keepAside gives the file at path a second name beside it — path.unreadable,
+// or the first of path.unreadable.2, .3, … that nothing holds — so the write
+// that then replaces path destroys nothing. A link, not a rename: an earlier
+// file kept aside is never written over, and a name already holding these very
+// bytes (a write that failed after keeping them) is not taken twice.
+func keepAside(path string) error {
+	cur, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	for n := 1; n <= 1000; n++ {
+		aside := path + ".unreadable"
+		if n > 1 {
+			aside = fmt.Sprintf("%s.unreadable.%d", path, n)
+		}
+		switch err := os.Link(path, aside); {
+		case err == nil:
+			return nil
+		case !errors.Is(err, os.ErrExist):
+			return err
+		}
+		if kept, err := os.Stat(aside); err == nil && os.SameFile(cur, kept) {
+			return nil
+		}
+	}
+	return errors.New("every name it could be kept under is taken")
 }

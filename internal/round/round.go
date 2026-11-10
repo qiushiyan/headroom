@@ -29,11 +29,17 @@ import (
 
 // Deps are the edges a round reads through, each replaced in tests.
 type Deps struct {
-	// Creds reads one Claude Code account's stored credential; "" when it
-	// cannot be read. ctx is the round's: a credential read is where a round
-	// can stall, and the picker's cancel and the detached refresh's signals
-	// stop it there.
-	Creds func(ctx context.Context, a accounts.Account) string
+	// Creds reads one Claude Code account's stored credential, and where it
+	// came from; an empty reading when it cannot be read. ctx is the round's:
+	// a credential read is where a round can stall, and the picker's cancel
+	// and the detached refresh's signals stop it there.
+	Creds func(ctx context.Context, a accounts.Account) creds.Reading
+	// Item says what the Keychain shows of one account's item, without its
+	// secret (creds.KeychainItem in production). It is asked only for an
+	// account whose read did not come from the Keychain and whose health
+	// would otherwise be a bad answer, since only there does it change what
+	// is said; nil asks nothing, and such a read stands as it is.
+	Item func(ctx context.Context, a accounts.Account) (creds.Item, string)
 	// Health asks Claude Code whether each account is logged in (ProbeHealth
 	// in production). nil skips the probe, and health falls back to
 	// credential evidence, as it does whenever the probe has no answer: the
@@ -103,7 +109,7 @@ func prepare(ctx context.Context, set accounts.Set, st *state.Store, now time.Ti
 			// read.
 			codexAccess(d, now)
 		} else {
-			claudeAccess(d, deps.Creds(ctx, d.Acct), health(d.Acct.ConfigDir), now)
+			claudeAccess(ctx, d, deps.Creds(ctx, d.Acct), health(d.Acct.ConfigDir), deps.Item, now)
 		}
 	}
 	return r
@@ -242,16 +248,58 @@ func (r *Round) Narrow(selector string) error {
 	return nil
 }
 
-func claudeAccess(d *row, raw string, health auth.Status, now time.Time) {
-	blob, ok := creds.Parse(raw)
+func claudeAccess(ctx context.Context, d *row, read creds.Reading, health auth.Status, item func(context.Context, accounts.Account) (creds.Item, string), now time.Time) {
+	blob, ok := creds.Parse(read.Raw)
 	if ok {
 		d.View.Plan = blob.PlanLabel()
 	}
-	d.View.Health = Health(health, raw, blob, ok, now.UnixMilli())
+	d.View.Health = Health(health, read.Raw, blob, ok, now.UnixMilli())
+	d.View.Login = accountstate.LoginReached
+	if reach := loginReach(ctx, d.Acct, read, d.View.Health, item); reach != accountstate.LoginReached {
+		// A bad answer reached without the login sessions use is no answer:
+		// the account is as it is wherever that login can be read.
+		d.View.Health, d.View.Login = accountstate.HealthUnknown, reach
+	}
 	d.View.Attempt = accountstate.Attempt{}
 	if d.View.Health == accountstate.HealthOK {
 		d.request, d.View.Attempt.State = refresh.Prepare(d.Acct, blob, ok, now)
 	}
+}
+
+// loginReach asks where the account's login is kept when the answer would
+// change what is said: the read did not come from the Keychain, and health
+// came out as something a person would be sent to fix — no login, an expired
+// one, an unreadable credential. A Keychain item that exists and was not
+// handed over, or that `security` cannot answer for, means that verdict was
+// reached on a file or on nothing, while the login sessions use sits unread:
+// `claude auth status` itself reports such an account logged out (DESIGN.md §
+// Renewing logins). The rule is creds.Reading.Access, which `login` holds an
+// account back by and `check` words its credential line with.
+func loginReach(ctx context.Context, a accounts.Account, read creds.Reading, health accountstate.Health, item func(context.Context, accounts.Account) (creds.Item, string)) accountstate.LoginReach {
+	switch health {
+	case accountstate.HealthNoLogin, accountstate.HealthReloginRequired, accountstate.HealthBadBlob:
+	default:
+		return accountstate.LoginReached
+	}
+	if read.Source == creds.SourceKeychain || ctx.Err() != nil {
+		return accountstate.LoginReached
+	}
+	var found creds.Item = creds.ItemAbsent
+	var said string
+	if item != nil {
+		found, said = item(ctx, a)
+	}
+	if ctx.Err() != nil {
+		// A question cut short is not an answer about the Keychain.
+		return accountstate.LoginReached
+	}
+	switch access, _ := read.Access(found, said); access {
+	case creds.Withheld:
+		return accountstate.LoginWithheld
+	case creds.Unplaced:
+		return accountstate.LoginUnplaced
+	}
+	return accountstate.LoginReached
 }
 
 // codexAccess is the Codex health and eligibility table, first match wins.

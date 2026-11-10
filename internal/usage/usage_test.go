@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 )
 
@@ -182,5 +183,61 @@ func TestIdentityFields(t *testing.T) {
 	r = parseOne(t, `{"limits":[{"kind":"weekly_all","group":"weekly","percent":1,"scope":null}]}`)
 	if r.Model != "" || r.IdentityState != tag.OK {
 		t.Errorf("null scope = %+v", r)
+	}
+}
+
+// Two rows of one reading claiming the same identity cannot be told apart by
+// anything a consumer selects on, so both are tagged — identity bad, shared —
+// and keep what they reported; a row beside them with an identity of its own
+// is untouched, and one whose identity already failed claims none to share.
+// Both vendors' readings end with the same step.
+func TestRowsSharingAnIdentityAreBothTagged(t *testing.T) {
+	rows, err := ParseLimits([]byte(`{"limits":[
+		{"kind":"session","group":"session","percent":12},
+		{"kind":"weekly_all","group":"weekly","percent":30},
+		{"kind":"session","group":"session","percent":80},
+		{"kind":"weekly_scoped","group":"weekly","percent":5,"scope":{"model":{"display_name":"Fable"}}},
+		{"kind":"weekly_scoped","group":"weekly","percent":6,"scope":{"model":{"display_name":"Opus"}}},
+		{"group":"weekly","percent":1},
+		{"group":"weekly","percent":2}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type got struct {
+		pct    int
+		shared bool
+		ident  tag.State
+	}
+	want := []got{
+		{12, true, tag.Bad}, {30, false, tag.OK}, {80, true, tag.Bad},
+		{5, false, tag.OK}, {6, false, tag.OK}, // one kind, two models: two limits
+		{1, false, tag.Bad}, {2, false, tag.Bad}, // no kind: unselectable already, sharing nothing
+	}
+	for i, r := range rows {
+		if g := (got{r.Percent, r.Shared, r.IdentityState}); g != want[i] {
+			t.Errorf("row %d: %+v, want %+v", i, g, want[i])
+		}
+		if r.PercentState != tag.OK {
+			t.Errorf("row %d: a shared identity is not a percent that failed to parse", i)
+		}
+	}
+	if !rows[0].Drifted() || rows[1].Drifted() {
+		t.Error("a shared identity is drift check must see, and only on the rows that share it")
+	}
+	if i := SessionWindow(config.Claude, rows); i != -1 {
+		t.Errorf("row %d was taken for the session window, though two rows claim to be it", i)
+	}
+
+	codex, err := Parse(config.Codex, []byte(`{"rate_limit":{"allowed":true,
+		"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_at":1},
+		"secondary_window":{"used_percent":20,"limit_window_seconds":604800,"reset_at":1}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range codex.Rows {
+		if r.Shared || r.IdentityState == tag.Bad {
+			t.Errorf("two windows of different lengths are two limits: %+v", r)
+		}
 	}
 }

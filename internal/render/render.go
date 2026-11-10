@@ -76,6 +76,14 @@ func healthText(v accountstate.Facts) string {
 	case accountstate.HealthBadBlob:
 		return "credential unreadable — format changed? run headroom check"
 	case accountstate.HealthUnknown:
+		switch v.Login {
+		case accountstate.LoginWithheld:
+			// Login's words for the same account: logging in from here would
+			// store a login no session that reads the Keychain uses.
+			return "login kept in the Keychain, which this session cannot read — run security unlock-keychain here"
+		case accountstate.LoginUnplaced:
+			return "could not tell where its login is kept — run headroom check"
+		}
 		if v.AuthMode != "" {
 			// Not a subscription login: there is no window to read, and
 			// nothing is wrong with the account.
@@ -214,8 +222,12 @@ func requestReason(v accountstate.Facts, now int64) string {
 // there is nothing to report; captioning it would put "live check deferred" on
 // a row that is telling the truth right now. Refused is the endpoint saying
 // no, which is a fact about the budget worth stating even beside fresh bars.
+//
+// An answer with no limits to report is an answer like one with figures: its
+// rows are the body, and over a fresh one there is no more to say about the
+// refresh than there is over fresh bars.
 func expected(s accountstate.AttemptState) bool {
-	return s == accountstate.AttemptOK || s == accountstate.AttemptNone || s == accountstate.AttemptDeferred
+	return s.Answered() || s == accountstate.AttemptNone || s == accountstate.AttemptDeferred
 }
 
 func retryPhrase(nextAt, now int64) string {
@@ -501,8 +513,12 @@ func (p Palette) limitRow(r usage.Row, now int64, width int) string {
 		phrase = "not started"
 	case resetRolled:
 		phrase = "window rolled over"
+	case resetAbsent:
+		// Legitimately none — a window nobody has opened. The compact cell's
+		// own token, so the two layouts spell the state alike.
+		phrase = "resets —"
 	default:
-		// Absent or unparseable: the drift marker is what tells them apart.
+		// Present and no longer a time: drift, which the marker also says.
 		phrase = "resets ?"
 	}
 	// The label carries the vendor's model name: sanitized, and padded by
