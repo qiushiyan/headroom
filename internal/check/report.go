@@ -197,5 +197,10 @@ func (r *report) request(name string, res refresh.Result, now time.Time) {
 			hint = fmt.Sprintf("%d malformed field(s) — shape drifted", bad)
 		}
 		r.check(bad == 0, fmt.Sprintf("%s, %d row(s), fields well-formed", label, len(res.Observation.Rows)), hint)
+	default:
+		// A request that was started ends in one of the states above. Any
+		// other is a result this report does not know how to read, and an
+		// assertion nobody read is untested, never silently passed over.
+		r.skip(fmt.Sprintf("api[%s]: not tested", name), "the request ended in a state this check does not read")
 	}
 }

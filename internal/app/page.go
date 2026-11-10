@@ -27,6 +27,14 @@ const presenceWindow = 5 * time.Minute
 // in-flight round — one list and one channel until that channel closes and
 // drains — so a result can only ever land on the page that started the round,
 // never on whichever page happens to be visible when it arrives.
+//
+// The schedule is the page's own too, and it moves by four events and nothing
+// else: a round started for it (startRound, when it is first shown), the `r`
+// key (refresh), the loop's second (tick) and a result delivered or its
+// channel closing (receive). What the schedule then is reads back through
+// refreshStatus, the footer's words. Whether a round is in flight is the
+// channel itself, never a second flag beside it; when the page last ran its
+// local half and when it is next due are instants on the page's one clock.
 type page struct {
 	scope config.Scope
 	st    *state.Store
@@ -54,6 +62,18 @@ type page struct {
 	// then the claim and whatever fetches it permits. The round it returns
 	// replaces the page's. nil means beginRound; tests inject channels.
 	begin func(ctx context.Context, pg *page) (*round.Round, <-chan round.Result)
+
+	// now is the page's clock: every instant the schedule records or
+	// compares is read from it. nil is the wall clock; tests hold one.
+	now func() time.Time
+}
+
+// clock reads the page's clock.
+func (pg *page) clock() time.Time {
+	if pg.now != nil {
+		return pg.now()
+	}
+	return time.Now()
 }
 
 const ackTTL = 4 * time.Second
@@ -73,11 +93,12 @@ func (pg *page) accounts() []accountstate.Account {
 
 // receive applies one result of this page's own round, or closes the round
 // out when its channel has drained. Only this receiving path updates facts.
-func (pg *page) receive(u round.Result, open bool, now time.Time) {
+func (pg *page) receive(u round.Result, open bool) {
 	if open {
 		pg.round.Apply(u)
 		return
 	}
+	now := pg.clock()
 	pg.updates = nil
 	pg.mark(now)
 	pg.schedule()
@@ -108,8 +129,9 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 	}
 	r, updates := begin(ctx, ui)
 	ui.round = r
-	ui.mark(time.Now())
-	ui.lastLocal = time.Now()
+	now := ui.clock()
+	ui.mark(now)
+	ui.lastLocal = now
 	ui.armed = false
 	ui.manual = manual
 	ui.updates = updates
@@ -119,7 +141,7 @@ func (ui *page) startRound(ctx context.Context, manual bool) {
 // local half with the health probe, then the claim and whatever fetches it
 // permits, against the page's own store.
 func beginRound(ctx context.Context, pg *page) (*round.Round, <-chan round.Result) {
-	r := round.Prepare(ctx, pg.scope, pg.st, time.Now(), pg.deps.Round)
+	r := round.Prepare(ctx, pg.scope, pg.st, pg.clock(), pg.deps.Round)
 	return r, r.Fetch(ctx)
 }
 
@@ -147,7 +169,7 @@ func (ui *page) markAt(now time.Time) {
 func (ui *page) ackString(now time.Time) string {
 	var next time.Time
 	for _, d := range ui.accounts() {
-		if d.View.Attempt.State == accountstate.AttemptOK || d.View.Attempt.State == accountstate.AttemptNoLimits {
+		if d.View.Attempt.State.Answered() {
 			continue
 		}
 		if at := d.View.Attempt.NextEligibleAt; at > now.Unix() {
@@ -169,7 +191,7 @@ func (ui *page) ackString(now time.Time) string {
 // configure: sooner is refused by the endpoint's budget, later would leave the
 // board saying less than it could.
 func (ui *page) schedule() {
-	ui.nextAt = nextRound(ui.st.Load(), ui.accounts(), ui.round != nil && ui.round.Asking(), ui.scope.RequestSpacing(), time.Now())
+	ui.nextAt = nextRound(ui.st.Load(), ui.accounts(), ui.round != nil && ui.round.Asking(), ui.scope.RequestSpacing(), ui.clock())
 }
 
 // nextRound is the instant the next round is due, from the store as it now
@@ -218,14 +240,48 @@ func (ui *page) due(lastKey time.Time) bool {
 	if ui.updates != nil {
 		return false
 	}
-	now := time.Now()
+	now := ui.clock()
 	if ui.armed {
 		return !now.Before(ui.lastLocal.Add(refreshFloor))
 	}
 	if ui.nextAt.IsZero() || now.Before(ui.nextAt) {
 		return false
 	}
-	return time.Since(lastKey) < presenceWindow
+	return now.Sub(lastKey) < presenceWindow
+}
+
+// tick is the loop's second on the visible page: a round that is due starts.
+// lastKey is when a key last landed on the board — presence. A round due
+// because it was armed is still the user's ask.
+func (ui *page) tick(ctx context.Context, lastKey time.Time) {
+	if ui.due(lastKey) {
+		ui.startRound(ctx, ui.armed)
+	}
+}
+
+// refreshStatus is how the schedule reads, for the footer: a round in flight
+// (and whether another is queued behind it), one queued behind the floor, the
+// answer to a round asked for by hand, a board nobody is at, or when the next
+// round is due. "" before the first round has completed. What it says and
+// what due decides are read from the same fields at the same clock; an
+// acknowledgement on show does not hold a due round back.
+func (ui *page) refreshStatus(lastKey time.Time) string {
+	now := ui.clock()
+	switch {
+	case ui.updates != nil && ui.armed:
+		return "refreshing… · queued"
+	case ui.updates != nil:
+		return "refreshing…"
+	case ui.armed:
+		return "queued · refresh in " + until(ui.lastLocal.Add(refreshFloor), now)
+	case ui.ack != "" && now.Before(ui.ackUntil):
+		return ui.ack
+	case ui.nextAt.IsZero():
+		return "" // no round has completed yet
+	case now.Sub(lastKey) >= presenceWindow:
+		return "paused — r to refresh"
+	}
+	return "next refresh in " + until(ui.nextAt, now)
 }
 
 // refresh is the `r` key: ask now. The claim — never this loop — decides per
@@ -238,7 +294,7 @@ func (ui *page) due(lastKey time.Time) bool {
 // round fires the moment the floor passes, unattended included.
 func (ui *page) refresh(ctx context.Context) {
 	ui.ack, ui.ackUntil = "", time.Time{} // a new ask supersedes the old answer
-	if ui.updates != nil || time.Now().Before(ui.lastLocal.Add(refreshFloor)) {
+	if ui.updates != nil || ui.clock().Before(ui.lastLocal.Add(refreshFloor)) {
 		ui.armed = true
 		return
 	}

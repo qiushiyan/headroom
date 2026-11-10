@@ -2,10 +2,10 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/round"
@@ -80,36 +80,93 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	}
 }
 
+// fakeClock is a clock a test holds: a page reads every instant of its
+// schedule from it, so a test moves time instead of the schedule's fields.
+type fakeClock struct{ t time.Time }
+
+func newFakeClock() *fakeClock               { return &fakeClock{t: time.Now()} }
+func (c *fakeClock) Now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// clockedPage is an injected page on a clock the test holds.
+func clockedPage(t *testing.T, names ...string) (*page, *fakeClock, *int) {
+	t.Helper()
+	pg, _, begun := injectedPage(t, config.Claude, names...)
+	clock := newFakeClock()
+	pg.now = clock.Now
+	return pg, clock, begun
+}
+
+// closeRound is the page's round ending: its channel closed and drained.
+func closeRound(pg *page) { pg.receive(round.Result{}, false) }
+
+// refreshIn is how long the page says its next round is away.
+func refreshIn(t *testing.T, pg *page, lastKey time.Time) time.Duration {
+	t.Helper()
+	said := pg.refreshStatus(lastKey)
+	d, err := time.ParseDuration(strings.TrimPrefix(said, "next refresh in "))
+	if err != nil {
+		t.Fatalf("the page does not say when its next round is: %q", said)
+	}
+	return d
+}
+
 // An unattended board stops asking. Presence is what watch got for free from
 // the user having chosen to run a long-lived command, and what a picker left
 // open on a spare tab does not.
 func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
-	now := time.Now()
-	lastKey := now.Add(-presenceWindow - time.Minute)
-	ui := &page{nextAt: now.Add(-time.Second)}
-	if ui.due(lastKey) {
-		t.Error("an unattended board kept polling")
+	ctx := context.Background()
+	pg, clock, begun := clockedPage(t, "a@x.com")
+	lastKey := clock.Now() // the last key anybody pressed
+	pg.startRound(ctx, false)
+	closeRound(pg)
+
+	clock.advance(presenceWindow + time.Minute) // long past due, and nobody there
+	pg.tick(ctx, lastKey)
+	if *begun != 1 || pg.refreshStatus(lastKey) != "paused — r to refresh" {
+		t.Errorf("an unattended board kept polling: %d rounds, %q", *begun, pg.refreshStatus(lastKey))
 	}
+
 	// A refresh asked for by hand fires regardless of presence: it was asked
-	// for. It waits only for the floor, never for the cadence.
-	ui.armed, ui.lastLocal = true, now.Add(-refreshFloor-time.Second)
-	if !ui.due(lastKey) {
-		t.Error("an armed refresh must fire even after the board paused")
+	// for. It waits only for the floor, never for the cadence. Pressed while
+	// a round is in flight it is queued; that round closes inside the floor.
+	pg.refresh(ctx)
+	pg.refresh(ctx)
+	closeRound(pg)
+	if *begun != 2 || !strings.HasPrefix(pg.refreshStatus(lastKey), "queued · refresh in ") {
+		t.Fatalf("a press during a round: %d rounds, %q", *begun, pg.refreshStatus(lastKey))
 	}
-	ui.lastLocal = now
-	if ui.due(lastKey) {
+	pg.tick(ctx, lastKey)
+	if *begun != 2 {
 		t.Error("an armed refresh inside the floor must wait it out")
 	}
-	// And a keypress resumes the ordinary cadence.
-	ui.armed, lastKey = false, now
-	if !ui.due(lastKey) {
+	clock.advance(refreshFloor + time.Second)
+	pg.tick(ctx, lastKey)
+	if *begun != 3 {
+		t.Error("an armed refresh must fire even after the board paused")
+	}
+	closeRound(pg)
+
+	// And a keypress resumes the ordinary cadence. (The round was asked for
+	// by hand, so its answer holds the footer first.)
+	clock.advance(ackTTL)
+	clock.advance(refreshIn(t, pg, clock.Now()) + time.Second)
+	pg.tick(ctx, lastKey)
+	if *begun != 3 {
+		t.Error("the cadence resumed with nobody there")
+	}
+	pg.tick(ctx, clock.Now())
+	if *begun != 4 {
 		t.Error("a present user must get the ordinary cadence back")
 	}
+
 	// A round already in flight never starts a second one, armed or not.
-	ui.updates = make(chan round.Result)
-	ui.armed = true
-	if ui.due(lastKey) {
-		t.Error("rounds must not overlap")
+	pg.tick(ctx, clock.Now())
+	pg.refresh(ctx)
+	clock.advance(time.Hour)
+	pg.tick(ctx, clock.Now())
+	if *begun != 4 {
+		t.Errorf("rounds must not overlap: %d", *begun)
 	}
 }
 
@@ -119,44 +176,61 @@ func TestPickerPausesWhenNobodyIsThere(t *testing.T) {
 // press instead of dropping it.
 func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 	ctx := context.Background()
-	ui, _, begun := injectedPage(t, config.Claude, "a@x.com")
-	ui.startRound(ctx, false) // its account is waiting on the budget
-	ui.updates = nil          // and the round has drained
+	pg, clock, begun := clockedPage(t, "a@x.com")
+	pg.startRound(ctx, false) // its account is waiting on the budget
+	closeRound(pg)            // and the round has drained
 
 	// Past the floor `r` runs a round immediately — even mid-quiet-period,
 	// even with accounts waiting on the budget: eligibility is the claim's
 	// question, and pre-deciding it here is the duplicated-eligibility bug
 	// the store's locked test-and-set exists to close.
-	ui.lastLocal, ui.nextAt = time.Now().Add(-refreshFloor-time.Second), time.Now().Add(time.Minute)
-	ui.refresh(ctx)
-	if *begun != 2 || ui.updates == nil || ui.armed || !ui.manual {
-		t.Fatalf("r mid-quiet-period did not run a round of its own (rounds %d, armed %v); only the claim may defer a request", *begun, ui.armed)
+	clock.advance(refreshFloor + time.Second)
+	if refreshIn(t, pg, clock.Now()) <= 0 {
+		t.Fatal("the fixture's next round is already due; the press would prove nothing")
+	}
+	pg.refresh(ctx)
+	if *begun != 2 || pg.refreshStatus(clock.Now()) != "refreshing…" {
+		t.Fatalf("r mid-quiet-period did not run a round of its own (rounds %d, %q); only the claim may defer a request", *begun, pg.refreshStatus(clock.Now()))
+	}
+	// The round a person asked for answers them when it lands.
+	closeRound(pg)
+	if said := pg.refreshStatus(clock.Now()); !strings.HasPrefix(said, "refreshed · ") {
+		t.Errorf("a round asked for by hand was not acknowledged: %q", said)
 	}
 
 	// Inside the floor the press arms — spawn hygiene for prepare's
 	// per-account `claude auth status`, not budget politeness.
-	ui.updates = nil
-	ui.refresh(ctx)
-	if !ui.armed || ui.updates != nil || *begun != 2 {
-		t.Errorf("r inside the floor: armed %v, rounds %d — it must arm and start nothing", ui.armed, *begun)
+	pg.refresh(ctx)
+	if *begun != 2 || !strings.HasPrefix(pg.refreshStatus(clock.Now()), "queued · refresh in ") {
+		t.Errorf("r inside the floor: rounds %d, %q — it must arm and start nothing", *begun, pg.refreshStatus(clock.Now()))
+	}
+	// The queued round fires the moment the floor passes.
+	clock.advance(refreshFloor + time.Second)
+	pg.tick(ctx, clock.Now())
+	if *begun != 3 {
+		t.Fatalf("the queued round did not fire once the floor passed: %d rounds", *begun)
 	}
 
 	// During a round it arms too, floor or not: the round in flight only
 	// carries the accounts that were eligible when it started.
-	ui.armed, ui.lastLocal = false, time.Now().Add(-refreshFloor-time.Second)
-	ui.updates = make(chan round.Result)
-	ui.refresh(ctx)
-	if !ui.armed || *begun != 2 {
-		t.Errorf("r during a round: armed %v, rounds %d — it must arm and start nothing", ui.armed, *begun)
+	clock.advance(refreshFloor + time.Second)
+	pg.refresh(ctx)
+	if *begun != 3 || pg.refreshStatus(clock.Now()) != "refreshing… · queued" {
+		t.Errorf("r during a round: rounds %d, %q — it must arm and start nothing", *begun, pg.refreshStatus(clock.Now()))
 	}
 
-	// A held key delivers dozens of presses; all coalesce into the one armed
-	// bit, and none spawns anything.
+	// A held key delivers dozens of presses; all coalesce into the one queued
+	// round, and none spawns anything.
 	for range 50 {
-		ui.refresh(ctx)
+		pg.refresh(ctx)
 	}
-	if !ui.armed || *begun != 2 {
-		t.Errorf("a burst of r: armed %v, rounds %d", ui.armed, *begun)
+	if *begun != 3 {
+		t.Errorf("a burst of r: rounds %d", *begun)
+	}
+	closeRound(pg)
+	pg.tick(ctx, clock.Now())
+	if *begun != 4 {
+		t.Errorf("the burst left %d rounds, want the one it queued", *begun)
 	}
 }
 
@@ -164,13 +238,19 @@ func TestRefreshRunsNowAndOnlyTheFloorDefers(t *testing.T) {
 // come back, and the round it comes back with must not be schedulable past
 // the presence window that gates it.
 func TestAnIdleBoardStillComesBack(t *testing.T) {
-	now := time.Now()
-	ui := &page{st: state.Open(config.Scope{AccountsRoot: t.TempDir()}),
-		round: round.Of(accounts.Set{}, nil, []accountstate.Account{{Key: state.Key{Name: "a"}}})}
-	ui.schedule()
+	ctx := context.Background()
+	pg, clock, begun := clockedPage(t, "a") // an injected account has no request: nothing to ask about
+	lastKey := clock.Now()
+	pg.startRound(ctx, false)
+	closeRound(pg)
 
-	if wait := ui.nextAt.Sub(now); wait >= presenceWindow {
+	if wait := refreshIn(t, pg, lastKey); wait >= presenceWindow {
 		t.Errorf("next round in %v, but presence expires at %v — measured from the same "+
 			"instant, so the round can never fire", wait, presenceWindow)
+	}
+	clock.advance(presenceWindow - time.Second)
+	pg.tick(ctx, lastKey)
+	if *begun != 2 {
+		t.Error("the idle board never came back inside the window its last key opened")
 	}
 }

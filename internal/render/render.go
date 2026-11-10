@@ -223,8 +223,12 @@ func requestReason(v accountstate.Facts, now int64) string {
 // there is nothing to report; captioning it would put "live check deferred" on
 // a row that is telling the truth right now. Refused is the endpoint saying
 // no, which is a fact about the budget worth stating even beside fresh bars.
+//
+// An answer with no limits to report is an answer like one with figures: its
+// rows are the body, and over a fresh one there is no more to say about the
+// refresh than there is over fresh bars.
 func expected(s accountstate.AttemptState) bool {
-	return s == accountstate.AttemptOK || s == accountstate.AttemptNone || s == accountstate.AttemptDeferred
+	return s.Answered() || s == accountstate.AttemptNone || s == accountstate.AttemptDeferred
 }
 
 func retryPhrase(nextAt, now int64) string {

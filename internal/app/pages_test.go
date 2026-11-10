@@ -66,7 +66,9 @@ func observed(percent int) refresh.Result {
 func TestPagesOwnTheirRounds(t *testing.T) {
 	claude, claudeCh, claudeBegun := injectedPage(t, config.Claude, "c0@x.com", "c1@x.com")
 	codex, codexCh, codexBegun := injectedPage(t, config.Codex, "x0@x.com", "x1@x.com")
-	ui := &picker{pages: []*page{claude, codex}, p: render.NewPalette(false), lastKey: time.Now()}
+	clock := newFakeClock()
+	claude.now, codex.now = clock.Now, clock.Now
+	ui := &picker{pages: []*page{claude, codex}, p: render.NewPalette(false), lastKey: clock.Now(), now: clock.Now}
 	ctx := context.Background()
 	tick := make(chan time.Time, 1)
 	keys := make(chan tui.Key, 1)
@@ -100,16 +102,16 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 	// The round closes on its own page, which schedules itself.
 	close(claudeCh)
 	ui.step(ctx, tick, keys)
-	if claude.updates != nil || claude.nextAt.IsZero() {
-		t.Errorf("round not closed out on its page: updates=%v nextAt=%v", claude.updates, claude.nextAt)
+	if said := claude.refreshStatus(ui.lastKey); !strings.HasPrefix(said, "next refresh in ") {
+		t.Errorf("round not closed out and scheduled on its page: %q", said)
 	}
-	if codex.updates == nil {
-		t.Error("closing Claude Code's round ended Codex's")
+	if said := codex.refreshStatus(ui.lastKey); said != "refreshing…" {
+		t.Errorf("closing Claude Code's round ended Codex's: %q", said)
 	}
 
 	// Claude Code is hidden and long overdue; a tick asks only the visible
 	// page, whose own round is still in flight — so nothing starts.
-	claude.nextAt = time.Now().Add(-time.Hour)
+	clock.advance(time.Hour)
 	tick <- time.Now()
 	ui.step(ctx, tick, keys)
 	if *claudeBegun != 1 || *codexBegun != 1 {
@@ -136,13 +138,12 @@ func TestPagesOwnTheirRounds(t *testing.T) {
 	}
 	close(codexCh)
 	ui.step(ctx, tick, keys)
-	if codex.updates != nil || codex.nextAt.IsZero() {
-		t.Errorf("a hidden page's round was not closed out on it: updates=%v nextAt=%v", codex.updates, codex.nextAt)
+	if said := codex.refreshStatus(ui.lastKey); !strings.HasPrefix(said, "next refresh in ") {
+		t.Errorf("a hidden page's round was not closed out and scheduled on it: %q", said)
 	}
 
 	// On its page, the deadline that passed while hidden is simply due at the
 	// next tick.
-	claude.lastLocal = time.Now().Add(-time.Hour)
 	tick <- time.Now()
 	ui.step(ctx, tick, keys)
 	if *claudeBegun != 2 {

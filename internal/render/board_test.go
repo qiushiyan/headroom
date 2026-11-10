@@ -541,3 +541,26 @@ func TestALoginOutOfReachIsNotSaidAsLoggedOut(t *testing.T) {
 		}
 	}
 }
+
+// An answer with no limits to report reads the same whether this run asked or
+// a run a moment ago did, and like a fresh answer with figures it says nothing
+// about its own age: the same observation must not caption itself two ways.
+func TestAFreshEmptyAnswerSaysTheSameLiveAndReplayed(t *testing.T) {
+	now := time.Now().Unix()
+	empty := func(src accountstate.Source) *accountstate.Observation {
+		return &accountstate.Observation{ObservedAt: now - 5, Source: src}
+	}
+	for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
+		lines := func(v accountstate.Facts) string {
+			return strings.Join(NewPalette(false).Board([]accountstate.Facts{v}, now, layout, 0).Groups[0], "\n")
+		}
+		live := lines(accountstate.Facts{Label: "a@x.com", Obs: empty(accountstate.SourceLive), Attempt: accountstate.Attempt{State: accountstate.AttemptNoLimits}})
+		replayed := lines(accountstate.Facts{Label: "a@x.com", Obs: empty(accountstate.SourceStore), Attempt: accountstate.Attempt{State: accountstate.AttemptDeferred}})
+		if live != replayed {
+			t.Errorf("layout %v: live %q, replayed %q", layout, live, replayed)
+		}
+		if strings.Count(live, "no limits reported") != 1 || strings.Contains(live, "observed") {
+			t.Errorf("layout %v: %q", layout, live)
+		}
+	}
+}

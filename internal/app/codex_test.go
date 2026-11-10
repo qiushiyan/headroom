@@ -355,9 +355,10 @@ func TestScopeSpacingReachesFreshnessAndTheIdleCadence(t *testing.T) {
 			t.Errorf("%s: fresh window %v, want the scope's spacing", a.Acct.Name, a.View.FreshFor)
 		}
 	}
-	pg := &page{scope: f.scope, st: st} // nothing to ask about: the idle cadence
+	clock := newFakeClock()
+	pg := &page{scope: f.scope, st: st, now: clock.Now} // nothing to ask about: the idle cadence
 	pg.schedule()
-	if wait := time.Until(pg.nextAt); wait < 6*time.Minute || wait > 8*time.Minute {
+	if wait := refreshIn(t, pg, clock.Now()); wait < 6*time.Minute || wait > 8*time.Minute {
 		t.Errorf("idle cadence %v, want the scope's spacing", wait)
 	}
 }

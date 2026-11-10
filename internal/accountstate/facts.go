@@ -115,6 +115,13 @@ const (
 	AttemptIdentityUnknown
 )
 
+// Answered reports that the endpoint answered the request with this account's
+// usage: figures, or the statement that there are no limits to report. Both
+// are the newest observation there is, and a surface that treats one as a
+// success treats the other so — what it then says of an empty answer is its
+// own.
+func (s AttemptState) Answered() bool { return s == AttemptOK || s == AttemptNoLimits }
+
 // Attempt is the outcome of the newest refresh, with the time the account
 // becomes eligible again where one applies.
 type Attempt struct {
