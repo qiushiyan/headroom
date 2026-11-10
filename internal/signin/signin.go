@@ -129,6 +129,19 @@ const (
 // behind it.
 func Live(state string) bool { return state == Awaiting || state == Exchanging }
 
+// Over reports whether a sign-in in this state has ended: nothing more will
+// be sent for it, and the next start begins another.
+func Over(state string) bool { return state == Renewed || state == Failed || state == Unknown }
+
+// The reasons this package ends a sign-in by itself: its holder is gone.
+const (
+	// ReasonHolderGone: the holder ended before any code was sent.
+	ReasonHolderGone = "holder_gone"
+	// ReasonOutcomeUnknown: the holder ended while the code was being
+	// exchanged, so nobody saw how the exchange went.
+	ReasonOutcomeUnknown = "outcome_unknown"
+)
+
 // Proc identifies a process across pid reuse: its pid and the second it
 // started at, as ps(1) reports it.
 type Proc struct {
@@ -157,6 +170,119 @@ type Record struct {
 	// Log is the holder's log — the vendor's screen and the holder's own
 	// notes — kept until the next sign-in of the dir.
 	Log string `json:"log,omitempty"`
+}
+
+// Orphaned is the record of a sign-in whose holder is gone: one the record
+// calls live ended when its holder did — before any code was sent, or with
+// the outcome of one unknown. A record already over is returned as it is.
+//
+// When it ended is not known: nobody saw the holder go, and finding its
+// record later does not date its end. FinishedMS is left as it was, zero for
+// a sign-in that was live, and readers say "unknown" where they would say
+// when.
+func (r Record) Orphaned() Record {
+	switch r.State {
+	case Awaiting:
+		r.State, r.Reason, r.Problem, r.URL = Failed, ReasonHolderGone, "", ""
+	case Exchanging:
+		r.State, r.Reason, r.Problem, r.URL = Unknown, ReasonOutcomeUnknown, "", ""
+	}
+	return r
+}
+
+// Signin is a sign-in in the hands of its holder: the record, and where it is
+// kept. Its steps are the only way a holder's sign-in moves — begun waiting
+// for its code, then exchanging one, then ended — and each is taken by
+// writing the record whole. What the vendor does between the steps is the
+// holder's to drive; which step may follow which, and what a record of each
+// state carries, is decided here.
+type Signin struct {
+	path string
+	rec  Record
+}
+
+// Begin starts a sign-in waiting for its code and writes its record: rec is
+// who it is for and the URL handed out, and wait how long it waits. A sign-in
+// that cannot be recorded is not begun.
+func Begin(path string, rec Record, now time.Time, wait time.Duration) (*Signin, error) {
+	rec.State, rec.Reason, rec.Problem = Awaiting, "", ""
+	rec.StartedMS, rec.ExpiresMS = now.UnixMilli(), now.Add(wait).UnixMilli()
+	rec.FinishedMS, rec.LoginEndsMS = 0, 0
+	if err := Write(path, rec); err != nil {
+		return nil, err
+	}
+	return &Signin{path: path, rec: rec}, nil
+}
+
+// Record is the sign-in as it stands on disk — or, for one whose ending could
+// not be saved, as it last stood there.
+func (s *Signin) Record() Record { return s.rec }
+
+// State is the sign-in's state as recorded.
+func (s *Signin) State() string { return s.rec.State }
+
+// ErrNotAwaiting refuses a code for a sign-in that is not waiting for one:
+// one is already being exchanged, or the sign-in is over.
+var ErrNotAwaiting = errors.New("the sign-in is not waiting for a code")
+
+// BeginExchange marks the sign-in as having a code on its way to the vendor.
+// It is the authorization to send one: the code goes out only after this
+// returns nil, which it does only once `exchanging` is on disk — so a holder
+// that dies mid-exchange leaves a record that says the outcome is unknown,
+// never one that invites a second code. A record that cannot be written
+// leaves the sign-in waiting, and nothing may be sent.
+func (s *Signin) BeginExchange() error {
+	if s.rec.State != Awaiting {
+		return ErrNotAwaiting
+	}
+	next := s.rec
+	next.State = Exchanging
+	if err := Write(s.path, next); err != nil {
+		return err
+	}
+	s.rec = next
+	return nil
+}
+
+// Ending is how a sign-in ends when its holder sees it end: renewed, with the
+// new login's end when the credential states one, or failed, with a reason
+// token and the same in words.
+type Ending struct {
+	state       string
+	reason      string
+	problem     string
+	loginEndsMS int64
+}
+
+// EndRenewed is a login that took; loginEndsMS is its end, 0 when the
+// credential records none.
+func EndRenewed(loginEndsMS int64) Ending { return Ending{state: Renewed, loginEndsMS: loginEndsMS} }
+
+// EndFailed is a sign-in over without a renewal.
+func EndFailed(reason, problem string) Ending {
+	return Ending{state: Failed, reason: reason, problem: problem}
+}
+
+// Renewed reports whether the ending is a login that took.
+func (e Ending) Renewed() bool { return e.state == Renewed }
+
+// Reason is a failed ending's token, "" for a renewal.
+func (e Ending) Reason() string { return e.reason }
+
+// End ends the sign-in as its holder saw it end, at now: the URL is no longer
+// one to open, and the record says when. The ending is what happened whether
+// or not it could be saved, so the record returned is always the ended one;
+// err is why it is not on disk, where the sign-in then still reads as it last
+// stood — and whoever settles that record will call it orphaned.
+func (s *Signin) End(e Ending, now time.Time) (Record, error) {
+	ended := s.rec
+	ended.State, ended.Reason, ended.Problem = e.state, e.reason, e.problem
+	ended.URL, ended.FinishedMS, ended.LoginEndsMS = "", now.UnixMilli(), e.loginEndsMS
+	if err := Write(s.path, ended); err != nil {
+		return ended, err
+	}
+	s.rec = ended
+	return ended, nil
 }
 
 // Read loads the record at path; found is false when there is none.

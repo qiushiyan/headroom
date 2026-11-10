@@ -62,8 +62,8 @@ const (
 	reasonKeychainShut  = "keychain_closed"
 	reasonExpired       = "expired"
 	reasonCancelled     = "cancelled"
-	reasonHolderGone    = "holder_gone"
-	reasonUnknown       = "outcome_unknown"
+	reasonHolderGone    = signin.ReasonHolderGone
+	reasonUnknown       = signin.ReasonOutcomeUnknown
 	reasonNoReply       = "no_reply"
 	reasonProtocol      = "protocol"
 	reasonNoAttempt     = "no_attempt"
@@ -198,12 +198,12 @@ func loginStart(std Streams, scope config.Scope, name string, deps handoffDeps) 
 		return printSignin(std, rec, 3, new(false))
 	}
 	defer lock.Close()
-	settleStale(paths, deps.ps, deps.bounds, deps.now())
+	settleStale(paths, deps.ps, deps.bounds)
 	rec, err := deps.spawn(acct.Name, lock, paths)
 	if err != nil {
 		// A holder that never got ready may have started a vendor; under the
 		// lock still, it is ended now.
-		settleStale(paths, deps.ps, deps.bounds, deps.now())
+		settleStale(paths, deps.ps, deps.bounds)
 		rec = endedRecord(acct, signin.Failed, reasonHolderFailed, err.Error(), deps.now())
 		rec.Log = paths.Log()
 		signin.Write(paths.Record(), rec)
@@ -251,9 +251,11 @@ func loginFinish(std Streams, scope config.Scope, name string, deps handoffDeps)
 	switch {
 	case rec.State == signin.Renewed:
 		exit = 0
-	case rec.State == signin.Awaiting, rec.Reason == reasonExchanging:
-		// Refused, nothing sent by this call: fix what the reason names and
-		// finish again — or, while a code is being exchanged, ask status.
+	case signin.Live(rec.State):
+		// The sign-in is not over and this call sent nothing — a lost reply,
+		// the one case where it may have, returned above. Fix what the
+		// reason names and finish again; while a code is being exchanged, or
+		// the holder is another build's, ask status.
 		exit = 3
 	}
 	return printSignin(std, rec, exit, nil)
@@ -291,7 +293,9 @@ func loginCancel(std Streams, scope config.Scope, name string, deps handoffDeps)
 	switch {
 	case err != nil:
 		return err
-	case who == holderAnswered && rec.Reason == reasonExchanging:
+	case who == holderAnswered && signin.Live(rec.State):
+		// Still live after a cancel its holder answered: refused, a code is
+		// being exchanged.
 		return printSignin(std, rec, 3, nil)
 	case who == holderAnswered:
 		return printSignin(std, rec, 0, nil)
@@ -311,7 +315,7 @@ func loginCancel(std Streams, scope config.Scope, name string, deps handoffDeps)
 		return printSignin(std, rec, 3, nil)
 	}
 	defer lock.Close()
-	settleStale(paths, deps.ps, deps.bounds, deps.now())
+	settleStale(paths, deps.ps, deps.bounds)
 	if rec, err = onDisk(acct, paths); err != nil {
 		return err
 	}
@@ -369,15 +373,19 @@ func settled(acct accounts.Account, paths signin.Paths) (signin.Record, error) {
 	return settle(rec), err
 }
 
-// settle is a record whose holder is gone: a sign-in it calls live ended
-// when its holder did — before a code was sent, or with the outcome of one
-// unknown.
+// settle is a record whose holder is gone, in this surface's words: a sign-in
+// it calls live ended when its holder did (signin.Record.Orphaned), and the
+// problem says what the reader does next. When it ended stays unknown.
 func settle(rec signin.Record) signin.Record {
-	switch rec.State {
-	case signin.Awaiting:
-		rec.State, rec.Reason, rec.Problem, rec.URL = signin.Failed, reasonHolderGone, "its holder ended before any code was sent — headroom login start "+rec.Account+" begins afresh", ""
-	case signin.Exchanging:
-		rec.State, rec.Reason, rec.Problem = signin.Unknown, reasonUnknown, "its holder ended while the code was being exchanged — headroom login --dry-run shows whether the login took"
+	if !signin.Live(rec.State) {
+		return rec
+	}
+	rec = rec.Orphaned()
+	switch rec.Reason {
+	case reasonHolderGone:
+		rec.Problem = "its holder ended before any code was sent — headroom login start " + rec.Account + " begins afresh"
+	case reasonUnknown:
+		rec.Problem = "its holder ended while the code was being exchanged — headroom login --dry-run shows whether the login took"
 	}
 	return rec
 }
@@ -389,7 +397,7 @@ func settle(rec signin.Record) signin.Record {
 // auth login`), so a registered vendor still running with its recorded
 // start is ended: after the exchange bound when its sign-in says a code may
 // be in flight. A record a holder left live is then settled.
-func settleStale(paths signin.Paths, ps func(int) (int64, error), bounds handoffBounds, now time.Time) {
+func settleStale(paths signin.Paths, ps func(int) (int64, error), bounds handoffBounds) {
 	rec, found, err := signin.Read(paths.Record())
 	inFlight := time.Duration(0)
 	if found && err == nil && rec.State == signin.Exchanging {
@@ -397,9 +405,9 @@ func settleStale(paths signin.Paths, ps func(int) (int64, error), bounds handoff
 	}
 	paths.EndVendor(ps, inFlight, bounds.stop)
 	if found && err == nil && signin.Live(rec.State) {
-		gone := settle(rec)
-		gone.FinishedMS = now.UnixMilli()
-		signin.Write(paths.Record(), gone)
+		// Settled as found, undated: nobody saw the holder go, and finding
+		// its record now does not say when it did.
+		signin.Write(paths.Record(), settle(rec))
 	}
 }
 

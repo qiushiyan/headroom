@@ -174,7 +174,7 @@ func liveAcquire(scope config.Scope) func(accounts.Account) (func(), string) {
 		case !ok:
 			return nil, "another headroom login is renewing it right now — headroom login status " + a.Name
 		}
-		settleStale(paths, sessions.PS, defaultHandoff, time.Now())
+		settleStale(paths, sessions.PS, defaultHandoff)
 		return func() { lock.Close() }, ""
 	}
 }
@@ -307,11 +307,19 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 // lastSigninPhrase names a handed-off sign-in that ended without a renewal,
 // for the plan line of its account: an agent's unattended pass is read back
 // here, in the one command that shows every account. "" otherwise.
+//
+// A sign-in whose holder went away has no end anybody saw, so it is dated by
+// its start and says so: an end that was not observed is never given a time.
 func lastSigninPhrase(rec signin.Record, now time.Time) string {
-	if rec.State != signin.Failed && rec.State != signin.Unknown || rec.FinishedMS == 0 {
+	switch {
+	case rec.State != signin.Failed && rec.State != signin.Unknown:
 		return ""
+	case rec.FinishedMS != 0:
+		return " · last sign-in " + render.When(rec.FinishedMS, now) + ": " + rec.Reason
+	case rec.StartedMS != 0:
+		return " · last sign-in started " + render.When(rec.StartedMS, now) + ": " + rec.Reason
 	}
-	return " · last sign-in " + render.When(rec.FinishedMS, now) + ": " + rec.Reason
+	return " · last sign-in: " + rec.Reason
 }
 
 // loginPlanDocument is `headroom login --dry-run --json`: every account as

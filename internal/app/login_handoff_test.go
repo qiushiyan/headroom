@@ -225,6 +225,7 @@ type signinDoc struct {
 	Problem     *string `json:"problem"`
 	URL         string  `json:"url"`
 	ExpiresAt   *string `json:"expires_at"`
+	FinishedAt  *string `json:"finished_at"`
 	LoginEndsAt *string `json:"login_ends_at"`
 	Reused      *bool   `json:"reused"`
 }
@@ -862,5 +863,113 @@ func TestThePlanNamesTheLastSigninThatDidNotRenew(t *testing.T) {
 	}
 	if c.Signin == nil || *c.Signin != signin.None || c.SigninReason != nil || c.SigninFinishedAt != nil {
 		t.Errorf("c, never started: %+v", c)
+	}
+}
+
+// A sign-in whose holder went away is where an unattended pass most needs
+// reading back, and nobody saw it end. The plan names it — dated by its
+// start, since its end has no time — in its line and its document, and no
+// surface gives it a finish time: not status, which only reads, and not the
+// cancel or start that later settles its record.
+func TestThePlanNamesASigninItsHolderLeft(t *testing.T) {
+	for _, c := range []struct{ left, state, reason string }{
+		{signin.Awaiting, signin.Failed, reasonHolderGone},
+		{signin.Exchanging, signin.Unknown, reasonUnknown},
+	} {
+		t.Run(c.left, func(t *testing.T) {
+			h := newHandoffWorld(t)
+			h.deps.bounds.exchange = 50 * time.Millisecond
+			h.leaveBehind(c.left, "60")
+			plan := func() (line string, acct struct {
+				Signin, Reason, FinishedAt *string
+			}) {
+				t.Helper()
+				batch := h.w.deps()
+				batch.signin = liveSignin(h.cfg)
+				var out bytes.Buffer
+				if code := loginTo(&out, io.Discard, h.cfg, []string{"--dry-run"}, batch); code != 0 {
+					t.Fatalf("plan: exit %d\n%s", code, out.String())
+				}
+				line = planLine(out.String(), "a@x.com")
+				out.Reset()
+				call(func(std Streams) error {
+					std.Out = &out
+					return renewLogins(std, h.cfg, LoginOptions{Within: DefaultLoginWithin, DryRun: true, JSON: true}, batch)
+				})
+				var doc struct {
+					Accounts []struct {
+						Account    string  `json:"account"`
+						Signin     *string `json:"signin"`
+						Reason     *string `json:"signin_reason"`
+						FinishedAt *string `json:"signin_finished_at"`
+					} `json:"accounts"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+					t.Fatalf("plan document: %v\n%s", err, out.String())
+				}
+				for _, a := range doc.Accounts {
+					if a.Account == "a@x.com" {
+						acct.Signin, acct.Reason, acct.FinishedAt = a.Signin, a.Reason, a.FinishedAt
+					}
+				}
+				return line, acct
+			}
+			check := func(when string) {
+				t.Helper()
+				line, acct := plan()
+				if !strings.Contains(line, "· last sign-in started ") || !strings.Contains(line, ": "+c.reason) {
+					t.Errorf("%s: the plan line does not name it: %q", when, line)
+				}
+				if acct.Signin == nil || *acct.Signin != c.state || acct.Reason == nil || *acct.Reason != c.reason || acct.FinishedAt != nil {
+					t.Errorf("%s: the plan document: %+v", when, acct)
+				}
+				if doc, code := h.run(loginStatus, "a@x.com", ""); code != 0 || doc.State != c.state || doc.reason() != c.reason || doc.FinishedAt != nil {
+					t.Errorf("%s: status: exit %d, %+v", when, code, doc)
+				}
+			}
+			check("as left")
+			// Cancel holds the lock, ends the vendor and writes the record
+			// settled. It still did not see the sign-in end.
+			if doc, code := h.run(loginCancel, "a@x.com", ""); code != 0 || doc.State != c.state || doc.FinishedAt != nil {
+				t.Fatalf("cancel: exit %d, %+v", code, doc)
+			}
+			if rec, _, _ := signin.Read(h.paths("a@x.com").Record()); rec.State != c.state || rec.FinishedMS != 0 {
+				t.Errorf("settled on disk: %+v", rec)
+			}
+			check("once settled")
+		})
+	}
+}
+
+// A holder from another build takes no code from this one. While its sign-in
+// is live — waiting, or with a code already being exchanged — this finish
+// sent nothing and the sign-in is not over: exit 3, the state as recorded.
+func TestFinishAgainstAnotherBuildSentNothing(t *testing.T) {
+	for _, state := range []string{signin.Awaiting, signin.Exchanging} {
+		t.Run(state, func(t *testing.T) {
+			h := newHandoffWorld(t)
+			paths := h.paths("a@x.com")
+			paths.Ensure()
+			signin.Write(paths.Record(), signin.Record{Account: "a@x.com", Email: "a@x.com", State: state, SigninState: "old"})
+			ln, err := signin.Listen(paths.Socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			go func() {
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					readLine(c)
+					fmt.Fprintln(c, `{"v":2,"record":{},"error":"protocol"}`)
+					c.Close()
+				}
+			}()
+			if doc, code := h.run(loginFinish, "a@x.com", "the-code#old\n"); code != 3 || doc.State != state || doc.reason() != reasonProtocol {
+				t.Errorf("exit %d, %+v", code, doc)
+			}
+		})
 	}
 }
