@@ -527,6 +527,12 @@ func loginState(r *loginRow, now time.Time) string {
 	if !r.blobOK || r.blob.RefreshState != tag.OK {
 		return "logged in, end date not recorded"
 	}
+	if r.blob.RefreshExpiresMS < now.UnixMilli() {
+		// Claude Code answers for the account while the login it stored says
+		// its end has passed. Both are said: an end in the past is never
+		// printed as one still to come.
+		return "login ended " + render.When(r.blob.RefreshExpiresMS, now) + " by its record, though Claude Code reports it logged in"
+	}
 	return "login ends " + render.When(r.blob.RefreshExpiresMS, now)
 }
 

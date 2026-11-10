@@ -684,3 +684,26 @@ func loginTo(out, errw io.Writer, cfg config.Scope, args []string, deps loginDep
 	io.WriteString(errw, r.stderr)
 	return r.code
 }
+
+// Claude Code can answer "logged in" for an account whose stored login says
+// its end has passed. The plan says both, renews it as due, and never prints
+// an end in the past as one still to come.
+func TestThePlanNeverSaysAPassedEndIsAhead(t *testing.T) {
+	cfg, w := renewFixture(t)
+	w.set(func() { w.raw["b@x.com"] = blobEnding("tok-b", w.now.Add(-3*24*time.Hour)) })
+	deps := w.deps()
+	deps.health = func([]accounts.Account) auth.QueryFunc {
+		return func(string) auth.Status { return auth.Status{Outcome: auth.OutcomeOK, LoggedIn: true} }
+	}
+	var out bytes.Buffer
+	if code := loginTo(&out, io.Discard, cfg, []string{"--dry-run"}, deps); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out.String())
+	}
+	line := planLine(out.String(), "b@x.com")
+	if strings.Contains(line, "login ends") || !strings.Contains(line, "login ended ") || !strings.Contains(line, "(3d ago) by its record, though Claude Code reports it logged in") {
+		t.Errorf("a passed end: %q", line)
+	}
+	if !strings.HasPrefix(line, "→") {
+		t.Errorf("a login whose recorded end has passed is due: %q", line)
+	}
+}
