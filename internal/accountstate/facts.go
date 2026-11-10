@@ -26,6 +26,23 @@ const (
 	HealthUnprobed
 )
 
+// LoginReach says whether this process could read a Claude Code account's
+// login where its sessions read it. Anything but LoginReached makes health
+// unknown: what was read instead — nothing, or a file the account's sessions
+// do not use — says nothing about the account, so it is never "not logged in"
+// and never a reason to log in again from here.
+type LoginReach int
+
+const (
+	// LoginReached: the read is the login sessions use, or its absence.
+	LoginReached LoginReach = iota
+	// LoginWithheld: the login is a Keychain item this session was not given
+	// — sealed, as macOS seals an ssh session, or locked.
+	LoginWithheld
+	// LoginUnplaced: nothing could say where the login is kept.
+	LoginUnplaced
+)
+
 // Source identifies the origin of an observation.
 type Source int
 
@@ -145,8 +162,11 @@ type Facts struct {
 	// key, agent identity or Bedrock login); health is then unknown and the
 	// caption says why. "" otherwise.
 	AuthMode string
-	Obs      *Observation // nil = nothing known
-	Attempt  Attempt
+	// Login says why health is unknown when it is the stored login's reach,
+	// not the account, that could not be established. LoginReached otherwise.
+	Login   LoginReach
+	Obs     *Observation // nil = nothing known
+	Attempt Attempt
 
 	// Load is what an automatic launch counts on this account's subscription
 	// beyond its figures — busy sessions and recent launches — from every

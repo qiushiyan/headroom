@@ -521,3 +521,23 @@ func TestCompactHeadingsGiveWayBeforeNames(t *testing.T) {
 		t.Errorf("80 columns lost the staleness signal: %q", clipped)
 	}
 }
+
+// An account whose login this session could not reach is told apart from one
+// that is logged out, in both layouts: "/login" from here would store a login
+// its other sessions never read.
+func TestALoginOutOfReachIsNotSaidAsLoggedOut(t *testing.T) {
+	now := time.Now().Unix()
+	for login, want := range map[accountstate.LoginReach]string{
+		accountstate.LoginWithheld: "login kept in the Keychain, which this session cannot read",
+		accountstate.LoginUnplaced: "could not tell where its login is kept",
+	} {
+		v := accountstate.Facts{Label: "a@x.com", Health: accountstate.HealthUnknown, Login: login}
+		for _, layout := range []Layout{LayoutBlocks, LayoutCompact} {
+			b := NewPalette(false).Board([]accountstate.Facts{v}, now, layout, 0)
+			text := strings.Join(b.Groups[0], "\n")
+			if !strings.Contains(text, want) || strings.Contains(text, "/login") || strings.Contains(text, "not logged in") {
+				t.Errorf("layout %v, login %v: %q", layout, login, text)
+			}
+		}
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/accountstate"
 	"github.com/qiushiyan/headroom/internal/auth"
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -36,7 +37,12 @@ func claudeBoard(accts []accountstate.Account) []round.View {
 // injected: no Keychain, no Claude Code install.
 func preparedWith(cfg config.Scope, st *state.Store, now time.Time, blobs map[string]string, health map[string]auth.Status) *round.Round {
 	return round.Prepare(context.Background(), cfg, st, now, round.Deps{
-		Creds:  func(_ context.Context, a accounts.Account) string { return blobs[a.ConfigDir] },
+		Creds: func(_ context.Context, a accounts.Account) creds.Reading {
+			if blobs[a.ConfigDir] == "" {
+				return creds.Reading{}
+			}
+			return creds.Reading{Raw: blobs[a.ConfigDir], Source: creds.SourceKeychain}
+		},
 		Health: func([]accounts.Account) auth.QueryFunc { return func(dir string) auth.Status { return health[dir] } },
 	})
 }

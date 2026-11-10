@@ -415,15 +415,14 @@ func judgeSubmission(code string, rec signin.Record, acct accounts.Account, deps
 		return "", reasonOtherSignin, fmt.Sprintf("that code is from another sign-in (its state begins %s, this one's %s): send the code from the page of the URL headroom login start printed; nothing was sent",
 			statePrefix(c.State), statePrefix(rec.SigninState))
 	}
-	raw, source := deps.readCred(acct)
-	item, said := deps.keychainItem(acct)
-	switch {
-	case keychainWithheld(item, source):
+	read := deps.readCred(acct)
+	switch access, said := read.Access(deps.keychainItem(acct)); access {
+	case creds.Withheld:
 		return "", reasonKeychainShut, "this session can no longer read " + acct.Name + "'s login in the Keychain, so a new one would be stored where sessions do not read it; nothing was sent — run `security unlock-keychain` here and finish again, or cancel"
-	case item == creds.ItemUnknown:
+	case creds.Unplaced:
 		return "", heldKeychainUnknown, "security could not say whether " + acct.Name + "'s login is in the Keychain (" + said + "); nothing was sent — finish again"
 	}
-	return raw, "", ""
+	return read.Raw, "", ""
 }
 
 // heldProblem is a held account's reason in words, with what opens it.

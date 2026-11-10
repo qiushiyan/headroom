@@ -47,7 +47,7 @@ type loginDeps struct {
 	health func([]accounts.Account) auth.QueryFunc
 	// readCred is the account's stored login and where it came from: a
 	// Keychain item this session could read, or the dir's file.
-	readCred  func(accounts.Account) (string, creds.Source)
+	readCred  func(accounts.Account) creds.Reading
 	metaEmail func(accounts.Account) string
 	// keychainItem reports an account's item by its attributes, which a
 	// sealed Keychain still shows, with what `security` said when it could
@@ -80,7 +80,7 @@ type loginRow struct {
 	health accountstate.Health
 	blob   creds.Blob
 	blobOK bool
-	source creds.Source // where the login was read from
+	read   creds.Reading // the read itself, for where the login came from
 	// signin is its handed-off sign-in's state (signin.None, …; "" when
 	// unreadable), and lastSignin that sign-in's record: how the last one
 	// ended, for the owner reading what an agent did.
@@ -180,10 +180,10 @@ func liveAcquire(scope config.Scope) func(accounts.Account) (func(), string) {
 }
 
 // The live reads of an account's login, shared by the batch and the handoff.
-func liveReadCred(a accounts.Account) (string, creds.Source) {
+func liveReadCred(a accounts.Account) creds.Reading {
 	ctx, cancel := context.WithTimeout(context.Background(), keychainWait)
 	defer cancel()
-	return creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
+	return creds.Read(ctx, a.ConfigDir, a.Dir())
 }
 
 func liveKeychainItem(a accounts.Account) (creds.Item, string) {
@@ -273,8 +273,7 @@ func renewLogins(std Streams, scope config.Scope, opts LoginOptions, deps loginD
 		// The baseline is taken now, not when the batch was planned: a live
 		// session may have refreshed this account while earlier approvals
 		// were pending.
-		raw, _ := deps.readCred(r.acct)
-		before, beforeOK := creds.Parse(raw)
+		before, beforeOK := creds.Parse(deps.readCred(r.acct).Raw)
 		err := deps.login(r.acct, set, r.page)
 		blob, msg, _ := judgeLogin(r, before, beforeOK, err, deps)
 		release()
@@ -404,16 +403,16 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 	health := deps.health(accts)
 	rows := make([]*loginRow, len(accts))
 	for i, a := range accts {
-		raw, source := deps.readCred(a)
-		blob, ok := creds.Parse(raw)
+		read := deps.readCred(a)
+		blob, ok := creds.Parse(read.Raw)
 		st := health(a.ConfigDir)
 		r := &loginRow{
 			acct:   a,
 			email:  loginEmail(a, st),
-			health: round.Health(st, raw, blob, ok, now.UnixMilli()),
+			health: round.Health(st, read.Raw, blob, ok, now.UnixMilli()),
 			blob:   blob,
 			blobOK: ok,
-			source: source,
+			read:   read,
 			signin: signin.None,
 		}
 		if deps.signin != nil {
@@ -434,26 +433,18 @@ func assessLogins(accts []accounts.Account, deps loginDeps, now time.Time) []*lo
 // unknown. Either way the login's state is unknown here, and a new one would
 // be stored where the item, which sessions read first, outranks it.
 func holdOf(r *loginRow, deps loginDeps) (string, string) {
-	item, said := deps.keychainItem(r.acct)
+	access, said := r.read.Access(deps.keychainItem(r.acct))
 	switch {
 	case signin.Live(r.signin):
 		return "a sign-in from headroom login start is in progress — headroom login status " + r.acct.Name, reasonBusy
-	case keychainWithheld(item, r.source):
+	case access == creds.Withheld:
 		return "login kept in the Keychain, which this session cannot read", heldKeychain
-	case item == creds.ItemUnknown:
+	case access == creds.Unplaced:
 		return "could not tell whether its login is in the Keychain (" + said + ")", heldKeychainUnknown
 	case r.email == "" && r.blobOK:
 		return "logged in, but its identity unreadable — a new login could not be checked", heldIdentity
 	}
 	return "", ""
-}
-
-// keychainWithheld is the one Keychain rule the plan, the handoff's code
-// check and the read-back share: the account's login is a Keychain item,
-// and the read of it did not come from the Keychain — so the login this
-// session sees is not the one every session that can read the Keychain uses.
-func keychainWithheld(item creds.Item, source creds.Source) bool {
-	return item == creds.ItemPresent && source != creds.SourceKeychain
 }
 
 // keychainClosed is what the plan says under n accounts held for a Keychain
@@ -555,8 +546,8 @@ func judgeLogin(r *loginRow, before creds.Blob, beforeOK bool, runErr error, dep
 	if runErr != nil {
 		return creds.Blob{}, "claude auth login: " + runErr.Error(), vendorRejected
 	}
-	raw, source := deps.readCred(r.acct)
-	blob, ok := creds.Parse(raw)
+	read := deps.readCred(r.acct)
+	blob, ok := creds.Parse(read.Raw)
 	var renewed bool
 	switch {
 	case !ok:
@@ -573,11 +564,11 @@ func judgeLogin(r *loginRow, before creds.Blob, beforeOK bool, runErr error, dep
 	// A login that lives in a Keychain item is the item's: one readable only
 	// from the file — the Keychain stopped answering this session since the
 	// plan — is a login no session that reads the Keychain uses.
-	switch item, said := deps.keychainItem(r.acct); {
-	case keychainWithheld(item, source):
+	switch access, said := read.Access(deps.keychainItem(r.acct)); access {
+	case creds.Withheld:
 		return blob, "the new login was saved to the dir's file, while the Keychain item every session reads first keeps the old one — " +
 			"this session can no longer read the Keychain; run `security unlock-keychain` here, or renew at the machine", storedElsewhere
-	case item == creds.ItemUnknown && source != creds.SourceKeychain:
+	case creds.Unplaced:
 		return blob, "the new login was read from the dir's file, and security could not say whether a Keychain item, which sessions read first, " +
 			"holds another (" + said + ") — renew again once security answers", storedElsewhere
 	}

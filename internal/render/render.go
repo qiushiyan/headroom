@@ -77,6 +77,14 @@ func healthText(v accountstate.Facts) string {
 	case accountstate.HealthBadBlob:
 		return "credential unreadable — format changed? run headroom check"
 	case accountstate.HealthUnknown:
+		switch v.Login {
+		case accountstate.LoginWithheld:
+			// Login's words for the same account: logging in from here would
+			// store a login no session that reads the Keychain uses.
+			return "login kept in the Keychain, which this session cannot read — run security unlock-keychain here"
+		case accountstate.LoginUnplaced:
+			return "could not tell where its login is kept — run headroom check"
+		}
 		if v.AuthMode != "" {
 			// Not a subscription login: there is no window to read, and
 			// nothing is wrong with the account.

@@ -52,8 +52,22 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 		if !a.IsPrimary() && !hasMeta(a) {
 			continue
 		}
-		raw, source := creds.ReadRaw(context.Background(), a.ConfigDir, a.Dir())
+		read := creds.Read(context.Background(), a.ConfigDir, a.Dir())
+		raw, source := read.Raw, read.Source
 		blob, ok := creds.Parse(raw)
+		// Where the login is kept is asked before the read is judged, by the
+		// rule the board and `login` judge it with: a read that did not come
+		// from the Keychain says "no login" or "this file's login" only once
+		// the Keychain has said it holds no item for the account.
+		if access, said := loginAccess(a, read); access != creds.Served {
+			label := fmt.Sprintf("credential[%s]: not tested", display(a))
+			if access == creds.Withheld {
+				r.skip(label, "its login is a Keychain item this session was not given (sealed, as over ssh, or locked) — run security unlock-keychain here")
+			} else {
+				r.skip(label, "could not tell where its login is kept ("+said+")")
+			}
+			continue
+		}
 		hint := "credential blob did not parse (accessToken missing or format changed)"
 		if source == creds.SourceNone {
 			hint = "not logged in — no Keychain item or .credentials.json"
@@ -153,6 +167,18 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 func hasMeta(a accounts.Account) bool {
 	_, err := os.Stat(a.MetaPath())
 	return err == nil
+}
+
+// loginAccess is how the read stands to the login the account's sessions use
+// (creds.Reading.Access). The Keychain is asked about its item only when the
+// read did not come from it, bounded as every Keychain question is.
+func loginAccess(a accounts.Account, read creds.Reading) (creds.Access, string) {
+	if read.Source == creds.SourceKeychain {
+		return creds.Served, ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return read.Access(creds.KeychainItem(ctx, a.ConfigDir))
 }
 
 func credentialSourceLabel(source creds.Source) string {

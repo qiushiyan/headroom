@@ -60,10 +60,18 @@ func LivePlace() launchop.Deps {
 // credential reader and, when probe is set, Claude Code's own health probe
 // (`claude auth status` per account, side by side).
 func LiveRound(probe bool) round.Deps {
-	d := round.Deps{Creds: func(ctx context.Context, a accounts.Account) string {
-		raw, _ := creds.ReadRaw(ctx, a.ConfigDir, a.Dir())
-		return raw
-	}}
+	d := round.Deps{
+		Creds: func(ctx context.Context, a accounts.Account) creds.Reading {
+			return creds.Read(ctx, a.ConfigDir, a.Dir())
+		},
+		Item: func(ctx context.Context, a accounts.Account) (creds.Item, string) {
+			// Bounded like every Keychain question: an account `security`
+			// stalls on is unplaced, not waited for.
+			ctx, cancel := context.WithTimeout(ctx, keychainWait)
+			defer cancel()
+			return creds.KeychainItem(ctx, a.ConfigDir)
+		},
+	}
 	if probe {
 		d.Health = round.ProbeHealth
 	}
