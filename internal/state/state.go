@@ -340,7 +340,7 @@ func read(accountsRoot string) *doc {
 		d.cond = condNotJSON
 		d.held[secAccounts] = true
 		d.problems = append(d.problems, Problem{"document",
-			"not valid JSON — no section of it is read; the next write keeps it beside it as state.json.unreadable and the ledger rebuilds conservatively"})
+			"not valid JSON — no section of it is read; the next write keeps it aside (state.json.unreadable, numbered when that name is taken) and the ledger rebuilds conservatively"})
 		return d
 	}
 
