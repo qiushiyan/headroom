@@ -33,16 +33,22 @@ func TestBar(t *testing.T) {
 
 // The block's reset phrase: a reset still ahead is a clock — the time left in
 // Remaining's spelling, with the weekday once it is a day or more away — and
-// a reset nobody stated is never one. (The rolled-over and unstarted phrases
-// are owned by TestRolledOverRowIsNotAnAnswer and TestCodexUnstartedWindow.)
+// a reset nobody stated is never one, nor is one that no longer parses, and
+// the two are spelled apart as the compact cell spells them: none is not
+// drift. (The rolled-over and unstarted phrases are owned by
+// TestRolledOverRowIsNotAnAnswer and TestCodexUnstartedWindow.)
 func TestResetPhrase(t *testing.T) {
 	p := NewPalette(false)
 	now := int64(1_754_000_000)
 	row := func(resetAt int64) string {
 		return p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetAt: resetAt}, now, 16)
 	}
-	if got := row(0); !strings.Contains(got, "resets ?") || strings.Contains(got, "(in ") {
-		t.Errorf("absent reset drew a clock: %q", got)
+	if got := row(0); !strings.Contains(got, "resets —") || strings.Contains(got, "(in ") || strings.Contains(got, "?") {
+		t.Errorf("absent reset: %q", got)
+	}
+	drifted := p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetState: tag.Bad}, now, 16)
+	if !strings.Contains(drifted, "resets ?") || strings.Contains(drifted, "(in ") || strings.Contains(drifted, "resets —") {
+		t.Errorf("a reset that no longer parses: %q", drifted)
 	}
 	for _, rem := range []int64{90, 3*3600 + 6*60, 23 * 3600, 86400, 2*86400 + 3*3600} {
 		got := row(now + rem)

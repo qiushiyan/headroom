@@ -69,6 +69,14 @@ func TestRemoveDirKeepsStoreAndScrubsOrder(t *testing.T) {
 	if err := RemoveDir(cfg, "a@x.com"); err != nil {
 		t.Fatal(err)
 	}
+	// The dir is gone and nothing else is touched: the order line is its
+	// own step, which needs no dir to run.
+	if got, _ := os.ReadFile(cfg.OrderFile()); !strings.Contains(string(got), "a@x.com # work") {
+		t.Errorf("removing the dir rewrote .order: %q", got)
+	}
+	if err := ScrubOrder(cfg, "a@x.com"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Lstat(dir); err == nil {
 		t.Fatal("dir still exists")
 	}

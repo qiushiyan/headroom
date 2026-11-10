@@ -36,7 +36,8 @@ type Row struct {
 	// IdentityState is tag.Bad when the row cannot be selected as what it
 	// claims to be: an identity field present under a type it has never
 	// had, a missing kind, a scoped row that no longer says what it is
-	// scoped to, or a known unscoped kind carrying a model. There is no
+	// scoped to, a known unscoped kind carrying a model, or another row of
+	// the same reading claiming the same identity (Shared). There is no
 	// tag.None — a limit that cannot say which limit it is isn't
 	// legitimately anonymous, it is unselectable, and only `check` failing
 	// will surface that before a consumer quietly stops matching.
@@ -49,6 +50,15 @@ type Row struct {
 	// that differ only in duration are different limits.
 	WindowSeconds int64
 	Feature       string
+
+	// Shared marks a row whose identity another row of the same reading also
+	// claims. Selecting by identity then returns two figures, and choosing
+	// either would present a guess as the limit: every such row is tagged
+	// IdentityState Bad and keeps what it reported. It is said apart from the
+	// other identity failures because its fields did decode — this vocabulary
+	// cannot tell the rows apart, which is not a claim that the vendor may
+	// never send two.
+	Shared bool
 
 	// Unstarted marks a window nobody has spent against yet: the vendor
 	// reports a reset one full window away that slides forward with every
@@ -65,6 +75,40 @@ const (
 	KindWeeklyAll    = "weekly_all"    // the all-models weekly window
 	KindWeeklyScoped = "weekly_scoped" // a weekly window scoped to one model (Model names it)
 )
+
+// Identity is what selects a row among the rows of one reading: every decoded
+// field that says which limit it is. Two rows with one Identity are one limit
+// said twice, as far as any consumer selecting by these fields can tell; it
+// is the key duplicate detection, the board's columns and a consumer's match
+// all compare.
+type Identity struct {
+	Kind, Group, Model, Feature string
+	WindowSeconds               int64
+}
+
+// Identity is the row's.
+func (r Row) Identity() Identity {
+	return Identity{Kind: r.Kind, Group: r.Group, Model: r.Model, Feature: r.Feature, WindowSeconds: r.WindowSeconds}
+}
+
+// markShared tags every row whose identity another row of the reading also
+// claims: Shared, and IdentityState Bad, on all of them. A row whose identity
+// already failed the contract claims none, and is left as it is. It is the
+// last step of every parse, so no reader of a reading meets two rows it
+// could both select.
+func markShared(rows []Row) {
+	seen := make(map[Identity]int, len(rows))
+	for _, r := range rows {
+		if r.IdentityState != tag.Bad {
+			seen[r.Identity()]++
+		}
+	}
+	for i := range rows {
+		if rows[i].IdentityState != tag.Bad && seen[rows[i].Identity()] > 1 {
+			rows[i].Shared, rows[i].IdentityState = true, tag.Bad
+		}
+	}
+}
 
 // Drifted reports whether any field was present but unparseable.
 func (r Row) Drifted() bool {
@@ -104,6 +148,7 @@ func ParseLimits(body []byte) ([]Row, error) {
 		}
 		rows = append(rows, parseEntry(e))
 	}
+	markShared(rows)
 	return rows, nil
 }
 

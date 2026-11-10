@@ -137,9 +137,11 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 				"cached payload present but its account identity or fetch time is missing — fallback lost")
 			continue
 		}
-		rows, err := usage.ParseLimits(a.Meta.CachedUsage)
+		// Through the one dispatch the board replays the cache through, so
+		// what it shows and what this asserts are one reading.
+		reading, err := usage.Parse(config.Claude, a.Meta.CachedUsage)
 		nbad := 0
-		for _, row := range rows {
+		for _, row := range reading.Rows {
 			if row.Drifted() {
 				nbad++
 			}

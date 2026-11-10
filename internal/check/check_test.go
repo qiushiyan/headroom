@@ -386,6 +386,14 @@ func TestRunVerdicts(t *testing.T) {
 			f.write(f.cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"},
 			  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"a previous login","utilization":{"limits":[]}}}`, 0600)
 		}, want: ExitFail, fail: "cache[primary]: Claude Code's cached usage parses via shared contract", phrase: drift},
+		// Two rows claiming one identity: the board says drift and sends its
+		// reader here, so this must fail too — through the one parse the
+		// board replays the cache through.
+		{name: "cache names one limit twice", status: 200, setup: func(t *testing.T, f fixture) {
+			f.write(f.cfg.PrimaryMeta(), `{"oauthAccount":{"emailAddress":"primary","accountUuid":"fixture"},
+			  "cachedUsageUtilization":{"fetchedAtMs":1,"accountUuid":"fixture","utilization":{"limits":[
+			    {"kind":"session","group":"session","percent":12},{"kind":"session","group":"session","percent":80}]}}}`, 0600)
+		}, want: ExitFail, fail: "cache[primary]: Claude Code's cached usage parses via shared contract", phrase: drift},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()

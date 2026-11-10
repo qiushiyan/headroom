@@ -334,7 +334,7 @@ func TestADocumentThatIsNotJSONHasNoReadableSection(t *testing.T) {
 	if snap.OwnersReadable() {
 		t.Error("re-homes nobody could read were reported readable")
 	}
-	for sec := section(0); sec < nSections; sec++ {
+	for sec := range nSections {
 		if snap.d.has(sec) {
 			t.Errorf("%s reads as held by a file that is not JSON", sec)
 		}
@@ -396,7 +396,7 @@ func TestAFileThatCannotBeReadHoldsEverySection(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap := Open(rootScope(root)).Load()
-	for sec := section(0); sec < nSections; sec++ {
+	for sec := range nSections {
 		if snap.d.has(sec) || !snap.d.held[sec] {
 			t.Errorf("%s: has %v, held %v", sec, snap.d.has(sec), snap.d.held[sec])
 		}

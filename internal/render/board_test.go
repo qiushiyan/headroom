@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -131,16 +133,31 @@ func TestCompactCellLayersAlign(t *testing.T) {
 }
 
 // Two rows claiming one identity is something the vocabulary cannot carry;
-// choosing either percent would present a guess as a figure.
-func TestCompactDuplicateIdentityIsNotAFigure(t *testing.T) {
+// choosing either percent would present a guess as a figure. The parse tags
+// both (usage.Row.Shared), and each layout only spells that: the compact row
+// has no column to put either in, the block keeps what each reported, and
+// both say drift — so the board never sends a person to a check that passes.
+func TestDuplicateIdentityIsDriftInBothLayouts(t *testing.T) {
 	now := time.Now().Unix()
-	views := []accountstate.Facts{{Label: "a@x.com", Obs: fresh(now, session(12, now+3600), session(80, now+3600))}}
-	line := bare(NewPalette(true).Board(views, now, LayoutCompact, 0).Groups[0][0])
-	if !strings.Contains(line, "?%") || strings.Contains(line, "12%") || strings.Contains(line, "80%") {
-		t.Fatalf("duplicate identity rendered a figure: %q", line)
+	reset := time.Unix(now+3600, 0).UTC().Format(time.RFC3339)
+	reading, err := usage.Parse(config.Claude, fmt.Appendf(nil,
+		`{"limits":[{"kind":"session","group":"session","percent":12,"resets_at":%q},{"kind":"session","group":"session","percent":80,"resets_at":%q},{"kind":"weekly_all","group":"weekly","percent":30,"resets_at":%q}]}`,
+		reset, reset, reset))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(line, "drift") {
-		t.Fatalf("duplicate identity left no drift caption: %q", line)
+	views := []accountstate.Facts{{Label: "a@x.com", Obs: accountstate.FromReading(reading, now, accountstate.SourceLive)}}
+
+	compact := bare(NewPalette(true).Board(views, now, LayoutCompact, 0).Groups[0][0])
+	if strings.Contains(compact, "12%") || strings.Contains(compact, "80%") || !strings.Contains(compact, "30%") {
+		t.Errorf("compact: a duplicated identity rendered a figure, or its neighbour lost its own: %q", compact)
+	}
+	if !strings.Contains(compact, "drift") {
+		t.Errorf("compact: no drift caption: %q", compact)
+	}
+	block := bare(strings.Join(NewPalette(true).Board(views, now, LayoutBlocks, 0).Groups[0], "\n"))
+	if !strings.Contains(block, "drift") || !strings.Contains(block, "12%") || !strings.Contains(block, "80%") {
+		t.Errorf("block: %q", block)
 	}
 }
 

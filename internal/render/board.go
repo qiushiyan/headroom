@@ -110,9 +110,12 @@ type column struct {
 	resetWidth int // widest reset token in the column
 }
 
+// matches reports a row a column holds: one whose identity is the column's,
+// and stands. A row whose identity failed the contract — two rows of one
+// reading claiming the same one included (usage.Row.Shared) — belongs to no
+// column, so a cell never has two rows to choose between.
 func (c column) matches(r usage.Row) bool {
-	return c.id.Kind == r.Kind && c.id.Group == r.Group && c.id.Model == r.Model &&
-		c.id.Feature == r.Feature && c.id.WindowSeconds == r.WindowSeconds
+	return r.IdentityState != tag.Bad && c.id.Identity() == r.Identity()
 }
 
 func columns(views []accountstate.Facts) []column {
@@ -214,23 +217,12 @@ func (p Palette) compactBoard(views []accountstate.Facts, now int64, width int) 
 		}
 		row := compactRow{cells: make([]cell, len(cols))}
 		for j, c := range cols {
-			var matched []usage.Row
-			for _, r := range v.Obs.Rows {
-				if c.matches(r) {
-					matched = append(matched, r)
-				}
-			}
-			switch len(matched) {
-			case 0:
-				row.cells[j] = cell{pct: "—", pctColor: p.Dim, resetColor: p.Dim}
-			case 1:
-				row.cells[j] = p.cellFor(matched[0], now)
-			default:
-				// Two rows claiming one identity: the vendor has said
-				// something this vocabulary cannot carry. Choosing either
-				// percent would present a guess as a figure.
-				row.cells[j] = cell{pct: "?%", pctColor: p.Red, resetColor: p.Dim}
-				row.drift = true
+			// A reading holds at most one row per identity: two that claim
+			// one are tagged at the parse (usage.Row.Shared) and match no
+			// column, so a cell is one row's figure or none.
+			row.cells[j] = cell{pct: "—", pctColor: p.Dim, resetColor: p.Dim}
+			if k := slices.IndexFunc(v.Obs.Rows, c.matches); k >= 0 {
+				row.cells[j] = p.cellFor(v.Obs.Rows[k], now)
 			}
 		}
 		for _, r := range v.Obs.Rows {

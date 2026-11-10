@@ -471,6 +471,37 @@ func TestAFailedExecSaysWhatTheLaunchRecorded(t *testing.T) {
 	})
 }
 
+// An account whose reading names one limit twice gives the rule no figure it
+// can bound: which of the two rows is the limit, nothing says. It is counted
+// as no room, like a percent that did not parse, so a launch goes to an
+// account whose figures stand — never to the one that looks emptiest because
+// its session window could not be picked out.
+func TestALimitNamedTwiceIsNoRoom(t *testing.T) {
+	f := newAutoFixture(t, "twice@x.com", "plain@x.com")
+	reset := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	week := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	f.observe("qiushi", 70, 70, time.Minute)
+	f.observe("plain@x.com", 40, 40, time.Minute)
+	f.store("twice@x.com", fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":0,"resets_at":%q},`+
+		`{"kind":"session","group":"session","percent":0,"resets_at":%q},`+
+		`{"kind":"weekly_all","group":"weekly","percent":1,"resets_at":%q}]}`, reset, reset, week), time.Now().Add(-time.Minute))
+
+	got := f.launch()
+	if got.account(f.cfg) != "plain@x.com" {
+		t.Fatalf("went to %s:\n%s", got.account(f.cfg), got.stderr)
+	}
+	dry := f.launch("--dry-run")
+	var line string
+	for l := range strings.SplitSeq(dry.stdout, "\n") {
+		if strings.Contains(l, "twice@x.com") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "?%") {
+		t.Errorf("the dry run prints a figure for a limit named twice: %q\n%s", line, dry.stdout)
+	}
+}
+
 // A verified live claim outranks every record: that account is driving the
 // session at this instant.
 func TestALiveClaimOutranksAReHome(t *testing.T) {

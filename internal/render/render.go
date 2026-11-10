@@ -527,8 +527,12 @@ func (p Palette) limitRow(r usage.Row, now int64, width int) string {
 		phrase = "not started"
 	case resetRolled:
 		phrase = "window rolled over"
+	case resetAbsent:
+		// Legitimately none — a window nobody has opened. The compact cell's
+		// own token, so the two layouts spell the state alike.
+		phrase = "resets —"
 	default:
-		// Absent or unparseable: the drift marker is what tells them apart.
+		// Present and no longer a time: drift, which the marker also says.
 		phrase = "resets ?"
 	}
 	// The label carries the vendor's model name: sanitized, and padded by
