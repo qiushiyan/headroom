@@ -140,7 +140,7 @@ Reasons:
 | `outcome_unknown` | `unknown` | the holder ended while exchanging |
 | `no_reply` | as it stood | `finish` lost the holder's answer after sending: ask `status`; from `status` or `cancel`, the holder took the call and did not answer in time — it is busy, not gone |
 | `protocol` | as it stood | the holder waiting is from another headroom build; nothing was sent |
-| `no_attempt` | `none` | there is no sign-in to finish or cancel |
+| `no_attempt` | `none` | there is no sign-in to finish; `cancel` with none to end prints `none` with no reason, exit 0 |
 
 ### `headroom login start <account>`
 
