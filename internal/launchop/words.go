@@ -96,7 +96,9 @@ func refusal(d placement.Decision, now time.Time) error {
 		other = "run it without --account, or on another model (--model opus)"
 	}
 	if d.RoomAt > now.Unix() {
-		return fmt.Errorf("%s\n%s has room again %s: %s, or wait until then", d.Refusal, d.HeldBy, renewal(d.RoomAt, now.Unix()), other)
+		// The account is named because the time is true of it alone: on a
+		// named launch, another account may have room now.
+		return fmt.Errorf("%s\n%s has room again on %s %s: %s, or wait until then", d.Refusal, d.HeldBy, d.RoomOn, renewal(d.RoomAt, now.Unix()), other)
 	}
 	return fmt.Errorf("%s\nnothing says when %s has room again: %s, or wait", d.Refusal, d.HeldBy, other)
 }

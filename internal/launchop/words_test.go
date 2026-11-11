@@ -167,7 +167,7 @@ func TestRefusalWording(t *testing.T) {
 	if got := refusal(plain, now).Error(); got != plain.Refusal {
 		t.Errorf("a refusal for another reason = %q", got)
 	}
-	d := placement.Decision{Refusal: "no account has room on Fable: a (Fable (7d) 95%)", Model: "Fable", HeldBy: "Fable", RoomAt: now.Add(30 * time.Hour).Unix()}
+	d := placement.Decision{Refusal: "no account has room on Fable: a (Fable (7d) 95%)", Model: "Fable", HeldBy: "Fable", RoomAt: now.Add(30 * time.Hour).Unix(), RoomOn: "a"}
 	got := strings.Split(refusal(d, now).Error(), "\n")
 	zone := time.Unix(d.RoomAt, 0).Format("MST")
 	if len(got) != 2 || got[0] != d.Refusal || !strings.HasPrefix(got[1], "Fable has room again ") ||
