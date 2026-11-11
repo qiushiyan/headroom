@@ -48,7 +48,10 @@ headroom launch: alice@example.com · auto · 5h 1% · week 3%, resets in 4.2d �
 Load is five-hour usage plus the sessions busy on that account and the
 launches just made there; an account near any limit is set aside, and among
 equally loaded accounts the weekly room that would lapse first is spent
-first. Launches started together land on different accounts.
+first. Launches started together land on different accounts. A session on
+Fable — `headroom launch -- --model fable` — never starts on an account at 90%
+or more of its Fable week, named or not; with none left, nothing starts and the
+error says when Fable renews.
 `headroom launch --dry-run` shows the whole table without starting anything,
 and each launch leaves one line in `~/.claude-accounts/launches.jsonl` for
 reading later with `jq`.

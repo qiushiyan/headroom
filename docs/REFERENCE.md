@@ -125,6 +125,12 @@ The rule gives each limit one job:
   is gone, so among equally loaded accounts the most room below 80% per hour
   its window has left goes first, judged on each account's tightest weekly
   limit. Then the account launched least recently.
+- **A model's own weekly limit admits the launches that ask for it**, and
+  ranks nothing: with `-- --model fable` (or `claude-fable-…`), an account
+  whose Fable figure is 90% or more, or unreadable, cannot take the launch,
+  one named with `--account` included, and an account with no Fable figure is
+  tried. With none left, nothing starts, and the error's last line says when
+  Fable renews and the ways on.
 
 Usage figures come from disk: the launch itself asks no network, so it adds a
 few tens of milliseconds. Figures older than fifteen minutes are *lower
@@ -162,12 +168,13 @@ and its new account is recorded, so its next turn follows it there.
 
 What placement does not do: it places once, at launch. A running session is
 never moved, and a session started on an account can still exhaust it later.
-The step, the 80% threshold and the fifteen minutes are policy, not
+The step, the 80% and 90% thresholds and the fifteen minutes are policy, not
 measurements.
 
 Each launch and headless placement appends one line to `launches.jsonl`
 beside `state.json`: when, the vendor, how it was decided, the account, the
-working directory and the session it named. Nothing reads it but you:
+working directory, the session it named and, for a Fable launch, the
+account's Fable figure. Nothing reads it but you:
 
 ```sh
 jq -c 'select(.mode == "auto") | {at, chosen, reason, cwd}' ~/.claude-accounts/launches.jsonl | tail

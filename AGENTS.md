@@ -76,6 +76,13 @@ command's own reference.
   its record serves the next launch, never an audit: the launch log is
   appended beside it and read by no code. Held by
   `TestPlaceIsChooseAndRecord`; DESIGN.md § Automatic placement.
+- **A model's own limit admits, never ranks.** A launch whose `--model` some
+  reading limits on its own (Fable) never runs on an account at 90% or more of
+  it or with it unreadable, a named one included; an account with no figure is
+  tried, and ranking stays the ordinary rule's. Held by
+  `TestALaunchAskingForAModelNeverStartsWhereItsLimitIsSpent`,
+  `TestNamingAnAccountDoesNotGetPastAModelsLimit` and
+  `TestAModelsLimitAdmitsAndNeverRanks`; DESIGN.md § Automatic placement.
 - **One quota document per accounts root, under one lock.** A program with
   its own config dir spends a subscription through a headless token and a
   placement, reaching this home with `HEADROOM_HOME` and reporting its
