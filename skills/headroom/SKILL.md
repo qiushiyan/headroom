@@ -47,8 +47,7 @@ shell's `x-<name>`) — quote that spelling.
   `excluded`, how many it had to leave out. A launch that asked for a model
   with a limit of its own adds `model` (`Fable`), named launches too, and
   `model_pct` with `model_basis` (`stale` is a lower bound) when the account
-  had a figure for it. Read it with
-  `jq`; no command lists it.
+  had a figure for it. Read it with `jq`; no command lists it.
 - **A `sessions:` line** under an account counts the sessions busy on it,
   headless runs included, and the launches of the last fifteen minutes.
 - **Which binary**: `headroom version` — the commit it was built from.
@@ -66,10 +65,11 @@ shell's `x-<name>`) — quote that spelling.
   means `headroom login` would bring that quota back).
 - **A Fable session**: `headroom launch -- --model fable` (or any
   `--model claude-fable-…`) never runs on an account whose `Fable (7d)` is
-  90% or more, or unreadable, `--account` included; the launch line adds
-  that figure (`no Fable figure` for an account tried without one), and `--dry-run -- --model fable` shows which accounts it
-  leaves out. With none left it starts nothing, exits 1, and its last line
-  says when Fable renews and the ways on: another model (`--model opus`),
+  90% or more, or unreadable, `--account` included. The launch line adds
+  that figure (`no Fable figure` for an account tried without one), and
+  `--dry-run -- --model fable` shows which accounts it leaves out. With none
+  left it starts nothing, exits 1, and its last line names the account whose
+  Fable renews first, when, and the ways on: another model (`--model opus`),
   dropping `--account` when it says so, or the wait. Which of those to take
   is the user's call.
 - **Keep an account for certain repositories**: `headroom accounts reserve
@@ -84,9 +84,8 @@ shell's `x-<name>`) — quote that spelling.
   user, from the session's project, `headroom launch --account <name> --
   --resume <id>` (or `-- --continue` for the newest session there), naming
   an account under 90% on `Fable (7d)` when the session runs on Fable and
-  keeping its `--model`. The
-  session's id is in its transcript's filename under
-  `~/.claude/projects/<munged project path>/`, or in Claude Code's own
+  keeping its `--model`. The session's id is in its transcript's filename
+  under `~/.claude/projects/<munged project path>/`, or in Claude Code's own
   `/resume`. The account named drives it from the first prompt, so the
   session's next automatic launch follows it there. Done when the session
   is running on the named account.
@@ -138,9 +137,10 @@ shell's `x-<name>`) — quote that spelling.
 
 `~/.codex` is the Codex primary, `~/.codex-accounts/<email>` each extra.
 Everything above applies with `--vendor codex` on `launch` and
-`accounts add`, except the Fable session, which is Claude Code's alone; the board (**tab** switches page), `headroom --json` and
-`headroom limits` already show both vendors (`--vendor codex` for one), and
-every JSON account carries `"vendor"`.
+`accounts add`, except the Fable session, which is Claude Code's alone; the
+board (**tab** switches page), `headroom --json` and `headroom limits`
+already show both vendors (`--vendor codex` for one), and every JSON account
+carries `"vendor"`.
 
 - **One session on another account**: `headroom launch --vendor codex
   --account <name> [-- <codex args>]`.

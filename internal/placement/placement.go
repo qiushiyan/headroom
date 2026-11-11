@@ -396,8 +396,9 @@ type Decision struct {
 	// in unix seconds, on a refusal to a caller that can wait; 0 when no such
 	// account says when its limits reset. On a refusal by a model's own limit
 	// (HeldBy), it is when that limit first renews, readably, on an account
-	// it alone held back.
+	// it alone held back, and RoomOn names that account.
 	RoomAt int64
+	RoomOn string
 
 	// Model is the model whose own limit admits this launch, by the vendor's
 	// name ("Fable"); "" when the launch asks for none such. It says what
@@ -442,7 +443,9 @@ func Choose(cands []Candidate, ledger Ledger, intent Intent, now time.Time) Deci
 			d.Refusal = fmt.Sprintf("%s cannot be launched: %s", c.Name, c.Excluded)
 		case c.ModelRefusal != "":
 			d.Refusal, d.HeldBy = fmt.Sprintf("%s cannot take a %s launch: %s", c.Name, d.Model, c.ModelRefusal), d.Model
-			d.RoomAt = renews(c.ModelRow, now)
+			if d.RoomAt = renews(c.ModelRow, now); d.RoomAt > 0 {
+				d.RoomOn = c.Name
+			}
 			d.Elsewhere = slices.ContainsFunc(d.Candidates, func(o Counted) bool { return o.Name != c.Name && o.Excluded == "" })
 		default:
 			d.Chosen, d.Reason = c.Name, intent.Reason
@@ -545,7 +548,8 @@ func (d *Decision) auto(intent Intent, now time.Time) {
 	ranked := append(slices.Clone(open), near...)
 	if len(ranked) == 0 {
 		if d.heldByModel() {
-			d.Refusal, d.RoomAt, d.HeldBy = d.heldRefusal(), d.modelRoomAt(now), d.Model
+			d.Refusal, d.HeldBy = d.heldRefusal(), d.Model
+			d.RoomAt, d.RoomOn = d.modelRoomAt(now)
 			return
 		}
 		d.Refusal = "no account can take a launch: " + d.exclusions()
@@ -622,18 +626,19 @@ func (d Decision) heldRefusal() string {
 }
 
 // modelRoomAt is when the model's own limit first renews on an account it
-// alone held back; 0 when none of them says.
-func (d Decision) modelRoomAt(now time.Time) int64 {
+// alone held back, and that account; 0 and "" when none of them says.
+func (d Decision) modelRoomAt(now time.Time) (int64, string) {
 	var first int64
+	var on string
 	for _, c := range d.Candidates {
 		if !c.HeldBack {
 			continue
 		}
 		if at := renews(c.ModelRow, now); at > 0 && (first == 0 || at < first) {
-			first = at
+			first, on = at, c.Name
 		}
 	}
-	return first
+	return first, on
 }
 
 // nearRefusal says why a caller that can wait was refused: every account it
