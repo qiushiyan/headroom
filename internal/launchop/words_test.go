@@ -158,7 +158,7 @@ func containsAll(s string, subs []string) bool {
 }
 
 // A refusal by a model's own limit ends on a line of its own: when that limit
-// renews and the ways on — the part a reader of a terminal's
+// renews, with its zone, and the ways on — the part a reader of a terminal's
 // tail keeps. Any other refusal is said as the rule said it, a launch that
 // asked for Fable included.
 func TestRefusalWording(t *testing.T) {
@@ -169,8 +169,9 @@ func TestRefusalWording(t *testing.T) {
 	}
 	d := placement.Decision{Refusal: "no account has room on Fable: a (Fable (7d) 95%)", Model: "Fable", HeldBy: "Fable", RoomAt: now.Add(30 * time.Hour).Unix()}
 	got := strings.Split(refusal(d, now).Error(), "\n")
+	zone := time.Unix(d.RoomAt, 0).Format("MST")
 	if len(got) != 2 || got[0] != d.Refusal || !strings.HasPrefix(got[1], "Fable has room again ") ||
-		!strings.Contains(got[1], " (in 1.2d)") ||
+		!strings.Contains(got[1], " "+zone+" (in 1.2d)") ||
 		!strings.HasSuffix(got[1], ": run it on another model (--model opus), or wait until then") {
 		t.Errorf("refusal = %q", got)
 	}

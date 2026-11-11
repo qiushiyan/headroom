@@ -96,12 +96,14 @@ func refusal(d placement.Decision, now time.Time) error {
 	return fmt.Errorf("%s\nnothing says when %s has room again: %s, or wait", d.Refusal, d.HeldBy, other)
 }
 
-// renewal is when a refusing limit renews: the time, the weekday once it is
-// a day or more away, and the time left — "Thu 16:59 (in 1.2d)".
+// renewal is when a refusing limit renews, with its zone, since it is read
+// later and elsewhere — by a driver relaying it to the owner hours on: the
+// time, the weekday once it is a day or more away, and the time left —
+// "Thu 16:59 GMT (in 1.2d)".
 func renewal(at, now int64) string {
-	layout := "15:04"
+	layout := "15:04 MST"
 	if at-now >= 86400 {
-		layout = "Mon 15:04"
+		layout = "Mon 15:04 MST"
 	}
 	return fmt.Sprintf("%s (in %s)", time.Unix(at, 0).Format(layout), render.Remaining(at-now))
 }
