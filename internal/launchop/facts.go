@@ -383,6 +383,12 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 			// nothing says which of them is the limit.
 			Bad: r.PercentState == tag.Bad || r.Shared, ResetAt: r.ResetAt, Window: r.WindowSeconds,
 			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
+			// The model as decoded, even on a row whose identity is tagged bad.
+			// A duplicated row still names its model and, being Bad, refuses
+			// as unreadable rather than reading as no figure; a row whose
+			// kind or group drifted is judged by its percent, and the drift
+			// is check's to report.
+			Model: r.Model,
 		})
 	}
 	return obs.ObservedAt, limits

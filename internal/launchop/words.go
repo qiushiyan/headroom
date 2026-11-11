@@ -7,6 +7,7 @@ package launchop
 // a line that printed them alike would read a bound as measured room.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -24,7 +25,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
-		return strings.Join(append(parts, d.Reason), " · ")
+		return strings.Join(append(append(parts, d.Reason), modelFigure(d.Model, c)...), " · ")
 	}
 	parts = append(parts, "auto")
 	switch {
@@ -51,6 +52,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 		parts = append(parts, figures(c, now)...)
 		parts = append(parts, fmt.Sprintf("load %d", c.Load))
 	}
+	parts = append(parts, modelFigure(d.Model, c)...)
 	if left := expiredLogins(d); left != "" {
 		parts = append(parts, left)
 	}
@@ -59,6 +61,56 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 		line += " (next: " + d.RunnerUp + ")"
 	}
 	return line
+}
+
+// modelFigure is an account's figure on the limit of the model the launch
+// asked for (model), said as what it rests on, which every launch that limit
+// admitted prints — named ones too, since it admitted them as well — and
+// "no <model> figure" for an account tried without one, so such a launch
+// never reads as an ordinary one. Nothing when the launch asked for no model
+// with a limit of its own.
+func modelFigure(model string, c placement.Counted) []string {
+	switch {
+	case model == "":
+		return nil
+	case c.ModelRow == nil:
+		return []string{"no " + model + " figure"}
+	}
+	return []string{shortLabel(c.ModelRow.Label) + " " + figure(c.ModelRow.Counted, c.ModelRow.Basis)}
+}
+
+// refusal is a decision that chose nobody, said as the launch's error. A
+// refusal by a model's own limit ends on a line of its own saying when that
+// limit renews and the ways on, so a reader that keeps only the tail of a
+// terminal — a driver reading why its session did not start, perhaps hours
+// later — still has what to decide. Letting the rule choose is offered only
+// when the caller named an account and another could take the launch.
+// Every other refusal is said as the rule said it: a model is no way out of
+// an expired login.
+func refusal(d placement.Decision, now time.Time) error {
+	if d.HeldBy == "" {
+		return errors.New(d.Refusal)
+	}
+	other := "run it on another model (--model opus)"
+	if d.Elsewhere {
+		other = "run it without --account, or on another model (--model opus)"
+	}
+	if d.RoomAt > now.Unix() {
+		return fmt.Errorf("%s\n%s has room again %s: %s, or wait until then", d.Refusal, d.HeldBy, renewal(d.RoomAt, now.Unix()), other)
+	}
+	return fmt.Errorf("%s\nnothing says when %s has room again: %s, or wait", d.Refusal, d.HeldBy, other)
+}
+
+// renewal is when a refusing limit renews, with its zone, since it is read
+// later and elsewhere — by a driver relaying it to the owner hours on: the
+// time, the weekday once it is a day or more away, and the time left —
+// "Thu 16:59 GMT (in 1.2d)".
+func renewal(at, now int64) string {
+	layout := "15:04 MST"
+	if at-now >= 86400 {
+		layout = "Mon 15:04 MST"
+	}
+	return fmt.Sprintf("%s (in %s)", time.Unix(at, 0).Format(layout), render.Remaining(at-now))
 }
 
 // expiredLogins says how many accounts the rule could not consider because
@@ -137,7 +189,7 @@ func shortLabel(label string) string {
 // account, with what was counted and why an account was left out.
 func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, f facts) {
 	if d.Chosen == "" {
-		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
+		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", refusal(d, now))
 	} else {
 		how := mode
 		if d.Reason != "" && d.Reason != mode {
@@ -168,7 +220,7 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 			week = Cell(c.Week.Counted, c.Week.Basis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, f.standing(c.Name)))
+			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, d.Model, now, f.standing(c.Name)))
 	}
 }
 
@@ -195,7 +247,7 @@ func Cell(counted int, basis placement.Basis) string {
 	return figure(counted, basis)
 }
 
-func dryRunNote(c placement.Counted, now time.Time, standing string) string {
+func dryRunNote(c placement.Counted, model string, now time.Time, standing string) string {
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
@@ -205,6 +257,11 @@ func dryRunNote(c placement.Counted, now time.Time, standing string) string {
 	}
 	if c.NearLimit {
 		notes = append(notes, fmt.Sprintf("near a limit (%s %d%%)", shortLabel(c.HighestLabel), c.Highest))
+	}
+	if c.ModelRefusal == "" && !(c.NearLimit && c.ModelRow != nil && c.HighestLabel == c.ModelRow.Label) {
+		// The figure the launch was admitted by, unless the near-limit note
+		// already names that row.
+		notes = append(notes, modelFigure(model, c)...)
 	}
 	switch {
 	case c.ObservedAt == 0:

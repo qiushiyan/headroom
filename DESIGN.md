@@ -392,7 +392,8 @@ step that records the choice, so nothing is placed on an account the caller
 would veto. One intent the launch never sets, `CanWait`, refuses when every
 account left is near a limit and says when the first has room again, instead
 of taking the least spent: an eval can wait; the owner's sessions on that
-account cannot. The caller reports the session's process — a launcher that
+account cannot. So a placement takes no model: waiting already keeps it off
+any account at 80% or more, a model's own limit included. The caller reports the session's process — a launcher that
 execs the vendor reports its own pid, which the exec keeps along with its
 start — and that *run*, kept in `state.json`, is a busy session of its
 subscription on every surface for as long as its pid runs with its recorded
@@ -943,8 +944,8 @@ A person with several subscriptions would otherwise spread sessions by hand, a
 named launcher per session. A bare launch chooses the account itself, every
 time: there is no mode to turn on and nothing a shell wrapper passes, since
 shell functions are frozen at shell init and panes would disagree about what
-`x` does for weeks. Naming an account is the one way to overrule the rule,
-and it lasts one launch.
+`x` does for weeks. Naming an account is the one way to overrule the rule's
+choice, and it lasts one launch.
 
 - **Placement is launch-time and nothing else.** A session runs where it was
   started; no request is proxied and no running session is moved. The promise
@@ -1002,6 +1003,24 @@ and it lasts one launch.
   behind room that in fact lasts longer. Codex windows start with the next
   request, so a passed or unstarted one counts its whole stated window, and
   a window nothing dates counts a whole week, the least pressing it can be.
+- **A model's own limit admits a launch; it never ranks one.** A launch whose
+  `--model` (any value before a bare `--`) names a model some reading has a
+  weekly limit of its own for — Fable — cannot run on an account whose figure
+  for that limit is 90% or more, or unreadable, whoever chose the account:
+  naming an account creates no quota, so a named launch refuses too, before
+  anything is written. Where it may run it is ranked like any other launch;
+  counting that usage as load would send a burst of launches to the account
+  with the most of it, the pile-up the load steps exist to end. An account
+  whose reading has no figure for the model is tried, as any unmeasured
+  account is: refusing it let one old reading still carrying the row refuse
+  every fresh one. That a model has such a limit is read from the readings,
+  never written into the rule, since the vendor has dropped one before
+  (Opus); names meet by family (`fable`, `claude-fable-5-2`, a row named
+  "Fable"), so `opus` or `best` is an ordinary launch. With every account
+  held, nothing starts, and the error's last line — all a driver reading a
+  failed open's tail sees — says when the limit first renews, with its zone,
+  and the ways on. A launch refused for another reason says that reason
+  alone.
 - **An account that cannot be asked is tried, not avoided.** Only the vendor
   refreshes an access token, so an account nothing has used for about eight
   hours cannot be asked — and those are the idle accounts, the ones new
@@ -1074,11 +1093,12 @@ and it lasts one launch.
   launch that can start goes through it, a named one included, because a
   session started by name is load an automatic one must count.
 - **A launch is one operation.** `headroom launch` builds a request and
-  commits it through `launchop`'s plan, which, for an automatic launch,
-  decides the intent from a session the launch names in its arguments; a
-  named launch reads nothing there and records no re-home. It refuses first
-  whatever is known before a write — a named account that cannot be
-  launched, a reservation that cannot be read — since `state.Place` prunes
+  commits it through `launchop`'s plan, which reads the intent from the
+  launch's arguments: the models a Claude Code launch asks for, and, for an
+  automatic launch, a session it names; a named launch records no re-home.
+  It refuses first whatever is known before a write — a named account that
+  cannot be launched or that its model's own limit holds back, a reservation
+  that cannot be read — since `state.Place` prunes
   even when its rule refuses, and a launch that cannot start must leave
   nothing behind; then it places and logs, and the surface announces the
   outcome and execs.
@@ -1096,7 +1116,9 @@ and it lasts one launch.
   `window ended`, a percent that does not parse as `?%`: the rule counts
   each of those differently from a measured figure, and the line must not
   print them as one. The weekly figure carries the time it has left
-  (`week 7%, resets in 1.9d`), since that decides ties; the dry-run table
+  (`week 7%, resets in 1.9d`), since that decides ties, and a launch a
+  model's own limit admitted adds that figure (`Fable (7d) 41%`, or `no Fable
+  figure`), named or not; the dry-run table
   prints a renewal projected from a schedule as `≈6.5d`, never as the
   vendor's countdown.
 - **A launch counts for a fixed span.** Fifteen minutes, whether or not its
@@ -1148,15 +1170,17 @@ the account, the working directory, the session the launch named, the pid
 and any bookkeeping that failed. A choice the rule made also carries what it
 rested on, derived from the decision: `age_s`, the age of the chosen
 account's figures; `tied`, the accounts at its load, so past one the
-tie-break decided; `excluded`, the accounts it could not consider. It explains and no code reads it — a person
+tie-break decided; `excluded`, the accounts it could not consider. A launch
+a model's own limit admitted carries `model`, and the chosen account's
+`model_pct` and `model_basis` when it had a figure. It explains and no code reads it — a person
 reads it with `jq` — so it is appended with `O_APPEND` and never rewritten,
 takes no lock, and a line that cannot be written is a note on the launch,
 never a refusal. Deleting it or tearing its last line changes nothing
 headroom does. It is unbounded: at the busiest machine's rate it grows a few
 megabytes a year, and the questions it answers — which launches went where,
 which surfaces are used at all, how often the tie-break decides — need weeks
-of it. Lines under an earlier `v` carry other fields and lack those three;
-every version has the rest. The rule's
+of it. Lines under an earlier `v` carry other fields and lack the newer
+ones; every version has the rest. The rule's
 constants are changed by reading this log and the board, and a change to
 what the rule chooses is held by the placement tests, never by a replay.
 

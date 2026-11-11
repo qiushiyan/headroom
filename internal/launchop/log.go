@@ -14,9 +14,9 @@ import (
 // state.json: where each went and why. It explains and no code reads it — a
 // person reads it with jq — so it is appended and never rewritten, takes no
 // lock, and a line that cannot be written is a note on the launch, never a
-// refusal. Lines from older builds carry more fields and v 2, and a v 3 line
-// lacks what the choice rested on; a reader keys on the fields down to
-// Problem, which every version has.
+// refusal. Lines from older builds carry more fields and v 2, a v 3 line
+// lacks what the choice rested on, and one before v 5 lacks the model fields;
+// a reader keys on the fields down to Problem, which every version has.
 type logLine struct {
 	V       int    `json:"v"`
 	At      string `json:"at"` // RFC3339 UTC
@@ -38,6 +38,15 @@ type logLine struct {
 	AgeS     *int64 `json:"age_s,omitempty"`    // seconds since the chosen account was observed; absent when never
 	Tied     int    `json:"tied,omitempty"`     // accounts with room at the chosen one's load, itself included
 	Excluded int    `json:"excluded,omitempty"` // accounts the choice had to leave out
+
+	// The model whose own limit admitted the launch, and the chosen account's
+	// figure on that limit with what it rests on — named launches included,
+	// since that limit admits them too. Absent when the launch asked for no
+	// model with a limit of its own; the figure is absent when the chosen
+	// account had none.
+	Model      string `json:"model,omitempty"`       // the vendor's name for it ("Fable")
+	ModelPct   *int   `json:"model_pct,omitempty"`   // the chosen account's counted figure
+	ModelBasis string `json:"model_basis,omitempty"` // observed, stale (a lower bound), ended or bad
 }
 
 // rested fills the three numbers from the decision the store returned.
@@ -60,7 +69,21 @@ func (l *logLine) rested(d placement.Decision, now time.Time) {
 	}
 }
 
-const logVersion = 4
+// model fills the model fields from the decision: the model whenever one
+// admitted the launch, and the chosen account's figure when it had one — an
+// account tried with no figure is logged as just that.
+func (l *logLine) model(d placement.Decision) {
+	if d.Model == "" {
+		return
+	}
+	l.Model = d.Model
+	if chosen, ok := d.Find(d.Chosen); ok && chosen.ModelRow != nil {
+		pct := chosen.ModelRow.Counted
+		l.ModelPct, l.ModelBasis = &pct, string(chosen.ModelRow.Basis)
+	}
+}
+
+const logVersion = 5
 
 // logPath is the log of one vendor's accounts root.
 func logPath(accountsRoot string) string { return filepath.Join(accountsRoot, "launches.jsonl") }

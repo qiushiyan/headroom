@@ -18,6 +18,13 @@ than fifteen minutes, "window ended" a window whose reset has passed, ?% a perce
 did not parse. A bare launch with -- --resume <id> or -- --session-id <id> follows the
 account that last drove that session while it has room, and records where it went.
 
+A launch with -- --model <m>, where <m> has a weekly limit of its own on the usage page
+(Fable: fable, claude-fable-5-2), never runs on an account whose figure for that limit is
+90% or more, or unreadable — an account named with --account included — and the line
+adds the figure ("Fable (7d) 41%"); an account with no figure for it is tried. With every
+account held so, nothing starts, and the error's last line says when that limit renews
+and the ways on: another model, the rule's choice of account, or the wait.
+
 Codex's sessions are shared across its accounts: headroom launch --vendor codex --account
 <other> -- resume continues one on another account.
 
@@ -42,6 +49,7 @@ Examples:
     headroom launch                                   the least-loaded account
     headroom launch --account a@x.com -- --resume 1f2e…   continue a session on a@x.com
     headroom launch --dry-run                         what a bare launch would choose, and why
+    headroom launch -- --model fable                  an account with Fable room, or a refusal
     headroom launch --vendor codex --account a@x.com -- login
 
 Exit codes:

@@ -25,6 +25,10 @@ type loggedLaunch struct {
 	AgeS     *int64 `json:"age_s"`
 	Tied     int    `json:"tied"`
 	Excluded int    `json:"excluded"`
+
+	Model      string `json:"model"`
+	ModelPct   *int   `json:"model_pct"`
+	ModelBasis string `json:"model_basis"`
 }
 
 func launchLogPath(accountsRoot string) string { return filepath.Join(accountsRoot, "launches.jsonl") }

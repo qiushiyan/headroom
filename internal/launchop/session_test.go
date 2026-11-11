@@ -1,6 +1,9 @@
 package launchop
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 const (
 	sessA = "11111111-1111-4111-8111-111111111111"
@@ -40,6 +43,31 @@ func TestSessionIntent(t *testing.T) {
 	for _, c := range cases {
 		if got := SessionOf(c.args); got != c.want {
 			t.Errorf("%v → %+v, want %+v", c.args, got, c.want)
+		}
+	}
+}
+
+func TestModelsOf(t *testing.T) {
+	cases := []struct {
+		args []string
+		want []string
+	}{
+		{nil, nil},
+		{[]string{"-p", "hello"}, nil},
+		{[]string{"--model", "fable"}, []string{"fable"}},
+		{[]string{"--model=claude-fable-5-2", "--effort", "high"}, []string{"claude-fable-5-2"}},
+		{[]string{"--settings", "{}", "--model", "fable", "--resume", sessA}, []string{"fable"}},
+		// Every value, in order: which one the vendor honours is its rule.
+		{[]string{"--model", "opus", "--model=fable"}, []string{"opus", "fable"}},
+		// Another flag that takes a model is not this one.
+		{[]string{"--fallback-model", "fable"}, nil},
+		// After a bare `--` everything is the vendor's positional text.
+		{[]string{"-p", "--", "--model", "fable"}, nil},
+		{[]string{"--model"}, nil},
+	}
+	for _, c := range cases {
+		if got := ModelsOf(c.args); !slices.Equal(got, c.want) {
+			t.Errorf("%q → %q, want %q", c.args, got, c.want)
 		}
 	}
 }

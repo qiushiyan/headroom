@@ -106,6 +106,33 @@ func TestLaunchLineWording(t *testing.T) {
 		not   []string
 	}{"named", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "named"}, obs("a", 0, 0, time.Minute)), false, Session{}, "",
 		[]string{"a · named"}, []string{"auto", "load"}})
+
+	// A launch a model's own limit admitted prints the chosen account's figure
+	// on it, said as what it rests on — named launches too, since that limit
+	// admitted them as well.
+	fable := func(name string, pct int, age time.Duration) placement.Candidate {
+		c := obs(name, 0, 20, age)
+		c.Limits = append(c.Limits, placement.Limit{Kind: "weekly_scoped", Label: "Fable (7d)", Percent: pct, ResetAt: now.Add(50 * time.Hour).Unix(), Model: "Fable"})
+		return c
+	}
+	asks := []string{"fable"}
+	for _, c := range []struct {
+		name string
+		d    placement.Decision
+		auto bool
+		want []string
+	}{
+		{"auto, Fable", choose(placement.Intent{Models: asks}, fable("a", 40, time.Minute)), true, []string{"a · auto", "load 0", "Fable (7d) 40%"}},
+		{"auto, Fable from old figures", choose(placement.Intent{Models: asks}, fable("a", 40, 3*time.Hour)), true, []string{"Fable (7d) ≥40%"}},
+		{"named, Fable", choose(placement.Intent{Kind: placement.Forced, Account: "a", Reason: "named", Models: asks}, fable("a", 70, time.Minute)), false, []string{"a · named · Fable (7d) 70%"}},
+	} {
+		if line := launchLine(c.d, c.auto, Session{}, "", now); !containsAll(line, c.want) {
+			t.Errorf("%s: %q lacks %q", c.name, line, c.want)
+		}
+	}
+	if line := launchLine(choose(placement.Intent{}, fable("a", 40, time.Minute)), true, Session{}, "", now); strings.Contains(line, "Fable") {
+		t.Errorf("a launch asking for no model printed a model figure: %q", line)
+	}
 	for _, c := range cases {
 		line := launchLine(c.d, c.auto, c.ref, c.owner, now)
 		for _, w := range c.want {
@@ -118,5 +145,46 @@ func TestLaunchLineWording(t *testing.T) {
 				t.Errorf("%s: %q must not say %q", c.name, line, n)
 			}
 		}
+	}
+}
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
+
+// A refusal by a model's own limit ends on a line of its own: when that limit
+// renews, with its zone, and the ways on — the part a reader of a terminal's
+// tail keeps. Any other refusal is said as the rule said it, a launch that
+// asked for Fable included.
+func TestRefusalWording(t *testing.T) {
+	now := time.Unix(1_790_848_000, 0)
+	plain := placement.Decision{Refusal: "no account can take a launch: a (login expired)", Model: "Fable"}
+	if got := refusal(plain, now).Error(); got != plain.Refusal {
+		t.Errorf("a refusal for another reason = %q", got)
+	}
+	d := placement.Decision{Refusal: "no account has room on Fable: a (Fable (7d) 95%)", Model: "Fable", HeldBy: "Fable", RoomAt: now.Add(30 * time.Hour).Unix()}
+	got := strings.Split(refusal(d, now).Error(), "\n")
+	zone := time.Unix(d.RoomAt, 0).Format("MST")
+	if len(got) != 2 || got[0] != d.Refusal || !strings.HasPrefix(got[1], "Fable has room again ") ||
+		!strings.Contains(got[1], " "+zone+" (in 1.2d)") ||
+		!strings.HasSuffix(got[1], ": run it on another model (--model opus), or wait until then") {
+		t.Errorf("refusal = %q", got)
+	}
+	d.Elsewhere = true
+	if named := refusal(d, now).Error(); !strings.HasSuffix(named, ": run it without --account, or on another model (--model opus), or wait until then") {
+		t.Errorf("named refusal with another account free = %q", named)
+	}
+	d.RoomAt = now.Add(3 * time.Hour).Unix()
+	if soon := refusal(d, now).Error(); strings.Contains(soon, time.Unix(d.RoomAt, 0).Format("Mon ")) || !strings.Contains(soon, "(in 3.0h)") {
+		t.Errorf("a renewal within the day = %q", soon)
+	}
+	d.RoomAt, d.Elsewhere = 0, false
+	if unknown := refusal(d, now).Error(); !strings.HasSuffix(unknown, "\nnothing says when Fable has room again: run it on another model (--model opus), or wait") {
+		t.Errorf("refusal with no renewal = %q", unknown)
 	}
 }
