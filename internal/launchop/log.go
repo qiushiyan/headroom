@@ -42,7 +42,8 @@ type logLine struct {
 	// The model whose own limit admitted the launch, and the chosen account's
 	// figure on that limit with what it rests on — named launches included,
 	// since that limit admits them too. Absent when the launch asked for no
-	// model with a limit of its own.
+	// model with a limit of its own; the figure is absent when the chosen
+	// account had none.
 	Model      string `json:"model,omitempty"`       // the vendor's name for it ("Fable")
 	ModelPct   *int   `json:"model_pct,omitempty"`   // the chosen account's counted figure
 	ModelBasis string `json:"model_basis,omitempty"` // observed, stale (a lower bound), ended or bad
@@ -68,14 +69,18 @@ func (l *logLine) rested(d placement.Decision, now time.Time) {
 	}
 }
 
-// model fills the model fields from the decision.
+// model fills the model fields from the decision: the model whenever one
+// admitted the launch, and the chosen account's figure when it had one — an
+// account tried with no figure is logged as just that.
 func (l *logLine) model(d placement.Decision) {
-	chosen, ok := d.Find(d.Chosen)
-	if d.Model == "" || !ok || chosen.ModelRow == nil {
+	if d.Model == "" {
 		return
 	}
-	pct := chosen.ModelRow.Counted
-	l.Model, l.ModelPct, l.ModelBasis = d.Model, &pct, string(chosen.ModelRow.Basis)
+	l.Model = d.Model
+	if chosen, ok := d.Find(d.Chosen); ok && chosen.ModelRow != nil {
+		pct := chosen.ModelRow.Counted
+		l.ModelPct, l.ModelBasis = &pct, string(chosen.ModelRow.Basis)
+	}
 }
 
 const logVersion = 5

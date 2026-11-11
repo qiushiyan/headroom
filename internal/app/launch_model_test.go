@@ -209,3 +209,22 @@ func TestTheLogSaysWhatTheFableFigureRestsOn(t *testing.T) {
 		t.Errorf("log = %+v", recs)
 	}
 }
+
+// A Fable launch tried on an account with no Fable figure says so on its line
+// and in the log, so it never reads as an ordinary launch: the first Fable
+// launch after a new account is added is the likeliest to take one.
+func TestAFableLaunchOnAnAccountWithNoFigureSaysSo(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.observeFable("qiushi", 20, 95, 72*time.Hour)
+	f.observe("a@x.com", 0, 30, time.Minute) // no Fable row
+	got := f.launch("--", "--model", "fable")
+	if got.code != 0 || got.account(f.cfg) != "a@x.com" || !strings.Contains(got.stderr, "no Fable figure") {
+		t.Fatalf("launch: %s", got)
+	}
+	if recs := f.log(); len(recs) != 1 || recs[0].Model != "Fable" || recs[0].ModelPct != nil || recs[0].ModelBasis != "" {
+		t.Errorf("log = %+v", recs)
+	}
+	if dry := f.launch("--dry-run", "--", "--model", "fable"); !strings.Contains(dry.stdout, "no Fable figure") {
+		t.Errorf("dry run:\n%s", dry.stdout)
+	}
+}

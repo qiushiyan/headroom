@@ -406,8 +406,10 @@ type Decision struct {
 
 	// HeldBy is the model whose own limit refused this launch, "" for a
 	// launch not refused or refused for another reason. Elsewhere says, on a
-	// named launch HeldBy refused, that an automatic choice has an account
-	// that could take it.
+	// named launch HeldBy refused, that another account is excluded by
+	// nothing these candidates carry — its figures would admit the launch.
+	// A named launch's candidates carry no login state, so an automatic
+	// launch may still refuse that account for its own reason.
 	HeldBy    string
 	Elsewhere bool
 }

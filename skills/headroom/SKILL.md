@@ -45,8 +45,9 @@ shell's `x-<name>`) — quote that spelling.
   `age_s`, how old the chosen account's figures were; `tied`, how many
   accounts shared its load, so past 1 the weekly tie-break decided;
   `excluded`, how many it had to leave out. A launch that asked for a model
-  with a limit of its own adds `model` (`Fable`), `model_pct` and
-  `model_basis` (`stale` is a lower bound), named launches too. Read it with
+  with a limit of its own adds `model` (`Fable`), named launches too, and
+  `model_pct` with `model_basis` (`stale` is a lower bound) when the account
+  had a figure for it. Read it with
   `jq`; no command lists it.
 - **A `sessions:` line** under an account counts the sessions busy on it,
   headless runs included, and the launches of the last fifteen minutes.
@@ -66,7 +67,7 @@ shell's `x-<name>`) — quote that spelling.
 - **A Fable session**: `headroom launch -- --model fable` (or any
   `--model claude-fable-…`) never runs on an account whose `Fable (7d)` is
   90% or more, or unreadable, `--account` included; the launch line adds
-  that figure, and `--dry-run -- --model fable` shows which accounts it
+  that figure (`no Fable figure` for an account tried without one), and `--dry-run -- --model fable` shows which accounts it
   leaves out. With none left it starts nothing, exits 1, and its last line
   says when Fable renews and the ways on: another model (`--model opus`),
   dropping `--account` when it says so, or the wait. Which of those to take

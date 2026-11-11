@@ -25,7 +25,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
-		return strings.Join(append(append(parts, d.Reason), modelFigure(c)...), " · ")
+		return strings.Join(append(append(parts, d.Reason), modelFigure(d.Model, c)...), " · ")
 	}
 	parts = append(parts, "auto")
 	switch {
@@ -52,7 +52,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 		parts = append(parts, figures(c, now)...)
 		parts = append(parts, fmt.Sprintf("load %d", c.Load))
 	}
-	parts = append(parts, modelFigure(c)...)
+	parts = append(parts, modelFigure(d.Model, c)...)
 	if left := expiredLogins(d); left != "" {
 		parts = append(parts, left)
 	}
@@ -63,13 +63,18 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 	return line
 }
 
-// modelFigure is the chosen account's figure on the limit of the model the
-// launch asked for, said as what it rests on, which every launch that limit
-// admitted prints — named ones too, since it admitted them as well. Nothing
-// when the launch asked for no model with a limit of its own.
-func modelFigure(c placement.Counted) []string {
-	if c.ModelRow == nil {
+// modelFigure is an account's figure on the limit of the model the launch
+// asked for (model), said as what it rests on, which every launch that limit
+// admitted prints — named ones too, since it admitted them as well — and
+// "no <model> figure" for an account tried without one, so such a launch
+// never reads as an ordinary one. Nothing when the launch asked for no model
+// with a limit of its own.
+func modelFigure(model string, c placement.Counted) []string {
+	switch {
+	case model == "":
 		return nil
+	case c.ModelRow == nil:
+		return []string{"no " + model + " figure"}
 	}
 	return []string{shortLabel(c.ModelRow.Label) + " " + figure(c.ModelRow.Counted, c.ModelRow.Basis)}
 }
@@ -215,7 +220,7 @@ func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, 
 			week = Cell(c.Week.Counted, c.Week.Basis)
 		}
 		fmt.Fprintf(w, "%s%s  %7s  %5s  %6s  %4d  %7d  %4d  %s\n", mark, render.PadCell(render.Sanitize(c.Name), nameW),
-			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, now, f.standing(c.Name)))
+			session, week, WeekLeft(c.Week), c.Busy, c.Pending, c.Load, dryRunNote(c, d.Model, now, f.standing(c.Name)))
 	}
 }
 
@@ -242,7 +247,7 @@ func Cell(counted int, basis placement.Basis) string {
 	return figure(counted, basis)
 }
 
-func dryRunNote(c placement.Counted, now time.Time, standing string) string {
+func dryRunNote(c placement.Counted, model string, now time.Time, standing string) string {
 	var notes []string
 	if c.Excluded != "" {
 		notes = append(notes, "excluded: "+c.Excluded)
@@ -256,7 +261,7 @@ func dryRunNote(c placement.Counted, now time.Time, standing string) string {
 	if c.ModelRefusal == "" && !(c.NearLimit && c.ModelRow != nil && c.HighestLabel == c.ModelRow.Label) {
 		// The figure the launch was admitted by, unless the near-limit note
 		// already names that row.
-		notes = append(notes, modelFigure(c)...)
+		notes = append(notes, modelFigure(model, c)...)
 	}
 	switch {
 	case c.ObservedAt == 0:
