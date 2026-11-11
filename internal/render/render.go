@@ -588,21 +588,15 @@ func bar(pct int) string {
 }
 
 // resetPhrase is the block's clock for a reset still ahead — the one reset
-// state that has one.
+// state that has one: the instant, with the weekday once it is a day or more
+// away, and the time left.
 func resetPhrase(resetAt, now int64) string {
-	return "resets " + Clock(resetAt, now)
-}
-
-// Clock is an instant still ahead as the board says a reset: the time, with
-// the weekday once it is a day or more away, and the time left — "16:59 (in
-// 3.2h)", "Thu 16:59 (in 1.2d)".
-func Clock(at, now int64) string {
-	rem := at - now
-	t := time.Unix(at, 0)
+	rem := resetAt - now
+	t := time.Unix(resetAt, 0)
 	if rem < 86400 {
-		return fmt.Sprintf("%s (in %s)", t.Format("15:04"), Remaining(rem))
+		return fmt.Sprintf("resets %s (in %s)", t.Format("15:04"), Remaining(rem))
 	}
-	return fmt.Sprintf("%s (in %s)", t.Format("Mon 15:04"), Remaining(rem))
+	return fmt.Sprintf("resets %s (in %s)", t.Format("Mon 15:04"), Remaining(rem))
 }
 
 // Remaining is the one spelling of "time until a window resets", in both

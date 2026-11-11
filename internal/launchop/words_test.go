@@ -157,26 +157,33 @@ func containsAll(s string, subs []string) bool {
 	return true
 }
 
-// A refusal for want of a model's own limit ends on a line of its own: when
-// that limit renews and the ways on, the part a reader of a terminal's tail
-// keeps. Any other refusal is said as the rule said it.
+// A refusal by a model's own limit ends on a line of its own: when that limit
+// renews and the ways on — the part a reader of a terminal's
+// tail keeps. Any other refusal is said as the rule said it, a launch that
+// asked for Fable included.
 func TestRefusalWording(t *testing.T) {
 	now := time.Unix(1_790_848_000, 0)
-	plain := placement.Decision{Refusal: "no account can take a launch: a (login expired)"}
-	if got := refusal(plain, false, now).Error(); got != plain.Refusal {
-		t.Errorf("plain refusal = %q", got)
+	plain := placement.Decision{Refusal: "no account can take a launch: a (login expired)", Model: "Fable"}
+	if got := refusal(plain, now).Error(); got != plain.Refusal {
+		t.Errorf("a refusal for another reason = %q", got)
 	}
-	d := placement.Decision{Refusal: "no account has room on Fable: a (Fable (7d) 95%)", Model: "Fable", RoomAt: now.Add(30 * time.Hour).Unix()}
-	got := strings.Split(refusal(d, false, now).Error(), "\n")
+	d := placement.Decision{Refusal: "no account has room on Fable: a (Fable (7d) 95%)", Model: "Fable", HeldBy: "Fable", RoomAt: now.Add(30 * time.Hour).Unix()}
+	got := strings.Split(refusal(d, now).Error(), "\n")
 	if len(got) != 2 || got[0] != d.Refusal || !strings.HasPrefix(got[1], "Fable has room again ") ||
-		!strings.HasSuffix(got[1], "(in 1.2d): run it on another model (--model opus), or wait until then") {
-		t.Errorf("auto refusal = %q", got)
+		!strings.Contains(got[1], " (in 1.2d)") ||
+		!strings.HasSuffix(got[1], ": run it on another model (--model opus), or wait until then") {
+		t.Errorf("refusal = %q", got)
 	}
-	if named := refusal(d, true, now).Error(); !strings.Contains(named, "run it without --account, or on another model (--model opus), or wait until then") {
-		t.Errorf("named refusal = %q", named)
+	d.Elsewhere = true
+	if named := refusal(d, now).Error(); !strings.HasSuffix(named, ": run it without --account, or on another model (--model opus), or wait until then") {
+		t.Errorf("named refusal with another account free = %q", named)
 	}
-	d.RoomAt = 0
-	if unknown := refusal(d, false, now).Error(); !strings.HasSuffix(unknown, "\nnothing says when Fable has room again: run it on another model (--model opus), or wait") {
+	d.RoomAt = now.Add(3 * time.Hour).Unix()
+	if soon := refusal(d, now).Error(); strings.Contains(soon, time.Unix(d.RoomAt, 0).Format("Mon ")) || !strings.Contains(soon, "(in 3.0h)") {
+		t.Errorf("a renewal within the day = %q", soon)
+	}
+	d.RoomAt, d.Elsewhere = 0, false
+	if unknown := refusal(d, now).Error(); !strings.HasSuffix(unknown, "\nnothing says when Fable has room again: run it on another model (--model opus), or wait") {
 		t.Errorf("refusal with no renewal = %q", unknown)
 	}
 }

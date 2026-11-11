@@ -27,11 +27,11 @@ func TestALaunchAskingForAModelNeverStartsWhereItsLimitIsSpent(t *testing.T) {
 		t.Fatalf("an ordinary launch chose %q (model %q): the lowest highest figure goes first", d.Chosen, d.Model)
 	}
 	d := chosen(t, []Candidate{spent, other}, Ledger{}, asksFable)
-	if d.Chosen != "other" || d.Reason != ReasonNearLimit || d.Model != "Fable" {
-		t.Fatalf("a Fable launch chose %q (%s, model %q)", d.Chosen, d.Reason, d.Model)
+	if d.Chosen != "other" || d.Reason != ReasonNearLimit || d.Model != "Fable" || d.HeldBy != "" {
+		t.Fatalf("a Fable launch chose %q (%s, model %q, held by %q)", d.Chosen, d.Reason, d.Model, d.HeldBy)
 	}
-	if c, _ := d.Find("spent"); c.Excluded != "Fable (7d) 92%" || c.ModelRefusal != c.Excluded {
-		t.Errorf("spent: excluded %q, model refusal %q", c.Excluded, c.ModelRefusal)
+	if c, _ := d.Find("spent"); c.Excluded != "Fable (7d) 92%" || c.ModelRefusal != c.Excluded || !c.HeldBack {
+		t.Errorf("spent: excluded %q, model refusal %q, held back %v", c.Excluded, c.ModelRefusal, c.HeldBack)
 	}
 	if c, _ := d.Find("other"); c.ModelRow == nil || c.ModelRow.Counted != 10 || c.ModelRefusal != "" {
 		t.Errorf("other: model row %+v, refusal %q", c.ModelRow, c.ModelRefusal)
@@ -65,29 +65,37 @@ func TestAModelsLimitAdmitsAndNeverRanks(t *testing.T) {
 	}
 }
 
+// The owner set the cutoff at 90%: a figure of 90 refuses, 89 admits. The
+// figures are written out, not derived from the constant, so moving the
+// constant fails here.
+func TestTheCutoffIsNinetyPercent(t *testing.T) {
+	if d := chosen(t, []Candidate{withFable("edge", 0, 90)}, Ledger{}, asksFable); d.Chosen != "" || d.HeldBy != "Fable" {
+		t.Fatalf("chose %q: a Fable figure of 90%% admits no Fable launch", d.Chosen)
+	}
+	if d := chosen(t, []Candidate{withFable("edge", 0, 89)}, Ledger{}, asksFable); d.Chosen != "edge" || d.Reason != ReasonNearLimit {
+		t.Fatalf("chose %q (%s): 89%% is near a limit, and still admits", d.Chosen, d.Reason)
+	}
+}
+
 func TestNoAccountWithRoomOnAModelRefusesAndSaysWhenItRenews(t *testing.T) {
 	late := withFable("late", 20, 95)
 	soon := withFable("soon", 20, 91)
 	soon.Limits[2].ResetAt = at(10 * time.Hour)
-	out := withFable("out", 0, 5)
+	// Logged out, and its Fable renews sooner still: it is not an account the
+	// launch could take, so its renewal is not when room returns.
+	out := withFable("out", 0, 99)
+	out.Limits[2].ResetAt = at(time.Hour)
 	out.Excluded = "login expired"
 	d := chosen(t, []Candidate{late, soon, out}, Ledger{}, asksFable)
 	want := "no account has room on Fable: late (Fable (7d) 95%), soon (Fable (7d) 91%); not eligible: out (login expired)"
-	if d.Chosen != "" || d.Refusal != want {
-		t.Fatalf("refusal = %q\nwant      %q", d.Refusal, want)
+	if d.Chosen != "" || d.Refusal != want || d.HeldBy != "Fable" {
+		t.Fatalf("refusal = %q (held by %q)\nwant      %q", d.Refusal, d.HeldBy, want)
 	}
 	if d.RoomAt != at(10*time.Hour) {
-		t.Errorf("room at %d, want the sooner renewal %d", d.RoomAt, at(10*time.Hour))
+		t.Errorf("room at %d, want the eligible account's renewal %d", d.RoomAt, at(10*time.Hour))
 	}
-
-	// The threshold itself refuses; one point under it admits.
-	edge := withFable("edge", 0, ModelLimitPercent)
-	if d := chosen(t, []Candidate{edge}, Ledger{}, asksFable); d.Chosen != "" {
-		t.Fatalf("chose %q: a row at %d%% admits no launch for its model", d.Chosen, ModelLimitPercent)
-	}
-	edge.Limits[2].Percent = ModelLimitPercent - 1
-	if d := chosen(t, []Candidate{edge}, Ledger{}, asksFable); d.Chosen != "edge" || d.Reason != ReasonNearLimit {
-		t.Fatalf("chose %q (%s): %d%% is near, and still admits", d.Chosen, d.Reason, ModelLimitPercent-1)
+	if c, _ := d.Find("out"); c.HeldBack || c.ModelRefusal == "" {
+		t.Errorf("out: held back %v, model refusal %q", c.HeldBack, c.ModelRefusal)
 	}
 
 	// An old reading is a lower bound and says so; a renewal nothing dates
@@ -99,57 +107,89 @@ func TestNoAccountWithRoomOnAModelRefusesAndSaysWhenItRenews(t *testing.T) {
 	if !strings.Contains(d.Refusal, "stale (Fable (7d) ≥93%)") || d.RoomAt != 0 {
 		t.Fatalf("refusal %q, room at %d", d.Refusal, d.RoomAt)
 	}
+
+	// A percent that did not parse bounds nothing, before its reset or after:
+	// its reset is no promise of room.
+	bad := withFable("bad", 0, 0)
+	bad.Limits[2].Bad = true
+	bad.Limits[2].ResetAt = at(2 * time.Hour)
+	d = chosen(t, []Candidate{bad}, Ledger{}, asksFable)
+	if d.Chosen != "" || !strings.Contains(d.Refusal, "bad (Fable (7d) unreadable)") || d.RoomAt != 0 {
+		t.Fatalf("an unparseable Fable figure: refusal %q, room at %d", d.Refusal, d.RoomAt)
+	}
+	if later := Choose([]Candidate{bad}, Ledger{}, asksFable, now.Add(3*time.Hour)); later.Chosen != "" {
+		t.Fatalf("past its reset an unparseable figure admitted the launch: %+v", later)
+	}
+}
+
+// A Fable launch refused for another reason is that refusal, said as the rule
+// says it: a model is no way out of an expired login.
+func TestAModelLaunchRefusedForAnotherReasonIsNotHeldByTheModel(t *testing.T) {
+	a, b := withFable("a", 0, 10), withFable("b", 0, 20)
+	a.Excluded, b.Excluded = "login expired", "login expired"
+	d := chosen(t, []Candidate{a, b}, Ledger{}, asksFable)
+	if d.Chosen != "" || d.HeldBy != "" || d.Model != "Fable" || !strings.HasPrefix(d.Refusal, "no account can take a launch:") {
+		t.Fatalf("held by %q, model %q, refusal %q", d.HeldBy, d.Model, d.Refusal)
+	}
+	gone := Choose([]Candidate{a}, Ledger{}, Intent{Kind: Forced, Account: "nobody", Models: []string{"fable"}}, now)
+	if gone.HeldBy != "" || gone.Chosen != "" {
+		t.Fatalf("a named account that does not exist: %+v", gone)
+	}
 }
 
 func TestNamingAnAccountDoesNotGetPastAModelsLimit(t *testing.T) {
 	spent := withFable("spent", 20, 97)
 	spent.Limits[2].ResetAt = at(30 * time.Hour)
 	room := withFable("room", 20, 50)
-	cands := []Candidate{spent, room}
 	named := func(account string, models ...string) Intent {
 		return Intent{Kind: Forced, Account: account, Reason: "named", Models: models}
 	}
-	d := chosen(t, cands, Ledger{}, named("spent", "fable"))
-	if d.Chosen != "" || d.Refusal != "spent cannot take a Fable launch: Fable (7d) 97%" || d.RoomAt != at(30*time.Hour) {
-		t.Fatalf("refusal %q, room at %d", d.Refusal, d.RoomAt)
+	d := chosen(t, []Candidate{spent, room}, Ledger{}, named("spent", "fable"))
+	if d.Chosen != "" || d.Refusal != "spent cannot take a Fable launch: Fable (7d) 97%" || d.HeldBy != "Fable" || d.RoomAt != at(30*time.Hour) {
+		t.Fatalf("refusal %q, held by %q, room at %d", d.Refusal, d.HeldBy, d.RoomAt)
 	}
-	if d := chosen(t, cands, Ledger{}, named("room", "fable")); d.Chosen != "room" || d.Reason != "named" {
+	if !d.Elsewhere {
+		t.Error("room could take it automatically, and the refusal must say so")
+	}
+	if d := chosen(t, []Candidate{spent, withFable("full", 20, 95)}, Ledger{}, named("spent", "fable")); d.Chosen != "" || d.Elsewhere {
+		t.Fatalf("with every other account spent, letting the rule choose is no way on: %+v", d)
+	}
+	if d := chosen(t, []Candidate{spent, room}, Ledger{}, named("room", "fable")); d.Chosen != "room" || d.Reason != "named" {
 		t.Fatalf("a named account with room: %+v", d)
 	}
-	if d := chosen(t, cands, Ledger{}, named("spent")); d.Chosen != "spent" {
+	if d := chosen(t, []Candidate{spent, room}, Ledger{}, named("spent")); d.Chosen != "spent" {
 		t.Fatalf("a named launch asking for no model is the caller's: %+v", d)
 	}
 	// What else keeps an account out of automatic choices does not hide its
 	// figure from a named launch.
 	spent.Excluded = "not logged in"
-	if d := chosen(t, []Candidate{spent, room}, Ledger{}, named("spent", "fable")); d.Chosen != "" || !strings.Contains(d.Refusal, "97%") {
+	if d := chosen(t, []Candidate{spent, room}, Ledger{}, named("spent", "fable")); d.Chosen != "" || d.HeldBy != "Fable" || !strings.Contains(d.Refusal, "97%") {
 		t.Fatalf("a named, otherwise excluded account: %+v", d)
 	}
 }
 
-// A limit nothing measured on an account is not room for a launch it governs,
-// though an ordinary launch still tries such an account.
-func TestAnAccountWithNoFigureForTheModelCannotTakeItsLaunch(t *testing.T) {
+// An account whose reading has no figure for the model is tried, as any
+// account nothing has measured is: what the cutoff stops is a launch onto a
+// figure known to be spent.
+func TestAnAccountWithNoFigureForTheModelIsTried(t *testing.T) {
 	unmeasured := acct("unmeasured", 0, 10)
-	never := Candidate{Name: "never", Key: "n"}
-	measured := withFable("measured", 0, 40)
-	measured.Busy = []Proc{{PID: 1, StartedMS: now.UnixMilli() - 3_600_000}}
-	cands := []Candidate{unmeasured, never, measured}
-	if d := chosen(t, cands, Ledger{}, Intent{}); d.Chosen == "measured" {
-		t.Fatalf("an ordinary launch chose %q: the accounts with no Fable figure are idle, and tried", d.Chosen)
+	full := withFable("full", 0, 99)
+	d := chosen(t, []Candidate{full, unmeasured}, Ledger{}, asksFable)
+	if d.Chosen != "unmeasured" {
+		t.Fatalf("chose %q", d.Chosen)
 	}
-	d := chosen(t, cands, Ledger{}, asksFable)
-	if d.Chosen != "measured" {
-		t.Fatalf("a Fable launch chose %q", d.Chosen)
+	if c, _ := d.Find("unmeasured"); c.Excluded != "" || c.ModelRow != nil || c.ModelRefusal != "" {
+		t.Errorf("unmeasured: excluded %q, row %+v, refusal %q", c.Excluded, c.ModelRow, c.ModelRefusal)
 	}
-	for _, name := range []string{"unmeasured", "never"} {
-		if c, _ := d.Find(name); c.Excluded != "no Fable figure" || c.ModelRow != nil {
-			t.Errorf("%s: excluded %q, row %+v", name, c.Excluded, c.ModelRow)
-		}
+	if d := chosen(t, []Candidate{full, {Name: "never", Key: "n"}}, Ledger{}, asksFable); d.Chosen != "never" {
+		t.Fatalf("chose %q: an account never observed is tried", d.Chosen)
 	}
-	d = chosen(t, []Candidate{unmeasured, withFable("full", 0, 99)}, Ledger{}, asksFable)
-	if d.Refusal != "no account has room on Fable: unmeasured (no Fable figure), full (Fable (7d) 99%)" || d.RoomAt != at(72*time.Hour) {
-		t.Fatalf("refusal %q, room at %d", d.Refusal, d.RoomAt)
+	// Readings of different ages: an old one that still carries an ended
+	// Fable row does not make a fresh one without the row a refusal.
+	old := withFable("old", 0, 40)
+	old.ObservedAt, old.Limits[2].ResetAt, old.Excluded = at(-8*24*time.Hour), at(-24*time.Hour), "login expired"
+	if d := chosen(t, []Candidate{old, acct("fresh", 0, 10)}, Ledger{}, asksFable); d.Chosen != "fresh" {
+		t.Fatalf("chose %q: refusal %q", d.Chosen, d.Refusal)
 	}
 }
 
@@ -163,6 +203,7 @@ func TestAModelNoReadingLimitsIsAnOrdinaryLaunch(t *testing.T) {
 	if asked.Chosen != plain.Chosen || asked.Model != "" {
 		t.Fatalf("chose %q (model %q), an ordinary launch %q", asked.Chosen, asked.Model, plain.Chosen)
 	}
+	// Claude Code's catalog resolves "best" to Opus; "default" names no model.
 	limited := []Candidate{withFable("a", 0, 95), withFable("b", 85, 10)}
 	for _, models := range [][]string{{"opus"}, {"default"}, {"best"}, {""}, {"--settings"}} {
 		if d := chosen(t, limited, Ledger{}, Intent{Models: models}); d.Model != "" || d.Chosen != "b" {
@@ -175,11 +216,20 @@ func TestAModelNoReadingLimitsIsAnOrdinaryLaunch(t *testing.T) {
 	if d := chosen(t, []Candidate{ended}, Ledger{}, asksFable); d.Chosen != "ended" || d.Model != "Fable" {
 		t.Fatalf("an ended Fable window: %+v", d)
 	}
-	// A percent that did not parse bounds nothing.
-	bad := withFable("bad", 0, 0)
-	bad.Limits[2].Bad = true
-	if d := chosen(t, []Candidate{bad}, Ledger{}, asksFable); d.Chosen != "" || !strings.Contains(d.Refusal, "bad (Fable (7d) unreadable)") {
-		t.Fatalf("an unparseable Fable figure: %+v", d)
+}
+
+// An account with several rows for the model is judged by its tightest,
+// whichever order the reading lists them in.
+func TestTheTightestRowForTheModelDecides(t *testing.T) {
+	for _, order := range [][2]int{{85, 92}, {92, 85}} {
+		c := acct("a", 0, 10)
+		c.Limits = append(c.Limits,
+			Limit{Kind: "weekly_scoped", Label: "Fable (7d)", Percent: order[0], ResetAt: at(72 * time.Hour), Model: "Fable"},
+			Limit{Kind: "session_scoped", Label: "Fable (5h)", Percent: order[1], ResetAt: at(2 * time.Hour), Model: "Fable"})
+		d := chosen(t, []Candidate{c}, Ledger{}, asksFable)
+		if d.Chosen != "" || !strings.Contains(d.Refusal, "92%") {
+			t.Errorf("rows %v: chose %q, refusal %q", order, d.Chosen, d.Refusal)
+		}
 	}
 }
 

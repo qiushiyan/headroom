@@ -19,10 +19,11 @@ did not parse. A bare launch with -- --resume <id> or -- --session-id <id> follo
 account that last drove that session while it has room, and records where it went.
 
 A launch with -- --model <m>, where <m> has a weekly limit of its own on the usage page
-(Fable: fable, claude-fable-5-2), runs only on an account under 90% of that limit — an
-account named with --account included — and the line adds its figure ("Fable (7d) 41%").
-An account with no figure for it is not room. With no account under 90%, nothing starts
-and the error's last line says when that limit renews: run it on another model, or wait.
+(Fable: fable, claude-fable-5-2), never runs on an account whose figure for that limit is
+90% or more, or unreadable — an account named with --account included — and the line
+adds the figure ("Fable (7d) 41%"); an account with no figure for it is tried. With every
+account held so, nothing starts, and the error's last line says when that limit renews
+and the ways on: another model, the rule's choice of account, or the wait.
 
 Codex's sessions are shared across its accounts: headroom launch --vendor codex --account
 <other> -- resume continues one on another account.

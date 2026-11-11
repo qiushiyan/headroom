@@ -134,8 +134,8 @@ func (p *Plan) preflight() error {
 			// A model's own limit refuses a named account from its reading
 			// alone, which the store's lock cannot change, so it is known here
 			// and refused before Place writes anything.
-			if d := placement.Choose(f.rule(), f.snap.Placements(), req.Intent, req.Now); d.Chosen == "" && d.Model != "" {
-				return refusal(d, true, req.Now)
+			if d := placement.Choose(f.rule(), f.snap.Placements(), req.Intent, req.Now); d.HeldBy != "" {
+				return refusal(d, req.Now)
 			}
 		}
 	}
@@ -190,7 +190,7 @@ func (p *Plan) Commit() (*Launch, error) {
 	placed, placeErr := req.Store.Place(l)
 	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, rehomed: placed.Route.Written()}
 	if out.decision.Chosen == "" {
-		return nil, refusal(out.decision, req.Intent.Kind == placement.Forced, req.Now)
+		return nil, refusal(out.decision, req.Now)
 	}
 	// The rule chooses no account that cannot be launched — such a candidate
 	// is excluded, and refused by name — so the chosen one was prepared.

@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/accounts"
+	"github.com/qiushiyan/headroom/internal/placement"
+	"github.com/qiushiyan/headroom/internal/state"
 )
 
 // observeFable stores a reading with an all-models row and a Fable-scoped row,
@@ -101,6 +105,15 @@ func TestANamedFableLaunchOnASpentAccountRefusesAndRecordsNothing(t *testing.T) 
 	f.observeFable("qiushi", 20, 30, 72*time.Hour)
 	f.observeFable("a@x.com", 40, 97, 30*time.Hour)
 	f.observeFable("b@x.com", 40, 20, 72*time.Hour)
+	// A placement long past its span: a refusal that reached the store would
+	// prune it, and state.json would change.
+	if _, err := f.st.Place(state.Launch{
+		Candidates: []placement.Candidate{{Name: "b@x.com", Ref: "b@x.com", Key: "test:b"}},
+		Intent:     placement.Intent{Kind: placement.Forced, Account: "b@x.com", Reason: "test"},
+		Now:        time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	files := []string{filepath.Join(f.cfg.AccountsRoot, "state.json"), launchLogPath(f.cfg.AccountsRoot)}
 	before := make([][]byte, len(files))
 	for i, p := range files {
@@ -129,8 +142,70 @@ func TestANamedFableLaunchOnASpentAccountRefusesAndRecordsNothing(t *testing.T) 
 	if recs := f.log(); len(recs) != 1 || recs[0].Mode != "named" || recs[0].Model != "Fable" || *recs[0].ModelPct != 20 {
 		t.Errorf("log = %+v", recs)
 	}
+	// Every other account spent too: letting the rule choose is no way on, and
+	// the refusal does not offer it.
+	g := newAutoFixture(t, "a@x.com")
+	g.observeFable("qiushi", 20, 95, 72*time.Hour)
+	g.observeFable("a@x.com", 40, 97, 30*time.Hour)
+	if alone := g.launch("--account", "a@x.com", "--", "--model", "fable"); alone.code == 0 || strings.Contains(alone.stderr, "without --account") ||
+		!strings.Contains(alone.stderr, "run it on another model (--model opus), or wait until then") {
+		t.Errorf("a named refusal with no other account free:\n%s", alone.stderr)
+	}
 	// Naming a spent account still works for a launch asking for no model.
 	if plain := f.launch("--account", "a@x.com", "--", "-p", "hi"); plain.code != 0 || plain.account(f.cfg) != "a@x.com" {
 		t.Fatalf("a named ordinary launch: %s", plain)
+	}
+}
+
+// A Fable launch refused for another reason says that reason and nothing
+// about Fable: run on Opus, it would be refused the same way.
+func TestAFableLaunchRefusedForAnotherReasonSaysNothingOfFable(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	f.observeFable("qiushi", 10, 10, 72*time.Hour)
+	f.observeFable("a@x.com", 10, 20, 72*time.Hour)
+	past := time.Now().Add(-time.Hour).UnixMilli()
+	f.edges.Creds = func(accounts.Account) string { // every login has ended
+		return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"refreshTokenExpiresAt":%d}}`, past)
+	}
+	got := f.launch("--", "--model", "fable")
+	if got.code == 0 || got.called || !strings.Contains(got.stderr, "no account can take a launch") ||
+		!strings.Contains(got.stderr, "login expired") || strings.Contains(got.stderr, "room again") {
+		t.Fatalf("refusal:\n%s", got.stderr)
+	}
+}
+
+// A reading whose Fable row arrives twice says nothing usable about Fable on
+// that account: the row still names the model, its figure is unreadable, and
+// the account cannot take a Fable launch — across the usage parser, not just
+// the rule.
+func TestADamagedFableRowIsUnreadableNotAbsent(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com")
+	reset := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	row := fmt.Sprintf(`{"kind":"weekly_scoped","group":"weekly","percent":5,"resets_at":%q,"scope":{"model":{"id":null,"display_name":"Fable"}}}`, reset)
+	f.store("qiushi", fmt.Sprintf(`{"limits":[{"kind":"weekly_all","group":"weekly","percent":10,"resets_at":%q},%s,%s]}`, reset, row, row), time.Now().Add(-time.Minute))
+	f.observe("a@x.com", 0, 30, time.Minute) // no Fable row: a is tried
+	dry := f.launch("--dry-run", "--", "--model", "fable")
+	if !strings.Contains(dry.stdout, "would start claude on a@x.com") || !strings.Contains(dry.stdout, "excluded: Fable (7d) unreadable") {
+		t.Fatalf("dry run:\n%s", dry.stdout)
+	}
+	if got := f.launch("--account", "qiushi", "--", "--model", "fable"); got.code == 0 || !strings.Contains(got.stderr, "qiushi cannot take a Fable launch: Fable (7d) unreadable") ||
+		!strings.Contains(got.stderr, "nothing says when Fable has room again") {
+		t.Fatalf("named launch on the damaged account:\n%s", got.stderr)
+	}
+}
+
+// The log keeps what the chosen account's Fable figure rested on: an old
+// reading is a lower bound, and says so.
+func TestTheLogSaysWhatTheFableFigureRestsOn(t *testing.T) {
+	f := newAutoFixture(t)
+	reset := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	f.store("qiushi", fmt.Sprintf(`{"limits":[{"kind":"weekly_all","group":"weekly","percent":10,"resets_at":%q},`+
+		`{"kind":"weekly_scoped","group":"weekly","percent":33,"resets_at":%q,"scope":{"model":{"id":null,"display_name":"Fable"}}}]}`, reset, reset),
+		time.Now().Add(-3*time.Hour))
+	if got := f.launch("--", "--model", "fable"); got.code != 0 || !strings.Contains(got.stderr, "Fable (7d) ≥33%") {
+		t.Fatalf("launch: %s", got)
+	}
+	if recs := f.log(); len(recs) != 1 || recs[0].ModelPct == nil || *recs[0].ModelPct != 33 || recs[0].ModelBasis != "stale" {
+		t.Errorf("log = %+v", recs)
 	}
 }

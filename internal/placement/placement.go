@@ -24,10 +24,12 @@
 // rule cannot prefer an account for what it is kept for.
 //
 // A launch that asks for a model with a weekly limit of its own (Fable) is
-// admitted, not ranked, by that limit: an account runs it only while its own
-// reading puts that limit under ModelLimitPercent, whoever chose the account,
-// and with none left the launch refuses. Where it may run, it is ranked like
-// any other launch. Admission adds no preference, so launches started
+// admitted, not ranked, by that limit: an account whose own reading puts it
+// at ModelLimitPercent or more, or shows it unreadable, cannot run the
+// launch, whoever chose the account, and with every account so held the
+// launch refuses. An account whose reading has no figure for the model is
+// tried, like any account nothing has measured. Where it may run, a launch is
+// ranked like any other: admission adds no preference, so launches started
 // together still spread.
 package placement
 
@@ -311,10 +313,12 @@ type Counted struct {
 	// (Decision.Model), its tightest when it has several; nil when the launch
 	// asks for no such model or this account's reading carries no row for it.
 	// ModelRefusal is why this account cannot take that launch, whoever chose
-	// it: the row at or past ModelLimitPercent, or no row at all, since a
-	// limit nothing measured is not room. "" when it can.
+	// it: the row at or past ModelLimitPercent, or unreadable. "" when it can,
+	// a missing row included. HeldBack says that limit alone keeps the account
+	// out of an automatic choice: nothing else excludes it.
 	ModelRow     *CountedLimit
 	ModelRefusal string
+	HeldBack     bool
 
 	LastPlacedMS int64
 	order        int
@@ -390,14 +394,22 @@ type Decision struct {
 
 	// RoomAt is when the first account set aside near a limit has room again,
 	// in unix seconds, on a refusal to a caller that can wait; 0 when no such
-	// account says when its limits reset. On a refusal for want of a model's
-	// own limit (Model set), it is when that limit first renews on an account
+	// account says when its limits reset. On a refusal by a model's own limit
+	// (HeldBy), it is when that limit first renews, readably, on an account
 	// it alone held back.
 	RoomAt int64
 
-	// Model is the model whose own limit admitted this launch, by the
-	// vendor's name ("Fable"); "" when the launch asks for none such.
+	// Model is the model whose own limit admits this launch, by the vendor's
+	// name ("Fable"); "" when the launch asks for none such. It says what
+	// the launch is judged by, never why a refusal was made: that is HeldBy.
 	Model string
+
+	// HeldBy is the model whose own limit refused this launch, "" for a
+	// launch not refused or refused for another reason. Elsewhere says, on a
+	// named launch HeldBy refused, that an automatic choice has an account
+	// that could take it.
+	HeldBy    string
+	Elsewhere bool
 }
 
 // Find returns the counted candidate of that name.
@@ -427,10 +439,9 @@ func Choose(cands []Candidate, ledger Ledger, intent Intent, now time.Time) Deci
 		case c.Unlaunchable:
 			d.Refusal = fmt.Sprintf("%s cannot be launched: %s", c.Name, c.Excluded)
 		case c.ModelRefusal != "":
-			d.Refusal = fmt.Sprintf("%s cannot take a %s launch: %s", c.Name, d.Model, c.ModelRefusal)
-			if c.ModelRow != nil && c.ModelRow.ResetAt > now.Unix() {
-				d.RoomAt = c.ModelRow.ResetAt
-			}
+			d.Refusal, d.HeldBy = fmt.Sprintf("%s cannot take a %s launch: %s", c.Name, d.Model, c.ModelRefusal), d.Model
+			d.RoomAt = renews(c.ModelRow, now)
+			d.Elsewhere = slices.ContainsFunc(d.Candidates, func(o Counted) bool { return o.Name != c.Name && o.Excluded == "" })
 		default:
 			d.Chosen, d.Reason = c.Name, intent.Reason
 		}
@@ -442,10 +453,11 @@ func Choose(cands []Candidate, ledger Ledger, intent Intent, now time.Time) Deci
 
 // limitedModel is the first model the launch asks for that some account's
 // reading has a limit of its own for, by the vendor's name; "" when none.
-// That a model has such a limit is read from the readings, never assumed: a
-// vendor that drops a model's own limit — as it once did for Opus — leaves
-// launches asking for it placed like any other, where a name written into
-// the rule would refuse every one of them.
+// That a model has such a limit is read from the readings, never assumed, and
+// each account is judged by its own reading: a vendor that drops a model's own
+// limit — as it once did for Opus — leaves every account whose reading lacks
+// the row taking those launches, where a name written into the rule would
+// refuse them all.
 func limitedModel(cands []Candidate, asked []string) string {
 	for _, a := range asked {
 		f := family(a)
@@ -478,14 +490,15 @@ func family(name string) string {
 	return s
 }
 
-// modelRefusal is why an account cannot take a launch admitted by model's own
-// limit, "" when it can. No row is a refusal: a limit nothing measured on
-// this account is not room, and the launch it would let through is the one
-// this exists to stop.
-func modelRefusal(row *CountedLimit, model string) string {
+// modelRefusal is why an account cannot take a launch admitted by its model's
+// own limit, "" when it can. A row nothing measured is no refusal: such an
+// account is tried, as an idle account always is, and what this stops is a
+// launch onto a figure known to be spent — or one that cannot be read, which
+// bounds nothing.
+func modelRefusal(row *CountedLimit) string {
 	switch {
 	case row == nil:
-		return "no " + model + " figure"
+		return ""
 	case row.Basis == BasisBad:
 		return row.Label + " unreadable"
 	case row.Counted < ModelLimitPercent:
@@ -530,7 +543,7 @@ func (d *Decision) auto(intent Intent, now time.Time) {
 	ranked := append(slices.Clone(open), near...)
 	if len(ranked) == 0 {
 		if d.heldByModel() {
-			d.Refusal, d.RoomAt = d.modelRefusal(), d.modelRoomAt(now)
+			d.Refusal, d.RoomAt, d.HeldBy = d.heldRefusal(), d.modelRoomAt(now), d.Model
 			return
 		}
 		d.Refusal = "no account can take a launch: " + d.exclusions()
@@ -571,25 +584,29 @@ func (d *Decision) auto(intent Intent, now time.Time) {
 	}
 }
 
-// heldBack reports that the model's own limit is what keeps this account out
-// of the launch: nothing else excludes it.
-func (c Counted) heldBack() bool {
-	return c.ModelRefusal != "" && c.Excluded == c.ModelRefusal
+// renews is when a model's row that refused a launch stops refusing it: its
+// reset, while that is ahead and its figure was read. 0 when nothing says —
+// a percent that did not parse still bounds nothing after its reset.
+func renews(row *CountedLimit, now time.Time) int64 {
+	if row == nil || row.Basis == BasisBad || row.ResetAt <= now.Unix() {
+		return 0
+	}
+	return row.ResetAt
 }
 
 // heldByModel reports that some account the rule could otherwise consider was
 // kept out by the model's own limit alone.
 func (d Decision) heldByModel() bool {
-	return slices.ContainsFunc(d.Candidates, Counted.heldBack)
+	return slices.ContainsFunc(d.Candidates, func(c Counted) bool { return c.HeldBack })
 }
 
-// modelRefusal says why a launch asking for a model with its own limit was
+// heldRefusal says why a launch asking for a model with its own limit was
 // refused: the accounts that limit held back, each with its figure, then the
 // others with why they could not be chosen at all.
-func (d Decision) modelRefusal() string {
+func (d Decision) heldRefusal() string {
 	var held, others []string
 	for _, c := range d.Candidates {
-		if c.heldBack() {
+		if c.HeldBack {
 			held = append(held, fmt.Sprintf("%s (%s)", c.Name, c.ModelRefusal))
 		} else {
 			others = append(others, fmt.Sprintf("%s (%s)", c.Name, c.Excluded))
@@ -607,10 +624,10 @@ func (d Decision) modelRefusal() string {
 func (d Decision) modelRoomAt(now time.Time) int64 {
 	var first int64
 	for _, c := range d.Candidates {
-		if !c.heldBack() || c.ModelRow == nil || c.ModelRow.ResetAt <= now.Unix() {
+		if !c.HeldBack {
 			continue
 		}
-		if at := c.ModelRow.ResetAt; first == 0 || at < first {
+		if at := renews(c.ModelRow, now); at > 0 && (first == 0 || at < first) {
 			first = at
 		}
 	}
@@ -738,9 +755,9 @@ func count(c Candidate, ledger Ledger, order int, now time.Time, model string) C
 		}
 	}
 	if model != "" {
-		out.ModelRefusal = modelRefusal(out.ModelRow, model)
-		if out.Excluded == "" {
-			out.Excluded = out.ModelRefusal
+		out.ModelRefusal = modelRefusal(out.ModelRow)
+		if out.Excluded == "" && out.ModelRefusal != "" {
+			out.Excluded, out.HeldBack = out.ModelRefusal, true
 		}
 	}
 	for _, p := range ledger.Recent {
