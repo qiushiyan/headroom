@@ -383,9 +383,21 @@ func limitsOf(vendor config.Vendor, obs *accountstate.Observation) (observedAt i
 			// nothing says which of them is the limit.
 			Bad: r.PercentState == tag.Bad || r.Shared, ResetAt: r.ResetAt, Window: r.WindowSeconds,
 			Period: int64(usage.Period(vendor, r) / time.Second), Session: j == session,
+			// A row whose identity did not parse names no model: what it is
+			// scoped to is exactly what failed.
+			Model: modelOf(r),
 		})
 	}
 	return obs.ObservedAt, limits
+}
+
+// modelOf is the model a row is scoped to, "" for an unscoped row and for one
+// whose identity did not parse.
+func modelOf(r usage.Row) string {
+	if r.IdentityState == tag.Bad {
+		return ""
+	}
+	return r.Model
 }
 
 // loginExpired is avoidReason's word for the one exclusion a person ends by

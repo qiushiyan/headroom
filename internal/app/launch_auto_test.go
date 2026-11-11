@@ -214,7 +214,7 @@ func TestAutoLaunchChoosesTheLeastLoadedAccountAndSaysSo(t *testing.T) {
 	}
 	// What the choice rested on: figures three minutes old, and a tie with b
 	// at load 0 that the weekly room broke. Nobody was left out.
-	if r := recs[0]; r.V != 4 || r.AgeS == nil || *r.AgeS < 170 || *r.AgeS > 190 || r.Tied != 2 || r.Excluded != 0 {
+	if r := recs[0]; r.V != 5 || r.AgeS == nil || *r.AgeS < 170 || *r.AgeS > 190 || r.Tied != 2 || r.Excluded != 0 {
 		t.Errorf("log v%d says the choice rested on age %v, %d tied, %d excluded", r.V, r.AgeS, r.Tied, r.Excluded)
 	}
 	if *f.refreshes != 1 {

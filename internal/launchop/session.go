@@ -1,6 +1,9 @@
 package launchop
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Session is what a launch's pass-through arguments say about which
 // session it is for. It is read, never rewritten: the arguments reach the
@@ -91,4 +94,31 @@ func SessionOf(args []string) Session {
 		return Session{Route: fresh, Record: fresh}
 	}
 	return Session{}
+}
+
+// ModelsOf is the one reader of the vendor's model flag in a launch's
+// arguments: every value given to `--model`, in order, up to a bare `--`.
+// Which of several the vendor honours is its own rule, unread here, so the
+// rule is handed them all and is admitted by the first it finds a limit for
+// — a launch that might run on a limited model is held to that limit. As with
+// SessionOf, a flag appearing as another option's value would be read as one;
+// the consequence is a launch held to a limit it may not spend, never one let
+// past it. `--fallback-model` is another flag and is not read.
+func ModelsOf(args []string) []string {
+	var models []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return models
+		case a == "--model":
+			if i+1 < len(args) {
+				models = append(models, args[i+1])
+				i++
+			}
+		case strings.HasPrefix(a, "--model="):
+			models = append(models, strings.TrimPrefix(a, "--model="))
+		}
+	}
+	return models
 }

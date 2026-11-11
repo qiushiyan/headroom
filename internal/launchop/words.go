@@ -7,6 +7,7 @@ package launchop
 // a line that printed them alike would read a bound as measured room.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -24,7 +25,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 	parts := []string{d.Chosen}
 	c, _ := d.Find(d.Chosen)
 	if !automatic {
-		return strings.Join(append(parts, d.Reason), " · ")
+		return strings.Join(append(append(parts, d.Reason), modelFigure(c)...), " · ")
 	}
 	parts = append(parts, "auto")
 	switch {
@@ -51,6 +52,7 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 		parts = append(parts, figures(c, now)...)
 		parts = append(parts, fmt.Sprintf("load %d", c.Load))
 	}
+	parts = append(parts, modelFigure(c)...)
 	if left := expiredLogins(d); left != "" {
 		parts = append(parts, left)
 	}
@@ -59,6 +61,37 @@ func launchLine(d placement.Decision, automatic bool, ref Session, owner string,
 		line += " (next: " + d.RunnerUp + ")"
 	}
 	return line
+}
+
+// modelFigure is the chosen account's figure on the limit of the model the
+// launch asked for, said as what it rests on, which every launch that limit
+// admitted prints — named ones too, since it admitted them as well. Nothing
+// when the launch asked for no model with a limit of its own.
+func modelFigure(c placement.Counted) []string {
+	if c.ModelRow == nil {
+		return nil
+	}
+	return []string{shortLabel(c.ModelRow.Label) + " " + figure(c.ModelRow.Counted, c.ModelRow.Basis)}
+}
+
+// refusal is a decision that chose nobody, said as the launch's error. A
+// refusal for want of a model's own limit ends on a line of its own saying
+// when that limit renews and the ways on, so a reader that keeps only the
+// tail of a terminal — a driver reading why its session did not start —
+// still has what to decide. named says the caller chose the account, which
+// adds a way on: letting the rule choose one with room.
+func refusal(d placement.Decision, named bool, now time.Time) error {
+	if d.Model == "" {
+		return errors.New(d.Refusal)
+	}
+	other := "run it on another model (--model opus)"
+	if named {
+		other = "run it without --account, or on another model (--model opus)"
+	}
+	if d.RoomAt > now.Unix() {
+		return fmt.Errorf("%s\n%s has room again %s: %s, or wait until then", d.Refusal, d.Model, render.Clock(d.RoomAt, now.Unix()), other)
+	}
+	return fmt.Errorf("%s\nnothing says when %s has room again: %s, or wait", d.Refusal, d.Model, other)
 }
 
 // expiredLogins says how many accounts the rule could not consider because
@@ -137,7 +170,7 @@ func shortLabel(label string) string {
 // account, with what was counted and why an account was left out.
 func writeDryRun(w io.Writer, binary string, d placement.Decision, mode string, now time.Time, f facts) {
 	if d.Chosen == "" {
-		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", d.Refusal)
+		fmt.Fprintf(w, "headroom launch --dry-run: would refuse — %s\n", refusal(d, mode == "named", now))
 	} else {
 		how := mode
 		if d.Reason != "" && d.Reason != mode {
@@ -205,6 +238,11 @@ func dryRunNote(c placement.Counted, now time.Time, standing string) string {
 	}
 	if c.NearLimit {
 		notes = append(notes, fmt.Sprintf("near a limit (%s %d%%)", shortLabel(c.HighestLabel), c.Highest))
+	}
+	if c.ModelRefusal == "" && !(c.NearLimit && c.ModelRow != nil && c.HighestLabel == c.ModelRow.Label) {
+		// The figure the launch was admitted by, unless the near-limit note
+		// already names that row.
+		notes = append(notes, modelFigure(c)...)
 	}
 	switch {
 	case c.ObservedAt == 0:

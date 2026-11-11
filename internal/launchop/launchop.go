@@ -14,7 +14,6 @@
 package launchop
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,12 +48,14 @@ type Request struct {
 	Store  *state.Store
 	Intent placement.Intent
 
-	// VendorArgs are a launch's pass-through arguments, for a launch that
-	// names its session there. An automatic Claude Code launch reads them
-	// (SessionOf): it follows the owner of a session named by id while that
-	// account has room, and records the re-home when it places the session
-	// elsewhere. A named launch was told where to go and reads nothing from
-	// them; the arguments reach the vendor as given.
+	// VendorArgs are a launch's pass-through arguments. Every Claude Code
+	// launch reads the models they ask for (ModelsOf): a model with a limit of
+	// its own admits a launch only where that limit has room, whoever chose
+	// the account. An automatic launch also reads the session they name
+	// (SessionOf): it follows that session's owner while that account has
+	// room, and records the re-home when it places the session elsewhere; a
+	// named launch was told where to go. The arguments reach the vendor as
+	// given.
 	VendorArgs []string
 
 	CWD     string
@@ -83,6 +84,10 @@ func Gather(req Request, deps Deps) *Plan {
 	p := &Plan{deps: deps}
 	automatic := req.Intent.Kind == placement.Auto
 	f := gather(req.Set, req.Store, readReservations(req.Set.Scope), req.Environ, req.CWD, automatic, req.Now, deps)
+	if req.Set.Scope.Vendor == config.Claude {
+		// Only Claude Code's readings carry a model's own limit.
+		req.Intent.Models = ModelsOf(req.VendorArgs)
+	}
 	if len(req.VendorArgs) > 0 && automatic && req.Set.Scope.Vendor == config.Claude {
 		// A launch that names a session follows the account that last drove
 		// it, so its prompt cache and its checkpoints stay usable. Only Claude
@@ -124,6 +129,14 @@ func (p *Plan) preflight() error {
 	if req.Intent.Kind == placement.Forced {
 		if c, ok := f.find(req.Intent.Account); ok && c.prepareErr != nil {
 			return c.prepareErr
+		}
+		if len(req.Intent.Models) > 0 {
+			// A model's own limit refuses a named account from its reading
+			// alone, which the store's lock cannot change, so it is known here
+			// and refused before Place writes anything.
+			if d := placement.Choose(f.rule(), f.snap.Placements(), req.Intent, req.Now); d.Chosen == "" && d.Model != "" {
+				return refusal(d, true, req.Now)
+			}
 		}
 	}
 	return nil
@@ -177,7 +190,7 @@ func (p *Plan) Commit() (*Launch, error) {
 	placed, placeErr := req.Store.Place(l)
 	out := &Launch{req: req, session: p.session, owner: p.owner, decision: placed.Decision, rehomed: placed.Route.Written()}
 	if out.decision.Chosen == "" {
-		return nil, errors.New(out.decision.Refusal)
+		return nil, refusal(out.decision, req.Intent.Kind == placement.Forced, req.Now)
 	}
 	// The rule chooses no account that cannot be launched — such a candidate
 	// is excluded, and refused by name — so the chosen one was prepared.
@@ -207,6 +220,7 @@ func (p *Plan) Commit() (*Launch, error) {
 	if req.Intent.Kind == placement.Auto {
 		line.rested(out.decision, req.Now)
 	}
+	line.model(out.decision)
 	if err := appendLog(scope.AccountsRoot, line, req.Now); err != nil {
 		out.notes = append(out.notes, fmt.Sprintf("launch log not written (%v)", err))
 	}

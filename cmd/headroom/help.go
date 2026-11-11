@@ -85,6 +85,12 @@ than fifteen minutes, "window ended" a window whose reset has passed, ?% a perce
 did not parse. A bare launch with -- --resume <id> or -- --session-id <id> follows the
 account that last drove that session while it has room, and records where it went.
 
+A launch with -- --model <m>, where <m> has a weekly limit of its own on the usage page
+(Fable: fable, claude-fable-5-2), runs only on an account under 90% of that limit — an
+account named with --account included — and the line adds its figure ("Fable (7d) 41%").
+An account with no figure for it is not room. With no account under 90%, nothing starts
+and the error's last line says when that limit renews: run it on another model, or wait.
+
 Codex's sessions are shared across its accounts: headroom launch --vendor codex --account
 <other> -- resume continues one on another account.`
 
@@ -93,6 +99,7 @@ var launchExamples = clikit.Section{
 	Body: `  headroom launch                                   the least-loaded account
   headroom launch --account a@x.com -- --resume 1f2e…   continue a session on a@x.com
   headroom launch --dry-run                         what a bare launch would choose, and why
+  headroom launch -- --model fable                  an account with Fable room, or a refusal
   headroom launch --vendor codex --account a@x.com -- login`,
 }
 
