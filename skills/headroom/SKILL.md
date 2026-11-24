@@ -1,6 +1,6 @@
 ---
 name: headroom
-description: Day-to-day use of the headroom CLI — quota per Claude Code or Codex account, launching on the least-loaded or a named account, continuing a rate-limited session on another account, checking the board after a vendor update.
+description: Day-to-day use of the headroom CLI — quota per Claude Code, Codex or Antigravity account, launching on the least-loaded or a named account, continuing a rate-limited session on another account, checking the board after a vendor update.
 disable-model-invocation: true
 ---
 
@@ -139,7 +139,7 @@ shell's `x-<name>`) — quote that spelling.
 Everything above applies with `--vendor codex` on `launch` and
 `accounts add`, except the Fable session, which is Claude Code's alone; the
 board (**tab** switches page), `headroom --json` and `headroom limits`
-already show both vendors (`--vendor codex` for one), and every JSON account
+already show every vendor (`--vendor codex` for one), and every JSON account
 carries `"vendor"`.
 
 - **One session on another account**: `headroom launch --vendor codex
@@ -155,6 +155,16 @@ carries `"vendor"`.
   another. *usage unknown* before headroom's first fetch is ordinary.
 - **Retiring a Codex account** is by hand: `accounts remove --vendor codex`
   refuses and names the directory.
+
+## Antigravity
+
+The machine's one agy sign-in has a page of its own (`--vendor agy` on the
+board, `limits` and `refresh`), named by the email its newest reading was
+taken for. headroom reads it by running `agy -p /usage` and never launches
+agy: hand the user `agy` itself. Its lines: *agy exited N — run agy to see
+why* and *agy did not answer* → the user runs `agy` to see; *agy is using an
+API key* → agy is on a key, which has no account quota. None of them calls
+for a login from headroom.
 
 Routing lives in `headroom launch` — it owns `CLAUDE_CONFIG_DIR` and
 `CODEX_HOME`. The unmanaged

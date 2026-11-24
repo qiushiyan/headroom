@@ -87,8 +87,12 @@ func canonicalStore(s config.Scope) (absent bool, err error) {
 
 // addCommand is the seeding command's spelling for a scope.
 func addCommand(s config.Scope) string {
-	if s.Vendor == config.Codex {
+	switch s.Vendor {
+	case config.Codex:
 		return "headroom accounts add --vendor codex"
+	case config.Agy:
+		// Antigravity has no topology to seed; nothing names this.
+		return ""
 	}
 	return "headroom accounts add"
 }

@@ -29,7 +29,7 @@ Flags:
 
 Inherited flags:
       --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
-                         remove act on it, Claude Code when absent (one of: claude, codex).
+                         remove act on it, Claude Code when absent (one of: claude, codex, agy).
   -h, --help             Show context-sensitive help.
       --version          Print the build this binary is — its commit and the commit's time — and
                          exit.

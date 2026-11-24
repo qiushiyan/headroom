@@ -1,0 +1,6 @@
+$ headroom accounts --compact --vendor agy
+exit 0
+--- stdout
+account     Gemini 7d  Gemini 5h  Claude and GPT 7d  Claude and GPT 5h
+g@x.com      12% 5.8d   50% 3.7h    0% not started     0% not started
+--- stderr

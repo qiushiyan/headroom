@@ -10,7 +10,7 @@ headroom refresh, all under the same per-account request budget.
 
 Flags:
       --vendor=VENDOR    Only this vendor's accounts; every vendor on this machine when absent (one
-                         of: claude, codex).
+                         of: claude, codex, agy).
       --account=NAME     Only the accounts of this name, in every vendor selected.
 
 Inherited flags:
@@ -21,7 +21,7 @@ Inherited flags:
 The JSON document (schema 8):
   {"schema": 8, "generated_at": RFC3339,
    "accounts": [{
-     "vendor": "claude"|"codex", "name", "email", "launcher", "plan",
+     "vendor": "claude"|"codex"|"agy", "name", "email", "launcher", "plan",
      "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
      "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
        "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",

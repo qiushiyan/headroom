@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -63,9 +64,11 @@ func (b Board) Body() []string {
 func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, width int) Board {
 	if layout == LayoutCompact {
 		b := p.compactBoard(views, now, width)
-		// The compact row's bare → needs saying; the block's "← next" says
-		// itself.
-		b.Header = append([]string{p.Dim + "→ marks the account the next launch takes" + p.Rst}, b.Header...)
+		if launched(views) {
+			// The compact row's bare → needs saying; the block's "← next"
+			// says itself.
+			b.Header = append([]string{p.Dim + "→ marks the account the next launch takes" + p.Rst}, b.Header...)
+		}
 		return b
 	}
 	lw := labelWidth(views)
@@ -74,6 +77,21 @@ func (p Palette) Board(views []accountstate.Facts, now int64, layout Layout, wid
 		b.Groups[i] = p.accountBlock(v, now, lw)
 	}
 	return b
+}
+
+// launched reports a board whose accounts a launch can take — every vendor's
+// but Antigravity's, which headroom observes and never launches, so no row of
+// its page is ever marked and the legend for the mark would explain nothing.
+// A board is one page, so one vendor.
+func launched(views []accountstate.Facts) bool {
+	if len(views) == 0 {
+		return true
+	}
+	switch views[0].Vendor {
+	case config.Agy:
+		return false
+	}
+	return true
 }
 
 const (

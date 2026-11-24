@@ -49,12 +49,18 @@ type Allowance struct {
 // Reading is everything one usage body says: its windows, its allowance, and
 // whose it claims to be (each "" when the body does not say), so no caller
 // decodes a body a second time.
+//
+// Email is the account the reading was measured for, when the document names
+// it: Antigravity's, from the run's own log, which is the only place its
+// sign-in is named. It labels the figures; it is never compared, since that
+// machine has one sign-in for them to belong to.
 type Reading struct {
 	Rows      []Row
 	Allowance Allowance
 	AccountID string
 	UserID    string
 	Plan      string
+	Email     string
 }
 
 // BelongsTo is the response identity check: a body may be shown under an
@@ -89,17 +95,26 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 		if r.IdentityState == tag.Bad {
 			continue
 		}
-		if vendor == config.Codex {
-			if r.Group != CodexGroupMain || r.WindowSeconds <= 0 {
+		switch vendor {
+		case config.Codex:
+			// The main rate limit's shortest window.
+			if r.Group != CodexGroupMain {
+				continue
+			}
+			fallthrough
+		case config.Agy:
+			// Antigravity: the shortest window of all, the vendor's first
+			// group (Gemini) winning a tie.
+			if r.WindowSeconds <= 0 {
 				continue
 			}
 			if best < 0 || r.WindowSeconds < rows[best].WindowSeconds {
 				best = i
 			}
-			continue
-		}
-		if r.Kind == KindSession {
-			return i
+		default:
+			if r.Kind == KindSession {
+				return i
+			}
 		}
 	}
 	return best
@@ -113,11 +128,14 @@ func SessionWindow(vendor config.Vendor, rows []Row) int {
 // seven days, unused accounts included). Its five-hour window starts with
 // the first request after one ends, and so does every Codex window: none of
 // those keeps a schedule a passed reset could name.
+//
+// Antigravity's windows have not been watched across a reset, so none is
+// known to keep a schedule.
 func Period(vendor config.Vendor, r Row) time.Duration {
-	if vendor == config.Codex || r.IdentityState == tag.Bad {
+	switch {
+	case vendor != config.Claude || r.IdentityState == tag.Bad:
 		return 0
-	}
-	if r.Kind == KindWeeklyAll || r.Kind == KindWeeklyScoped {
+	case r.Kind == KindWeeklyAll || r.Kind == KindWeeklyScoped:
 		return 7 * 24 * time.Hour
 	}
 	return 0
@@ -133,14 +151,19 @@ func Period(vendor config.Vendor, r Row) time.Duration {
 // inside a group the longer window first, for the same reason the weekly
 // leads for Claude Code. Like SessionWindow it is the vendor's vocabulary,
 // so it lives beside the parsers; render's column tests are its owners.
+// Antigravity: the vendor's own order, which a stable sort keeps — its groups
+// as agy lists them, each one's weekly window before its five-hour one.
 func CompareRows(vendor config.Vendor, a, b Row) int {
-	if vendor == config.Codex {
+	switch vendor {
+	case config.Codex:
 		return cmp.Or(
 			cmp.Compare(codexGroupRank(a.Group), codexGroupRank(b.Group)),
 			cmp.Compare(a.Feature, b.Feature),
 			cmp.Compare(b.WindowSeconds, a.WindowSeconds), // longer window first
 			cmp.Compare(a.Kind, b.Kind),
 		)
+	case config.Agy:
+		return 0
 	}
 	return cmp.Or(
 		cmp.Compare(kindRank(a.Kind), kindRank(b.Kind)),
@@ -180,9 +203,14 @@ func codexGroupRank(group string) int {
 // opposed to one feature of it. Every Claude Code row does. Of Codex's, only
 // the main rate limit's windows do: a code-review or additional limit that is
 // spent, or that no longer parses, blocks that feature and leaves the account
-// usable, so it must not decide where a session goes.
+// usable, so it must not decide where a session goes. Every Antigravity row
+// bounds the work of its group's models.
 func General(vendor config.Vendor, r Row) bool {
-	return vendor != config.Codex || r.Group == CodexGroupMain
+	switch vendor {
+	case config.Codex:
+		return r.Group == CodexGroupMain
+	}
+	return true
 }
 
 // Parse is the one dispatch from a vendor to the parser of its usage body.
@@ -190,8 +218,13 @@ func General(vendor config.Vendor, r Row) bool {
 // here: the store a body was read from, or the endpoint it was fetched from,
 // says which vendor it is, and nothing else may guess.
 func Parse(vendor config.Vendor, body []byte) (Reading, error) {
-	if vendor == config.Codex {
+	switch vendor {
+	case config.Codex:
 		r, err := parseCodex(body)
+		markShared(r.Rows)
+		return r, err
+	case config.Agy:
+		r, err := parseAgy(body)
 		markShared(r.Rows)
 		return r, err
 	}

@@ -72,6 +72,11 @@ func Primary(v config.Vendor) Target { return Target{vendor: v} }
 // canonicalizes a relative CODEX_HOME against the cwd (measured 0.155.0),
 // which is a different misroute and the same refusal.
 func Extra(v config.Vendor, configDir string) (Target, error) {
+	switch v {
+	case config.Agy:
+		// One sign-in per macOS user: there is no other account to route to.
+		return Target{}, errors.New("launch: Antigravity has one sign-in per macOS user and no extra account")
+	}
 	if configDir == "" {
 		return Target{}, errors.New("launch: an extra account needs a config dir")
 	}

@@ -92,9 +92,22 @@ type Set struct {
 	Accounts []Account
 }
 
+// ErrOneSignIn is why no Antigravity account is ever added, removed or
+// reserved: agy keeps one sign-in per macOS user, in one Keychain item, so the
+// machine's sign-in is the only account there is.
+var ErrOneSignIn = errors.New("Antigravity keeps one sign-in per macOS user — headroom adds, removes and reserves no accounts for it; sign in with agy itself")
+
 // Discover returns the primary first, then .order-listed dirs in file order,
-// then the remaining dirs alphabetically.
+// then the remaining dirs alphabetically. Antigravity has the primary alone:
+// whatever its accounts root holds beside headroom's state file is no account.
 func Discover(cfg config.Scope) Set {
+	switch cfg.Vendor {
+	case config.Agy:
+		a := Account{Scope: cfg}
+		a.readIdentity()
+		a.Name = PrimaryName(cfg, a.Email)
+		return Set{Scope: cfg, Accounts: []Account{a}}
+	}
 	dirs := []string{""}
 	seen := map[string]bool{"": true}
 
@@ -155,7 +168,8 @@ func orderEntry(line string) string {
 // readIdentity is the first of the three places a vendor document is read:
 // who is logged in here, from decoded fields of the vendor's own file.
 func (a *Account) readIdentity() {
-	if a.Scope.Vendor == config.Codex {
+	switch a.Scope.Vendor {
+	case config.Codex:
 		a.Auth = codexauth.Read(a.Dir())
 		a.Email = a.Auth.Email
 		// The ledger identity is both parts or nothing: an account that cannot
@@ -163,6 +177,13 @@ func (a *Account) readIdentity() {
 		// dir-name fallback Claude Code accounts use away from it.
 		a.AccountID = a.Auth.Identity()
 		a.Readable = a.AccountID != ""
+		return
+	case config.Agy:
+		// Nothing on disk names the Google account agy is signed in as, and
+		// the sign-in itself is never read. The one account is the machine's
+		// sign-in, keyed by its dir name ("primary"), and its email travels
+		// with each reading instead (usage.Reading.Email).
+		a.Readable = true
 		return
 	}
 	a.Meta, _ = ReadMeta(a.MetaPath())
@@ -346,8 +367,12 @@ func Launcher(a Account) string {
 // EngineLauncher is the engine's own spelling of a launch on this account,
 // whatever wrapper the shell configured.
 func EngineLauncher(a Account) string {
-	if a.Scope.Vendor == config.Codex {
+	switch a.Scope.Vendor {
+	case config.Codex:
 		return "headroom launch --vendor codex --account " + a.Name
+	case config.Agy:
+		// headroom never launches Antigravity: agy itself is how it starts.
+		return "agy"
 	}
 	return "headroom launch --account " + a.Name
 }

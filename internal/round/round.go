@@ -13,6 +13,7 @@ package round
 
 import (
 	"context"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -103,12 +104,15 @@ func prepare(ctx context.Context, set accounts.Set, st *state.Store, now time.Ti
 		health = deps.Health(set.Accounts)
 	}
 	for _, d := range r.rows {
-		if d.Acct.Scope.Vendor == config.Codex {
+		switch d.Acct.Scope.Vendor {
+		case config.Codex:
 			// The Codex reader works from the auth snapshot discovery already
 			// took; only Claude Code's access costs a process and a Keychain
 			// read.
 			codexAccess(d, now)
-		} else {
+		case config.Agy:
+			agyAccess(d, os.Environ())
+		case config.Claude:
 			claudeAccess(ctx, d, deps.Creds(ctx, d.Acct), health(d.Acct.ConfigDir), deps.Item, now)
 		}
 	}
@@ -213,6 +217,10 @@ func (r *Round) Apply(res Result) {
 		if res.Observation.Plan != "" {
 			d.View.Plan = res.Observation.Plan
 		}
+		if res.Observation.Email != "" {
+			// The figures name whose they are (accountstate.Assemble).
+			d.View.Label = res.Observation.Email
+		}
 	}
 	if res.StoreErr != nil {
 		d.View.Attempt.StoreError = res.StoreErr.Error()
@@ -300,6 +308,17 @@ func loginReach(ctx context.Context, a accounts.Account, read creds.Reading, hea
 		return accountstate.LoginUnplaced
 	}
 	return accountstate.LoginReached
+}
+
+// agyAccess is Antigravity's: there is no question to ask agy about its
+// sign-in short of the read itself, and headroom reads nothing of the login.
+// An installed agy — the scope is present, or there would be no round — is
+// taken as usable, and a read that fails says so on the attempt axis, never
+// as a login problem it has no evidence for.
+func agyAccess(d *row, environ []string) {
+	d.View.Health = accountstate.HealthOK
+	d.View.Attempt = accountstate.Attempt{}
+	d.request, d.View.Attempt.State = refresh.PrepareAgy(d.Acct, environ)
 }
 
 // codexAccess is the Codex health and eligibility table, first match wins.

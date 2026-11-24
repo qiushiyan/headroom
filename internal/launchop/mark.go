@@ -5,6 +5,7 @@ import (
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -40,6 +41,12 @@ type Marks struct {
 // there is nothing to mark.
 func Mark(set accounts.Set, st *state.Store, accts []accountstate.Account, environ []string, dir string, now time.Time, deps Deps) *Marks {
 	if len(accts) == 0 || st == nil {
+		return nil
+	}
+	switch set.Scope.Vendor {
+	case config.Agy:
+		// headroom never launches Antigravity: no account of its page is one
+		// a launch would take, and there is no load of headroom's to count.
 		return nil
 	}
 	snap := st.Load()

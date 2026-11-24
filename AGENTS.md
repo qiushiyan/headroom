@@ -2,14 +2,16 @@
 
 headroom answers which of this machine's Claude Code and Codex accounts has
 quota left and launches the vendor on the answer — a new session on the
-least-loaded account, a resumed one on the account that last drove it. A
-person reaches it through the board and shell launchers, agents through the
-skills in `skills/`, and other programs through the contracts below.
-`DESIGN.md` owns the design: the mental model, the reverse-engineered vendor
-contracts and, in § The code, which package owns what. Read it before changing behaviour, and § A second vendor:
-Codex before touching anything vendor-scoped. `README.md` is the user's story,
-`docs/REFERENCE.md` what crosses commands, and `headroom <command> --help` each
-command's own reference.
+least-loaded account, a resumed one on the account that last drove it. It
+also shows the quota of the machine's one Antigravity sign-in, which it never
+launches. A person reaches it through the board and shell launchers, agents
+through the skills in `skills/`, and other programs through the contracts
+below. `DESIGN.md` owns the design: the mental model, the reverse-engineered
+vendor contracts and, in § The code, which package owns what. Read it before
+changing behaviour, and § A second vendor: Codex and § A third vendor:
+Antigravity before touching anything vendor-scoped. `README.md` is the user's
+story, `docs/REFERENCE.md` what crosses commands, and
+`headroom <command> --help` each command's own reference.
 
 - One maintainer's tool: each piece of work on its own branch, merged to
   `main` and pushed at milestones; keep changes proportional to demonstrated
@@ -21,7 +23,7 @@ command's own reference.
   same pass.
   - `version` → planlab steward's `install.sh`, `ship.sh`, `steward.ts`: the
     commit is the second word of line 1.
-  - `limits [--vendor claude|codex]`, and `accounts --compact` off a terminal
+  - `limits [--vendor claude|codex|agy]`, and `accounts --compact` off a terminal
     → dotfiles' quota mod, `claude-quota-refresh.sh` and `remote-logins`:
     schema 8's fields, one frame, exit 0.
   - `launch [flags] -- <args>` → the dotfiles zsh and codex wrappers and
@@ -51,11 +53,15 @@ command's own reference.
 - **Vendor variation is scope data plus three document readers** —
   identity at discovery, access at preparation, the usage body through
   `usage.Parse`. What a vendor supports as a command is decided by the command
-  that owns it, never by a scope flag. DESIGN.md § A second vendor: Codex.
+  that owns it, never by a scope flag, and a branch on the vendor is a switch
+  naming each one, never "Codex, else Claude Code". Held by
+  `TestNoVendorBranchAssumesTwo`; DESIGN.md § A second vendor: Codex.
 - **Identity travels with every observation.** A usage body naming another
   account or user is unparseable and never shown, and Codex usage is never
-  derived from rollouts. Held by `TestCodexResponseNamingSomeoneElseIsNeverShown`
-  and `TestCodexRolloutsAreNeverUsage`.
+  derived from rollouts. Antigravity's email, named nowhere on disk, is stored
+  inside the reading and labels its figures. Held by
+  `TestCodexResponseNamingSomeoneElseIsNeverShown`,
+  `TestCodexRolloutsAreNeverUsage` and `TestAgyRoundReadsTheOneSignIn`.
 - **Health, Observation and Attempt are three axes, never one status.** A 429
   or an aged-out token annotates what is known and never erases it, and rows
   never travel without their timestamp. Held by `TestApplyWritesEachAxisOnItsOwn`;
@@ -127,8 +133,11 @@ command's own reference.
   elsewhere.
 - **Read-only against the vendors** except one explicit command —
   `accounts remove`'s Keychain item — refused while liveness is
-  unverifiable. No Codex file is ever written, and the usage client only
-  issues GETs. DESIGN.md § The system observed.
+  unverifiable. No Codex or agy file is ever written, the usage client only
+  issues GETs, and Antigravity is read by running agy's own `agy -p /usage`:
+  nothing of agy's sign-in is read, since another program using it is what
+  Google suspends accounts for. DESIGN.md § The system observed and § A third
+  vendor: Antigravity.
 - **No login is linked between dirs**: no share mode, and no config package
   that happens to hold a login, history or registry, makes two dirs one
   login. Held by `TestNoLoginIsLinkedBetweenDirs`; DESIGN.md § The account
@@ -138,7 +147,7 @@ command's own reference.
   couldn't test (exit 2), and its own files from the vendor's.
 - Tests never touch live state. That means the Keychain, the vendors' dirs and
   usage endpoints, the user's accounts roots, and live session registries. Each
-  test uses a temporary `HEADROOM_HOME`, with stub `claude`, `codex`,
+  test uses a temporary `HEADROOM_HOME`, with stub `claude`, `codex`, `agy`,
   `security` and `open` on a `PATH` without the real ones, and usage URLs on a
   local server or `127.0.0.1:1`; `TestMain` clears the environment a managed
   shell carries. `make test-pty` drives the board through a real pty

@@ -37,25 +37,27 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 	for _, a := range set.Accounts {
 		key := state.KeyFor(a)
 		v := Facts{Vendor: a.Scope.Vendor, FreshFor: a.Scope.RequestSpacing(), Label: a.Name, Launcher: accounts.Launcher(a), Health: HealthUnprobed}
-		if a.Scope.Vendor == config.Codex {
-			v.LoginCommand = accounts.EngineLauncher(a) + " -- login"
-		}
 		if a.Email != "" {
 			v.Label = a.Email
 		}
 		if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
 			v.DirMismatch = a.Name
 		}
-		if a.Scope.Vendor == config.Codex {
+		switch a.Scope.Vendor {
+		case config.Codex:
+			v.LoginCommand = accounts.EngineLauncher(a) + " -- login"
 			// What the login's id token says, until a response names a plan.
 			v.Plan = a.Auth.Plan
-		}
-		if a.Scope.Vendor == config.Codex && !a.Readable {
-			// A Codex account that cannot say whose it is has no ledger key at
-			// all: it replays nothing, even if an earlier login on this home
-			// was fetched, and it has no deadline to report.
-			list = append(list, Account{a, key, v})
-			continue
+			if !a.Readable {
+				// A Codex account that cannot say whose it is has no ledger
+				// key at all: it replays nothing, even if an earlier login on
+				// this home was fetched, and it has no deadline to report.
+				list = append(list, Account{a, key, v})
+				continue
+			}
+		case config.Agy:
+			// agy signs in with its own browser flow, started by running it.
+			v.LoginCommand = "agy"
 		}
 		v.Obs = newestObservation(snap, key, a, now)
 		if v.Obs != nil && v.Obs.Plan != "" {
@@ -63,6 +65,11 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 			// which is as old as the last login refresh. Decided here, from
 			// disk alone, so `limits` reports the plan the board does.
 			v.Plan = v.Obs.Plan
+		}
+		if v.Obs != nil && v.Obs.Email != "" {
+			// Figures are shown under the account they were measured for:
+			// Antigravity's are named by its reading, nothing else names it.
+			v.Label = v.Obs.Email
 		}
 		if next := snap.NextEligible(key, now); next.After(now) {
 			v.Attempt.NextEligibleAt = next.Unix()

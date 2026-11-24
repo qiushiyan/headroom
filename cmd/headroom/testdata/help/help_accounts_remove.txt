@@ -8,7 +8,8 @@ Refused while a session is live on it, or when that cannot be verified. Bare, it
 removable accounts and refuses; it asks y/N unless --yes. Transcripts are machine-global
 and survive. Also removes stranded <name>.lock debris. Codex accounts are
 never removed — headroom cannot tell whether a codex session is running on a home — and the
-refusal names the dir to delete by hand.
+refusal names the dir to delete by hand. Antigravity's one account is agy's own sign-in,
+never removed by headroom.
 
 Arguments:
   <account>              The account to remove, or <name>.lock debris; bare, the removable ones are
@@ -19,7 +20,7 @@ Flags:
 
 Inherited flags:
       --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
-                         remove act on it, Claude Code when absent (one of: claude, codex).
+                         remove act on it, Claude Code when absent (one of: claude, codex, agy).
   -h, --help             Show context-sensitive help.
       --version          Print the build this binary is — its commit and the commit's time — and
                          exit.

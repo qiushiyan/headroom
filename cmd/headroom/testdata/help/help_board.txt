@@ -21,7 +21,7 @@ headroom limits prints the same document from disk alone, without probing or ask
 
 Flags:
       --vendor=VENDOR    Only this vendor's accounts; every vendor on this machine when absent (one
-                         of: claude, codex).
+                         of: claude, codex, agy).
       --compact          One row per account: each limit's percent and time to reset, every warning
                          at the end of the row.
       --json             Print the board as a JSON document after one refresh round.
@@ -37,7 +37,7 @@ Constraints:
 The JSON document (schema 8):
   {"schema": 8, "generated_at": RFC3339,
    "accounts": [{
-     "vendor": "claude"|"codex", "name", "email", "launcher", "plan",
+     "vendor": "claude"|"codex"|"agy", "name", "email", "launcher", "plan",
      "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
      "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
        "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",

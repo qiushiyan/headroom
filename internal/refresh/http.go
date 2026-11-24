@@ -7,10 +7,13 @@ import (
 )
 
 // response is one account's fetch outcome; Err covers transport failures.
+// Exit is the status of a run of the vendor's program (Candidate.run), 0 when
+// it succeeded; a GET leaves it 0 and says its outcome in StatusCode.
 type response struct {
 	StatusCode int
 	Body       []byte
 	Err        error
+	Exit       int
 }
 
 // fetch sends the candidate's prepared request: always a GET, never anything

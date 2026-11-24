@@ -6,7 +6,7 @@ account has quota left, starts each session on the least-loaded account (or
 the one you name), and lets a conversation move between accounts — so a rate
 limit on one subscription stops nothing. It does the same for several Codex
 CLI subscriptions: the board gets a Codex page, and the same launcher starts
-`codex`.
+`codex`. Google's Antigravity CLI gets a page too, for its quota only.
 
 ```
 alice@example.com (max 20x · headroom launch --account alice@example.com)
@@ -33,6 +33,11 @@ Severity colours remain visible when data is stale.
 `headroom limits` always emits JSON from disk, for scripts and status lines.
 `headroom --json` probes and refreshes within the same request budget as
 the board.
+
+With `agy` signed in on the machine, the board has an Antigravity page: the
+Gemini and the Claude and GPT windows of its one sign-in. headroom reads them
+by running `agy -p /usage` itself, never touches agy's login, and never
+launches it.
 
 ### 2. Spread sessions across accounts
 
@@ -186,15 +191,17 @@ npx skills add qiushiyan/headroom
 
 ## Status
 
-Everything headroom assumes about Claude Code and Codex — Keychain naming,
-`auth.json`, the usage endpoints and their response shapes, the session store
-layouts — is reverse-engineered and perishable. `headroom check` exists
-precisely because any vendor update may break it; run it when something looks
-wrong. The usage endpoints are undocumented and the vendors' consumer terms
-restrict them to first-party clients: headroom reads them the way the vendors'
-own usage screens do and never writes login or quota state. Install it as a read-only
-instrument you understand, not as a supported product — there are no
-releases; `go install` from source is the distribution.
+Everything headroom assumes about Claude Code, Codex and Antigravity —
+Keychain naming, `auth.json`, the usage endpoints and their response shapes,
+agy's `/usage` answer, the session store layouts — is reverse-engineered and
+perishable. `headroom check` exists precisely because any vendor update may
+break it; run it when something looks wrong. The usage endpoints are
+undocumented and the vendors' consumer terms restrict them to first-party
+clients: headroom reads them the way the vendors' own usage screens do, reads
+Antigravity's through agy itself, and never writes login or quota state.
+Install it as a read-only instrument you understand, not as a supported
+product — there are no releases; `go install` from source is the
+distribution.
 
 How it works, shell integration, configuration, developing:
 [docs/REFERENCE.md](docs/REFERENCE.md) · design and vendor contracts:

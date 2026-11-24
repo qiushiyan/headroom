@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -154,5 +155,46 @@ func TestLoadResolvesBothScopes(t *testing.T) {
 				t.Errorf("%s alone must make Codex present, Claude Code first: %v (%v)", dir, c.Present(), err)
 			}
 		})
+	}
+}
+
+// Antigravity's scope: agy's state dir is the primary and decides presence,
+// its accounts root holds headroom's state file alone, and its reads are
+// spaced by its own quiet period. Nothing of it launches, so a relocated home
+// refuses nothing of it.
+func TestAgyScope(t *testing.T) {
+	clearOverrides(t)
+	home := t.TempDir()
+	t.Setenv("HEADROOM_HOME", home)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := cfg.Scope(Agy)
+	if s.Vendor != Agy || s.PrimaryDir() != filepath.Join(home, ".gemini", "antigravity-cli") ||
+		s.AccountsRoot != filepath.Join(home, ".agy-accounts") || s.Binary() != "agy" || s.RequestSpacing() != AgySpacing {
+		t.Errorf("scope %+v", s)
+	}
+	if s.Present || !strings.Contains(fmt.Sprint(s.RequirePresent()), "run it once to sign in") {
+		t.Errorf("absent agy: present %v, refusal %v", s.Present, s.RequirePresent())
+	}
+	if s.PrimaryLaunchRefused() {
+		t.Error("a relocated home refuses an Antigravity launch, but there is none")
+	}
+	// The accounts root alone is headroom's own doing, not agy having run.
+	if err := os.MkdirAll(s.AccountsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := Load(); cfg.Agy.Present {
+		t.Error("the accounts root alone made Antigravity present")
+	}
+	if err := os.MkdirAll(s.PrimaryDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := Load(); !cfg.Agy.Present || len(cfg.Present()) != 2 || cfg.Present()[1].Vendor != Agy {
+		t.Errorf("present: %+v", cfg.Present())
+	}
+	if Agy.Title() != "Antigravity" || Agy.EnvPolicy().HomeVar != "" {
+		t.Errorf("title %q, home variable %q", Agy.Title(), Agy.EnvPolicy().HomeVar)
 	}
 }

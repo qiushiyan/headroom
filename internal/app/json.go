@@ -42,9 +42,9 @@ type jsonProblem struct {
 // Limits are present whenever any are known, and `usage.observed_at` says
 // when — a consumer that ignores it is choosing to.
 type jsonAccount struct {
-	Vendor      string      `json:"vendor"` // "claude" | "codex"
-	Name        string      `json:"name"`   // dir basename, or the primary's name
-	Email       string      `json:"email,omitempty"`
+	Vendor      string      `json:"vendor"`          // "claude" | "codex" | "agy"
+	Name        string      `json:"name"`            // dir basename, or the primary's name
+	Email       string      `json:"email,omitempty"` // agy: the newest reading's, which is the only place it is named
 	Launcher    string      `json:"launcher"`
 	Plan        string      `json:"plan,omitempty"`
 	Health      string      `json:"health"`
@@ -66,7 +66,7 @@ type jsonLoad struct {
 
 type jsonUsage struct {
 	ObservedAt string `json:"observed_at"` // RFC3339 UTC
-	Source     string `json:"source"`      // "live" | "headroom_cache" | "claude_cache" (never for Codex)
+	Source     string `json:"source"`      // "live" | "headroom_cache" | "claude_cache" (Claude Code only)
 	Fresh      bool   `json:"fresh"`       // within the vendor's request spacing
 	// Allowance is the account-level answer beside the windows: "blocked" is
 	// positive evidence the vendor refuses work, whatever the percents say;
@@ -130,6 +130,7 @@ var attemptNames = map[accountstate.AttemptState]string{
 	accountstate.AttemptNoLimits:             "no_limits",
 	accountstate.AttemptStateUnavailable:     "state_unavailable",
 	accountstate.AttemptIdentityUnknown:      "identity_unknown",
+	accountstate.AttemptVendorFailed:         "vendor_failed", // agy exited non-zero
 }
 
 // jsonDocument serializes one board per vendor.
@@ -147,6 +148,8 @@ func jsonDocument(boards []round.View, generatedAt time.Time) ([]byte, error) {
 		// (5: a second vendor — "vendor" on every account and problem,
 		// `current` keyed by vendor, feature / window_seconds / unstarted on
 		// limits, the allowance on usage.)
+		// A third vendor, "agy", and the attempt state "vendor_failed" are new
+		// values, not fields: 8 stands.
 		Schema:      8,
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
 		Accounts:    []jsonAccount{},
@@ -166,7 +169,7 @@ func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
 		a := jsonAccount{
 			Vendor:      string(b.Scope.Vendor),
 			Name:        d.Acct.Name,
-			Email:       d.Acct.Email,
+			Email:       accountEmail(d),
 			Launcher:    v.Launcher,
 			Plan:        v.Plan,
 			Health:      healthNames[v.Health],
@@ -224,6 +227,16 @@ func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
 		}
 		doc.Accounts = append(doc.Accounts, a)
 	}
+}
+
+// accountEmail is who is logged in: what discovery read, or for an account
+// discovery cannot name (Antigravity's), the email its newest reading was
+// measured for.
+func accountEmail(d accountstate.Account) string {
+	if d.Acct.Email == "" && d.View.Obs != nil {
+		return d.View.Obs.Email
+	}
+	return d.Acct.Email
 }
 
 // fetchBoards runs one full round per scope — prepare, the claim and whatever

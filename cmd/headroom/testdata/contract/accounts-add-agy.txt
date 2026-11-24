@@ -1,0 +1,5 @@
+$ headroom accounts --vendor agy add h@x.com
+exit 1
+--- stdout
+--- stderr
+headroom: error: Antigravity keeps one sign-in per macOS user — headroom adds, removes and reserves no accounts for it; sign in with agy itself

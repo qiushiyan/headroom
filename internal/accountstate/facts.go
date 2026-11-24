@@ -78,18 +78,20 @@ func (s Source) Ours() bool { return s == SourceLive || s == SourceStore }
 //
 // Allowance is the account-level half of the same response: whether the
 // vendor will take work at all, whatever the windows say. Plan is the plan the
-// response named, "" when it named none.
+// response named, "" when it named none. Email is the account the figures were
+// measured for, when the response names it (Antigravity's), "" otherwise.
 type Observation struct {
 	Rows       []usage.Row
 	Allowance  usage.Allowance
 	Plan       string
+	Email      string
 	ObservedAt int64 // unix seconds
 	Source     Source
 }
 
 // FromReading builds the observation a parsed usage body amounts to.
 func FromReading(r usage.Reading, observedAt int64, source Source) *Observation {
-	return &Observation{Rows: r.Rows, Allowance: r.Allowance, Plan: r.Plan, ObservedAt: observedAt, Source: source}
+	return &Observation{Rows: r.Rows, Allowance: r.Allowance, Plan: r.Plan, Email: r.Email, ObservedAt: observedAt, Source: source}
 }
 
 // AttemptState is what happened the last time headroom tried to refresh —
@@ -113,6 +115,10 @@ const (
 	AttemptStateUnavailable
 	// An unreadable identity cannot authorize a per-account budget.
 	AttemptIdentityUnknown
+	// The vendor's own program, which a read runs instead of a request
+	// (Antigravity's agy), exited non-zero: it declined, for its own reason.
+	// Its exit status is the attempt's ExitCode.
+	AttemptVendorFailed
 )
 
 // Answered reports that the endpoint answered the request with this account's
@@ -127,6 +133,7 @@ func (s AttemptState) Answered() bool { return s == AttemptOK || s == AttemptNoL
 type Attempt struct {
 	State          AttemptState
 	HTTPCode       int
+	ExitCode       int    // AttemptVendorFailed: the vendor program's exit status
 	NextEligibleAt int64  // unix seconds; 0 = eligible now
 	StoreError     string // request bookkeeping failed independently of the endpoint result
 }

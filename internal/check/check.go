@@ -6,7 +6,7 @@
 // uses, so the checker cannot drift from what rendering actually needs.
 //
 // One file per audited subject: the report and its verdict (report.go), each
-// vendor's group (claude.go, codex.go), the session store (sessions.go),
+// vendor's group (claude.go, codex.go, agy.go), the session store (sessions.go),
 // headroom's state files (ownstate.go), routing and homes (routing.go),
 // retention (retention.go) and the installed binaries (binary.go).
 package check
@@ -48,6 +48,14 @@ func Run(cfg config.Config, out io.Writer, color bool, probe sessions.PIDProbe) 
 	} else {
 		r.note(fmt.Sprintf("codex: not found (no %s, no %s) — Codex checks not run",
 			cfg.Codex.PrimaryDir(), cfg.Codex.AccountsRoot))
+	}
+
+	// Antigravity's, last, the same way: present where agy has run.
+	if cfg.Agy.Present {
+		r.group(config.Agy, "agy ")
+		checkAgy(cfg.Agy, os.Environ(), r)
+	} else {
+		r.note(fmt.Sprintf("agy: not found (no %s) — Antigravity checks not run", cfg.Agy.PrimaryDir()))
 	}
 	return r.verdict()
 }

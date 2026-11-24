@@ -27,4 +27,12 @@ q@x.com (plus · headroom launch --vendor codex --account q)  ← next
 c@x.com (plus · headroom launch --vendor codex --account c@x.com)
   weekly           [██████████████░░░░░░]  70%  resets <day> <clock> (in 3.0d)
   stale · observed 10m ago · access token stale — any headroom launch --vendor codex --account c@x.com session refreshes it
+
+Antigravity
+
+g@x.com  agy
+  Gemini 7d         [██░░░░░░░░░░░░░░░░░░]  12%  resets <day> <clock> (in 5.8d)
+  Gemini 5h         [██████████░░░░░░░░░░]  50%  resets <clock> (in 3.7h)
+  Claude and GPT 7d [░░░░░░░░░░░░░░░░░░░░]   0%  not started
+  Claude and GPT 5h [░░░░░░░░░░░░░░░░░░░░]   0%  not started
 --- stderr
