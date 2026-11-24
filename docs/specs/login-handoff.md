@@ -36,11 +36,15 @@ with a stub `$BROWSER`, input on a pipe and output on a pipe or file:
   sequences: `Opening browser to sign in…`, `If the browser didn't open,
   visit: <URL>`, then `Paste code here if prompted > ` with no newline, and
   waits.
-- The printed URL's `redirect_uri` is
-  `https://platform.claude.com/oauth/code/callback`, whose page shows the
-  `code#state` to paste. The URL handed to `$BROWSER` redirects to
+- The printed URL leads to the page that shows the `code#<tag>` to paste.
+  The URL handed to `$BROWSER` redirects to
   `http://localhost:<port>/callback`, which a browser on another machine
-  cannot reach. Both carry the same `state` and the same PKCE challenge.
+  cannot reach. From 2.1.331 the printed URL is a short link,
+  `https://claude.ai/oauth/authorize?z-<challenge>&login_hint=…`, and its
+  page's code carries the opened URL's PKCE challenge; the opened URL's
+  `state` is another value. Through 2.1.311 it was the full URL, with
+  `redirect_uri` `https://platform.claude.com/oauth/code/callback`, and the
+  code carried the `state` both URLs shared.
 - It calls `$BROWSER` about 200ms after printing the URL.
 - It reads the code from a pipe. A well-formed code the server rejects ends
   the sign-in at once: `Login failed: That code wasn't accepted. It may be
@@ -126,7 +130,7 @@ Reasons:
 | `screen_changed` | `failed` | the printed URL is not the sign-in the vendor opened |
 | `holder_failed` | `failed` | the holder could not start (stated in `problem`) |
 | `code_malformed` | `awaiting_code` | the line is not shaped `code#state`; nothing was sent |
-| `code_other_signin` | `awaiting_code` | the code's state is another sign-in's; nothing was sent |
+| `code_other_signin` | `awaiting_code` | the code's tag is another sign-in's; nothing was sent |
 | `keychain_closed` | `awaiting_code` | the Keychain stopped serving this account's login since `start`; nothing was sent |
 | `record_failed` | `awaiting_code` | the sign-in's record could not be written, and a code goes only once the record shows it; nothing was sent |
 | `vendor_rejected` | `failed` | the vendor refused the code; the login is unchanged |
@@ -158,7 +162,7 @@ start x` returns.
 
 Reads one line, the `code#state` the page showed, from stdin, and hands it to
 the holder. The holder sends it to the vendor only when it is shaped
-`code#state`, carries the state of the URL `start` printed, and the account's
+`code#state`, carries the tag of the URL `start` printed, and the account's
 login can still be read where it was read at `start`; otherwise exit 3, state
 `awaiting_code`, nothing sent — fix what `reason` names and finish again. A
 sent code is never sent again: the holder marks the sign-in `exchanging`
@@ -249,14 +253,17 @@ like a subcommand.
   document back to `start` and is closed. It is the
   vendor's parent and runs `claude auth login --email <e>` under
   `launch.Prepare`'s environment with headroom as a `$BROWSER` that records
-  the sign-in's state and opens nothing.
-- **The URL** is read off the vendor's output by one parser: an https URL
-  carrying a `state` and a `redirect_uri` that is not localhost. When the
-  opener records a state within 3 seconds and it differs, the sign-in fails
+  the sign-in's tags (its challenge and state) and opens nothing.
+- **The URL** is read off the vendor's output by one parser, with the tag
+  its page's code carries: a short link `…/oauth/authorize?z-<challenge>` off
+  this machine, tagged by the challenge, or an https URL carrying a `state`
+  and a `redirect_uri` that is not localhost, tagged by the state. When the
+  opener records tags within 3 seconds and none is the printed URL's, the
+  sign-in fails
   `screen_changed`; no URL in 30 seconds fails `no_url`. headroom never
   builds a URL of its own.
 - **The record** `<key>.json` is the document plus what only the holder
-  needs: the holder's pid and start instant and the sign-in's state. The
+  needs: the holder's pid and start instant and the printed URL's tag. The
   holder writes it whole on each transition, through `signin.Signin`, which
   owns which step may follow which and what a record of each state carries.
   A code is authorized only by `exchanging` on disk, so a dead holder's

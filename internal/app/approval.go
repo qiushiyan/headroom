@@ -167,7 +167,7 @@ func runOpen(errw io.Writer, url, signin, profileDir string, open bool) int {
 	if signin != "" {
 		// Best effort: an unrecorded sign-in leaves its code unchecked, never
 		// its page unopened.
-		recordSignin(signin, browser.SigninState(url))
+		recordSignin(signin, browser.SigninTags(url))
 	}
 	if !open {
 		return 0
@@ -185,11 +185,23 @@ func runOpen(errw io.Writer, url, signin, profileDir string, open bool) int {
 	return 0
 }
 
-// recordSignin writes state whole, by rename: a code pasted while it is
-// written is never checked against part of it.
-func recordSignin(path, state string) {
+// recordSignin writes the sign-in's tags (browser.SigninTags) whole, one a
+// line, by rename: a code pasted while they are written is never checked
+// against part of them.
+func recordSignin(path string, tags []string) {
 	tmp := path + ".tmp"
-	if os.WriteFile(tmp, []byte(state), 0o600) == nil {
+	if os.WriteFile(tmp, []byte(strings.Join(tags, "\n")), 0o600) == nil {
 		os.Rename(tmp, path)
 	}
+}
+
+// recordedSignin is what recordSignin wrote at path: the sign-in's tags, and
+// whether there was a record. A record holding none is a URL that named no
+// sign-in.
+func recordedSignin(path string) (tags []string, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return strings.Fields(string(data)), true
 }

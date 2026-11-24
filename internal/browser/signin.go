@@ -13,16 +13,25 @@ import (
 // nothing.
 const SigninEnv = "HEADROOM_BROWSER_SIGNIN"
 
-// SigninState is the state parameter of a vendor authorize URL: the value
-// the code its page shows must carry. Claude Code builds the URL it opens and
-// the URL it prints from one state (read from 2.1.309), so either names the
-// sign-in. "" when the URL carries none.
-func SigninState(rawURL string) string {
+// SigninTags are the values that name the sign-in of an authorize URL on
+// the page that shows its code, `code#<tag>`: its PKCE code_challenge and its
+// state, challenge first. Claude Code's printed URL is the short link
+// `…/oauth/authorize?z-<challenge>` (measured 2.1.331), whose page's code
+// carries the challenge; while it printed the full URL (2.1.309–2.1.311), the
+// code carried the state the URL it opens shares. Each is drawn afresh for a
+// sign-in, so either names it. None when the URL carries neither.
+func SigninTags(rawURL string) []string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
+		return nil
 	}
-	return u.Query().Get("state")
+	var tags []string
+	for _, key := range []string{"code_challenge", "state"} {
+		if v := u.Query().Get(key); v != "" {
+			tags = append(tags, v)
+		}
+	}
+	return tags
 }
 
 // Code is a sign-in code as the vendor's callback page shows it.
@@ -48,19 +57,28 @@ func ParseCode(line string) (Code, bool) {
 }
 
 // SigninURL finds, in one line of the vendor's login screen, the sign-in URL
-// a browser on another machine can complete: an https URL carrying a state
-// and an https redirect_uri off this machine — the page that shows the code
-// to paste. The URL Claude Code hands its $BROWSER redirects to a localhost
-// listener instead, and is never it (2.1.311: `If the browser didn't open,
-// visit: <URL>`, redirecting to platform.claude.com/oauth/code/callback).
-// headroom hands out only a URL the vendor printed, never one it built.
-func SigninURL(line string) (signinURL, state string, ok bool) {
+// a browser on another machine can complete, and the tag its page's code
+// carries (SigninTags). It is either Claude Code's short link, an https
+// `…/oauth/authorize?z-<challenge>` off this machine (2.1.331: `If the browser
+// didn't open, visit: <URL>`), or a full authorize URL carrying a state and an
+// https redirect_uri off this machine — the page that shows the code to paste
+// (2.1.311, redirecting to platform.claude.com/oauth/code/callback). The URL
+// Claude Code hands its $BROWSER redirects to a localhost listener instead,
+// and is never it. headroom hands out only a URL the vendor printed, never
+// one it built.
+func SigninURL(line string) (signinURL, tag string, ok bool) {
 	for field := range strings.FieldsSeq(terminalEscape.ReplaceAllString(line, " ")) {
 		if !strings.HasPrefix(field, "https://") {
 			continue
 		}
 		u, err := url.Parse(field)
-		if err != nil {
+		if err != nil || localHost(u.Hostname()) {
+			continue
+		}
+		if short, found := strings.CutPrefix(u.RawQuery, "z-"); found && strings.HasSuffix(u.Path, "/oauth/authorize") {
+			if challenge, _, _ := strings.Cut(short, "&"); challenge != "" {
+				return field, challenge, true
+			}
 			continue
 		}
 		q := u.Query()

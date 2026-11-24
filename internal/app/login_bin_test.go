@@ -55,7 +55,7 @@ case "$1 $2" in
 "auth status") echo '{"loggedIn":true}' ;;
 "auth login")
   { echo "login $*"; echo "dir=$CLAUDE_CONFIG_DIR"; echo "browser=$BROWSER"; } >> "$RECORD"
-  "$BROWSER" "https://claude.com/cai/oauth/authorize?state=s"
+  "$BROWSER" "https://claude.com/cai/oauth/authorize?code_challenge=c&state=s"
   echo browsed >> "$RECORD"
   if [ -n "$PASTE" ]; then read -r code; echo "code=$code" >> "$RECORD"; fi
   printf '{"claudeAiOauth":{"accessToken":"new","expiresAt":1,"refreshTokenExpiresAt":` + fmt.Sprint(newEnd) + `}}' > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" ;;
@@ -158,7 +158,7 @@ func TestLoginBinaryOpensTheMatchedProfile(t *testing.T) {
 	for _, want := range []string{
 		"login auth login --email a@x.com",
 		"dir=" + h.extra,
-		"open -na Google Chrome --args --profile-directory=Profile 7 https://claude.com/cai/oauth/authorize?state=s",
+		"open -na Google Chrome --args --profile-directory=Profile 7 https://claude.com/cai/oauth/authorize?code_challenge=c&state=s",
 	} {
 		if !strings.Contains(rec, want) {
 			t.Errorf("record lacks %q:\n%s", want, rec)
@@ -191,18 +191,19 @@ func TestLoginBinaryOpensNothingForARemoteUser(t *testing.T) {
 }
 
 // The code reaches the vendor through headroom, which learned the sign-in's
-// state from the URL the vendor handed its $BROWSER: a code another sign-in
-// issued is held back, and this sign-in's goes through.
+// tags from the URL the vendor handed its $BROWSER: a code another sign-in
+// issued is held back, and this sign-in's goes through — here the challenge,
+// which the page of 2.1.331's printed short link puts on it.
 func TestLoginBinaryRelaysOnlyThisSigninsCode(t *testing.T) {
 	h := newLoginBin(t)
 	cmd, stdin, out := h.start(t, "login")
 	// Paste only once the page is up, as a person would.
 	await(t, cmd, "the vendor stub opening its page", func() bool { return h.browsed() == 1 })
-	fmt.Fprint(stdin, "stale#other\ngood#s\n")
+	fmt.Fprint(stdin, "stale#other\ngood#c\n")
 	stdin.Close()
 	cmd.Wait()
 	rec, _ := os.ReadFile(h.record)
-	if !strings.Contains(string(rec), "code=good#s") || strings.Contains(string(rec), "code=stale") {
+	if !strings.Contains(string(rec), "code=good#c") || strings.Contains(string(rec), "code=stale") {
 		t.Errorf("vendor got the wrong code:\n%s\noutput:\n%s", rec, out.String())
 	}
 	if !strings.Contains(out.String(), "✓ a@x.com: logged in") {

@@ -446,31 +446,33 @@ func (v *vendorStdin) Close() error { v.closed = true; return nil }
 // A paste is read before the vendor sees it: a line that is no code, or a
 // code another sign-in issued, is refused with what came in and a fresh
 // prompt, and the same line again goes through as pasted, since the check is
-// headroom's reading of the vendor. A code from this sign-in passes. The
-// vendor's input ends with the terminal's.
+// headroom's reading of the vendor. A code carrying either of this sign-in's
+// tags passes: the challenge, which the page of 2.1.331's short link puts on
+// it, and the state, which the full URL's page did. The vendor's input ends
+// with the terminal's.
 func TestRelayCodesChecksEachPaste(t *testing.T) {
 	lines := make(chan string)
 	vendor, said := &vendorStdin{}, &bytes.Buffer{}
 	relayed := make(chan struct{})
 	go func() {
 		defer close(relayed)
-		relayCodes(lines, vendor, said, func() string { return "THISSTATE0123" }, make(chan struct{}))
+		relayCodes(lines, vendor, said, func() []string { return []string{"THISCHALLENGE", "THISSTATE0123"} }, make(chan struct{}))
 	}()
-	for _, l := range []string{"", "half a code", "abc#OTHERSTATE9", "abc#OTHERSTATE9", "  good#THISSTATE0123 \r"} {
+	for _, l := range []string{"", "half a code", "abc#OTHERSTATE9", "abc#OTHERSTATE9", "  good#THISCHALLENGE \r", "fine#THISSTATE0123"} {
 		lines <- l
 	}
 	close(lines)
 	<-relayed
 
-	if got, want := vendor.String(), "abc#OTHERSTATE9\ngood#THISSTATE0123\n"; got != want {
+	if got, want := vendor.String(), "abc#OTHERSTATE9\ngood#THISCHALLENGE\nfine#THISSTATE0123\n"; got != want {
 		t.Errorf("vendor got %q, want %q", got, want)
 	}
 	if !vendor.closed {
 		t.Error("the vendor's input stayed open after the terminal's ended")
 	}
 	for _, s := range []string{
-		`"half a code"`,        // the malformed paste, echoed back
-		"OTHERSTA", "THISSTAT", // the two states, told apart
+		`"half a code"`,          // the malformed paste, echoed back
+		"#OTHERSTA", "#THISCHAL", // the code's tag and this sign-in's, told apart
 		"as pasted",    // the same line again, sent anyway
 		"this sign-in", // the code that passed the check
 	} {
@@ -492,7 +494,7 @@ func TestRelayCodesStopsWithTheLogin(t *testing.T) {
 	done, relayed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(relayed)
-		relayCodes(lines, vendor, said, func() string { return "" }, done)
+		relayCodes(lines, vendor, said, func() []string { return nil }, done)
 	}()
 	lines <- "abc#anything"
 	close(done)

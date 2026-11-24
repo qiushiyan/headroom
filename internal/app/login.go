@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -649,15 +650,15 @@ func vendorLogin(std Streams, pasted func() <-chan string, acct accounts.Account
 	done, relayed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(relayed)
-		relayCodes(lines, vendorIn, std.Err, func() string {
+		relayCodes(lines, vendorIn, std.Err, func() []string {
 			// The vendor hands $BROWSER the URL just after printing it, so
 			// only a paste typed ahead can beat the record; give it a
 			// moment before calling the state unknown. With no opener of
 			// headroom's, a pasted code goes unchecked.
 			for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-				state, err := os.ReadFile(stateFile)
-				if err == nil || !page.recorded() || time.Now().After(deadline) {
-					return string(state)
+				tags, ok := recordedSignin(stateFile)
+				if ok || !page.recorded() || time.Now().After(deadline) {
+					return tags
 				}
 			}
 		}, done)
@@ -727,10 +728,11 @@ func drainLines(lines <-chan string) {
 // headroom reads them rather than the vendor, so that a paste echoes and
 // edits as a line and a code that is not this sign-in's is refused before it
 // is spent — why, in DESIGN.md § Renewing logins ("headroom reads the pasted
-// code"). state reports this sign-in's state, "" while unknown. A refused
+// code"). tags reports what names this sign-in (browser.SigninTags), none
+// while unknown. A refused
 // line pasted again as it was goes through: the check rests on a reading of
 // the vendor and must never be what stands between the owner and a login.
-func relayCodes(lines <-chan string, vendor io.WriteCloser, say io.Writer, state func() string, done <-chan struct{}) {
+func relayCodes(lines <-chan string, vendor io.WriteCloser, say io.Writer, tags func() []string, done <-chan struct{}) {
 	refused := ""
 	for {
 		select {
@@ -747,7 +749,7 @@ func relayCodes(lines <-chan string, vendor io.WriteCloser, say io.Writer, state
 				fmt.Fprint(say, "Paste code here > ")
 				continue
 			}
-			problem, note := judgeCode(line, state())
+			problem, note := judgeCode(line, tags())
 			switch {
 			case problem == "":
 				fmt.Fprintf(say, "headroom: %s — passing it to claude\n", note)
@@ -765,18 +767,18 @@ func relayCodes(lines <-chan string, vendor io.WriteCloser, say io.Writer, state
 }
 
 // judgeCode reads one trimmed line pasted at the vendor's prompt against the
-// sign-in whose state is want ("" unknown): problem is why it should not be
+// sign-in named by want (none: unknown): problem is why it should not be
 // sent, and otherwise note says what was checked.
-func judgeCode(line, want string) (problem, note string) {
+func judgeCode(line string, want []string) (problem, note string) {
 	c, ok := browser.ParseCode(line)
 	switch {
 	case !ok:
 		return fmt.Sprintf("%q is not a sign-in code: the page shows one shaped code#state, copy all of it", line), ""
-	case want == "":
+	case len(want) == 0:
 		return "", "code received"
-	case c.State != want:
-		return fmt.Sprintf("that code is from another sign-in (its state begins %s, this one's %s): paste the code from the page this login opened or from the URL above",
-			statePrefix(c.State), statePrefix(want)), ""
+	case !slices.Contains(want, c.State):
+		return fmt.Sprintf("that code is from another sign-in (it ends #%s, this one's would end #%s): paste the code from the page this login opened or from the URL above",
+			statePrefix(c.State), statePrefix(want[0])), ""
 	}
 	return "", "code received, from this sign-in"
 }
