@@ -1429,7 +1429,7 @@ and `state.json` under its own accounts root.
   builds `claude auth login` under `launch.Prepare`'s environment with the
   binary itself as `$BROWSER` (`loginCommand`, for the batch and the holder
   alike; `app/approval.go` owns that opener for `login` and `headless
-  mint`), relays only a pasted code carrying the sign-in's state, and
+  mint`), relays only a pasted code carrying one of the sign-in's tags, and
   decides whether a login took (`judgeLogin`, shared with the handoff);
   `internal/browser` matches an email to a Chrome profile and reads the
   vendor's sign-in URL. `app/login_handoff.go` is `start`, `finish`,
@@ -1505,7 +1505,7 @@ failed vendor command and a login as the wrong email — and through the
 built binary against stub `claude`, `open` and `security`: the login's dir,
 headroom as `$BROWSER`, the profile `open` receives, nothing opened for a
 remote user, the opener answering under a configuration headroom refuses,
-and a pasted code reaching the vendor only when it carries the state the
+and a pasted code reaching the vendor only when it carries a tag the
 opener recorded. The relay is driven directly with scripted lines: what it
 refuses, what it says, the same line twice, and the vendor's input ending
 with the terminal's. The handoff is held both in process and through the
