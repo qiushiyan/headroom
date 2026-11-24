@@ -1,7 +1,10 @@
 # Antigravity support — a third vendor, on the board only
 
-Status: built on the `agy-support` branch, 2026-11-24. Written against `main`
-at fc4b068, agy 1.5.13 (Homebrew cask `antigravity-cli`), macOS.
+Status: built on the `agy-support` branch, 2026-11-24; kept as the dated
+record of the decision. The design as it stands lives in `DESIGN.md` § A third
+vendor: Antigravity — read that, not this, for what is true today. Written
+against `main` at fc4b068, agy 1.5.13 (Homebrew cask `antigravity-cli`),
+macOS.
 
 ## Summary
 

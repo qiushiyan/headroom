@@ -65,6 +65,13 @@ reports the disagreement. Codex homes are retired by hand: `accounts remove
 --vendor codex` refuses, naming the directory to delete once no `codex`
 process runs.
 
+## Antigravity
+
+Nothing to add: agy keeps one sign-in per macOS user, and headroom only reads
+its quota. The user runs `agy` once at the machine and signs in; the board's
+Antigravity page appears. `accounts add`, `remove` and `reserve` with
+`--vendor agy` refuse, and nothing launches it through headroom.
+
 ## A program that runs its own sessions
 
 For a program that starts `claude` under a config dir of its own, or under

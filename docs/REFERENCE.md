@@ -19,9 +19,11 @@ holds across commands:
   unless `--vendor codex` says otherwise, so an invocation without it means
   what it always meant. Commands that report — the board, `limits`,
   `refresh` — cover every vendor on the machine unless `--vendor` names one.
-  `login` and `headless` are Claude Code only. A command naming a vendor
-  this machine does not have fails saying so, except `accounts add`, which is
-  how the first Codex home comes to exist.
+  `login` and `headless` are Claude Code only. Antigravity (`--vendor agy`)
+  is reported and never acted on: `launch` does not take it, and `accounts
+  add`, `remove` and `reserve` refuse it. A command naming a vendor this
+  machine does not have fails saying so, except `accounts add`, which is how
+  the first Codex home comes to exist.
 - **Arguments for the vendor.** `launch` passes its arguments to `claude` (or
   `codex`) unchanged. headroom's flags come first and end at the
   first argument or at `--`: `headroom launch fix it` and `headroom launch --
@@ -77,6 +79,12 @@ whatever the percentages read, and does not count it as a choice. Only Codex's
 file credential store is read; a keyring login shows as not logged in, and
 `check` says why.
 
+Antigravity has one account, the machine's agy sign-in. headroom reads its
+quota by running `agy -p /usage` from its own accounts root, with every
+credential variable stripped, and reads nothing of the sign-in; the row is
+named by the email that read's log names. A read agy declines shows its exit
+status (`vendor_failed`) and sends you to `agy`, never to a login.
+
 `check` exits 0 for PASS, 1 for failed assertions, or 2 for INCONCLUSIVE.
 Failures identify vendor drift or headroom's own state problems, and name the
 vendor. Rate limiting, transport failure, lock contention, a valid newer state
@@ -99,7 +107,7 @@ object — `accounts remove` deleting the removed account's own Keychain item
 — refused while liveness is active or unverifiable. Launch routing belongs to headroom too: it validates the
 account and builds the child environment, neutralizing an inherited
 `CLAUDE_CONFIG_DIR` (for Codex, `CODEX_HOME` and the ambient credential
-variables). No Codex file is ever written. Shell wrappers provide personal
+variables). No Codex or agy file is ever written. Shell wrappers provide personal
 preflight and flags;
 [DESIGN.md](../DESIGN.md) explains that ownership boundary and its vendor contracts.
 
@@ -280,7 +288,7 @@ Nothing needs configuring on a standard install; environment variables re-point 
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HEADROOM_HOME` | `~` | Re-points everything home-derived, for both vendors: the primary dirs, the session stores, the accounts roots `.claude-accounts` and `.codex-accounts`. A test's sandbox, or a program under another `HOME` reaching this one; a launch of the primary refuses under it |
+| `HEADROOM_HOME` | `~` | Re-points everything home-derived, for every vendor: the primary dirs (agy's `.gemini/antigravity-cli` among them), the session stores, the accounts roots `.claude-accounts`, `.codex-accounts` and `.agy-accounts`. A test's sandbox, or a program under another `HOME` reaching this one; a launch of the primary refuses under it |
 | `HEADROOM_LAUNCHER_FORMAT` | `headroom launch --account %s` | How the board spells the command that launches an account (`%s` = its name) — display only; a shell integration sets it to its own names (`x-%s`) |
 | `HEADROOM_CODEX_LAUNCHER_FORMAT` | `headroom launch --vendor codex --account %s` | The Codex counterpart of `HEADROOM_LAUNCHER_FORMAT`. Log-in hints keep the engine's own spelling whatever this says |
 | `HEADROOM_CODEX_PRIMARY_NAME` | *(derived)* | The name the primary `~/.codex` answers to, derived and pinned like `HEADROOM_PRIMARY_NAME` |

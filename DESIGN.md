@@ -1,8 +1,9 @@
 # Design — why headroom is shaped this way
 
 headroom is a read-only observer of systems it doesn't own: several Claude
-Code logins on one machine, each keyed to its own config dir, and several
-Codex CLI logins, each keyed to its own home. It answers "which account has
+Code logins on one machine, each keyed to its own config dir, several
+Codex CLI logins, each keyed to its own home, and the machine's one
+Antigravity CLI sign-in, whose quota it shows and which it never launches. It answers "which account has
 headroom left?" and lets the user act on the answer (the account board,
 `accounts`: live and self-refreshing on a terminal with a page per vendor,
 one frame off it, one row per account under `--compact`, a versioned document
@@ -18,7 +19,8 @@ vendor contracts — the things the code can't say about itself.
 Most of this file is written about Claude Code, the vendor the model was
 built on. The mechanisms it describes — discovery, the claim ledger, the
 three axes, launch preparation — are the same code for Codex;
-A second vendor: Codex says where Codex differs and why.
+A second vendor: Codex says where Codex differs and why, and A third vendor:
+Antigravity what Antigravity gets and why it gets so little.
 
 ## The system observed: the filesystem is the registry
 
@@ -745,10 +747,10 @@ without them an unreadable store and a first run both serialize as
 
 The document is one JSON object whatever the vendors. `accounts[]` is one flat
 list and every account and problem carries its `vendor`, because the same
-email can be an account of both; `current` is an object keyed by vendor,
-holding the vendors in the document. `--vendor` restricts all of it to one
-vendor, and `--account` filters by name inside the selected vendors, so an
-email both vendors know answers twice.
+email can be an account of more than one; `current` is an object keyed by
+vendor, holding the vendors in the document. `--vendor` restricts all of it to
+one vendor, and `--account` filters by name inside the selected vendors, so an
+email several vendors know answers once under each.
 
 Rows are selectable by decoded identity, never by prose. Each limit carries
 the vendor's own vocabulary verbatim — `kind` (observed: `session`,
@@ -1194,8 +1196,8 @@ what the rule chooses is held by the placement tests, never by a replay.
 
 ## A second vendor: Codex
 
-The vendor set is closed at `claude` and `codex`. What differs between them
-enters in exactly two ways. What is only a path, a name or a number is data
+The vendor set is closed: `claude`, `codex` and `agy` (A third vendor:
+Antigravity). What differs between them enters in exactly two ways. What is only a path, a name or a number is data
 on a per-vendor **scope** that `config.Load` resolves — primary dir, accounts
 root, the canonical session store and the name of the per-account link to it,
 binary, usage URL, request spacing, launcher format, environment policy,
@@ -1209,6 +1211,13 @@ command is decided in the command that owns it, in plain sight: the Codex
 removal refusal, Claude Code-only login and headless tokens, each vendor's
 group of checks.
 
+A branch on the vendor is a switch that names each vendor it is about, never
+"Codex, else Claude Code": the third vendor turned every such else into a
+silent answer for Antigravity as Claude Code — its Keychain, its probe, its
+`.claude.json`. `TestNoVendorBranchAssumesTwo` refuses a comparison with
+Codex or Antigravity anywhere in the code; a comparison with Claude Code
+stays, because it selects what only Claude Code has.
+
 The alternatives this beats: a data-only descriptor cannot say how identity,
 health and credentials are read, so those rules leak into callers behind
 flags; an interface with a method per stage, or a parallel Codex pipeline
@@ -1216,9 +1225,9 @@ glued at the app layer, gives claims, freshness, launch ordering and topology
 two owners — exactly the mechanisms whose single spelling this design
 protects.
 
-Both scopes always resolve; presence (`~/.codex` or the Codex accounts root
-exists) only decides whether the board, `--json` and `check` include Codex
-unasked. A command naming an absent vendor fails with that reason, except
+Every scope always resolves; presence (`~/.codex` or the Codex accounts root
+exists, agy's own `~/.gemini/antigravity-cli` exists) only decides whether
+the board, `--json` and `check` include the vendor unasked. A command naming an absent vendor fails with that reason, except
 `accounts add`, which is how the first Codex directory comes to exist. Claude
 Code is always present.
 
@@ -1341,9 +1350,71 @@ here.
   `headroom launch --vendor codex --account <name> -- login` in the engine's
   own spelling — a wrapper's argument passing is not headroom's to know.
 
+## A third vendor: Antigravity
+
+Google's Antigravity CLI, `agy`, is observed and never launched. The board,
+`limits`, `accounts --compact`, `--json`, `refresh` and `check` cover it
+wherever agy has run; `launch`, `login` and `headless` do not take it,
+`accounts add`, `remove` and `reserve` refuse it (`accounts.ErrOneSignIn`),
+and its page carries no next-launch mark. The owner runs one Antigravity
+account and asked for its quota beside the others; placement, login and
+headless tokens were weighed and are impossible here, for the first two
+facts below. A documented way for agy to hold a second sign-in reopens it.
+
+### Antigravity observed
+
+Measured on agy 1.5.13 (`docs/specs/agy-support.md` § Antigravity observed
+keeps the detail); as perishable as every contract here.
+
+- **One sign-in per macOS user.** The login is one Keychain item under a
+  fixed name, and moving agy's state dir leaves the sign-in where it is.
+  There is no second account to place on, switch to or seed.
+- **headroom never uses the login.** A program other than agy using agy's
+  OAuth token is what Google suspends Antigravity accounts for
+  (`~/dotfiles/docs/antigravity-cli.md`), so headroom reads nothing of it —
+  not the Keychain item, not a token — and the pattern the other vendors
+  share, a GET carrying the account's token, is closed. The read is agy's
+  own: `agy -p /usage --output-format json` answers the `/usage` slash command
+  in print mode, with no model turn, no tokens and no conversation. Under an
+  API key it exits 2: a key has no account quota.
+- **Identity is only in the run's log.** Nothing on disk names the Google
+  account and no print-mode command does; each run logs an
+  `applyAuthResult: email=…` line once it has signed in, and `--log-file`
+  puts that log where headroom reads it, leaving agy's own log dir alone.
+
+### Identity travels with the reading
+
+Discovery has nothing to read, so the one account is the primary, keyed by
+its dir as a Claude Code account without a uuid is, and its email arrives
+with each reading. The read stores headroom's own envelope — agy's answer and
+the email its run's log names — and `usage.Parse(agy, …)` reads both out of
+that one body, live, replayed and in `check`, so figures are always labelled
+with the account they were measured for (`TestAgyRoundReadsTheOneSignIn`). A
+log without the line leaves the figures shown and unlabelled — the machine
+has one sign-in for them to belong to — and `check` fails the identity line
+as drift.
+
+### The read
+
+A request candidate binds its transport: the GET, or a run of the vendor's
+own program, prepared from the accounts root under `launch.Target`'s
+environment with every variable that would make agy answer for another
+credential or state dir stripped. The claim, completion and stored body stay
+the ledger's. Its quiet period is longer than the other vendors', since a read
+starts a whole agy that signs in and asks Google several questions, and the
+run is bounded as a GET is, so a round ends when it always did. A run that
+exits non-zero is the attempt state `vendor_failed`, with its exit status: it
+sends the person to agy, never to a login, because headroom has no evidence of
+why agy declined.
+
+Health has no oracle. Short of the read nothing asks agy whether it is signed
+in, and a request's outcome never writes health (Three axes, because three
+things vary independently), so an installed agy counts as usable and a read
+that fails says so on the attempt axis.
+
 ## The code
 
-The vendor set is closed at `claude` and `codex`. `config.Load` resolves one
+The vendor set is closed: `claude`, `codex`, `agy`. `config.Load` resolves one
 `Scope` per vendor — paths, binary, usage URL, request spacing, launcher
 format, environment policy, presence — every path derived from one home
 (`HEADROOM_HOME`, else `$HOME`). `accounts.Discover(scope)` returns a `Set` that owns `Select`,
@@ -1382,9 +1453,11 @@ and `state.json` under its own accounts root.
   claims, parallel fetches, response interpretation and completion
   recording. A candidate binds its ledger key, vendor, prepared request
   and expected identity behind unexported fields, and `Start` refuses a
-  candidate of the other vendor. `state` owns the request ledger, stored
-  bodies, placements, headless runs and re-homes, one document under one
-  lock. `render` decides an account's notes once (`clauses`) and lays them
+  candidate of another vendor. A candidate is a GET or a run of the vendor's
+  program (`internal/refresh/run.go`); `internal/agy` owns the run's
+  arguments, the identity line its log carries and the envelope stored for
+  it. `state` owns the request ledger, stored bodies, placements, headless
+  runs and re-homes, one document under one lock. `render` decides an account's notes once (`clauses`) and lays them
   out in the block and the compact row; JSON serialization stays with the
   surfaces.
 - **A round** is `internal/round`: one vendor's discovery, facts on disk,
@@ -1483,7 +1556,11 @@ configuration headroom refuses, and a missing vendor. `TestHelpPages` pins every
 change). Surfaces below it are tested through their typed entries, `round`
 and `launchop` through their own interfaces.
 
-Parser tables pin vendor contracts and visible drift. The placement rule is a table over candidates;
+Parser tables pin vendor contracts and visible drift. Antigravity's read is
+held against a stub `agy` on `PATH`: each outcome of a run, the environment
+and directory it runs in and its bound (`internal/refresh/run_test.go`), the
+round, the check group, and the contract fixtures, which record how the run
+was started. The placement rule is a table over candidates;
 the store's place operation is tested for the same property as the claim —
 contending handles on the real lock — and the launch path through the exec
 seam with credentials and the process table injected. The detached refresh
@@ -1560,5 +1637,5 @@ against this checkout's binary and a recording `claude` stub.
 Personal-first: the defaults fit the author's machine, and `HEADROOM_*`
 environment variables re-point each of them. The endpoints headroom reads are
 undocumented and restricted by the vendors' consumer terms to first-party
-clients; this repository exists as a personal, read-only instrument, not as
-a distribution.
+clients, and Antigravity's quota is read through agy, its own client; this
+repository exists as a personal, read-only instrument, not as a distribution.
