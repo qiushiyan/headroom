@@ -627,6 +627,40 @@ func TestHandoffUnreadableScreen(t *testing.T) {
 	}
 }
 
+// Claude Code 2.1.331 prints a short link, `…/oauth/authorize?z-<challenge>`,
+// and hands $BROWSER the full URL, whose state is not the link's: the code the
+// link's page shows carries the challenge, which the opener records beside the
+// state. start hands out the short link, and finish takes that page's code.
+func TestHandoffShortLink(t *testing.T) {
+	h := newHandoffWorld(t)
+	short := func(state string) string {
+		return "https://claude.ai/oauth/authorize?z-challenge-" + strings.TrimPrefix(state, "state-") + "&login_hint=a%40x.com"
+	}
+	h.screen = func(state string) []string {
+		u := short(state)
+		return []string{"Opening browser to sign in…", "If the browser didn't open, visit:", "\x1b]8;;" + u + "\x07" + u + "\x1b]8;;\x07", "Paste code here if prompted > "}
+	}
+	h.opened = func(state string) string { return "challenge-" + strings.TrimPrefix(state, "state-") + "\n" + state }
+	doc, code := h.run(loginStart, "a@x.com", "")
+	if code != 0 || doc.State != signin.Awaiting || doc.URL != short("state-1") {
+		t.Fatalf("start: exit %d, %+v", code, doc)
+	}
+	if doc, code := h.run(loginFinish, "a@x.com", "the-code#challenge-9\n"); code != 3 || doc.reason() != reasonOtherSignin {
+		t.Errorf("another sign-in's code: exit %d, %+v", code, doc)
+	}
+	if doc, code := h.run(loginFinish, "a@x.com", "the-code#challenge-1\n"); code != 0 || doc.State != signin.Renewed {
+		t.Fatalf("finish: exit %d, %+v", code, doc)
+	}
+	if got := h.sent(); len(got) != 1 || got[0] != "the-code#challenge-1" {
+		t.Errorf("the vendor received %q", got)
+	}
+	h.holders.Wait()
+	h.opened = func(string) string { return "another\nother" }
+	if doc, code := h.run(loginStart, "a@x.com", ""); code != 1 || doc.reason() != reasonScreenChanged {
+		t.Errorf("another sign-in opened: exit %d, %+v", code, doc)
+	}
+}
+
 // Cancel ends a waiting sign-in and its vendor; nothing to cancel is fine.
 func TestHandoffCancel(t *testing.T) {
 	h := newHandoffWorld(t)

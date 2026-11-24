@@ -201,7 +201,8 @@ click per account.
   2.1.291). So `$BROWSER` is the headroom binary, with
   `HEADROOM_BROWSER_PROFILE` naming a Chrome profile directory (empty for the
   default browser) and `HEADROOM_BROWSER_SIGNIN` a file for the URL's
-  `state`. Called that way with one https URL, headroom records the state,
+  sign-in tags, its `code_challenge` and its `state`. Called that way with
+  one https URL, headroom records the tags,
   runs `open(1)` and does nothing else — dispatched before configuration,
   like `version`, since the vendor's environment is not one headroom must
   accept.
@@ -213,14 +214,18 @@ click per account.
   `Request failed with status code 400` that ends the attempt. So the
   vendor's input is a pipe from headroom, which reads the terminal in its
   normal mode, where a paste echoes and edits as a line, and passes a line
-  on only when it is shaped `code#state` and carries the recorded state; the
-  vendor builds the URL it opens and the URL it prints from one state. A
+  on only when it is shaped `code#state` and carries a recorded tag. The URL
+  the vendor prints is a short link, `…/oauth/authorize?z-<challenge>`, whose
+  page's code carries the challenge of the URL it opens, whose state is
+  another value (measured 2.1.331); while it printed the full URL (2.1.309 to
+  2.1.311), the code carried the state both URLs shared. Either tag names the
+  sign-in, so a code carrying either passes. A
   refused line gets the reason and a fresh prompt, and the sign-in stays
   open. The same line again goes through as pasted: the check is headroom's
   reading of the vendor, and must never stand between the owner and a
-  login. With no state recorded — off macOS at the machine, or no opener
+  login. With no tag recorded — off macOS at the machine, or no opener
   call within a few seconds of the paste — a well-formed code goes through
-  without the state check, and headroom claims none. The pipe costs the vendor's
+  unchecked, and headroom claims no check. The pipe costs the vendor's
   paste-only fallback for a localhost listener that cannot start, which it
   offers only on a terminal.
 - **The profile is matched, never configured** (`internal/browser`, reading
@@ -305,17 +310,20 @@ contract. What the shape rests on, measured on 2.1.311:
   login start x` returns — and the holder is the vendor's parent until the
   sign-in ends. The vendor's input reaching end of file does not end it: a
   killed holder leaves it waiting forever.
-- **The URL handed out is the one the vendor printed.** On a pipe it prints
-  plain lines, and its printed URL redirects to the page that shows the
-  code; the one it hands `$BROWSER` redirects to a localhost listener a
-  remote browser cannot reach. Both carry one state. `browser.SigninURL` is
-  the one reader of that screen; headroom, as a `$BROWSER` that records and
-  opens nothing, cross-checks the state, and never builds a URL itself.
-- **A code is sent once, and only one this sign-in's state carries.** A
+- **The URL handed out is the one the vendor printed.** Its printed URL
+  leads to the page that shows the code; the one it hands `$BROWSER`
+  redirects to a localhost listener a remote browser cannot reach. The
+  printed one is a short link, `…/oauth/authorize?z-<challenge>` (2.1.331),
+  whose page's code carries the opened URL's challenge; before, it was the
+  full URL, whose code carried the state both shared. `browser.SigninURL` is
+  the one reader of that screen and of the tag its code carries; headroom,
+  as a `$BROWSER` that records and opens nothing, cross-checks that tag
+  against the opened URL's, and never builds a URL itself.
+- **A code is sent once, and only one carrying this sign-in's tag.** A
   well-formed code the server rejects ends the sign-in; a malformed one
   leaves it waiting. So the holder refuses a code that is not `code#state`
-  or carries another state, with no repeat-to-bypass — the URL was
-  headroom's own, so another state is another sign-in — and checks the
+  or carries another tag, with no repeat-to-bypass — the URL was
+  headroom's own, so another tag is another sign-in — and checks the
   Keychain still gives the login before sending. `signin.Signin` owns the
   sign-in's steps: `exchanging` on disk is the authorization to send, so a
   code that cannot be recorded is not sent and a dead holder's record never

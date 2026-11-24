@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -107,7 +108,7 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 	if err != nil {
 		return fail(reasonHolderFailed, "claude auth login: "+err.Error())
 	}
-	url, state, last, ok := awaitSigninURL(v, deps.bounds.url)
+	url, tag, last, ok := awaitSigninURL(v, deps.bounds.url)
 	if !ok {
 		v.Stop()
 		problem := fmt.Sprintf("claude auth login printed no sign-in URL headroom could read within %s", deps.bounds.url)
@@ -116,14 +117,14 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 		}
 		return fail(reasonNoURL, problem+" — has Claude Code changed its login screen? Nothing was started")
 	}
-	if opened := awaitOpener(paths.Opener(), deps.bounds.opener); opened != "" && opened != state {
+	if opened := awaitOpener(paths.Opener(), deps.bounds.opener); len(opened) > 0 && !slices.Contains(opened, tag) {
 		v.Stop()
-		return fail(reasonScreenChanged, "the URL claude auth login printed is not the sign-in it opened (state "+statePrefix(state)+" printed, "+statePrefix(opened)+" opened) — has Claude Code changed its login screen? Nothing was started")
+		return fail(reasonScreenChanged, "the URL claude auth login printed is not the sign-in it opened ("+statePrefix(tag)+" printed, "+statePrefix(opened[0])+" opened) — has Claude Code changed its login screen? Nothing was started")
 	}
 	self := signin.Proc{PID: os.Getpid()}
 	self.Start, _ = deps.ps(self.PID)
 	s, err := signin.Begin(paths.Record(), signin.Record{
-		Account: acct.Name, Email: row.email, URL: url, SigninState: state, Holder: self, Log: paths.Log(),
+		Account: acct.Name, Email: row.email, URL: url, SigninState: tag, Holder: self, Log: paths.Log(),
 	}, deps.now(), deps.bounds.awaiting)
 	if err != nil {
 		v.Stop()
@@ -134,9 +135,9 @@ func holdSignin(ready io.WriteCloser, logw io.Writer, scope config.Scope, name s
 }
 
 // awaitSigninURL reads the vendor's screen until it prints the sign-in URL,
-// within wait; last is the last line it printed, for a screen that never
-// shows one.
-func awaitSigninURL(v vendorRun, wait time.Duration) (url, state, last string, ok bool) {
+// within wait, and the tag its page's code carries; last is the last line it
+// printed, for a screen that never shows one.
+func awaitSigninURL(v vendorRun, wait time.Duration) (url, tag, last string, ok bool) {
 	timeout := time.After(wait)
 	lines := v.Lines()
 	for {
@@ -157,15 +158,15 @@ func awaitSigninURL(v vendorRun, wait time.Duration) (url, state, last string, o
 	}
 }
 
-// awaitOpener is the state headroom recorded as the vendor's $BROWSER, ""
-// when none came within wait.
-func awaitOpener(path string, wait time.Duration) string {
+// awaitOpener is the sign-in's tags headroom recorded as the vendor's
+// $BROWSER, none when none came within wait.
+func awaitOpener(path string, wait time.Duration) []string {
 	for deadline := time.Now().Add(wait); ; time.Sleep(50 * time.Millisecond) {
-		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-			return string(data)
+		if tags, _ := recordedSignin(path); len(tags) > 0 {
+			return tags
 		}
 		if time.Now().After(deadline) {
-			return ""
+			return nil
 		}
 	}
 }
@@ -383,11 +384,11 @@ func serveSignin(ln *net.UnixListener, v vendorRun, s *signin.Signin, acct accou
 }
 
 // judgeSubmission decides whether a code may go to the vendor: shaped
-// `code#state`, carrying the state of the URL handed out, and with the
+// `code#state`, carrying the tag of the URL handed out, and with the
 // account's login still read where sessions read it. A code the vendor
 // rejects ends the sign-in (measured, 2.1.311), so a code headroom can tell
 // is wrong is refused here, without the escape a person at the terminal
-// has: the URL was headroom's own, so another state is another sign-in. The
+// has: the URL was headroom's own, so another tag is another sign-in. The
 // line itself is never repeated back. raw is the login read just now, the
 // read-back's baseline.
 func judgeSubmission(code string, rec signin.Record, acct accounts.Account, deps loginDeps) (raw, reason, problem string) {
@@ -396,7 +397,7 @@ func judgeSubmission(code string, rec signin.Record, acct accounts.Account, deps
 	case !ok:
 		return "", reasonMalformed, "the line sent is not a sign-in code: the page shows one shaped code#state, and all of it is the code; nothing was sent"
 	case c.State != rec.SigninState:
-		return "", reasonOtherSignin, fmt.Sprintf("that code is from another sign-in (its state begins %s, this one's %s): send the code from the page of the URL headroom login start printed; nothing was sent",
+		return "", reasonOtherSignin, fmt.Sprintf("that code is from another sign-in (it ends #%s, this one's would end #%s): send the code from the page of the URL headroom login start printed; nothing was sent",
 			statePrefix(c.State), statePrefix(rec.SigninState))
 	}
 	read := deps.readCred(acct)

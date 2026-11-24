@@ -163,8 +163,8 @@ type Record struct {
 	FinishedMS  int64  `json:"finished_ms,omitempty"`
 	LoginEndsMS int64  `json:"login_ends_ms,omitempty"`
 
-	// SigninState is the OAuth state of the URL handed out, which a code
-	// must carry.
+	// SigninState is the tag of the URL handed out (browser.SigninURL): what
+	// a code from its page carries after the #, which a code must carry.
 	SigninState string `json:"signin_state,omitempty"`
 	Holder      Proc   `json:"holder"`
 	// Log is the holder's log — the vendor's screen and the holder's own
