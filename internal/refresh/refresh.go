@@ -15,6 +15,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/launch"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -26,6 +27,11 @@ import (
 // spends, the vendor whose endpoint it asks, the prepared request and the
 // token it carries. The fields stay unexported so a caller cannot pair one
 // account's key with another's token or header.
+//
+// A request is one of two transports, bound here and nowhere else: a GET
+// carrying the account's token (Claude Code, Codex), or a run of the vendor's
+// own program, which signs in by itself and prints its answer (Antigravity's
+// agy) — run is set for the second, and then no token, URL or header is.
 type Candidate struct {
 	key     state.Key
 	vendor  config.Vendor
@@ -33,9 +39,27 @@ type Candidate struct {
 	headers [][2]string // beyond Authorization
 	dir     string      // what the 401 re-read is asked about
 	token   string
+	run     *run
 
 	// What the response must not contradict (usage.Reading.BelongsTo).
 	accountID, userID string
+}
+
+// PrepareAgy is the Antigravity half of the access reader: the one read its
+// one account has, agy's own `/usage`, run from the accounts root under the
+// environment launch.Target builds for it — every variable that would make
+// agy answer for another credential or another state dir removed. It reads
+// nothing of agy's sign-in: agy is the only client of its own login.
+func PrepareAgy(a accounts.Account, environ []string) (*Candidate, accountstate.AttemptState) {
+	return &Candidate{
+		key:    state.KeyFor(a),
+		vendor: config.Agy,
+		run: &run{
+			bin: a.Scope.Binary(),
+			dir: a.Scope.AccountsRoot,
+			env: launch.Primary(config.Agy).Env(environ),
+		},
+	}, accountstate.AttemptPending
 }
 
 // userAgent identifies headroom to the Codex backend. The vendor's own client
@@ -113,6 +137,13 @@ func interpret(c Candidate, res response, at time.Time) (Result, state.Outcome, 
 	case res.Err != nil:
 		r.Attempt.State = accountstate.AttemptTransport
 		return r, state.OutcomeFailed, nil
+	case c.run != nil && res.Exit != 0:
+		// The vendor's program declined. Whether it asked Google anything is
+		// unknown, so the claim's own spacing stands and nothing is stored.
+		r.Attempt.State, r.Attempt.ExitCode = accountstate.AttemptVendorFailed, res.Exit
+		return r, state.OutcomeFailed, nil
+	case c.run != nil:
+		// A run that exited 0 answered; what it said is the parser's.
 	case res.StatusCode == http.StatusTooManyRequests:
 		r.Attempt.State = accountstate.AttemptRefused
 		return r, state.OutcomeRefused, nil
@@ -192,7 +223,7 @@ func Start(ctx context.Context, st *state.Store, candidates []*Candidate, reread
 		wg.Add(1)
 		go func(i int, c Candidate, generation int64) {
 			defer wg.Done()
-			res := fetch(ctx, client, c)
+			res := c.ask(ctx, client)
 			at := time.Now()
 			r, outcome, body := interpret(c, res, at)
 			r.Index = i

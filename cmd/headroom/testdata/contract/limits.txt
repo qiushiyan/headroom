@@ -191,6 +191,79 @@ exit 0
         "state": "none"
       },
       "load": null
+    },
+    {
+      "vendor": "agy",
+      "name": "primary",
+      "email": "g@x.com",
+      "launcher": "agy",
+      "health": "unprobed",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "headroom_cache",
+        "fresh": false,
+        "allowance": "unknown",
+        "limits": [
+          {
+            "label": "Gemini 7d",
+            "kind": "gemini-weekly",
+            "group": "weekly",
+            "model": "Gemini Models",
+            "window_seconds": 604800,
+            "percent": 10,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "Gemini 5h",
+            "kind": "gemini-5h",
+            "group": "5h",
+            "model": "Gemini Models",
+            "window_seconds": 18000,
+            "percent": 25,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "Claude and GPT 7d",
+            "kind": "3p-weekly",
+            "group": "weekly",
+            "model": "Claude and GPT models",
+            "window_seconds": 604800,
+            "percent": 0,
+            "percent_state": "ok",
+            "resets_at": null,
+            "reset_state": "none",
+            "severity": "normal",
+            "identity_state": "ok",
+            "unstarted": true
+          },
+          {
+            "label": "Claude and GPT 5h",
+            "kind": "3p-5h",
+            "group": "5h",
+            "model": "Claude and GPT models",
+            "window_seconds": 18000,
+            "percent": 0,
+            "percent_state": "ok",
+            "resets_at": null,
+            "reset_state": "none",
+            "severity": "normal",
+            "identity_state": "ok",
+            "unstarted": true
+          }
+        ]
+      },
+      "attempt": {
+        "state": "none"
+      },
+      "load": null
     }
   ]
 }

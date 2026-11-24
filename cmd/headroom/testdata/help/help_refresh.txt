@@ -2,15 +2,15 @@ Usage: headroom refresh [flags]
 
 Ask the usage endpoint about every account that may be asked, and store the answers.
 
-Asks the usage endpoint about every account the budget lets it ask, stores the answers and
-prints nothing: the round headroom --json runs, without the health probes or the document.
-An automatic launch leaves one running for the next launch's figures. It ends within about
-twelve seconds; SIGTERM, SIGINT or SIGHUP stop it within one, with the request it abandoned
-recorded.
+Asks the usage endpoint about every account the budget lets it ask (for Antigravity, runs
+agy -p /usage), stores the answers and prints nothing: the round headroom --json runs,
+without the health probes or the document. An automatic launch leaves one running for the
+next launch's figures. It ends within about twelve seconds; SIGTERM, SIGINT or SIGHUP stop
+it within one, with the request it abandoned recorded.
 
 Flags:
       --vendor=VENDOR    Only this vendor's accounts; every vendor on this machine when absent (one
-                         of: claude, codex).
+                         of: claude, codex, agy).
 
 Inherited flags:
   -h, --help             Show context-sensitive help.

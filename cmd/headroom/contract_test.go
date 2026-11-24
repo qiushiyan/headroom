@@ -56,6 +56,8 @@ func TestContracts(t *testing.T) {
 		{"accounts", []string{"accounts"}, ""},
 		{"accounts-compact", []string{"accounts", "--compact"}, ""},
 		{"accounts-compact-codex", []string{"accounts", "--compact", "--vendor", "codex"}, ""},
+		{"limits-agy", []string{"limits", "--vendor", "agy"}, ""},
+		{"accounts-compact-agy", []string{"accounts", "--compact", "--vendor", "agy"}, ""},
 		{"headless-list", []string{"headless"}, ""},
 		{"headless-json", []string{"headless", "--json"}, ""},
 		{"login-dry-run", []string{"login", "--dry-run"}, ""},
@@ -98,6 +100,8 @@ func TestContracts(t *testing.T) {
 		{"headless-place-empty", []string{"headless", "place", "--exclude", ""}, ""},
 		{"accounts-remove-empty", []string{"accounts", "remove", ""}, ""},
 		{"accounts-vendor-before-add", []string{"accounts", "--vendor", "codex", "add", "g@x.com"}, ""},
+		{"launch-agy", []string{"launch", "--vendor", "agy", "--"}, ""},
+		{"accounts-add-agy", []string{"accounts", "--vendor", "agy", "add", "h@x.com"}, ""},
 
 		// The plan as an agent reads it, and a handed-off sign-in end to end,
 		// last: the renewal changes a@x.com's login. (docs/specs/login-handoff.md)
@@ -159,7 +163,7 @@ func TestCheckExitsAsDocumented(t *testing.T) {
 // observed ten minutes ago.
 type world struct {
 	base, home, stubs, record string
-	claude, codex             config.Scope
+	claude, codex, agy        config.Scope
 	bin                       string
 	lastStdout                string // the newest run's stdout, unnormalized
 }
@@ -178,8 +182,11 @@ func newWorld(t *testing.T) *world {
 	}
 	w := &world{base: base, home: filepath.Join(base, "home"), stubs: filepath.Join(base, "stubs"), record: filepath.Join(base, "record")}
 	cfg := config.ForHome(w.home)
-	w.claude, w.codex = cfg.Claude, cfg.Codex
-	w.codex.Present = true
+	w.claude, w.codex, w.agy = cfg.Claude, cfg.Codex, cfg.Agy
+	w.codex.Present, w.agy.Present = true, true
+	if err := os.MkdirAll(w.agy.PrimaryDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	aged := time.Now().Add(-time.Hour).UnixMilli()
 	far := time.Now().Add(25 * 24 * time.Hour).UnixMilli()
@@ -225,6 +232,20 @@ func newWorld(t *testing.T) *world {
 			`"spend_control":{"reached":false},"rate_limit_reached_type":null}`, n, n, percent, time.Now().Add(72*time.Hour).Unix())
 	}
 	observe(t, w.codex, map[string]string{"q": codexUsage(1, 30), "c@x.com": codexUsage(2, 70)})
+	// Antigravity: one sign-in, its figures and email in headroom's envelope
+	// of what agy printed. The stub answers the same document a little later.
+	agyAnswer := func(weekly, fiveHour float64) string {
+		return fmt.Sprintf(`{"conversation_id":"","status":"SUCCESS","response":"","num_turns":0,`+
+			`"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"command":{"name":"usage","data":{"groups":[`+
+			`{"name":"Gemini Models","buckets":[`+
+			`{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":%g,"reset_time":%q},`+
+			`{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":%g,"reset_time":%q}]},`+
+			`{"name":"Claude and GPT models","buckets":[`+
+			`{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z"},`+
+			`{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z"}]}]}}}`,
+			weekly, reset(140*time.Hour), fiveHour, reset(220*time.Minute))
+	}
+	observe(t, w.agy, map[string]string{"primary": `{"email":"g@x.com","agy":` + agyAnswer(0.9, 0.75) + `}`})
 
 	// Headless tokens for two accounts, minted for the subscription each dir
 	// is logged in to.
@@ -261,6 +282,17 @@ case "$1 $2" in
 "login status") echo "Logged in using ChatGPT"; exit 0 ;;
 esac
 { echo "codex $*"; echo "CODEX_HOME=${CODEX_HOME-<unset>}"; echo ---; } >> "$RECORD"
+`,
+		// agy answers its quota and writes the sign-in line to the run's log;
+		// it records how it was run, but not the log's temporary path.
+		"agy": `#!/bin/sh
+echo "agy $1 $2 $3 $4 (in $(pwd))" >> "$RECORD"
+log=""
+while [ $# -gt 0 ]; do [ "$1" = "--log-file" ] && log="$2"; shift; done
+[ -n "$log" ] && echo 'I1124 20:05:33.774290 1 server_oauth.go:221] applyAuthResult: email=g@x.com, authMethod=consumer, quotaProject=' > "$log"
+cat <<'JSON'
+` + agyAnswer(0.88, 0.5) + `
+JSON
 `,
 		"security": "#!/bin/sh\nexit 44\n",
 		"open":     "#!/bin/sh\necho \"open $*\" >> \"$RECORD\"\n",
@@ -351,7 +383,7 @@ func (w *world) runIn(t *testing.T, stdin string, args ...string) string {
 // the temporary directory, the build's commit, instants (RFC 3339, epoch
 // seconds and milliseconds, the clock and day a board or log line shows them
 // at, the date a login or token end is named by), spans counted in seconds
-// from now, process ids, the Keychain item a dir's path names and the random
+// from now, what is left of a quiet period, process ids, the Keychain item a dir's path names and the random
 // id a placement is given. Spans a person
 // reads ("in 3.3h", "10m ago") are kept: the fixture fixes them relative to
 // now, and their rounding absorbs the seconds a run takes.
@@ -368,6 +400,7 @@ var (
 	keychain    = regexp.MustCompile(`credentials-[0-9a-f]{8}\b`)
 	placement   = regexp.MustCompile(`"placement": "[0-9a-f]+"`)
 	startedArgs = regexp.MustCompile(`headless started [0-9a-f]+ \d+`)
+	quietLeft   = regexp.MustCompile(`\b(\d+m)?\d+s remaining\b`)
 )
 
 func (w *world) normalize(s string) string {
@@ -384,6 +417,7 @@ func (w *world) normalize(s string) string {
 	s = keychain.ReplaceAllString(s, "credentials-<dir-hash>")
 	s = placement.ReplaceAllString(s, `"placement": "<id>"`)
 	s = startedArgs.ReplaceAllString(s, "headless started <id> <pid>")
+	s = quietLeft.ReplaceAllString(s, "<span> remaining")
 	return s
 }
 
@@ -488,7 +522,7 @@ var updatePins = os.Getenv("HEADROOM_CONTRACT_UPDATE") != ""
 
 func TestMain(m *testing.M) {
 	ambient := []string{"BROWSER", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"}
-	for _, v := range []config.Vendor{config.Claude, config.Codex} {
+	for _, v := range config.Vendors {
 		ambient = append(ambient, v.EnvPolicy().Strip...)
 	}
 	for _, kv := range os.Environ() {

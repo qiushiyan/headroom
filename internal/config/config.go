@@ -12,24 +12,37 @@ import (
 	"time"
 )
 
-// Vendor is one of two fixed values. The set is closed on purpose: what
-// varies between the two is either data on a Scope or one of three document
+// Vendor is one of three fixed values. The set is closed on purpose: what
+// varies between them is either data on a Scope or one of three document
 // readers (identity, access, the usage body) — never a method per pipeline
-// stage, which would invite a third "generic" vendor nobody has.
+// stage, which would invite a "generic" vendor nobody has.
+//
+// A branch on the vendor is a switch that names the vendor it is about. A
+// two-way test ("Codex, else Claude Code") reads "the other one" as a single
+// vendor, and a third vendor makes that a silent wrong answer; the switches
+// say what each vendor gets (TestNoVendorBranchAssumesTwo).
 type Vendor string
 
 const (
 	Claude Vendor = "claude"
 	Codex  Vendor = "codex"
+	// Agy is Google's Antigravity CLI. It is observed and never launched: the
+	// board, limits, refresh and check cover it, and every command that
+	// launches, logs in or manages accounts refuses it — it keeps one sign-in
+	// per macOS user (docs/specs/agy-support.md).
+	Agy Vendor = "agy"
 )
 
 // Vendors is the closed set in display order: Claude Code first.
-var Vendors = []Vendor{Claude, Codex}
+var Vendors = []Vendor{Claude, Codex, Agy}
 
 // Title is the vendor's product name, for headings and the tab bar.
 func (v Vendor) Title() string {
-	if v == Codex {
+	switch v {
+	case Codex:
 		return "Codex"
+	case Agy:
+		return "Antigravity"
 	}
 	return "Claude Code"
 }
@@ -42,6 +55,12 @@ func (v Vendor) Title() string {
 // as a local policy, not a vendor promise — it is a field on the scope so a
 // stricter budget changes a number, and every ledger deadline respects it.
 const DefaultSpacing = 90 * time.Second
+
+// AgySpacing is Antigravity's quiet period. A read is not one request but a
+// whole agy process that signs in and asks Google several questions, and its
+// windows run five hours and a week, so a read every few minutes says all
+// there is to say.
+const AgySpacing = 5 * time.Minute
 
 // EnvPolicy is what a launched child's environment is built from, as data:
 // the variable that selects a non-primary account, every inherited variable
@@ -68,7 +87,24 @@ func (p EnvPolicy) IsSecret(name string) bool {
 // Vendor answers as Claude Code, so a forgotten construction fails toward
 // the rules the existing launch surface was verified under.
 func (v Vendor) EnvPolicy() EnvPolicy {
-	if v == Codex {
+	switch v {
+	case Agy:
+		// Antigravity is never launched; its policy shapes the one process
+		// headroom runs, the quota read, which must answer for this machine's
+		// sign-in. Under GEMINI_API_KEY agy answers for the key, which has no
+		// account quota (exit 2, documented in its changelog). The rest are
+		// names the 1.5.13 binary reads that substitute a credential or
+		// re-point its state, stripped on the same principle; their effects
+		// are unmeasured. There is no home variable: the sign-in is one
+		// Keychain item per macOS user, and no variable selects another.
+		return EnvPolicy{
+			Strip: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+				"GOOGLE_CLOUD_PROJECT", "GOOGLE_GENAI_USE_VERTEXAI", "JETSKI_OAUTH_TOKEN", "AGY_ACCOUNT",
+				"AGY_ADC_AUTH", "AGY_LLM_GATEWAY_URL", "AGY_LLM_GATEWAY_API_KEY",
+				"ANTIGRAVITY_GEMINI_DIR", "ANTIGRAVITY_APP_DATA_DIR", "ANTIGRAVITY_CONFIG_REL_DIR"},
+			Secret: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "JETSKI_OAUTH_TOKEN", "AGY_LLM_GATEWAY_API_KEY"},
+		}
+	case Codex:
 		// CODEX_API_KEY and CODEX_ACCESS_TOKEN are read from the environment
 		// ahead of auth.json (the latter measured on codex-cli 0.155.0), so an
 		// inherited one would run the chosen home on someone else's login.
@@ -148,20 +184,23 @@ type Scope struct {
 // Config holds one Scope per vendor. Load is the only door: every directory
 // that crosses into a launch is absolute because it was established here.
 type Config struct {
-	Claude, Codex Scope
+	Claude, Codex, Agy Scope
 }
 
-// Scope returns the vendor's scope; both are always resolved.
+// Scope returns the vendor's scope; every one is always resolved.
 func (c Config) Scope(v Vendor) Scope {
-	if v == Codex {
+	switch v {
+	case Codex:
 		return c.Codex
+	case Agy:
+		return c.Agy
 	}
 	return c.Claude
 }
 
 // Present lists the scopes of the vendors on this machine, Claude Code first.
 func (c Config) Present() []Scope {
-	out := make([]Scope, 0, 2)
+	out := make([]Scope, 0, len(Vendors))
 	for _, v := range Vendors {
 		if s := c.Scope(v); s.Present {
 			out = append(out, s)
@@ -190,6 +229,16 @@ func ForHome(home string) Config {
 			UsageURL:       "https://chatgpt.com/backend-api/wham/usage",
 			LauncherFormat: "headroom launch --vendor codex --account %s",
 			Spacing:        DefaultSpacing,
+		},
+		// Antigravity's accounts root holds headroom's state file and nothing
+		// else: there is one sign-in per macOS user, so discovery finds the
+		// primary alone. It has no usage URL — the read is a run of agy — and
+		// no launcher format, since nothing launches it.
+		Agy: Scope{
+			Vendor:       Agy,
+			Home:         home,
+			AccountsRoot: filepath.Join(home, ".agy-accounts"),
+			Spacing:      AgySpacing,
 		},
 	}
 	return c
@@ -223,7 +272,7 @@ func Load() (Config, error) {
 	}
 	c := ForHome(home)
 	relocated := filepath.Clean(home) != filepath.Clean(realHome)
-	c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated = relocated, relocated
+	c.Claude.PrimaryRelocated, c.Codex.PrimaryRelocated, c.Agy.PrimaryRelocated = relocated, relocated, relocated
 
 	for _, o := range []struct {
 		scope                    *Scope
@@ -247,6 +296,10 @@ func Load() (Config, error) {
 	}
 
 	c.Codex.Present = isDir(c.Codex.PrimaryDir()) || isDir(c.Codex.AccountsRoot)
+	// Antigravity is present where agy has run: its state dir exists. The
+	// accounts root alone says nothing — headroom creates it for its state
+	// file, and no account can be added there.
+	c.Agy.Present = isDir(c.Agy.PrimaryDir())
 	return c, nil
 }
 
@@ -274,11 +327,17 @@ func (s Scope) OrderFile() string { return filepath.Join(s.AccountsRoot, ".order
 func (s Scope) PrimaryMeta() string { return filepath.Join(s.Home, ".claude.json") }
 
 // RequirePresent is why a command acting on this vendor cannot: the vendor
-// was not found on this machine. Only Codex can be absent, and `accounts
-// add` is how its first directory comes to exist.
+// was not found on this machine. Claude Code is always present. A Codex
+// directory comes to exist through `accounts add`; Antigravity's through
+// agy's own first run.
 func (s Scope) RequirePresent() error {
 	if s.Present {
 		return nil
+	}
+	switch s.Vendor {
+	case Agy:
+		return fmt.Errorf("%s was not found on this machine (no %s) — install agy and run it once to sign in",
+			s.Vendor.Title(), s.PrimaryDir())
 	}
 	return fmt.Errorf("%s was not found on this machine (no %s, no %s) — `headroom accounts add --vendor %s <email>` seeds the first account",
 		s.Vendor.Title(), s.PrimaryDir(), s.AccountsRoot, s.Vendor)
@@ -286,24 +345,40 @@ func (s Scope) RequirePresent() error {
 
 // PrimaryLaunchRefused reports that a primary launch must refuse: the home is
 // re-pointed and the primary would be selected by absence, which the vendor
-// resolves against the real home.
-func (s Scope) PrimaryLaunchRefused() bool { return s.PrimaryRelocated }
+// resolves against the real home. Antigravity is never launched, so nothing
+// of its refuses.
+func (s Scope) PrimaryLaunchRefused() bool {
+	switch s.Vendor {
+	case Agy:
+		return false
+	}
+	return s.PrimaryRelocated
+}
 
 // PrimaryDir is the primary account's state dir. Accounts carry "" for it
 // (the vendor's home variable absent), so readers of per-account files
 // resolve the real path through here.
 func (s Scope) PrimaryDir() string {
-	if s.Vendor == Codex {
+	switch s.Vendor {
+	case Codex:
 		return filepath.Join(s.Home, ".codex")
+	case Agy:
+		// agy's state dir; the sign-in itself is in the Keychain, which
+		// headroom never reads for it.
+		return filepath.Join(s.Home, ".gemini", "antigravity-cli")
 	}
 	return filepath.Join(s.Home, ".claude")
 }
 
 // StoreLink is the name of the per-account link to the canonical session
-// store: Claude Code's projects/, Codex's sessions/.
+// store: Claude Code's projects/, Codex's sessions/. Antigravity has one
+// account and so no link; its conversations are agy's alone.
 func (s Scope) StoreLink() string {
-	if s.Vendor == Codex {
+	switch s.Vendor {
+	case Codex:
 		return "sessions"
+	case Agy:
+		return "conversations"
 	}
 	return "projects"
 }
@@ -313,10 +388,14 @@ func (s Scope) StoreLink() string {
 // session registry. It has no override of its own; it follows HEADROOM_HOME.
 func (s Scope) StoreDir() string { return filepath.Join(s.PrimaryDir(), s.StoreLink()) }
 
-// Binary is the executable a launch resolves on PATH and execs as argv[0].
+// Binary is the executable a launch resolves on PATH and execs as argv[0] —
+// for Antigravity, the one a quota read runs.
 func (s Scope) Binary() string {
-	if s.Vendor == Codex {
+	switch s.Vendor {
+	case Codex:
 		return "codex"
+	case Agy:
+		return "agy"
 	}
 	return "claude"
 }

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/agy"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/render"
@@ -109,13 +111,7 @@ func (r *report) verdict() int {
 			"nothing here says Claude Code changed anything\n", r.fails)
 		return ExitFail
 	case r.fails > 0:
-		who := "Claude Code"
-		switch {
-		case r.drifted[config.Codex] > 0 && r.drifted[config.Claude] > 0:
-			who = "Claude Code and Codex"
-		case r.drifted[config.Codex] > 0:
-			who = "Codex"
-		}
+		who := driftedNames(r.drifted)
 		fmt.Fprintf(r.out, "%d check(s) failed — %s likely changed a format\n", r.fails, who)
 		return ExitFail
 	case r.unknowns > 0:
@@ -128,6 +124,25 @@ func (r *report) verdict() int {
 	}
 }
 
+// driftedNames is who the vendor failures are against, in the vendors'
+// order: "Claude Code", "Claude Code and Codex", "Claude Code, Codex and
+// Antigravity". With none counted the failures were Claude Code's group's.
+func driftedNames(drifted map[config.Vendor]int) string {
+	var names []string
+	for _, v := range config.Vendors {
+		if drifted[v] > 0 {
+			names = append(names, v.Title())
+		}
+	}
+	switch len(names) {
+	case 0:
+		return config.Claude.Title()
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
 // display is the name an account's lines carry: "primary" for the primary,
 // whatever it is called, and the account's name otherwise.
 func display(a accounts.Account) string {
@@ -135,6 +150,16 @@ func display(a accounts.Account) string {
 		return "primary"
 	}
 	return a.Name
+}
+
+// recovers401 reports a vendor that recovers from a 401 by itself — Codex
+// reloads and refreshes — so a rejected token is never evidence of drift.
+func (r *report) recovers401() bool {
+	switch r.vendor {
+	case config.Codex:
+		return true
+	}
+	return false
 }
 
 // request is diagnostic policy over the same request evidence the board
@@ -146,7 +171,15 @@ func (r *report) request(name string, res refresh.Result, now time.Time) {
 	if res.Attempt.HTTPCode != 0 {
 		status = fmt.Sprint(res.Attempt.HTTPCode)
 	}
+	subject := "api"
 	label := fmt.Sprintf("api[%s]: HTTP %s", name, status)
+	switch r.vendor {
+	case config.Agy:
+		// A read is a run of agy, which has an exit status and no HTTP one.
+		subject = "read"
+		label = fmt.Sprintf("read[%s]: agy -p /usage", name)
+	}
+	untested := fmt.Sprintf("%s[%s]: not tested", subject, name)
 	if res.StoreErr != nil {
 		bookkeeping := fmt.Sprintf("state[%s]: request bookkeeping", name)
 		if errors.Is(res.StoreErr, state.ErrBusy) || errors.Is(res.StoreErr, state.ErrReadOnly) {
@@ -157,11 +190,19 @@ func (r *report) request(name string, res refresh.Result, now time.Time) {
 	}
 	switch res.Attempt.State {
 	case accountstate.AttemptStateUnavailable:
-		r.skip(fmt.Sprintf("api[%s]: not tested", name), "headroom could not authorize a request against its state file")
+		r.skip(untested, "headroom could not authorize a request against its state file")
 	case accountstate.AttemptDeferred:
-		r.skip(fmt.Sprintf("api[%s]: not tested", name), fmt.Sprintf("inside this account's quiet period — %s remaining", time.Unix(res.Attempt.NextEligibleAt, 0).Sub(now).Round(time.Second)))
+		r.skip(untested, fmt.Sprintf("inside this account's quiet period — %s remaining", time.Unix(res.Attempt.NextEligibleAt, 0).Sub(now).Round(time.Second)))
 	case accountstate.AttemptTransport:
 		r.skip(label, "transport error — no evidence either way")
+	case accountstate.AttemptVendorFailed:
+		// Why agy declined is agy's to say: not signed in, offline, an API key
+		// in its settings. None of it says the document drifted.
+		why := fmt.Sprintf("agy exited %d — run agy to see why; no evidence either way", res.Attempt.ExitCode)
+		if res.Attempt.ExitCode == agy.ExitAPIKey {
+			why = "agy is using an API key, which has no account quota — no evidence either way"
+		}
+		r.skip(label, why)
 	case accountstate.AttemptRefused:
 		r.skip(label, "rate limited — no evidence either way")
 	case accountstate.AttemptUnparseable:
@@ -170,7 +211,7 @@ func (r *report) request(name string, res refresh.Result, now time.Time) {
 		switch {
 		case res.Attempt.HTTPCode >= 500:
 			r.skip(label, "vendor-side error — no evidence either way")
-		case res.Attempt.HTTPCode == http.StatusUnauthorized && r.vendor == config.Codex && res.TokenAfter401 != refresh.TokenChanged:
+		case res.Attempt.HTTPCode == http.StatusUnauthorized && r.recovers401() && res.TokenAfter401 != refresh.TokenChanged:
 			// Codex recovers from a 401 by reloading and refreshing, so a
 			// rejected token is never evidence that anything drifted — where
 			// Claude Code's unchanged-token 401 below is.
@@ -201,6 +242,6 @@ func (r *report) request(name string, res refresh.Result, now time.Time) {
 		// A request that was started ends in one of the states above. Any
 		// other is a result this report does not know how to read, and an
 		// assertion nobody read is untested, never silently passed over.
-		r.skip(fmt.Sprintf("api[%s]: not tested", name), "the request ended in a state this check does not read")
+		r.skip(untested, "the request ended in a state this check does not read")
 	}
 }

@@ -26,6 +26,12 @@ type ReserveOptions struct {
 // names its repository and the row a launch compares against is the one
 // written here.
 func AccountsReserve(std Streams, cfg config.Scope, opts ReserveOptions) error {
+	switch cfg.Vendor {
+	case config.Agy:
+		// A reservation binds automatic launches, and nothing launches
+		// Antigravity.
+		return accounts.ErrOneSignIn
+	}
 	out := std.Out
 	set := accounts.Discover(cfg)
 	switch {

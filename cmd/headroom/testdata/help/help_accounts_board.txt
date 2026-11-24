@@ -26,7 +26,7 @@ Flags:
 
 Inherited flags:
       --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
-                         remove act on it, Claude Code when absent (one of: claude, codex).
+                         remove act on it, Claude Code when absent (one of: claude, codex, agy).
   -h, --help             Show context-sensitive help.
       --version          Print the build this binary is — its commit and the commit's time — and
                          exit.
@@ -37,7 +37,7 @@ Constraints:
 The JSON document (schema 8):
   {"schema": 8, "generated_at": RFC3339,
    "accounts": [{
-     "vendor": "claude"|"codex", "name", "email", "launcher", "plan",
+     "vendor": "claude"|"codex"|"agy", "name", "email", "launcher", "plan",
      "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
      "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
        "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",

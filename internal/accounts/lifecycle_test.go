@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +132,8 @@ func TestRemoveDirRefusesUnmigratedProjects(t *testing.T) {
 // and refuses a store that is a symlink, a file or unreadable before it makes
 // the account's dir.
 func TestSeedStorePreconditions(t *testing.T) {
-	for _, vendor := range config.Vendors {
+	// Antigravity seeds nothing (TestSeedRefusesAntigravity).
+	for _, vendor := range []config.Vendor{config.Claude, config.Codex} {
 		scope := func(t *testing.T) config.Scope { return config.ForHome(t.TempDir()).Scope(vendor) }
 		otherVendor := config.Codex
 		if vendor == config.Codex {
@@ -236,5 +238,17 @@ func TestSeedCodexSharesOnlyWhitelistedConfig(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
 			t.Errorf("%s was shared: a login or per-home state must never be", n)
 		}
+	}
+}
+
+// Antigravity keeps one sign-in per macOS user: there is no second account to
+// seed, and nothing is created trying.
+func TestSeedRefusesAntigravity(t *testing.T) {
+	cfg := config.ForHome(t.TempDir()).Agy
+	if _, err := Seed(cfg, "a@x.com", SeedOptions{}); !errors.Is(err, ErrOneSignIn) {
+		t.Fatalf("Seed = %v, want ErrOneSignIn", err)
+	}
+	if _, err := os.Stat(cfg.AccountsRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the accounts root was created: %v", err)
 	}
 }

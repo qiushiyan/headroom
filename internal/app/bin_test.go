@@ -30,7 +30,7 @@ var built struct {
 // cleared the variable first was order-dependent.
 func TestMain(m *testing.M) {
 	ambient := []string{"BROWSER", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"}
-	for _, v := range []config.Vendor{config.Claude, config.Codex} {
+	for _, v := range config.Vendors {
 		ambient = append(ambient, v.EnvPolicy().Strip...)
 	}
 	for _, kv := range os.Environ() {

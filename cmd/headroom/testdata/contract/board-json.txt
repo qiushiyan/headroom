@@ -214,7 +214,82 @@ exit 0
         "busy": 0,
         "launched": 0
       }
+    },
+    {
+      "vendor": "agy",
+      "name": "primary",
+      "email": "g@x.com",
+      "launcher": "agy",
+      "health": "ok",
+      "usage": {
+        "observed_at": "<time>",
+        "source": "live",
+        "fresh": true,
+        "allowance": "unknown",
+        "limits": [
+          {
+            "label": "Gemini 7d",
+            "kind": "gemini-weekly",
+            "group": "weekly",
+            "model": "Gemini Models",
+            "window_seconds": 604800,
+            "percent": 12,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "Gemini 5h",
+            "kind": "gemini-5h",
+            "group": "5h",
+            "model": "Gemini Models",
+            "window_seconds": 18000,
+            "percent": 50,
+            "percent_state": "ok",
+            "resets_at": "<time>",
+            "reset_state": "ok",
+            "severity": "normal",
+            "identity_state": "ok"
+          },
+          {
+            "label": "Claude and GPT 7d",
+            "kind": "3p-weekly",
+            "group": "weekly",
+            "model": "Claude and GPT models",
+            "window_seconds": 604800,
+            "percent": 0,
+            "percent_state": "ok",
+            "resets_at": null,
+            "reset_state": "none",
+            "severity": "normal",
+            "identity_state": "ok",
+            "unstarted": true
+          },
+          {
+            "label": "Claude and GPT 5h",
+            "kind": "3p-5h",
+            "group": "5h",
+            "model": "Claude and GPT models",
+            "window_seconds": 18000,
+            "percent": 0,
+            "percent_state": "ok",
+            "resets_at": null,
+            "reset_state": "none",
+            "severity": "normal",
+            "identity_state": "ok",
+            "unstarted": true
+          }
+        ]
+      },
+      "attempt": {
+        "state": "ok"
+      },
+      "load": null
     }
   ]
 }
 --- stderr
+--- vendor
+agy -p /usage --output-format json (in $BASE/home/.agy-accounts)

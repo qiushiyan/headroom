@@ -68,7 +68,8 @@ var codexSharedConfig = []string{
 // with none of its own config writes one and prunes everyone's history by the
 // vendor's default.
 func storeSettings(v config.Vendor) []string {
-	if v == config.Claude {
+	switch v {
+	case config.Claude:
 		return []string{"settings.json"}
 	}
 	return nil
@@ -77,8 +78,12 @@ func storeSettings(v config.Vendor) []string {
 // SharedConfigEntries is the vendor's default sharing whitelist: what a bare
 // `accounts add --share-config` links from the primary's dir.
 func SharedConfigEntries(v config.Vendor) []string {
-	if v == config.Codex {
+	switch v {
+	case config.Codex:
 		return codexSharedConfig
+	case config.Agy:
+		// No account is ever seeded for Antigravity (Seed refuses).
+		return nil
 	}
 	return claudeSharedConfig
 }
@@ -91,8 +96,12 @@ func SharedConfigEntries(v config.Vendor) []string {
 // to hold one has it skipped and named, and `check` fails on a dir where any
 // but the store link is a link.
 func PerDirEntries(v config.Vendor) []string {
-	if v == config.Codex {
+	switch v {
+	case config.Codex:
 		return []string{"auth.json", "history.jsonl", "sessions"}
+	case config.Agy:
+		// No account is ever seeded for Antigravity (Seed refuses).
+		return nil
 	}
 	return []string{".claude.json", ".credentials.json", "history.jsonl", "sessions", "projects"}
 }
@@ -157,6 +166,10 @@ func ValidateExtraName(name string) error {
 //
 // The result says what was linked, and from where, even beside an error.
 func Seed(cfg config.Scope, name string, opt SeedOptions) (Seeded, error) {
+	switch cfg.Vendor {
+	case config.Agy:
+		return Seeded{}, ErrOneSignIn
+	}
 	if err := ValidateExtraName(name); err != nil {
 		return Seeded{}, err
 	}

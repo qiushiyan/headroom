@@ -401,13 +401,18 @@ const loginExpired = "login expired"
 // avoidReason is why an automatic choice must not land on this account, or "".
 // Positive evidence only — see build.
 func avoidReason(a accounts.Account, obs *accountstate.Observation, raw string, now time.Time) string {
-	switch {
-	case a.Scope.Vendor == config.Codex && a.Auth.State == codexauth.Absent:
-		return "not logged in"
-	case a.Scope.Vendor == config.Codex && (a.Auth.State == codexauth.Unreadable || a.Auth.State == codexauth.NoTokens):
-		return "login unreadable"
-	case a.Scope.Vendor == config.Claude && a.Readable && a.Email == "":
-		return "not logged in"
+	switch a.Scope.Vendor {
+	case config.Codex:
+		switch a.Auth.State {
+		case codexauth.Absent:
+			return "not logged in"
+		case codexauth.Unreadable, codexauth.NoTokens:
+			return "login unreadable"
+		}
+	case config.Claude:
+		if a.Readable && a.Email == "" {
+			return "not logged in"
+		}
 	}
 	// Whether the blob holds a token is not asked: a login the vendor ended
 	// has none, and its passed refresh expiry is the evidence (creds.Parse).

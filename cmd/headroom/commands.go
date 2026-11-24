@@ -51,7 +51,7 @@ func (c *BoardCmd) Run(ctx *kong.Context, in io.Reader, term app.Terminal, cfg c
 }
 
 type AccountsCmd struct {
-	Vendor *config.Vendor `enum:"claude,codex" help:"The vendor whose accounts these are: the board shows only its; add and remove act on it, Claude Code when absent."`
+	Vendor *config.Vendor `enum:"claude,codex,agy" help:"The vendor whose accounts these are: the board shows only its; add and remove act on it, Claude Code when absent."`
 
 	Board   AccountsBoardCmd `cmd:"" default:"withargs" help:"The account board."`
 	Add     AddCmd           `cmd:"" help:"Seed the dir for a new subscription."`

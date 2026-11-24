@@ -30,9 +30,13 @@ func worthRefreshing(f facts, now time.Time) bool {
 // snapshot discovery took.
 func (c candidate) askable(now time.Time) bool {
 	a := c.acct
-	if a.Scope.Vendor == config.Codex {
+	switch a.Scope.Vendor {
+	case config.Codex:
 		return a.Auth.State == codexauth.OK && !a.Auth.TokenStale(now.Unix())
+	case config.Claude:
+		blob, ok := creds.Parse(c.cred)
+		return ok && a.Readable && blob.TokenUsable(now.UnixMilli())
 	}
-	blob, ok := creds.Parse(c.cred)
-	return ok && a.Readable && blob.TokenUsable(now.UnixMilli())
+	// Antigravity is never placed, so never a candidate.
+	return false
 }

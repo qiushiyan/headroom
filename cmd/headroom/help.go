@@ -14,7 +14,11 @@ An account is a config dir: Claude Code's primary is ~/.claude and the others ar
 that report — the board, limits, refresh — cover every vendor on this machine
 unless --vendor names one. Commands that act on one account — launch, accounts add and
 remove — act on Claude Code unless --vendor says codex. login and headless are
-Claude Code only.`
+Claude Code only.
+
+Antigravity (--vendor agy) is observed, never launched: its one account is the machine's
+agy sign-in, read by running agy -p /usage. The board, limits, refresh and check cover it;
+launch, login, headless and account changes do not.`
 
 var configuration = clikit.Section{
 	Title: "Configuration",
@@ -54,7 +58,7 @@ var boardDocument = clikit.Section{
 	Title: "The JSON document (schema 8)",
 	Body: `{"schema": 8, "generated_at": RFC3339,
  "accounts": [{
-   "vendor": "claude"|"codex", "name", "email", "launcher", "plan",
+   "vendor": "claude"|"codex"|"agy", "name", "email", "launcher", "plan",
    "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
    "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
      "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",
@@ -197,7 +201,8 @@ one, flag or no flag: every account prunes the one session store by its own sett
 account with settings of its own can delete every other account's history.
 
 Then log in once: for Claude Code, headroom launch --account <email> and /login in the
-session; for Codex, headroom launch --vendor codex --account <email> -- login.`
+session; for Codex, headroom launch --vendor codex --account <email> -- login. Antigravity
+is refused: agy keeps one sign-in per macOS user.`
 
 const removeHelp = `Removes an extra account: deletes its Keychain item and its dir, and scrubs .order and
 any reservation.
@@ -205,7 +210,8 @@ Refused while a session is live on it, or when that cannot be verified. Bare, it
 removable accounts and refuses; it asks y/N unless --yes. Transcripts are machine-global
 and survive. Also removes stranded <name>.lock debris. Codex accounts are
 never removed — headroom cannot tell whether a codex session is running on a home — and the
-refusal names the dir to delete by hand.`
+refusal names the dir to delete by hand. Antigravity's one account is agy's own sign-in,
+never removed by headroom.`
 
 const reserveHelp = `Keeps an account for certain repositories. Bare, it lists every reservation; with
 directories it replaces the account's reservation; --clear drops it.
@@ -233,8 +239,8 @@ one it could not test (rate limited, offline, a stale token). It exits 0 when ev
 passed, 1 on any FAIL — a configuration headroom refuses among them — and 2 when nothing
 failed but something could not be tested.`
 
-const refreshHelp = `Asks the usage endpoint about every account the budget lets it ask, stores the answers and
-prints nothing: the round headroom --json runs, without the health probes or the document.
-An automatic launch leaves one running for the next launch's figures. It ends within about
-twelve seconds; SIGTERM, SIGINT or SIGHUP stop it within one, with the request it abandoned
-recorded.`
+const refreshHelp = `Asks the usage endpoint about every account the budget lets it ask (for Antigravity, runs
+agy -p /usage), stores the answers and prints nothing: the round headroom --json runs,
+without the health probes or the document. An automatic launch leaves one running for the
+next launch's figures. It ends within about twelve seconds; SIGTERM, SIGINT or SIGHUP stop
+it within one, with the request it abandoned recorded.`

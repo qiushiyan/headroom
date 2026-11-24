@@ -39,6 +39,11 @@ FAIL  codex isolation: CODEX_HOME set to an empty dir answers not logged in — 
  ok   codex state[c@x.com]: stored usage response parses via shared contract
  ok   codex dirs: every account config dir is absolute
  ok   codex topology[c@x.com]: sessions/ resolves to the canonical store
+ ok   agy binary: agy on PATH
+ ??   agy read[primary]: not tested — inside this account's quiet period — <span> remaining
+ ok   agy state: every section readable
+ ok   agy state[sessions]: re-home records readable
+ ok   agy state[primary]: stored usage response parses via shared contract
 
 4 check(s) failed — Claude Code and Codex likely changed a format
 --- stderr

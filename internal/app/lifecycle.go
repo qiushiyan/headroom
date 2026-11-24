@@ -38,6 +38,10 @@ type AddOptions struct {
 // dir. It is the one command that works while a vendor is absent: it is how
 // the first Codex directory comes to exist.
 func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
+	switch cfg.Vendor {
+	case config.Agy:
+		return accounts.ErrOneSignIn
+	}
 	out, name := std.Out, opts.Email
 	opt := accounts.SeedOptions{}
 	switch {
@@ -77,12 +81,13 @@ func AccountsAdd(std Streams, cfg config.Scope, opts AddOptions) error {
 		// holds: this dir gets its own at its first login.
 		fmt.Fprintf(out, "  kept per dir, not linked: %s\n", strings.Join(seeded.Kept, ", "))
 	}
-	if cfg.Vendor == config.Codex {
+	switch cfg.Vendor {
+	case config.Codex:
 		// Codex has no in-session /login: logging in is one command, in the
 		// engine's own spelling — a wrapper's argument passing is not
 		// headroom's to know.
 		fmt.Fprintf(out, "next: headroom launch --vendor codex --account %s -- login   and log in as %s\n", name, name)
-	} else {
+	case config.Claude:
 		fmt.Fprintf(out, "next: headroom launch --account %s   then /login as %s\n", name, name)
 	}
 	fmt.Fprintf(out, "      (the board warns if the login does not match the dir name; new accounts sort last until listed in %s)\n", cfg.OrderFile())
@@ -105,8 +110,11 @@ type removeDeps struct {
 // refuses. Codex accounts are never removed: headroom cannot tell whether a
 // codex session is running on a home.
 func AccountsRemove(std Streams, term Terminal, cfg config.Scope, name string, yes bool, probe sessions.PIDProbe) error {
-	if cfg.Vendor == config.Codex {
+	switch cfg.Vendor {
+	case config.Codex:
 		return codexRemoveRefusal(cfg, name)
+	case config.Agy:
+		return accounts.ErrOneSignIn
 	}
 	return accountsRemove(std, cfg, name, yes, removeDeps{
 		probe:          probe,

@@ -30,7 +30,7 @@ func (CLI) HelpSections() []clikit.Section { return []clikit.Section{configurati
 
 // vendorFilter narrows a report to one vendor.
 type vendorFilter struct {
-	Vendor *config.Vendor `enum:"claude,codex" help:"Only this vendor's accounts; every vendor on this machine when absent."`
+	Vendor *config.Vendor `enum:"claude,codex,agy" help:"Only this vendor's accounts; every vendor on this machine when absent."`
 }
 
 // scopes are the vendors the report covers.
@@ -46,7 +46,9 @@ func filterScopes(cfg config.Config, v *config.Vendor) ([]config.Scope, error) {
 	return []config.Scope{s}, s.RequirePresent()
 }
 
-// vendorOne picks the vendor a command acts on.
+// vendorOne picks the vendor a command acts on. Antigravity is not one of
+// them: headroom observes it and never launches it, so --vendor agy here is a
+// usage error before any configuration is read.
 type vendorOne struct {
 	Vendor config.Vendor `enum:"claude,codex" default:"claude" help:"The vendor whose account this acts on."`
 }

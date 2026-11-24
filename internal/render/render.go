@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/accountstate"
+	"github.com/qiushiyan/headroom/internal/agy"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/tag"
 	"github.com/qiushiyan/headroom/internal/usage"
@@ -189,12 +190,29 @@ func requestReason(v accountstate.Facts, now int64) string {
 		// non-problem; the remedy is simply to use the account.
 		return fmt.Sprintf("access token stale — any %s session refreshes it", v.Launcher)
 	case accountstate.AttemptTransport:
+		switch v.Vendor {
+		case config.Agy:
+			// The read is a run of agy, not a request: it did not start, or
+			// did not finish in time.
+			return "agy did not answer — not on PATH, or timed out"
+		}
 		return "fetch failed (network?)"
+	case accountstate.AttemptVendorFailed:
+		if v.Attempt.ExitCode == agy.ExitAPIKey {
+			// agy answers for an API key, which has no account quota.
+			return "agy is using an API key — no account quota to read"
+		}
+		// Why agy declined is agy's to say; headroom has no evidence it is
+		// the sign-in, so it sends the person to agy rather than to a login.
+		return fmt.Sprintf("agy exited %d — run agy to see why", v.Attempt.ExitCode)
 	case accountstate.AttemptHTTP:
-		if v.Vendor == config.Codex && v.Attempt.HTTPCode == 401 {
-			// Codex itself recovers from a 401 by reloading and refreshing, so
-			// a rejected token is not evidence that a person must log in.
-			return fmt.Sprintf("access token rejected — any %s session refreshes it", v.Launcher)
+		switch v.Vendor {
+		case config.Codex:
+			if v.Attempt.HTTPCode == 401 {
+				// Codex itself recovers from a 401 by reloading and refreshing,
+				// so a rejected token is not evidence that a person must log in.
+				return fmt.Sprintf("access token rejected — any %s session refreshes it", v.Launcher)
+			}
 		}
 		return fmt.Sprintf("HTTP %d from usage endpoint", v.Attempt.HTTPCode)
 	case accountstate.AttemptUnparseable:
@@ -204,8 +222,12 @@ func requestReason(v accountstate.Facts, now int64) string {
 	case accountstate.AttemptStateUnavailable:
 		return "headroom's own state file unavailable — run headroom check"
 	case accountstate.AttemptIdentityUnknown:
-		if v.Vendor == config.Codex {
+		switch v.Vendor {
+		case config.Codex:
 			return "account identity unreadable — auth.json names no account and user"
+		case config.Agy:
+			// Never produced: Antigravity's one account is keyed by its dir.
+			return "account identity unreadable"
 		}
 		return "account identity unreadable — .claude.json did not parse"
 	default:

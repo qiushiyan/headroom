@@ -12,7 +12,8 @@ one, flag or no flag: every account prunes the one session store by its own sett
 account with settings of its own can delete every other account's history.
 
 Then log in once: for Claude Code, headroom launch --account <email> and /login in the
-session; for Codex, headroom launch --vendor codex --account <email> -- login.
+session; for Codex, headroom launch --vendor codex --account <email> -- login. Antigravity
+is refused: agy keeps one sign-in per macOS user.
 
 Arguments:
   <email>                The new subscription's email: the account's dir name, and the login it must
@@ -24,7 +25,7 @@ Flags:
 
 Inherited flags:
       --vendor=VENDOR    The vendor whose accounts these are: the board shows only its; add and
-                         remove act on it, Claude Code when absent (one of: claude, codex).
+                         remove act on it, Claude Code when absent (one of: claude, codex, agy).
   -h, --help             Show context-sensitive help.
       --version          Print the build this binary is — its commit and the commit's time — and
                          exit.

@@ -14,6 +14,10 @@ unless --vendor names one. Commands that act on one account — launch, accounts
 remove — act on Claude Code unless --vendor says codex. login and headless are
 Claude Code only.
 
+Antigravity (--vendor agy) is observed, never launched: its one account is the machine's
+agy sign-in, read by running agy -p /usage. The board, limits, refresh and check cover it;
+launch, login, headless and account changes do not.
+
 Flags:
   -h, --help             Show context-sensitive help.
       --version          Print the build this binary is — its commit and the commit's time — and
@@ -21,7 +25,7 @@ Flags:
 
 Arguments and flags of board, the default command:
       --vendor=VENDOR    Only this vendor's accounts; every vendor on this machine when absent (one
-                         of: claude, codex).
+                         of: claude, codex, agy).
       --compact          One row per account: each limit's percent and time to reset, every warning
                          at the end of the row.
       --json             Print the board as a JSON document after one refresh round.
