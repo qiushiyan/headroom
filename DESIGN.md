@@ -788,10 +788,14 @@ whether its record may be swept; its vendor contracts, reverse-engineered and
 perishable:
 
 - **Owner = the newest account claim headroom can observe or was explicitly
-  given** — transcripts carry no account identity, so "the account that
-  drove this session" is evidence, not ground truth, and the contract says
-  so (`sessions.OwnerOf`). Three sources, one precedence: a *verified*
-  live-registry claim (that account runs it now) beats everything;
+  given** — a transcript names only the account that started it: its
+  `session-owner` record, written since Claude Code 2.1.317, is copied
+  forward unchanged while other accounts drive the session, so a reader of it
+  would route a moved session back to where it began, and headroom reads none.
+  "The account that drove this session" is evidence, not ground truth, and the
+  contract says so (`sessions.OwnerOf`). A record that followed the driving
+  account would join the sources below. Three sources, one precedence: a
+  *verified* live-registry claim (that account runs it now) beats everything;
   otherwise the newest of the explicit re-home and each account's newest
   `history.jsonl` prompt for that session id — all timestamps from this
   machine's clock, on one axis, never re-stamped. Attribution parses the
