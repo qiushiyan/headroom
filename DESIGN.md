@@ -777,11 +777,15 @@ mislabeled as all-models would read calm at the exact moment work stops.
 
 Session transcripts are machine-global — every account's `projects/`
 symlinks to `~/.claude/projects` (`accounts add` creates that topology) — so
-any account can continue any conversation: `claude --resume <id>` from the
-session's project, on whichever account the launch decides. headroom reads
-the transcripts for nothing but their ids. What a launch needs about a
-session is who drove it, whether it is running, and whether its record may
-be swept; its vendor contracts, reverse-engineered and perishable:
+any account can continue any conversation: `claude --resume <id>` from any
+directory, on whichever account the launch decides. Claude Code finds the id
+in every project folder, for a session whose own directory is gone too, runs
+it where it was launched and appends to the file where it lies (verified on
+2.1.332), so the launch's directory decides only where the session goes on
+working. headroom reads the transcripts for nothing but their ids. What a
+launch needs about a session is who drove it, whether it is running, and
+whether its record may be swept; its vendor contracts, reverse-engineered and
+perishable:
 
 - **Owner = the newest account claim headroom can observe or was explicitly
   given** — transcripts carry no account identity, so "the account that
@@ -842,7 +846,11 @@ A verb retired from the command line is an unknown word: clikit refuses it
 before any configuration is read, with exit 2 and nothing on stdout, so a
 stale shell function that still calls `sessions`, `resume`, `resolve` or
 `launches` stops instead of reading a reply it would misparse. Those names
-are never rebound to a new meaning (The launch surface says why).
+are never rebound to a new meaning (The launch surface says why). The list
+of the machine's sessions is the shell's: dotfiles' `x-sessions`
+(`zsh/.config/zsh/claude.zsh`) picks one and resumes it through `launch --
+--resume <id>`, so which account a named session runs on stays this
+repository's decision alone.
 
 ## The launch surface
 
