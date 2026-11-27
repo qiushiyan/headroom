@@ -90,7 +90,8 @@ session state — Claude Code owns all of it. `login` is no exception: it runs
 Claude Code's own login command, and Claude Code stores what results. What it
 writes is its own: one `state.json` per accounts root holding non-secret
 request timestamps, the usage responses it fetched itself, session re-homes,
-the record of recent launches and the headless runs; `launches.jsonl`, the
+the record of recent launches, the headless runs and the readings other
+machines gave of the same accounts; `launches.jsonl`, the
 launch log nothing reads (see The launch log); `headless.json`, the one file
 that holds secrets — the headless tokens, mode 0600 (see Headless tokens);
 the `.login` directory, readable by the user alone, where each account dir's
@@ -490,7 +491,8 @@ account can have old observations and a refused refresh at the same time.
 - **Observation** — rows, *always* carrying `ObservedAt` and `Source`. Rows
   never travel without their timestamp; that is what let carried-over data
   pass itself off as current. `Source` separates headroom's own fetch in this
-  process from its own answer replayed off disk from Claude Code's cache: the
+  process from its own answer replayed off disk from Claude Code's cache,
+  and from another machine's reading, which names that machine: the
   first two are equally headroom's reading of the endpoint and the caption
   treats them alike, while a machine consumer can still tell "this run asked"
   from "a previous run asked". A row whose own reset instant has passed is not
@@ -566,8 +568,8 @@ coordination the whole fleet would go dark together rather than one account at
 a time. Every process is short-lived and there is no daemon, so coordination
 has to live on disk. `internal/state` owns that file — one JSON document under
 the accounts root, written atomically under an flock, holding the request
-ledger, the responses, the session re-homes, the recent launches and the
-headless runs.
+ledger, the responses, the session re-homes, the recent launches, the
+headless runs and other machines' readings (Readings from other machines).
 
 - **A claim is a test-and-set, and the claim is the authorization.**
   Eligibility is decided and the claim recorded inside one locked section, so
@@ -632,7 +634,12 @@ headless runs.
   rewritten. A file that is not JSON gives a reader no section — its
   re-homes are unreadable, never none — and the write that replaces it
   first keeps it beside itself under a name nothing holds
-  (`state.json.unreadable`, numbered on), or does not replace it.
+  (`state.json.unreadable`, numbered on), or does not replace it. Whichever
+  write comes first, the ledger's conservative rebuild stays owed to the
+  first claim: until one runs, every write leaves the ledger section in a
+  form no reader decodes, so a launch's record or a pull landing first
+  cannot leave a ledger that reads as merely empty
+  (`TestAPullBeforeTheFirstClaimKeepsTheLedgerQuiet`).
 - **Records are bounded by age, never by which accounts a caller could see.**
   Sweeping by absence needs a complete account registry, and no caller can
   promise one: an account's key comes from a vendor file Claude Code rewrites
@@ -673,7 +680,8 @@ a deadline at the maximum cooldown included, so a vendor whose spacing sits
 above that cap is never handed an earlier retry by one. Figures are labelled
 stale only once they are older than the request spacing — inside that window no newer answer is
 obtainable, so nagging about age would be nagging about something nobody can
-act on. And the board's refresh cadence *is* eligibility: there is no interval
+act on. On a machine that pulls other machines' readings the window is
+placement's, for the reason Readings from other machines gives. And the board's refresh cadence *is* eligibility: there is no interval
 to configure, because asking sooner is refused and asking later says less
 than it could. Presence bounds it: a board left open on a spare tab stops
 asking after a few minutes without a keypress, since a surface that polls for
@@ -725,7 +733,8 @@ warm), and it may spend every account's request budget to answer about one.
 `headroom limits [--vendor <v>] [--account <name>]` is the read that fits:
 the same versioned document, assembled from disk alone — discovery and
 the newest stored observation through `accountstate.Read`
-(headroom's own store and Claude Code's cache, newest wins). No health
+(headroom's own store, Claude Code's cache and the readings other machines
+gave, newest wins). No health
 probe, no Keychain read, no claim, no request: it is not a second door onto
 the endpoint because it never touches the door at all, and it answers in
 about 10ms. Nor a process sample: its accounts carry `load: null`, since
@@ -772,6 +781,97 @@ them and placement counts neither as room — is tagged
 case matters most, because the model-scoped weekly is routinely the binding
 limit while the all-models figure sits far lower, and a scoped row
 mislabeled as all-models would read calm at the exact moment work stops.
+
+## Readings from other machines
+
+A machine can ask the usage endpoint only about an account whose access token
+it holds live, and only a session on that machine renews it — headroom never
+does (The system observed). With the same accounts on several machines, each
+machine's figures for the accounts another drives freeze for hours while that
+machine spends them, and placement chooses on the frozen figures. The machine
+driving an account holds its current reading, so the machines' readings
+together are current for every account in use on any of them.
+`HEADROOM_PEERS` names the other machines as ssh reaches them; each machine
+pulls the others' own readings, and every reader takes the newest reading of
+each account wherever it was made. The dated record of the decision, its
+measurements and its review is `docs/specs/peer-readings.md`.
+
+- **Opt-in, by one setting.** Unset, a machine behaves as one that never knew
+  of peers: no ssh, no caption, and a `peers` section an earlier
+  configuration left in `state.json` is not decoded, reported or rewritten —
+  a store reads it only for a scope that names peers
+  (`TestAHomeNamingNoPeerLeavesTheSectionAlone`). A name that is no ssh
+  destination is left out of every pull and failed by `check` against
+  headroom's own configuration; no other command refuses over it, since a
+  typo in an enhancement must not stop a launch. Claude Code's and Codex's
+  scopes take the names, Antigravity's none: each machine reads its own
+  sign-in by running agy every time, and machines may be signed in to
+  different Google accounts. Which machines exist is the owner's to say, in
+  their dotfiles, never headroom's.
+- **What crosses, and what never does.** A pull runs `headroom readings` on
+  the other machine: its own newest reading of each account, raw as the
+  vendor sent it, read from disk alone so it answers where the login
+  Keychain is sealed. Never a reading it pulled — a reading travels one hop,
+  so nothing comes back under a second machine's name — and never a token, a
+  Keychain item or a vendor request: a pull spends no account's budget
+  (`TestOwnReadingsAreThisMachinesNewest`, and the two-home binary test's
+  recording `security`, `claude` and `ssh`). The document is versioned, and
+  a reader refuses another schema, another vendor or a missing list by name:
+  machines run builds installed at different times.
+- **Pull, not push.** The rounds that already fetch — the board, `--json`,
+  `refresh` — pull beside their requests; `limits` and launches read the
+  last pull from disk. Pulling keeps every file a machine writes its own,
+  written by its own activity, and a laptop that wakes catches up at its next
+  round. A launch or headless placement leaves a refresh when a pull is due,
+  and the board schedules a round for one, even with nothing of its own to
+  ask: `Snapshot.NextPull` states the rule `ClaimPull` applies.
+- **The answer lives in `state.json`**, not in a file of its own: one
+  snapshot then carries everything the assembly reads, so placement,
+  `limits` and headless see it with no route of their own, under the store's
+  lock, atomic writes and per-section corruption policy (disposable, like the
+  placements). `ClaimPull` is a test-and-set although a pull spends no
+  budget, so one machine's surfaces asking at once open one connection, and
+  its generation drops an outcome that outlived its claim, as `Complete`
+  does (`TestALateCompletionIsDropped`). An answer adds and renews readings
+  per account and never erases one — an answer that leaves an account out
+  says nothing about the dated reading held — and admits only readings a
+  reader would take, so one stamped too far ahead never hides a later valid
+  one (`TestAnAnswerRenewsAndNeverErases`,
+  `TestOnlyUsableReadingsAreKeptAndRead`). A failure keeps the readings and
+  is said under its own time, and an answer clears it, so which outcome came
+  last never rests on a clock.
+- **Identity, as for this machine's own.** A reading is matched to an
+  account by the ledger's key and passes the parse and response identity
+  check a body of this machine's own passes; an account known only by its
+  dir's name has none (`TestAPulledCodexReadingNamingSomeoneElseIsNeverShown`).
+- **One rule picks the figures.** `accountstate.Newest` — the later reading,
+  a tie at the second to the nearer source — is applied by `Select` over
+  disk and by a round to what arrives while it runs, so the board and the
+  next launch cannot settle on different figures. A round that pulls turns
+  every arrival into figures in one selector goroutine, in order, from the
+  store as each left it, with an answer of its own the store could not
+  record as one more candidate; `Apply` shows what it is handed. A round that
+  pulls from nobody shows each answer as it lands
+  (`TestARoundThatPullsEndsOnTheStoresChoice`,
+  `TestAnUnrecordedAnswerSurvivesAPull`, `TestARoundOnItsOwnShowsWhatItRecorded`).
+  It beat ranking pulled readings in the round beside the store's rule, and
+  selecting once per pull, whose selections could land out of order.
+- **One meaning of current.** On a machine that pulls, figures are current
+  for placement's window whoever read them (`accountstate.FreshFor`); on one
+  alone, for the spacing. A newer reading of an account this machine cannot
+  ask about arrives at the cadence of whichever machine drives it — every few
+  minutes while it is in use there — so held to the spacing every such
+  reading read stale beside a run-a-session errand that bought nothing, and a
+  window per source gave one board more than one meaning of current. On a
+  machine that pulls, an aged-out token is not captioned while the figures
+  are current; past the window both come back.
+- **Where it shows.** The board captions a pulled reading `via <machine>`,
+  and the JSON documents carry `source: "peer"` and `peer`. A drift marker on
+  one sends to `check` on that machine, which audits the responses it stored.
+  `check` says, per named machine, when it last answered and how many of this
+  machine's accounts its readings matched, or why the newest ask failed and
+  when the next is due — notes that never change the verdict, since a laptop
+  asleep is not a fault.
 
 ## Sessions: what a launch reads
 
@@ -1453,8 +1553,8 @@ and `state.json` under its own accounts root.
   stdin and stdout apart: the board and remove's y/N need both, mint only
   stdin) and the
   edges it crosses as values: `launchop.Deps` (credential reader, process
-  probe, detached refresh), `round.Deps` (credential reader, health probe),
-  an `ExecFunc`. No package-level seam and no write to the process's own
+  probe, detached refresh), `round.Deps` (credential reader, health probe,
+  the asker that reaches another machine), an `ExecFunc`. No package-level seam and no write to the process's own
   streams; `cmd/headroom`'s `host` binds the live edges once, and a test binds
   its own.
 - **Account facts and live requests have separate owners.** `accountstate`
@@ -1469,7 +1569,10 @@ and `state.json` under its own accounts root.
   program (`internal/refresh/run.go`); `internal/agy` owns the run's
   arguments, the identity line its log carries and the envelope stored for
   it. `state` owns the request ledger, stored bodies, placements, headless
-  runs and re-homes, one document under one lock. `render` decides an account's notes once (`clauses`) and lays them
+  runs, re-homes and other machines' readings, one document under one lock;
+  `internal/peers` owns the readings document between machines and the pull
+  that asks for it, and `accountstate.Select` is the one choice among a
+  machine's own readings and theirs. `render` decides an account's notes once (`clauses`) and lays them
   out in the block and the compact row; JSON serialization stays with the
   surfaces.
 - **A round** is `internal/round`: one vendor's discovery, facts on disk,
@@ -1637,7 +1740,8 @@ does not exist until its block creates it — so every frame before that is
 the single-vendor one — and Codex is present for one block that pins the
 two-vendor print, tab switching, and keys on the Codex page writing nothing.
 Signals must restore the terminal before exit. The harness uses fixture
-`claude` and `security` commands and redirects account and session state
+`claude` and `security` commands and an `ssh` that fails the run if any case
+reaches for another machine, and redirects account and session state
 into a temporary home. Signal cases address the recorded fixture child PID.
 An outer shell checks terminal state after exit; the tmux scrollback case
 skips when tmux is absent. The dotfiles repo's

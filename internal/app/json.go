@@ -65,9 +65,10 @@ type jsonLoad struct {
 }
 
 type jsonUsage struct {
-	ObservedAt string `json:"observed_at"` // RFC3339 UTC
-	Source     string `json:"source"`      // "live" | "headroom_cache" | "claude_cache" (Claude Code only)
-	Fresh      bool   `json:"fresh"`       // within the vendor's request spacing
+	ObservedAt string `json:"observed_at"`    // RFC3339 UTC
+	Source     string `json:"source"`         // "live" | "headroom_cache" | "claude_cache" (Claude Code only) | "peer"
+	Peer       string `json:"peer,omitempty"` // source "peer": the machine, as HEADROOM_PEERS names it
+	Fresh      bool   `json:"fresh"`          // within the vendor's request spacing
 	// Allowance is the account-level answer beside the windows: "blocked" is
 	// positive evidence the vendor refuses work, whatever the percents say;
 	// "unknown" (every Claude Code response) is never to be read as allowed.
@@ -195,6 +196,7 @@ func (doc *jsonDoc) appendAccounts(b round.View, now int64) {
 			u := &jsonUsage{
 				ObservedAt: time.Unix(v.Obs.ObservedAt, 0).UTC().Format(time.RFC3339),
 				Source:     v.Obs.Source.Name(),
+				Peer:       v.Obs.Peer,
 				Fresh:      v.Fresh(now),
 
 				Allowance:       v.Obs.Allowance.State.Name(),

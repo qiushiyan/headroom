@@ -1,7 +1,8 @@
 // Package state owns the one file headroom writes for itself, one per
 // accounts root: what it asked the usage endpoint, when, what came back, which
-// sessions were re-homed, which launches are on their way, and which headless
-// sessions are running.
+// sessions were re-homed, which launches are on their way, which headless
+// sessions are running, and what the other machines it pulls from last said
+// about the same accounts.
 //
 // Three properties this package exists to guarantee, none of which a caller
 // can be trusted to maintain:
@@ -181,10 +182,11 @@ const (
 	secSessions
 	secPlacements
 	secRuns
+	secPeers
 	nSections
 )
 
-var sectionNames = [nSections]string{"accounts", "sessions", "placements", "runs"}
+var sectionNames = [nSections]string{"accounts", "sessions", "placements", "runs", "peers"}
 
 func (s section) String() string { return sectionNames[s] }
 
@@ -211,6 +213,13 @@ type doc struct {
 	// Disposable like the placements: a section that will not decode is set
 	// aside at the next write and the record starts empty.
 	runs []Run
+
+	// peers is what this machine last heard from each other machine it pulls
+	// readings from (peers.go), read only under a scope that names peers.
+	// Disposable like the placements: every reading in it is renewed by the
+	// next answer from the machine that made it, so a section that will not
+	// decode is set aside at the next pull and the readings start empty.
+	peers map[string]peerRec
 
 	// cond is what reading the file came to; held is each section's standing
 	// with a write. The two answer different questions, and has is the one
@@ -269,13 +278,17 @@ func statePath(accountsRoot string) string {
 	return filepath.Join(accountsRoot, "state.json")
 }
 
-func read(accountsRoot string) *doc {
+// read decodes the document under accountsRoot. readPeers is whether the
+// peers section is read at all: a store whose scope names no peer leaves it
+// undecoded, unreported and carried as it stands.
+func read(accountsRoot string, readPeers bool) *doc {
 	d := &doc{
 		root:     accountsRoot,
 		raw:      map[string]json.RawMessage{},
 		version:  Version,
 		accounts: map[string]accountRec{},
 		sessions: map[string]sessions.OwnerRec{},
+		peers:    map[string]peerRec{},
 	}
 	data, err := os.ReadFile(statePath(accountsRoot))
 	if err != nil {
@@ -345,6 +358,13 @@ func read(accountsRoot string) *doc {
 		d.runs, d.held[secRuns] = nil, true
 		d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
 	}
+	switch {
+	case !readPeers:
+		d.held[secPeers] = true
+	case !decoded("peers", &d.peers) || !validPeerRecs(d.peers):
+		d.peers, d.held[secPeers] = map[string]peerRec{}, true
+		d.problems = append(d.problems, Problem{"peers", "unreadable — set aside at the next pull; readings from other machines start empty"})
+	}
 	// A JSON null decodes into a map without error and leaves it nil. Nothing
 	// here writes one, but a foreign or hand-edited document may, and a nil map
 	// panics on the first assignment rather than failing any check above.
@@ -353,6 +373,9 @@ func read(accountsRoot string) *doc {
 	}
 	if d.sessions == nil {
 		d.sessions = map[string]sessions.OwnerRec{}
+	}
+	if d.peers == nil {
+		d.peers = map[string]peerRec{}
 	}
 	return d
 }
@@ -512,9 +535,17 @@ func (d *doc) marshal() ([]byte, error) {
 		}
 	}
 	put(secAccounts, false, d.accounts)
+	if d.cond == condNotJSON && d.held[secAccounts] {
+		// The file was not JSON and no claim has rebuilt the ledger yet: the
+		// silence it owes is kept by writing the section as one no reader
+		// decodes, so the next reader holds it too and the first claim, not
+		// whichever write came first, rebuilds it quiet.
+		out[secAccounts.String()] = json.RawMessage(`"unreadable: rebuilt quiet by the next claim"`)
+	}
 	put(secSessions, false, d.sessions)
 	put(secRuns, len(d.runs) == 0, d.runs)
 	put(secPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0, d.placements)
+	put(secPeers, len(d.peers) == 0, d.peers)
 	if err != nil {
 		return nil, err
 	}

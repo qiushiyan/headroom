@@ -33,6 +33,9 @@ export HEADROOM_PRIMARY_NAME=primary
 export HEADROOM_USAGE_URL="http://127.0.0.1:1/usage"
 export HEADROOM_CODEX_USAGE_URL="http://127.0.0.1:1/usage"
 unset HEADROOM_CODEX_PRIMARY_NAME HEADROOM_CODEX_LAUNCHER_FORMAT HEADROOM_LAUNCHER_FORMAT
+# A shell that pulls readings from another machine exports the machines it
+# pulls from; no case here may reach one.
+unset HEADROOM_PEERS
 unset CODEX_HOME CODEX_SQLITE_HOME CODEX_API_KEY CODEX_ACCESS_TOKEN
 # One account carries an accountUuid (every real dir on this machine does —
 # it is what the request ledger keys on) and one deliberately does not, so the
@@ -67,7 +70,14 @@ cat >"$work/stub/security" <<'EOS'
 # The fixture has no Keychain items.
 exit 44
 EOS
-chmod +x "$work/stub/claude" "$work/stub/security"
+# No case reaches another machine: an ssh that answers nothing and leaves a
+# mark the run fails on, standing in front of the real one.
+cat >"$work/stub/ssh" <<EOS
+#!/bin/sh
+echo "\$*" >>"$work/ssh.called"
+exit 255
+EOS
+chmod +x "$work/stub/claude" "$work/stub/security" "$work/stub/ssh"
 export PATH="$work/stub:$PATH"
 export STUB_DIR="$work/stub"
 ln -s "$HEADROOM_HOME/.claude/projects" "$accounts_root/a@x.com/projects"
@@ -351,5 +361,12 @@ for verb in resume sessions resolve launches; do
         echo "ok   retired-$verb"
     fi
 done
+
+if [ -e "$work/ssh.called" ]; then
+    echo "FAIL no-ssh: a case reached for another machine: $(cat "$work/ssh.called")"
+    fail=1
+else
+    echo "ok   no-ssh"
+fi
 
 exit $fail

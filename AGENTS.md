@@ -62,6 +62,15 @@ story, `docs/REFERENCE.md` what crosses commands, and
   inside the reading and labels its figures. Held by
   `TestCodexResponseNamingSomeoneElseIsNeverShown`,
   `TestCodexRolloutsAreNeverUsage` and `TestAgyRoundReadsTheOneSignIn`.
+- **Other machines' readings are opt-in, one hop, and chosen by the one
+  rule.** With `HEADROOM_PEERS` unset nothing is pulled, read or reported. A
+  machine hands on only its own readings, read from disk alone; one is
+  matched by the ledger's key and the vendor's body check, and the board and
+  placement choose among them by `accountstate.Newest`. Held by
+  `TestAHomeNamingNoPeerLeavesTheSectionAlone`,
+  `TestOwnReadingsAreThisMachinesNewest` and
+  `TestARoundThatPullsEndsOnTheStoresChoice`; DESIGN.md § Readings from
+  other machines.
 - **Health, Observation and Attempt are three axes, never one status.** A 429
   or an aged-out token annotates what is known and never erases it, and rows
   never travel without their timestamp. Held by `TestApplyWritesEachAxisOnItsOwn`;
@@ -146,9 +155,10 @@ story, `docs/REFERENCE.md` what crosses commands, and
   status line, never a process failure. `check` tells broken (exit 1) from
   couldn't test (exit 2), and its own files from the vendor's.
 - Tests never touch live state. That means the Keychain, the vendors' dirs and
-  usage endpoints, the user's accounts roots, and live session registries. Each
+  usage endpoints, the user's accounts roots, live session registries and
+  the other machines. Each
   test uses a temporary `HEADROOM_HOME`, with stub `claude`, `codex`, `agy`,
-  `security` and `open` on a `PATH` without the real ones, and usage URLs on a
+  `security`, `open` and `ssh` on a `PATH` without the real ones, and usage URLs on a
   local server or `127.0.0.1:1`; `TestMain` clears the environment a managed
   shell carries. `make test-pty` drives the board through a real pty
   (`test/pty/run.sh`).

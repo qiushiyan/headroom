@@ -78,6 +78,9 @@ Configuration:
     HEADROOM_LAUNCHER_FORMAT         how the board spells an account's launch command (%s = name)
     HEADROOM_CODEX_PRIMARY_NAME      the name ~/.codex answers to
     HEADROOM_CODEX_LAUNCHER_FORMAT   the board's Codex launch command
+    HEADROOM_PEERS                   other machines with the same accounts, as ssh reaches them
+                                     (comma- or space-separated): each one's newest Claude Code and
+                                     Codex readings are pulled over ssh and the newest reading wins
 
   A relative HEADROOM_HOME makes every command refuse until it is fixed; headroom check
   says which.

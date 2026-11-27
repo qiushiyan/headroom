@@ -179,12 +179,28 @@ type Scope struct {
 	// home variable being absent, which the vendor resolves against the real
 	// home, so the child would run on a tree the board never described.
 	PrimaryRelocated bool
+
+	// Peers are the other machines whose readings of these accounts are read
+	// beside this machine's own, each named as ssh reaches it
+	// (HEADROOM_PEERS). None, the default, is a machine on its own: nothing
+	// is pulled and nothing is read but its own. A machine can only ask about
+	// an account whose access token it keeps live, and only a session there
+	// keeps it so, so each machine's figures for the accounts it does not use
+	// age while another machine uses them (DESIGN.md § Readings from other
+	// machines).
+	Peers []string
 }
 
 // Config holds one Scope per vendor. Load is the only door: every directory
 // that crosses into a launch is absolute because it was established here.
 type Config struct {
 	Claude, Codex, Agy Scope
+
+	// BadPeers are the names in HEADROOM_PEERS that are no ssh destination
+	// headroom will pass on. They are left out of every scope's Peers and
+	// said by `check`, never a reason for any other command to refuse:
+	// pulling is an enhancement, and a typo in it must not stop a launch.
+	BadPeers []string
 }
 
 // Scope returns the vendor's scope; every one is always resolved.
@@ -295,12 +311,52 @@ func Load() (Config, error) {
 		}
 	}
 
+	peers, bad := parsePeers(os.Getenv("HEADROOM_PEERS"))
+	c.BadPeers = bad
+	// Claude Code's and Codex's figures age on a machine that does not use the
+	// account: a token only a session refreshes is what a request needs.
+	// Antigravity has no such gap — each machine reads its own sign-in by
+	// running agy, every time — and two machines may be signed in to two
+	// Google accounts, so its scope takes no peers.
+	c.Claude.Peers, c.Codex.Peers = peers, slices.Clone(peers)
+
 	c.Codex.Present = isDir(c.Codex.PrimaryDir()) || isDir(c.Codex.AccountsRoot)
 	// Antigravity is present where agy has run: its state dir exists. The
 	// accounts root alone says nothing — headroom creates it for its state
 	// file, and no account can be added there.
 	c.Agy.Present = isDir(c.Agy.PrimaryDir())
 	return c, nil
+}
+
+// parsePeers reads HEADROOM_PEERS: ssh destinations separated by commas or
+// spaces, each said once. A destination reaches ssh as an argument, so one
+// that would read as an option, or carries anything an ssh alias or
+// user@host never does, is set apart in bad rather than passed on.
+func parsePeers(v string) (peers, bad []string) {
+	for _, p := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		switch {
+		case !validPeer(p):
+			bad = append(bad, p)
+		case !slices.Contains(peers, p):
+			peers = append(peers, p)
+		}
+	}
+	return peers, bad
+}
+
+func validPeer(p string) bool {
+	if p == "" || p[0] == '-' || len(p) > 255 {
+		return false
+	}
+	for _, r := range p {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("._-@:", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func relativeErr(name, v string) error {

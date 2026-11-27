@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -50,6 +51,7 @@ const (
 	SourceLive  Source = iota // headroom's own fetch, in this process
 	SourceStore               // headroom's own fetch, replayed from the state file
 	SourceCache               // Claude Code's own cache in .claude.json
+	SourcePeer                // another machine's reading, pulled from it (Observation.Peer names it)
 )
 
 // Name is the source as the JSON documents and the launch log spell it. A
@@ -64,6 +66,8 @@ func (s Source) Name() string {
 		return "headroom_cache"
 	case SourceCache:
 		return "claude_cache"
+	case SourcePeer:
+		return "peer"
 	}
 	return ""
 }
@@ -80,6 +84,8 @@ func (s Source) Ours() bool { return s == SourceLive || s == SourceStore }
 // vendor will take work at all, whatever the windows say. Plan is the plan the
 // response named, "" when it named none. Email is the account the figures were
 // measured for, when the response names it (Antigravity's), "" otherwise.
+// Peer is the machine a SourcePeer reading came from, as HEADROOM_PEERS
+// names it.
 type Observation struct {
 	Rows       []usage.Row
 	Allowance  usage.Allowance
@@ -87,6 +93,7 @@ type Observation struct {
 	Email      string
 	ObservedAt int64 // unix seconds
 	Source     Source
+	Peer       string
 }
 
 // FromReading builds the observation a parsed usage body amounts to.
@@ -142,16 +149,30 @@ type Attempt struct {
 // inside that period. It is a display policy, not a vendor promise.
 // Sharing the spacing prevents a timing change from marking every other run
 // stale while no newer answer is obtainable. Spacing is per vendor, so facts
-// carry their own window (Facts.FreshFor, set at assembly from the scope);
-// this is the default for facts assembled without one.
+// carry their own window (Facts.FreshFor, set at assembly from the scope, by
+// FreshFor); this is the default for facts assembled without one.
 const FreshWindow = config.DefaultSpacing
+
+// FreshFor is the window inside which a scope's figures are current: its
+// spacing, on a machine on its own. On one that pulls other machines'
+// readings, a newer reading of an account it cannot ask about itself arrives
+// at the cadence of whichever machine drives the account — every few minutes
+// while it is in use there — so the window is the one placement takes any
+// reading as measured for, whatever machine made it. One meaning for every
+// source: what makes figures current is their age, never who read them.
+func FreshFor(scope config.Scope) time.Duration {
+	if len(scope.Peers) > 0 {
+		return max(scope.RequestSpacing(), placement.StaleAfter)
+	}
+	return scope.RequestSpacing()
+}
 
 // Facts carries three independent answers: an account can be logged in,
 // have figures 22 hours old, and have its newest refresh refused. Keeping
 // them separate prevents a 429 or stale token from erasing known usage.
 type Facts struct {
 	Vendor      config.Vendor
-	FreshFor    time.Duration // the scope's spacing; 0 means FreshWindow
+	FreshFor    time.Duration // the scope's window (FreshFor); 0 means FreshWindow
 	Label       string
 	DirMismatch string // dir name when the logged-in email doesn't match it
 	Plan        string
@@ -182,6 +203,14 @@ type Facts struct {
 	Obs     *Observation // nil = nothing known
 	Attempt Attempt
 
+	// Paired reports that the scope names peers: the figures may be another
+	// machine's, and every reading is current for FreshFor's longer window.
+	Paired bool
+	// basePlan and baseLabel are what the account itself says — its login's
+	// plan, its name — which Show falls back to when the figures name
+	// neither, so a reading that names no plan never keeps another's.
+	basePlan, baseLabel string
+
 	// Load is what an automatic launch counts on this account's subscription
 	// beyond its figures — busy sessions and recent launches — from every
 	// home that shares the ledger. nil when the surface did not read it: the
@@ -207,13 +236,57 @@ type Load struct {
 }
 
 // Fresh reports whether the observation is recent enough to describe current
-// headroom.
+// headroom: inside the scope's window (FreshFor).
 func (v Facts) Fresh(now int64) bool {
 	window := v.FreshFor
 	if window <= 0 {
 		window = FreshWindow
 	}
 	return v.Obs != nil && now-v.Obs.ObservedAt <= int64(window/time.Second)
+}
+
+// Show makes o the figures on show, with what it names: a plan the response
+// named outranks the login's, which is as old as the last login refresh, and
+// figures are labelled with the account they were measured for (Antigravity's
+// are named by its reading, nothing else names it). Every place figures are
+// chosen goes through it, so the plan and label always follow the figures.
+func (v *Facts) Show(o *Observation) {
+	v.Obs = o
+	if v.basePlan != "" {
+		v.Plan = v.basePlan
+	}
+	if v.baseLabel != "" {
+		v.Label = v.baseLabel
+	}
+	if o == nil {
+		return
+	}
+	if o.Plan != "" {
+		v.Plan = o.Plan
+	}
+	if o.Email != "" {
+		v.Label = o.Email
+	}
+}
+
+// SetLoginPlan is the plan the account's login names, shown whenever the
+// figures name none.
+func (v *Facts) SetLoginPlan(plan string) {
+	v.basePlan = plan
+	v.Show(v.Obs)
+}
+
+// Newest is the reading that stands of two: the later one, and on a tie the
+// first. It is the one rule for which figures are shown, applied by the
+// assembly from disk and by a round to what arrives while it runs, so the
+// board and the next launch cannot settle on different figures. A tie is
+// decided at the second, as figures are dated; the first is the caller's
+// nearer source — this process's answer, then this machine's own.
+func Newest(a, b *Observation) *Observation {
+	if a == nil || (b != nil && b.ObservedAt > a.ObservedAt) {
+		return b
+	}
+	return a
 }
 
 // Actionable is the question the picker actually asks: are these figures

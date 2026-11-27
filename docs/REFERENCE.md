@@ -85,6 +85,21 @@ credential variable stripped, and reads nothing of the sign-in; the row is
 named by the email that read's log names. A read agy declines shows its exit
 status (`vendor_failed`) and sends you to `agy`, never to a login.
 
+A machine can ask about an account only while a session there keeps its
+token live, so on a machine that does not use an account its figures age.
+With the same accounts on several machines, `HEADROOM_PEERS` on each names
+the others as ssh reaches them: the board, `--json` and `refresh` then also
+pull each one's own newest Claude Code and Codex readings over ssh (it runs
+the hidden `headroom readings` there, read from disk alone), and every
+surface — placement included — uses the newest reading of each account,
+whichever machine made it. The board captions such figures `via <machine>`
+and the JSON documents name it in `usage.peer`; `limits` reads the last pull
+and pulls nothing. On a machine that pulls, figures count as current for
+placement's fifteen minutes whoever read them. `check` says how each named
+machine last answered, and fails a name that is no ssh destination, which no
+other command refuses over. Each machine needs the same headroom build. Why
+it is shaped so: DESIGN.md § Readings from other machines.
+
 `check` exits 0 for PASS, 1 for failed assertions, or 2 for INCONCLUSIVE.
 Failures identify vendor drift or headroom's own state problems, and name the
 vendor. Rate limiting, transport failure, lock contention, a valid newer state
@@ -292,6 +307,7 @@ Nothing needs configuring on a standard install; environment variables re-point 
 | `HEADROOM_LAUNCHER_FORMAT` | `headroom launch --account %s` | How the board spells the command that launches an account (`%s` = its name) — display only; a shell integration sets it to its own names (`x-%s`) |
 | `HEADROOM_CODEX_LAUNCHER_FORMAT` | `headroom launch --vendor codex --account %s` | The Codex counterpart of `HEADROOM_LAUNCHER_FORMAT`. Log-in hints keep the engine's own spelling whatever this says |
 | `HEADROOM_CODEX_PRIMARY_NAME` | *(derived)* | The name the primary `~/.codex` answers to, derived and pinned like `HEADROOM_PRIMARY_NAME` |
+| `HEADROOM_PEERS` | *(none)* | The other machines with the same accounts, as ssh reaches them without a prompt (an alias or `user@host`, comma- or space-separated), whose Claude Code and Codex readings this machine pulls (How it works). Unset, nothing is pulled and nothing changes |
 | `HEADROOM_PRIMARY_NAME` | *(derived)* | The name the primary `~/.claude` answers to — in `--account` and the board's launcher column. Unset, it is the local part of the primary's logged-in email (`alice` for `alice@example.com`; `primary` before any login); set it to keep one name whoever is logged in. It is a name only: records name the dir, so changing it, or shells holding different values, changes nothing they say |
 
 Two settings are files beside the accounts: `~/.claude-accounts/.order`, the

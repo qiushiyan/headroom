@@ -67,11 +67,16 @@ type Store struct {
 	root    string
 	vendor  config.Vendor
 	spacing time.Duration
+	paired  bool // the scope names peers, so the peers section is read (peers.go)
 }
 
 func Open(scope config.Scope) *Store {
-	return &Store{root: filepath.Clean(scope.AccountsRoot), vendor: scope.Vendor, spacing: scope.RequestSpacing()}
+	return &Store{root: filepath.Clean(scope.AccountsRoot), vendor: scope.Vendor, spacing: scope.RequestSpacing(), paired: len(scope.Peers) > 0}
 }
+
+// read is the document as this store reads it: a store whose scope names no
+// peer leaves the peers section unread.
+func (s *Store) read() *doc { return read(s.root, s.paired) }
 
 // Vendor is whose responses this store holds — and therefore which parser
 // reads a body that came out of it.
@@ -80,7 +85,7 @@ func (s *Store) Vendor() config.Vendor { return s.vendor }
 // Load reads the document. No lock: writes land by atomic rename, so a reader
 // sees one whole version or the previous one.
 func (s *Store) Load() Snapshot {
-	return Snapshot{d: read(s.root), vendor: s.vendor, spacing: s.spacing}
+	return Snapshot{d: s.read(), vendor: s.vendor, spacing: s.spacing}
 }
 
 // ceiling is the furthest out a deadline written by this code can sit: the
@@ -511,7 +516,7 @@ func (s *Store) update(wait time.Duration, fn func(*doc) error) error {
 	}
 	defer release(lock)
 
-	d := read(s.root)
+	d := s.read()
 	if err := writable(d); err != nil {
 		return err
 	}

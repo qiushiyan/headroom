@@ -130,6 +130,20 @@ sessions count as load the launcher steers around. A program under another
 `HOME` reaches this home's headroom with `HEADROOM_HOME`. The contract is
 [docs/specs/headless.md](docs/specs/headless.md).
 
+### 7. The same accounts on two machines
+
+Each machine reads current figures only for the accounts it uses, so an
+account busy on your desktop reads hours old on your laptop. Name the other
+machine on each, as ssh reaches it, and every board, `limits` and launch uses
+whichever machine's reading is newest:
+
+```sh
+export HEADROOM_PEERS=desk      # on the laptop (laptop on the desk); install the same build on both
+headroom refresh && headroom check   # check's peer[desk] line says it answered
+```
+
+The board then captions those figures `via desk`. Unset, nothing changes.
+
 ## Install
 
 ```sh

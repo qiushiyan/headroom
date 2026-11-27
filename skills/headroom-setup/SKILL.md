@@ -72,6 +72,28 @@ its quota. The user runs `agy` once at the machine and signs in; the board's
 Antigravity page appears. `accounts add`, `remove` and `reserve` with
 `--vendor agy` refuse, and nothing launches it through headroom.
 
+## The same accounts on several machines
+
+A machine reads current figures only for the accounts it uses: a token only a
+session there renews is what a request needs, so an account used on the other
+machine reads hours old here. Each machine can pull the others' own readings
+over ssh, and placement, the board and `limits` then use the newest reading
+of each account — the board captions it `via <machine>`, the JSON documents
+name the machine in `usage.peer`. Claude Code and Codex only; skip this with
+one machine.
+
+1. On each machine, export `HEADROOM_PEERS` with the other machines, as
+   `ssh` reaches them without a prompt (an alias or `user@host`, separated by
+   commas or spaces), in a file every shell reads (`~/.zshenv`).
+2. Install the same headroom build on every machine.
+3. On each machine: `headroom refresh`, then `headroom check`.
+
+Done when each machine's `check` has, under every vendor it uses, `peer[<machine>]:
+answered …, with a usable reading of N of the M accounts here` and N above
+0. `the ask … failed — <reason>` names what to fix there (unreachable, no
+headroom, a build without the readings command), and the line says when it
+asks again; 0 of M means the machines hold different accounts.
+
 ## A program that runs its own sessions
 
 For a program that starts `claude` under a config dir of its own, or under

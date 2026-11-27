@@ -289,7 +289,7 @@ const (
 	clauseAttempt                     // how the newest refresh went
 	// Then what explains.
 	clauseAge    // how old the figures are
-	clauseSource // where they came from, when not headroom's own fetch
+	clauseSource // where they came from, when not headroom's own fetch on this machine
 	clauseLoad   // the sessions and launches on the account
 	clauseKinds
 )
@@ -319,7 +319,7 @@ func (p Palette) clauses(v accountstate.Facts, now int64, rowDrift bool) clauses
 		c[clauseEmpty] = p.Dim + "no limits reported" + p.Rst
 	}
 	if rowDrift || allowanceDrifted(v) {
-		c[clauseDrift] = p.Red + "⚠ drift — run headroom check" + p.Rst
+		c[clauseDrift] = p.Red + "⚠ drift — " + driftCheck(v.Obs) + p.Rst
 	}
 	if t := featureText(v); t != "" {
 		c[clauseFeature] = p.Yel + t + p.Rst
@@ -344,13 +344,21 @@ func (p Palette) clauses(v accountstate.Facts, now int64, rowDrift bool) clauses
 		c[clauseStale] = p.Yel + "stale" + p.Rst
 	}
 	c[clauseAge] = p.Dim + "observed " + Age(now-v.Obs.ObservedAt) + " ago" + p.Rst
-	if v.Obs.Source == accountstate.SourceCache {
+	switch v.Obs.Source {
+	case accountstate.SourceCache:
 		c[clauseSource] = p.Dim + "via Claude Code's cache" + p.Rst
+	case accountstate.SourcePeer:
+		c[clauseSource] = p.Dim + "via " + Sanitize(v.Obs.Peer) + p.Rst
 	}
 	// No limits is already the body of an empty observation; repeating it as
-	// a caption would say the same thing twice.
+	// a caption would say the same thing twice. Nor, on a machine that pulls
+	// other machines' readings, is an aged-out token worth a word while the
+	// figures on show are current, whoever read them: the errand buys a
+	// reading, and a current one is on show; once they age it comes back. A
+	// machine on its own says it as it always has.
 	sayAttempt := v.Attempt.State != accountstate.AttemptOK && v.Attempt.State != accountstate.AttemptNone &&
-		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0)
+		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0) &&
+		!(v.Attempt.State == accountstate.AttemptTokenStale && fresh && v.Paired)
 	if sayAttempt || v.Attempt.StoreError != "" {
 		c[clauseAttempt] = p.Dim + attemptReason(v, now) + p.Rst
 	}
@@ -422,7 +430,7 @@ func (p Palette) accountBlock(v accountstate.Facts, now int64, width int) []stri
 	line("", clauseEmpty)
 	if v.Obs != nil {
 		for _, r := range v.Obs.Rows {
-			lines = append(lines, p.limitRow(r, now, width))
+			lines = append(lines, p.limitRow(r, now, width, driftCheck(v.Obs)))
 		}
 	}
 	line("", clauseAllowance)
@@ -512,7 +520,7 @@ func rowState(r usage.Row, now int64) (pctState, resetState) {
 // Bars and percentages retain their severity colour regardless of observation
 // age; the provenance caption carries staleness separately. width is the
 // board's label column (labelWidth), shared by every account.
-func (p Palette) limitRow(r usage.Row, now int64, width int) string {
+func (p Palette) limitRow(r usage.Row, now int64, width int, check string) string {
 	pct, reset := rowState(r, now)
 	glyphs, figure := bar(r.Percent), fmt.Sprintf("%3d%%", r.Percent)
 	switch pct {
@@ -548,9 +556,19 @@ func (p Palette) limitRow(r usage.Row, now int64, width int) string {
 	line := fmt.Sprintf("  %s %s[%s] %s%s  %s%s%s",
 		PadCell(Sanitize(r.Label), width), p.severity(r, pct), glyphs, figure, p.Rst, p.Dim, phrase, p.Rst)
 	if r.Drifted() {
-		line += "  " + p.Red + "⚠ drift — run headroom check" + p.Rst
+		line += "  " + p.Red + "⚠ drift — " + check + p.Rst
 	}
 	return line
+}
+
+// driftCheck is where drift in these figures is diagnosed: check audits the
+// responses its own machine stored, so a reading another machine made is
+// audited on that machine.
+func driftCheck(o *accountstate.Observation) string {
+	if o != nil && o.Source == accountstate.SourcePeer {
+		return "run headroom check on " + Sanitize(o.Peer)
+	}
+	return "run headroom check"
 }
 
 // severity is the one colour rule for bars and percentages in both layouts.

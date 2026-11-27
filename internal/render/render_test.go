@@ -41,12 +41,12 @@ func TestResetPhrase(t *testing.T) {
 	p := NewPalette(false)
 	now := int64(1_754_000_000)
 	row := func(resetAt int64) string {
-		return p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetAt: resetAt}, now, 16)
+		return p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetAt: resetAt}, now, 16, "run headroom check")
 	}
 	if got := row(0); !strings.Contains(got, "resets —") || strings.Contains(got, "(in ") || strings.Contains(got, "?") {
 		t.Errorf("absent reset: %q", got)
 	}
-	drifted := p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetState: tag.Bad}, now, 16)
+	drifted := p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal", ResetState: tag.Bad}, now, 16, "run headroom check")
 	if !strings.Contains(drifted, "resets ?") || strings.Contains(drifted, "(in ") || strings.Contains(drifted, "resets —") {
 		t.Errorf("a reset that no longer parses: %q", drifted)
 	}
@@ -66,8 +66,8 @@ func TestResetPhrase(t *testing.T) {
 // bad percent rendering as a plain 0% would read as free headroom.
 func TestLimitRowDrift(t *testing.T) {
 	p := NewPalette(false)
-	bad := p.limitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: tag.Bad}, 0, 16)
-	real0 := p.limitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16)
+	bad := p.limitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: tag.Bad}, 0, 16, "run headroom check")
+	real0 := p.limitRow(usage.Row{Label: "5h session", Percent: 0, Severity: "normal"}, 0, 16, "run headroom check")
 	if bad == real0 {
 		t.Fatalf("bad percent indistinguishable from real 0%%: %q", bad)
 	}
@@ -83,7 +83,7 @@ func TestLimitRowDrift(t *testing.T) {
 
 	// A bad timestamp alone also carries the marker.
 	badReset := p.limitRow(usage.Row{Label: "5h session", Percent: 5, Severity: "normal",
-		ResetState: tag.Bad}, 0, 16)
+		ResetState: tag.Bad}, 0, 16, "run headroom check")
 	if !strings.Contains(badReset, "drift") {
 		t.Errorf("bad reset should carry the drift marker: %q", badReset)
 	}
@@ -91,7 +91,7 @@ func TestLimitRowDrift(t *testing.T) {
 	// A bad percent whose window has since ended says both, as the compact
 	// cell does: the percent is drift, and the window rolled over.
 	now := int64(1_800_000_000)
-	ended := p.limitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: tag.Bad, ResetAt: now - 1800}, now, 16)
+	ended := p.limitRow(usage.Row{Label: "5h session", Severity: "normal", PercentState: tag.Bad, ResetAt: now - 1800}, now, 16, "run headroom check")
 	if !strings.Contains(ended, "?%") || !strings.Contains(ended, "rolled over") || !strings.Contains(ended, "drift") {
 		t.Errorf("bad percent over an ended window: %q", ended)
 	}
@@ -317,7 +317,7 @@ func TestRolledOverRowIsNotAnAnswer(t *testing.T) {
 	rolled := usage.Row{Label: "5h session", Percent: 8, ResetAt: now - 33*3600,
 		PercentState: tag.OK, ResetState: tag.OK}
 
-	line := p.limitRow(rolled, now, 12)
+	line := p.limitRow(rolled, now, 12, "run headroom check")
 	if strings.Contains(line, "8%") {
 		t.Errorf("a rolled-over window still shows its old percent: %q", line)
 	}

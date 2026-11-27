@@ -24,6 +24,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/peers"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -50,6 +51,9 @@ type Deps struct {
 	// Start sends the requests the store's claim permits and reports each
 	// result by the index of the request it answers; nil is refresh.Start.
 	Start func(ctx context.Context, st *state.Store, requests []*refresh.Candidate) <-chan refresh.Result
+	// Pull asks another machine for its readings (peers.SSH in production).
+	// nil pulls from nobody, and so does a scope that names no peers.
+	Pull peers.Asker
 }
 
 // Round is one vendor's round: the scope and store it ran under, the set it
@@ -65,6 +69,7 @@ type Round struct {
 
 	rows  []*row
 	start func(ctx context.Context, st *state.Store, requests []*refresh.Candidate) <-chan refresh.Result
+	pull  peers.Asker
 }
 
 // row is one account as the round holds it: its facts, and beside them the
@@ -98,7 +103,7 @@ func prepare(ctx context.Context, set accounts.Set, st *state.Store, now time.Ti
 	scope := set.Scope
 	snap := st.Load()
 	accts := accountstate.Assemble(set, snap, now)
-	r := &Round{Scope: scope, Store: st, Set: set, Problems: snap.Problems(), rows: rowsOf(accts), start: deps.Start}
+	r := &Round{Scope: scope, Store: st, Set: set, Problems: snap.Problems(), rows: rowsOf(accts), start: deps.Start, pull: deps.Pull}
 	var health auth.QueryFunc = func(string) auth.Status { return auth.Status{} }
 	if scope.Vendor == config.Claude && deps.Health != nil {
 		health = deps.Health(set.Accounts)
@@ -166,14 +171,31 @@ func (r *Round) Asking() bool {
 }
 
 // Result is one answer of a round's Fetch: the request's result, by the index
-// of the account it answers, and the round it belongs to.
+// of the account it answers, and the round it belongs to. In a round that
+// pulls, selection carries the figures the accounts it covers come to, chosen
+// from the store after the answer landed; a pull's result is no request's
+// (pulled), and carries every account's selection, or problem — this machine
+// failing to claim or record the pull.
 type Result struct {
 	refresh.Result
-	of *Round
+	of        *Round
+	selection map[int]*accountstate.Observation
+	pulled    bool
+	problem   string
+}
+
+// event is what reaches a pulling round's selector: a request's result, a
+// pull that landed, or this machine failing to record one.
+type event struct {
+	res     *refresh.Result
+	pulled  bool
+	problem string
 }
 
 // Fetch is the budget half of the round: the claim, and whatever requests it
-// permits, each result reported as this round's.
+// permits, each result reported as this round's — and beside them, a pull
+// from each machine the scope names whose pull is due, its readings reported
+// as results of the accounts they are of.
 func (r *Round) Fetch(ctx context.Context) <-chan Result {
 	requests := make([]*refresh.Candidate, len(r.rows))
 	for i, d := range r.rows {
@@ -185,7 +207,78 @@ func (r *Round) Fetch(ctx context.Context) <-chan Result {
 			return refresh.Start(ctx, st, requests, nil)
 		}
 	}
-	return r.Feed(start(ctx, r.Store, requests))
+	if r.pull == nil || len(r.Scope.Peers) == 0 {
+		return r.Feed(start(ctx, r.Store, requests))
+	}
+	// Figures then arrive from two places at once — this machine's requests
+	// and the other machines' answers — and the board must come to what the
+	// store holds, whatever order they land in. So every arrival is turned
+	// into figures in one place, in order: the selector reads the store after
+	// each and chooses the affected accounts' figures by the assembly's rule
+	// (accountstate.Select), with any answer of this process the store could
+	// not record as one more candidate. Each choice is made from a store at
+	// least as new as the one before it, so the last to land is the newest;
+	// Apply only shows what it is handed.
+	//
+	// The pulls start first: the claim inside start can wait on the lock,
+	// and a pull has no reason to wait on it.
+	accts := r.Accounts()
+	events := make(chan event, len(r.rows)+len(r.Scope.Peers))
+	var wg sync.WaitGroup
+	for _, peer := range r.Scope.Peers {
+		wg.Go(func() {
+			answered, err := peers.Pull(ctx, r.Store, peer, r.pull)
+			switch {
+			case err != nil:
+				events <- event{problem: err.Error()}
+			case answered:
+				events <- event{pulled: true}
+			}
+		})
+	}
+	src := start(ctx, r.Store, requests)
+	wg.Go(func() {
+		for u := range src {
+			events <- event{res: &u}
+		}
+	})
+	go func() {
+		wg.Wait()
+		close(events)
+	}()
+	out := make(chan Result, len(r.rows)+len(r.Scope.Peers))
+	go func() {
+		defer close(out)
+		unrecorded := map[int]*accountstate.Observation{}
+		choose := func(snap state.Snapshot, now time.Time, i int) *accountstate.Observation {
+			a := accts[i]
+			return accountstate.Newest(unrecorded[i], accountstate.Select(snap, a.Key, a.Acct, now))
+		}
+		for ev := range events {
+			switch {
+			case ev.problem != "":
+				out <- Result{of: r, problem: ev.problem}
+			case ev.pulled:
+				snap, now := r.Store.Load(), time.Now()
+				sel := make(map[int]*accountstate.Observation, len(accts))
+				for i := range accts {
+					sel[i] = choose(snap, now, i)
+				}
+				out <- Result{of: r, selection: sel, pulled: true}
+			default:
+				u := *ev.res
+				res := Result{Result: u, of: r}
+				if u.Index >= 0 && u.Index < len(accts) {
+					if u.Observation != nil && u.StoreErr != nil {
+						unrecorded[u.Index] = u.Observation
+					}
+					res.selection = map[int]*accountstate.Observation{u.Index: choose(r.Store.Load(), time.Now(), u.Index)}
+				}
+				out <- res
+			}
+		}
+	}()
+	return out
 }
 
 // Feed reports what src delivers as this round's results, in order, and
@@ -207,20 +300,27 @@ func (r *Round) Feed(src <-chan refresh.Result) <-chan Result {
 // round's result is ignored: its index counts that round's accounts, and the
 // same index here can be someone else's.
 func (r *Round) Apply(res Result) {
-	if res.of != r || res.Index < 0 || res.Index >= len(r.rows) {
+	if res.of != r {
+		return
+	}
+	if res.problem != "" {
+		r.Problems = append(slices.Clip(r.Problems), state.Problem{Section: "peers", Detail: res.problem})
+		return
+	}
+	for i, o := range res.selection {
+		if i >= 0 && i < len(r.rows) {
+			r.rows[i].View.Show(o)
+		}
+	}
+	if res.pulled || res.Index < 0 || res.Index >= len(r.rows) {
 		return
 	}
 	d := r.rows[res.Index]
 	d.View.Attempt = res.Attempt
-	if res.Observation != nil {
-		d.View.Obs = res.Observation
-		if res.Observation.Plan != "" {
-			d.View.Plan = res.Observation.Plan
-		}
-		if res.Observation.Email != "" {
-			// The figures name whose they are (accountstate.Assemble).
-			d.View.Label = res.Observation.Email
-		}
+	if res.selection == nil && res.Observation != nil {
+		// A round that pulls from nobody shows each answer as it lands, as
+		// the store records it.
+		d.View.Show(res.Observation)
 	}
 	if res.StoreErr != nil {
 		d.View.Attempt.StoreError = res.StoreErr.Error()
@@ -259,7 +359,7 @@ func (r *Round) Narrow(selector string) error {
 func claudeAccess(ctx context.Context, d *row, read creds.Reading, health auth.Status, item func(context.Context, accounts.Account) (creds.Item, string), now time.Time) {
 	blob, ok := creds.Parse(read.Raw)
 	if ok {
-		d.View.Plan = blob.PlanLabel()
+		d.View.SetLoginPlan(blob.PlanLabel())
 	}
 	d.View.Health = Health(health, read.Raw, blob, ok, now.UnixMilli())
 	d.View.Login = accountstate.LoginReached

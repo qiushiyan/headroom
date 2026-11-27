@@ -33,7 +33,7 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	}
 	// A round with something to ask about, as prepare leaves a usable account.
 	next := func(st *state.Store, asking bool, keys ...state.Key) time.Time {
-		return nextRound(st.Load(), accts(keys...), asking, config.DefaultSpacing, now)
+		return nextRound(st.Load(), accts(keys...), nil, asking, config.DefaultSpacing, now)
 	}
 
 	if wait := next(st, true, keys...).Sub(now); wait < config.DefaultSpacing-2*time.Second {
@@ -77,6 +77,37 @@ func TestPickerSchedulesAtTheNextEligibleInstant(t *testing.T) {
 	// business.
 	if wait := next(state.Open(config.Scope{AccountsRoot: t.TempDir()}), false, keys[0]).Sub(now); wait < config.DefaultSpacing-2*time.Second {
 		t.Errorf("idle board polls every %v, at a subprocess spawn per account; want the request spacing", wait)
+	}
+}
+
+// A board that pulls readings from another machine rounds when that pull is
+// due, whatever its own accounts are waiting on: every account cooling down
+// after a refusal must not push the next round past the presence window,
+// where it would never fire, while the other machine has news.
+func TestThePickerRoundsWhenAPullIsDue(t *testing.T) {
+	now := time.Now()
+	keys := []state.Key{{Name: "a"}}
+	scope := config.Scope{AccountsRoot: t.TempDir(), Spacing: config.DefaultSpacing, Peers: []string{"mini2"}}
+	st := state.Open(scope)
+	dec, _ := st.Claim(keys, now)
+	for range 4 {
+		st.Complete(keys[0], dec[0].Generation, state.OutcomeRefused, nil, now)
+	}
+	c, _ := st.ClaimPull("mini2", now)
+	st.RecordPull("mini2", c.Generation, nil, "", now)
+	accts := []accountstate.Account{{Key: keys[0]}}
+
+	next := nextRound(st.Load(), accts, scope.Peers, true, config.DefaultSpacing, now)
+	if wait := next.Sub(now); wait > config.DefaultSpacing+2*time.Second {
+		t.Errorf("next round in %v with a pull due in %v", wait, config.DefaultSpacing)
+	}
+	if wait := nextRound(st.Load(), accts, nil, true, config.DefaultSpacing, now).Sub(now); wait < 2*config.DefaultSpacing {
+		t.Errorf("without peers the cooldown should set the pace; next round in %v", wait)
+	}
+	// One due now still waits for the floor.
+	fresh := state.Open(config.Scope{AccountsRoot: t.TempDir(), Spacing: config.DefaultSpacing, Peers: []string{"mini2"}})
+	if wait := nextRound(fresh.Load(), accts, scope.Peers, true, config.DefaultSpacing, now).Sub(now); wait < refreshFloor-2*time.Second {
+		t.Errorf("a pull due now ran a round in %v, inside the floor", wait)
 	}
 }
 

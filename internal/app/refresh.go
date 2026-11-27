@@ -18,6 +18,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
 	"github.com/qiushiyan/headroom/internal/launchop"
+	"github.com/qiushiyan/headroom/internal/peers"
 	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/sessions"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -57,10 +58,12 @@ func LivePlace() launchop.Deps {
 }
 
 // LiveRound is the edges a round reads through on this machine: the
-// credential reader and, when probe is set, Claude Code's own health probe
-// (`claude auth status` per account, side by side).
+// credential reader, ssh to the machines a scope pulls readings from, and,
+// when probe is set, Claude Code's own health probe (`claude auth status`
+// per account, side by side).
 func LiveRound(probe bool) round.Deps {
 	d := round.Deps{
+		Pull: peers.SSH,
 		Creds: func(ctx context.Context, a accounts.Account) creds.Reading {
 			return creds.Read(ctx, a.ConfigDir, a.Dir())
 		},
