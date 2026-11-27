@@ -76,13 +76,7 @@ func Open(scope config.Scope) *Store {
 
 // read is the document as this store reads it: a store whose scope names no
 // peer leaves the peers section unread.
-func (s *Store) read() *doc {
-	d := read(s.root)
-	if !s.paired {
-		d.unread()
-	}
-	return d
-}
+func (s *Store) read() *doc { return read(s.root, s.paired) }
 
 // Vendor is whose responses this store holds — and therefore which parser
 // reads a body that came out of it.

@@ -17,6 +17,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/peers"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
+	"github.com/qiushiyan/headroom/internal/usage"
 )
 
 func weekly(pct int) json.RawMessage {
@@ -116,52 +117,119 @@ func TestAPullLeavesTheBoardOnTheStoresChoice(t *testing.T) {
 	}
 }
 
-// Whichever arrives first — this process's live answer or a pull's choice —
-// the board comes to the same figures, the ones the store would choose: a
-// live answer stands over an older pulled reading, and a pulled reading
-// stamped by a clock ahead of this one stands over the live answer, on the
-// board as on disk. A live answer the store never recorded survives a pull.
-func TestEveryOrderComesToOneAnswer(t *testing.T) {
-	now := time.Now()
-	for _, c := range []struct {
-		name      string
-		peerAt    time.Time
-		wantPeer  bool
-		liveSaved bool
-	}{
-		{"live newer than the pulled reading", now.Add(-30 * time.Second), false, true},
-		{"a pulled reading from a clock ahead", now.Add(time.Minute), true, true},
-		{"a live answer the store never recorded", now.Add(-30 * time.Second), false, false},
-	} {
-		for _, liveFirst := range []bool{true, false} {
-			scope := pairedScope(t)
-			st := state.Open(scope)
-			pulled(t, st, "a1", weekly(80), c.peerAt)
-			if c.liveSaved {
-				store(t, st, "a1", weekly(5), now)
+// answering is a start that answers a1's request with pct at at, recorded in
+// the store first as refresh.Start records it — or, when recorded is false,
+// as an answer whose record failed.
+func answering(t *testing.T, pct int, at time.Time, recorded bool) func(context.Context, *state.Store, []*refresh.Candidate) <-chan refresh.Result {
+	body := weekly(pct)
+	reading, err := usage.Parse(config.Claude, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func(_ context.Context, st *state.Store, _ []*refresh.Candidate) <-chan refresh.Result {
+		res := refresh.Result{Index: 0, Attempt: accountstate.Attempt{State: accountstate.AttemptOK},
+			Observation: accountstate.FromReading(reading, at.Unix(), accountstate.SourceLive)}
+		if recorded {
+			k := state.Key{UUID: "a1"}
+			dec, err := st.Claim([]state.Key{k}, at.Add(time.Hour))
+			if err != nil || !dec[0].Permit {
+				t.Errorf("claim: %+v %v", dec, err)
 			}
-			r := peerRound(t, scope, nil)
-			liveObs := &accountstate.Observation{ObservedAt: now.Unix(), Source: accountstate.SourceLive}
-			src := make(chan refresh.Result, 1)
-			src <- refresh.Result{Index: 0, Observation: liveObs}
-			close(src)
-			snap := st.Load()
-			reconcile := Result{of: r, selected: []*accountstate.Observation{
-				accountstate.Select(snap, r.rows[0].Key, r.rows[0].Acct, now), accountstate.Select(snap, r.rows[1].Key, r.rows[1].Acct, now)}}
-			live := <-r.Feed(src)
-			if liveFirst {
-				r.Apply(live)
-				r.Apply(reconcile)
-			} else {
-				r.Apply(reconcile)
-				r.Apply(live)
+			if _, err := st.Complete(k, dec[0].Generation, state.OutcomeStored, body, at); err != nil {
+				t.Error(err)
 			}
-			got := r.rows[0].View.Obs
-			if isPeer := got != nil && got.Source == accountstate.SourcePeer; isPeer != c.wantPeer {
-				t.Errorf("%s, live first %v: board shows %+v", c.name, liveFirst, got)
-			}
+		} else {
+			res.StoreErr = fmt.Errorf("state file is busy")
+		}
+		src := make(chan refresh.Result, 1)
+		src <- res
+		close(src)
+		return src
+	}
+}
+
+// onDisk reports whether every row shows what the store now chooses for it.
+func onDisk(t *testing.T, r *Round) {
+	t.Helper()
+	snap, now := r.Store.Load(), time.Now()
+	for _, d := range r.rows {
+		want := accountstate.Select(snap, d.Key, d.Acct, now)
+		if (d.View.Obs == nil) != (want == nil) || (want != nil && (d.View.Obs.ObservedAt != want.ObservedAt || d.View.Obs.Peer != want.Peer || d.View.Obs.Rows[0].Percent != want.Rows[0].Percent)) {
+			t.Errorf("%s: board shows %+v, the store chooses %+v", d.Acct.Name, d.View.Obs, want)
 		}
 	}
+}
+
+// However this machine's answers and two machines' pulls interleave, the
+// board ends on what the store chooses: a newer pulled reading over an older
+// own one, this machine's newer answer over a pulled one, a pulled reading
+// stamped by a clock ahead over this machine's answer — on the board as on
+// disk.
+func TestARoundThatPullsEndsOnTheStoresChoice(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		name     string
+		macAt    time.Time
+		wantPeer string
+	}{
+		{"this machine's answer is newest", now.Add(-30 * time.Second), ""},
+		{"a pulled reading stamped by a clock ahead", now.Add(time.Minute), "mac"},
+	} {
+		scope := pairedScope(t)
+		scope.Peers = []string{"mini2", "mac"}
+		ask := func(_ context.Context, peer string, _ config.Vendor) ([]byte, error) {
+			if peer == "mac" {
+				return answer(c.macAt, map[string]int{"a1": 91, "b1": 33}), nil
+			}
+			return answer(now.Add(-time.Minute), map[string]int{"a1": 80, "b1": 30}), nil
+		}
+		r := peerRound(t, scope, ask)
+		r.start = answering(t, 5, now, true)
+		r.Complete(context.Background())
+		onDisk(t, r)
+		if got := r.rows[0].View.Obs; got == nil || got.Peer != c.wantPeer {
+			t.Errorf("%s: a1 shows %+v, want peer %q", c.name, got, c.wantPeer)
+		}
+		if b := r.rows[1].View.Obs; b == nil || b.Peer != "mac" || b.Rows[0].Percent != 33 {
+			t.Errorf("%s: b1 shows %+v, want mac's newer 33%%", c.name, b)
+		}
+	}
+}
+
+// An answer of this process's own that the store could not record is still
+// the newest reading there is: a pull landing after it does not take it off
+// the board.
+func TestAnUnrecordedAnswerSurvivesAPull(t *testing.T) {
+	now := time.Now()
+	scope := pairedScope(t)
+	ask := func(context.Context, string, config.Vendor) ([]byte, error) {
+		return answer(now.Add(-time.Minute), map[string]int{"a1": 80}), nil
+	}
+	r := peerRound(t, scope, ask)
+	r.start = answering(t, 5, now, false)
+	r.Complete(context.Background())
+	got := r.rows[0].View.Obs
+	if got == nil || got.Source != accountstate.SourceLive || got.ObservedAt != now.Unix() || got.Rows[0].Percent != 5 {
+		t.Errorf("a1 shows %+v, want this process's unrecorded 5%% answer", got)
+	}
+}
+
+// A round that pulls from nobody shows each answer as it lands, as the store
+// records it — even over a stored reading stamped ahead by a clock that has
+// since stepped back, which the answer replaced on disk.
+func TestARoundOnItsOwnShowsWhatItRecorded(t *testing.T) {
+	now := time.Now()
+	scope := pairedScope(t)
+	scope.Peers = nil
+	st := state.Open(scope)
+	store(t, st, "a1", weekly(10), now.Add(time.Minute))
+	r := peerRound(t, scope, nil)
+	if r.rows[0].View.Obs == nil || r.rows[0].View.Obs.Rows[0].Percent != 10 {
+		t.Fatalf("fixture: a1 = %+v", r.rows[0].View.Obs)
+	}
+	r.start = answering(t, 88, now, true)
+	r.Complete(context.Background())
+	onDisk(t, r)
 }
 
 // Opt-in: a scope naming no peer asks nobody, and a second round inside the

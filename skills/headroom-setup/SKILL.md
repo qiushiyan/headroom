@@ -77,16 +77,16 @@ Antigravity page appears. `accounts add`, `remove` and `reserve` with
 A machine reads current figures only for the accounts it uses: a token only a
 session there renews is what a request needs, so an account used on the other
 machine reads hours old here. Each machine can pull the others' own readings
-over ssh, and every surface then shows the newest reading of each account,
-captioned `via <machine>`. Claude Code and Codex only; skip this with one
-machine.
+over ssh, and placement, the board and `limits` then use the newest reading
+of each account — the board captions it `via <machine>`, the JSON documents
+name the machine in `usage.peer`. Claude Code and Codex only; skip this with
+one machine.
 
 1. On each machine, export `HEADROOM_PEERS` with the other machines, as
    `ssh` reaches them without a prompt (an alias or `user@host`, separated by
    commas or spaces), in a file every shell reads (`~/.zshenv`).
 2. Install the same headroom build on every machine.
-3. On each machine: `headroom refresh --vendor claude`, then `headroom
-   check`.
+3. On each machine: `headroom refresh`, then `headroom check`.
 
 Done when each machine's `check` has, under every vendor it uses, `peer[<machine>]:
 answered …, with a usable reading of N of the M accounts here` and N above

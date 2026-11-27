@@ -147,3 +147,22 @@ func TestPullRecordsOutcomesNotTheCallersEnd(t *testing.T) {
 		t.Errorf("a pull cut short by its caller was recorded as a failure: %+v", s)
 	}
 }
+
+// A pull bounds its ask itself: a caller with no deadline of its own still
+// hands the asker one, no later than askWait.
+func TestAPullBoundsItsAsk(t *testing.T) {
+	scope := config.Scope{Vendor: config.Claude, AccountsRoot: t.TempDir(), Spacing: config.DefaultSpacing, Peers: []string{"mini2"}}
+	var deadline time.Time
+	var bounded bool
+	ask := func(ctx context.Context, _ string, _ config.Vendor) ([]byte, error) {
+		deadline, bounded = ctx.Deadline()
+		return []byte(`{"schema":1,"vendor":"claude","readings":[]}`), nil
+	}
+	start := time.Now()
+	if answered, err := Pull(context.Background(), state.Open(scope), "mini2", ask); !answered || err != nil {
+		t.Fatalf("pull = %v, %v", answered, err)
+	}
+	if !bounded || deadline.After(start.Add(askWait+time.Second)) {
+		t.Errorf("the ask's deadline = %v (bounded %v), want one within %v", deadline, bounded, askWait)
+	}
+}

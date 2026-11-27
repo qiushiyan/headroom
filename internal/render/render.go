@@ -351,13 +351,14 @@ func (p Palette) clauses(v accountstate.Facts, now int64, rowDrift bool) clauses
 		c[clauseSource] = p.Dim + "via " + Sanitize(v.Obs.Peer) + p.Rst
 	}
 	// No limits is already the body of an empty observation; repeating it as
-	// a caption would say the same thing twice. Nor is an aged-out token worth
-	// a word while the figures on show are current, whoever read them: the
-	// errand buys a reading, and a current one is on show. Once they age the
-	// errand comes back.
+	// a caption would say the same thing twice. Nor, on a machine that pulls
+	// other machines' readings, is an aged-out token worth a word while the
+	// figures on show are current, whoever read them: the errand buys a
+	// reading, and a current one is on show; once they age it comes back. A
+	// machine on its own says it as it always has.
 	sayAttempt := v.Attempt.State != accountstate.AttemptOK && v.Attempt.State != accountstate.AttemptNone &&
 		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0) &&
-		!(v.Attempt.State == accountstate.AttemptTokenStale && fresh)
+		!(v.Attempt.State == accountstate.AttemptTokenStale && fresh && v.Paired)
 	if sayAttempt || v.Attempt.StoreError != "" {
 		c[clauseAttempt] = p.Dim + attemptReason(v, now) + p.Rst
 	}

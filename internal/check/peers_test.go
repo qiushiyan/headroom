@@ -64,13 +64,19 @@ func TestRunSaysHowPullsStand(t *testing.T) {
 	cfg := config.Config{Claude: claude, Codex: codex}
 
 	var out strings.Builder
+	alone := cfg
+	alone.Claude.Peers, alone.Codex.Peers = nil, nil
+	without := Run(alone, &out, false, nil)
+	out.Reset()
 	code := Run(cfg, &out, false, nil)
 	text := out.String()
-	if !strings.Contains(text, " peer[mini2]: not asked yet") || !strings.Contains(text, "codex peer[mini2]: not asked yet") {
-		t.Errorf("a group left out its peer line:\n%s", text)
+	for _, want := range []string{"--   peer[mini2]: not asked yet", "--   codex peer[mini2]: not asked yet"} {
+		if strings.Count(text, want) != 1 {
+			t.Errorf("want one %q line:\n%s", want, text)
+		}
 	}
-	if strings.Contains(text, "FAIL  peer") || strings.Contains(text, "FAIL  codex peer") {
-		t.Errorf("a peer line failed the run:\n%s", text)
+	if code != without {
+		t.Errorf("naming a peer moved the verdict from %d to %d", without, code)
 	}
 
 	// Claude Code's group alone, so the closing line answers for this line.

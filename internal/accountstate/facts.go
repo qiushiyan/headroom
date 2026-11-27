@@ -172,7 +172,7 @@ func FreshFor(scope config.Scope) time.Duration {
 // them separate prevents a 429 or stale token from erasing known usage.
 type Facts struct {
 	Vendor      config.Vendor
-	FreshFor    time.Duration // the scope's spacing; 0 means FreshWindow
+	FreshFor    time.Duration // the scope's window (FreshFor); 0 means FreshWindow
 	Label       string
 	DirMismatch string // dir name when the logged-in email doesn't match it
 	Plan        string
@@ -202,6 +202,14 @@ type Facts struct {
 	Login   LoginReach
 	Obs     *Observation // nil = nothing known
 	Attempt Attempt
+
+	// Paired reports that the scope names peers: the figures may be another
+	// machine's, and every reading is current for FreshFor's longer window.
+	Paired bool
+	// basePlan and baseLabel are what the account itself says — its login's
+	// plan, its name — which Show falls back to when the figures name
+	// neither, so a reading that names no plan never keeps another's.
+	basePlan, baseLabel string
 
 	// Load is what an automatic launch counts on this account's subscription
 	// beyond its figures — busy sessions and recent launches — from every
@@ -244,6 +252,12 @@ func (v Facts) Fresh(now int64) bool {
 // chosen goes through it, so the plan and label always follow the figures.
 func (v *Facts) Show(o *Observation) {
 	v.Obs = o
+	if v.basePlan != "" {
+		v.Plan = v.basePlan
+	}
+	if v.baseLabel != "" {
+		v.Label = v.baseLabel
+	}
 	if o == nil {
 		return
 	}
@@ -253,6 +267,13 @@ func (v *Facts) Show(o *Observation) {
 	if o.Email != "" {
 		v.Label = o.Email
 	}
+}
+
+// SetLoginPlan is the plan the account's login names, shown whenever the
+// figures name none.
+func (v *Facts) SetLoginPlan(plan string) {
+	v.basePlan = plan
+	v.Show(v.Obs)
 }
 
 // Newest is the reading that stands of two: the later one, and on a tie the

@@ -111,8 +111,59 @@ func TestAFailedPullKeepsTheLastAnswer(t *testing.T) {
 		t.Fatal("a machine that did not answer was never asked again")
 	}
 	st, _ := s.Load().PeerStatus("mini2")
-	if st.Error != "ssh could not reach it" || st.FailedMS != later.UnixMilli() || st.PulledMS != now.UnixMilli() || st.AttemptMS != retry.UnixMilli() {
-		t.Errorf("status = %+v, want each outcome under its own time", st)
+	if st.Error != "ssh could not reach it" || st.FailedMS != later.UnixMilli() || st.PulledMS != now.UnixMilli() || st.AttemptMS != retry.UnixMilli() || !st.Pending {
+		t.Errorf("status = %+v, want each outcome under its own time and the new ask pending", st)
+	}
+}
+
+// Which outcome came last never rests on a clock: an answer after a failure
+// clears it even when the clock has stepped back past the failure's time,
+// and the next pull is due a spacing on, not a retry on.
+func TestAnAnswerClearsTheFailureWhateverTheClock(t *testing.T) {
+	s := Open(pairedScope(t.TempDir()))
+	now := time.Now()
+	c, _ := s.ClaimPull("mini2", now)
+	s.RecordPull("mini2", c.Generation, nil, "ssh could not reach it", now)
+	// The clock stepped back an hour: the last ask now reads as stamped in
+	// the future, so the pull is due, and its answer lands before the
+	// failure's time.
+	back := now.Add(-time.Hour)
+	if c, _ = s.ClaimPull("mini2", back); !c.Permit {
+		t.Fatal("an ask stamped in the future held the pull off")
+	}
+	s.RecordPull("mini2", c.Generation, map[string]Observation{"uuid:a1": reading(back)}, "", back)
+	st, _ := s.Load().PeerStatus("mini2")
+	if st.Error != "" || st.FailedMS != 0 || st.Pending {
+		t.Errorf("status = %+v, want the answer to stand as the newest outcome", st)
+	}
+}
+
+// A reading a reader would refuse never enters the record: one stamped too
+// far ahead would otherwise stand over every later, valid reading of the
+// account, which the reader would then never see. A reading past the
+// ledger's retention is not read.
+func TestOnlyUsableReadingsAreKeptAndRead(t *testing.T) {
+	s := Open(pairedScope(t.TempDir()))
+	now := time.Now()
+	k := Key{UUID: "a1"}
+	pull(t, s, "mini2", now, map[string]Observation{k.ID(): reading(now.Add(time.Hour))})
+	pull(t, s, "mini2", now.Add(rootScope("").RequestSpacing()), map[string]Observation{k.ID(): reading(now)})
+	if o, ok := s.Load().PeerObservation("mini2", k, now); !ok || o.FetchedAtMS != now.UnixMilli() {
+		t.Errorf("a reading stamped an hour ahead hid the valid one: %+v %v", o, ok)
+	}
+	if _, ok := s.Load().PeerObservation("mini2", k, now.Add(retention+time.Hour)); ok {
+		t.Error("a reading past the ledger's retention was read")
+	}
+}
+
+// A document no claim can write says the next pull is not soon, so neither a
+// launch nor the board spins on a claim that must fail.
+func TestNoPullIsDueOnADocumentNoClaimCanWrite(t *testing.T) {
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":99}`)
+	now := time.Now()
+	if next := Open(pairedScope(root)).Load().NextPull("mini2", now); !next.After(now.Add(rootScope(root).RequestSpacing())) {
+		t.Errorf("next pull %v on a newer headroom's document", next)
 	}
 }
 

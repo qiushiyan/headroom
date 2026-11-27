@@ -1,7 +1,7 @@
 # Readings from other machines — one home's figures, current wherever the account is used
 
 Status: built on the `peer-readings` branch, 2026-11-27, and revised by its
-review (round 1, Astra: § Review revisions). Written against `main` at
+review (rounds 1 and 2, Astra: § Review revisions). Written against `main` at
 a0feb6b, on two macOS machines (a laptop and a desk mini) holding the same
 seven Claude Code accounts.
 
@@ -87,8 +87,13 @@ pull.
   is carried through writes as it stands, as an older binary carries it.
   Disposable like the placements: an unreadable section is reported, read as
   empty, and set aside at the next pull. Readings are merged per key, newer
-  over older, kept only for `uuid:` keys with a body the store keeps, none
-  older than the ledger's thirty days, at most 256 per machine. A machine
+  over older, of only the readings a reader would take — `uuid:` keys, a body
+  the store keeps, stamped neither past the clock skew allowed nor older than
+  the ledger's thirty days — so a reading stamped too far ahead never stands
+  over a later valid one; at most 256 per machine. The read applies the same
+  bounds. An answer clears the failure it follows, and the generation of the
+  newest outcome says whether an ask has one yet, so which outcome came last
+  never rests on a clock. A machine
   nobody has asked in thirty days is swept at a pull, by age, never by who
   the caller's configuration names; a home that names no peer at all carries
   the section as it stands.
@@ -98,11 +103,13 @@ pull.
   not the newest ask's, as `Complete` does a stale fetch. The next pull is due
   a spacing later, or five minutes after a failure (a laptop asleep costs
   each ask a connection timeout) — `Snapshot.NextPull` states the same rule
-  for the launch gate and the board's schedule. ssh runs with
+  for the launch gate and the board's schedule, and says not soon on a
+  document no claim can write (a newer headroom's, or one unreadable), as
+  `NextEligible` does. ssh runs with
   `BatchMode=yes`, `ConnectTimeout=3`, `-T`, and the remote command puts
   `~/.local/bin` (where `make install` puts headroom) ahead of PATH; the ask
-  is bounded at eight seconds, a child holding the output pipe included
-  (`WaitDelay`), and its answer at 4 MiB. A pull cut short by the round's own
+  is bounded at eight seconds, and a child left holding the output pipe has a
+  second more to let go (`WaitDelay`); the answer is bounded at 4 MiB. A pull cut short by the round's own
   end records nothing. A failure keeps the readings and records why under
   its own time. This machine failing to claim or record a pull is a `peers`
   problem of the round, in the JSON documents.
@@ -116,13 +123,17 @@ pull.
   `accountstate.Newest`. A machine the scope does not name is never read, so
   turning the variable off returns the board to this machine's own figures at
   once.
-- **In a round.** A pull that lands sends one result holding every account's
-  figures chosen again by `Select` over the store as it now stands; the round
-  shows them except where it holds a live answer of its own that is newer,
-  which may not have reached the store. A live answer is applied by `Newest`
-  too, so a reading stamped by a clock ahead of this one stands on the board
-  as it does on disk. A pull never touches the attempt axis, which is about
-  this machine's request.
+- **In a round.** A round that pulls turns every arrival — a request's
+  answer, a pull that landed — into figures in one place, in order: a
+  selector goroutine reads the store after each and chooses the affected
+  accounts' figures by `Select`, with any answer of this process the store
+  could not record as one more candidate. Each choice is made from a store at
+  least as new as the one before it, so the last to land is the newest, and
+  `Apply` only shows what it is handed. A round that pulls from nobody shows
+  each answer as it lands, as on `main`. A pull never touches the attempt
+  axis, which is about this machine's request. Plan and label are rebuilt
+  from the account each time the figures change (`Facts.Show`), so a reading
+  naming no plan never keeps another's.
 - **Freshness.** `accountstate.FreshFor(scope)`: on a machine that names
   peers, `max(spacing, placement.StaleAfter)` — 15 minutes — for every
   source; on one alone, the spacing. What makes figures current is their
@@ -133,9 +144,10 @@ pull.
   account in use was 3 minutes old, and the row read "stale" with a
   run-a-session errand), then as fifteen minutes for pulled readings only,
   which the review showed gave two meanings to "current" on one board.
-- **Captions.** "via <machine>" names a pulled reading. An aged-out token is
-  not captioned while the figures on show are current, whoever read them:
-  the errand buys a reading, and a current one is on show. A drift marker on
+- **Captions.** "via <machine>" names a pulled reading. On a machine that
+  pulls, an aged-out token is not captioned while the figures on show are
+  current, whoever read them: the errand buys a reading, and a current one is
+  on show. A machine on its own captions it as it always has. A drift marker on
   a pulled reading sends to `headroom check on <machine>`, since check
   audits the responses its own machine stored.
 
@@ -156,6 +168,23 @@ command, and a leftover section reported on a machine that names no peer;
 `check` dating an old failure to a new ask; every exit 2 diagnosed as an old
 build; a peer's drift sent to a check that cannot see it; the freshness
 window depending on the source.
+
+Round 2 (`review-r2`) found the round-1 fixes partly integrated and four
+regressions, all fixed: two pulls' store selections could land out of order
+and roll the board back, and the live path's `Newest` let a stored reading
+stamped ahead outlast the answer that replaced it (one selector goroutine,
+and `main`'s live path for a round that pulls from nobody); a future-stamped
+reading admitted by the merge hid later valid ones (the merge admits only
+usable readings); an answer after a clock step back left a failure standing
+(an answer clears the failure; the outcome's generation says pending). Also:
+`NextPull` on an unwritable document, the unpaired section left undecoded,
+the plan kept across readings, the bound's wording, the token caption on an
+unpaired machine, the setup skill's refresh step and "via" wording, and
+sharper pins for the board mark, headless placement, both peers' order, the
+unrecorded answer, the exporter's onward pull, an absent vendor's `[]`, the
+pull's own deadline and check's per-group lines. Rebutted: legacy failure
+records from the branch's first commit — that format was never installed,
+and the one record written in it, by the dogfood run, holds no failure.
 
 ## Verification
 

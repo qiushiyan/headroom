@@ -225,7 +225,7 @@ func TestCaptionKeepsEveryClause(t *testing.T) {
 			// current — inside a paired machine's window, whoever read them —
 			// this machine's aged-out token is no errand.
 			name: "current figures from another machine name it and spare the token errand",
-			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute,
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute, Paired: true,
 				Obs:     &accountstate.Observation{Rows: []usage.Row{row}, ObservedAt: now - 600, Source: accountstate.SourcePeer, Peer: "mini2"},
 				Attempt: attempt(accountstate.AttemptTokenStale)},
 			want:    []string{"12%", "via mini2", "observed 10m ago"},
@@ -233,14 +233,21 @@ func TestCaptionKeepsEveryClause(t *testing.T) {
 		},
 		{
 			name: "current figures of this machine's own spare the token errand too",
-			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute,
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute, Paired: true,
 				Obs: obs(10*time.Minute, accountstate.SourceStore, row), Attempt: attempt(accountstate.AttemptTokenStale)},
 			want:    []string{"12%", "observed 10m ago"},
 			notWant: []string{"stale", "access token"},
 		},
 		{
+			// Opt-in: a machine that pulls from nobody says what it always said.
+			name: "a machine on its own still sends the errand over current figures",
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a",
+				Obs: obs(20*time.Second, accountstate.SourceCache, row), Attempt: attempt(accountstate.AttemptTokenStale)},
+			want: []string{"12%", "access token stale"},
+		},
+		{
 			name: "old figures from another machine still send the errand",
-			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute,
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute, Paired: true,
 				Obs:     &accountstate.Observation{Rows: []usage.Row{row}, ObservedAt: now - 3*3600, Source: accountstate.SourcePeer, Peer: "mini2"},
 				Attempt: attempt(accountstate.AttemptTokenStale)},
 			want: []string{"stale", "via mini2", "observed 3h ago", "access token stale"},

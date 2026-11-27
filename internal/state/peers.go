@@ -39,9 +39,11 @@ const (
 )
 
 // peerRec is what this machine last heard from one other. AttemptMS and
-// Generation are the newest ask; PulledMS is when an answer last landed and
-// FailedMS when an ask last failed, Error why — each outcome dated by itself,
-// so a failure is never told under a later ask's time. Readings are the
+// Generation are the newest ask, Outcome the generation of the newest outcome
+// recorded, so an ask newer than it has none yet. PulledMS is when an answer
+// last landed; FailedMS when the newest outcome failed, Error why, both
+// cleared by an answer — so which came last never rests on a clock, and a
+// failure is never told under a later ask's time. Readings are the
 // machine's own newest reading of each account it has answered for, by the
 // ledger's key: an answer adds and renews them and never takes one away,
 // since an answer that leaves an account out says nothing about the reading
@@ -50,6 +52,7 @@ const (
 type peerRec struct {
 	AttemptMS  int64                  `json:"attempt_ms"`
 	Generation int64                  `json:"generation,omitempty"`
+	Outcome    int64                  `json:"outcome_generation,omitempty"`
 	PulledMS   int64                  `json:"pulled_ms,omitempty"`
 	FailedMS   int64                  `json:"failed_ms,omitempty"`
 	Error      string                 `json:"error,omitempty"`
@@ -57,7 +60,7 @@ type peerRec struct {
 }
 
 // failing reports that the newest outcome was a failure.
-func (r peerRec) failing() bool { return r.FailedMS > r.PulledMS }
+func (r peerRec) failing() bool { return r.FailedMS != 0 }
 
 // nextPullMS is when a pull from this machine is next due, in Unix
 // milliseconds; 0 means now. One spacing after the last ask, or PeerRetry
@@ -84,10 +87,13 @@ type PullClaim struct {
 	Generation int64
 }
 
-// PeerStatus is how pulling from one machine stands, for `check` to say.
+// PeerStatus is how pulling from one machine stands, for `check` to say:
+// when it was last asked, whether that ask has an outcome yet, when an answer
+// last landed, and — when the newest outcome failed — when and why.
 type PeerStatus struct {
 	AttemptMS, PulledMS, FailedMS int64
 	Error                         string
+	Pending                       bool
 	Readings                      int
 }
 
@@ -133,10 +139,11 @@ func (s *Store) RecordPull(peer string, generation int64, readings map[string]Ob
 		if !ok || r.Generation != generation {
 			return nil
 		}
+		r.Outcome = generation
 		if failure != "" {
 			r.FailedMS, r.Error = at.UnixMilli(), failure
 		} else {
-			r.PulledMS, r.Error = at.UnixMilli(), ""
+			r.PulledMS, r.FailedMS, r.Error = at.UnixMilli(), 0, ""
 			r.Readings = mergeReadings(r.Readings, readings, at)
 		}
 		d.peers[peer] = r
@@ -145,15 +152,15 @@ func (s *Store) RecordPull(peer string, generation int64, readings map[string]Ob
 	})
 }
 
-// mergeReadings is held with fresh laid over it, newest per key: only
-// readings keyed by identity, with a body the store keeps, none older than
-// the ledger's retention, and the newest peerReadingsMax of them.
+// mergeReadings is held with fresh laid over it, newest per key, of the
+// readings a reader would take (usableReading) — so one a reader refuses,
+// stamped too far ahead, never stands over a usable one, and a record holding
+// one recovers at the next answer — and the newest peerReadingsMax of them.
 func mergeReadings(held, fresh map[string]Observation, at time.Time) map[string]Observation {
 	out := make(map[string]Observation, len(held)+len(fresh))
-	cutoff := at.Add(-retention).UnixMilli()
 	for _, m := range []map[string]Observation{held, fresh} {
 		for id, o := range m {
-			if !strings.HasPrefix(id, "uuid:") || o.FetchedAtMS <= cutoff || len(o.Body) == 0 || len(o.Body) > BodyLimit {
+			if !strings.HasPrefix(id, "uuid:") || !usableReading(o, at) || len(o.Body) > BodyLimit {
 				continue
 			}
 			if prev, ok := out[id]; ok && prev.FetchedAtMS >= o.FetchedAtMS {
@@ -181,19 +188,30 @@ func (s Snapshot) PeerObservation(peer string, k Key, now time.Time) (Observatio
 		return Observation{}, false
 	}
 	o, ok := s.d.peers[peer].Readings[k.ID()]
-	if !ok || len(o.Body) == 0 || o.FetchedAtMS <= 0 || o.FetchedAtMS > now.Add(futureSkew).UnixMilli() {
+	if !ok || !usableReading(o, now) {
 		return Observation{}, false
 	}
 	return o, true
 }
 
+// usableReading is a reading a reader takes at now: it has a body, and a time
+// neither stamped in the future past the skew a clock may carry nor older
+// than the ledger's retention.
+func usableReading(o Observation, now time.Time) bool {
+	return len(o.Body) > 0 && o.FetchedAtMS > now.Add(-retention).UnixMilli() && o.FetchedAtMS <= now.Add(futureSkew).UnixMilli()
+}
+
 // NextPull is when a pull from peer is next due, by the rule ClaimPull
 // applies; the zero time means now. A surface deciding whether, or when, to
 // run a round reads it, so a machine whose own accounts have nothing to ask
-// still pulls; the claim alone authorizes. Never, under a scope that names no
-// peers, or a section that could not be read and will be set aside at the
-// next pull — which is due.
+// still pulls; the claim alone authorizes. A document no claim can write — a
+// newer headroom's, or one that cannot be read — says not soon, as
+// NextEligible does, so nothing spins on a claim that must fail. A section
+// that could not be read is set aside by the next pull, which is due.
 func (s Snapshot) NextPull(peer string, now time.Time) time.Time {
+	if s.d.readOnly() || s.d.cond == condUnreadable {
+		return now.Add(ceiling(s.spacing))
+	}
 	if !s.d.has(secPeers) {
 		return time.Time{}
 	}
@@ -210,7 +228,8 @@ func (s Snapshot) PeerStatus(peer string) (PeerStatus, bool) {
 	if !ok || !s.d.has(secPeers) {
 		return PeerStatus{}, false
 	}
-	return PeerStatus{AttemptMS: r.AttemptMS, PulledMS: r.PulledMS, FailedMS: r.FailedMS, Error: r.Error, Readings: len(r.Readings)}, true
+	return PeerStatus{AttemptMS: r.AttemptMS, PulledMS: r.PulledMS, FailedMS: r.FailedMS, Error: r.Error,
+		Pending: r.Generation > r.Outcome, Readings: len(r.Readings)}, true
 }
 
 // sweepPeers drops the record of a machine nobody has asked in the ledger's
@@ -238,12 +257,4 @@ func validPeerRecs(m map[string]peerRec) bool {
 		}
 	}
 	return true
-}
-
-// unread leaves the peers section as it stands: not read, not reported, and
-// carried through the write verbatim. A store whose scope names no peer reads
-// the document so.
-func (d *doc) unread() {
-	d.peers, d.held[secPeers] = map[string]peerRec{}, true
-	d.problems = slices.DeleteFunc(d.problems, func(p Problem) bool { return p.Section == secPeers.String() })
 }

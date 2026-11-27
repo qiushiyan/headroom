@@ -95,7 +95,7 @@ func checkPeers(scope config.Scope, set accounts.Set, snap state.Snapshot, r *re
 			continue
 		}
 		switch {
-		case st.FailedMS > st.PulledMS:
+		case st.FailedMS != 0:
 			newest := "none yet"
 			if st.PulledMS > 0 {
 				newest = ago(st.PulledMS)
@@ -115,7 +115,7 @@ func checkPeers(scope config.Scope, set accounts.Set, snap state.Snapshot, r *re
 			}
 			r.ok(fmt.Sprintf("%s: answered %s, with a usable reading of %d of the %d accounts here", label, ago(st.PulledMS), matched, len(set.Accounts)))
 		}
-		if st.AttemptMS > max(st.PulledMS, st.FailedMS) {
+		if st.Pending {
 			r.note(fmt.Sprintf("%s%s: asked %s, with no outcome recorded — still on its way, or cut short", r.prefix, label, ago(st.AttemptMS)))
 		}
 	}

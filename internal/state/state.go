@@ -278,7 +278,10 @@ func statePath(accountsRoot string) string {
 	return filepath.Join(accountsRoot, "state.json")
 }
 
-func read(accountsRoot string) *doc {
+// read decodes the document under accountsRoot. readPeers is whether the
+// peers section is read at all: a store whose scope names no peer leaves it
+// undecoded, unreported and carried as it stands.
+func read(accountsRoot string, readPeers bool) *doc {
 	d := &doc{
 		root:     accountsRoot,
 		raw:      map[string]json.RawMessage{},
@@ -355,7 +358,10 @@ func read(accountsRoot string) *doc {
 		d.runs, d.held[secRuns] = nil, true
 		d.problems = append(d.problems, Problem{"runs", "unreadable — set aside at the next headless placement; running headless sessions stop counting as busy"})
 	}
-	if !decoded("peers", &d.peers) || !validPeerRecs(d.peers) {
+	switch {
+	case !readPeers:
+		d.held[secPeers] = true
+	case !decoded("peers", &d.peers) || !validPeerRecs(d.peers):
 		d.peers, d.held[secPeers] = map[string]peerRec{}, true
 		d.problems = append(d.problems, Problem{"peers", "unreadable — set aside at the next pull; readings from other machines start empty"})
 	}

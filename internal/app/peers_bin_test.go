@@ -6,9 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/round"
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
@@ -52,8 +55,10 @@ func TestAReadingFromAnotherMachineIsShownHere(t *testing.T) {
 		}
 	}
 	// ssh runs the remote command, its last argument, as the other machine's
-	// login shell would: under that home, with a PATH that lacks ~/.local/bin.
-	ssh := fmt.Sprintf("#!/bin/sh\nfor last; do :; done\nexec env -i HOME=%q PATH=%q /bin/sh -c \"$last\"\n", there.home, there.stubs+":/usr/bin:/bin")
+	// login shell would: under that home, with a PATH that lacks ~/.local/bin,
+	// and that machine's own HEADROOM_PEERS naming this one back — so a
+	// readings that pulled onward would reach the recording ssh.
+	ssh := fmt.Sprintf("#!/bin/sh\nfor last; do :; done\nexec env -i HOME=%q PATH=%q HEADROOM_PEERS=mac /bin/sh -c \"$last\"\n", there.home, there.stubs+":/usr/bin:/bin")
 	if err := os.WriteFile(filepath.Join(here.stubs, "ssh"), []byte(ssh), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +101,11 @@ func TestAReadingFromAnotherMachineIsShownHere(t *testing.T) {
 		}
 	}
 
+	// A vendor this machine lacks answers an empty list, never no list.
+	if out := run("readings", "--vendor", "codex"); !strings.Contains(string(out), `"readings":[]`) {
+		t.Errorf("readings for an absent vendor = %s, want an empty list", out)
+	}
+
 	// Without HEADROOM_PEERS the same home reads as a machine on its own.
 	env = here.env("HEADROOM_USAGE_URL=http://127.0.0.1:1")
 	if err := json.Unmarshal(run("limits", "--vendor", "claude", "--account", "a@x.com"), &doc); err != nil {
@@ -103,5 +113,67 @@ func TestAReadingFromAnotherMachineIsShownHere(t *testing.T) {
 	}
 	if u := doc.Accounts[0].Usage; u != nil && u.Source == "peer" {
 		t.Errorf("a home naming no peer showed a pulled reading: %+v", u)
+	}
+}
+
+// pairedWith is f's scope naming mini2, holding mini2's reading of name —
+// session and weekly percent, made now.
+func (f autoFixture) pairedWith(name string, session, weekly int) config.Scope {
+	f.t.Helper()
+	paired := f.cfg
+	paired.Peers = []string{"mini2"}
+	st := state.Open(paired)
+	now := time.Now()
+	c, err := st.ClaimPull("mini2", now)
+	if err != nil || !c.Permit {
+		f.t.Fatalf("claim: %+v %v", c, err)
+	}
+	reset := func(d time.Duration) string { return now.Add(d).UTC().Format(time.RFC3339) }
+	body := fmt.Sprintf(`{"limits":[{"kind":"session","group":"session","percent":%d,"resets_at":%q},`+
+		`{"kind":"weekly_all","group":"weekly","percent":%d,"resets_at":%q}]}`, session, reset(2*time.Hour), weekly, reset(72*time.Hour))
+	if err := st.RecordPull("mini2", c.Generation, map[string]state.Observation{f.key(name).ID(): {FetchedAtMS: now.UnixMilli(), Body: []byte(body)}}, "", now); err != nil {
+		f.t.Fatal(err)
+	}
+	return paired
+}
+
+// The board's next-launch mark and a headless placement choose on another
+// machine's newer reading as a launch does: b's own figures make it the
+// emptiest, mini2's newer reading of b says otherwise, and both move — while
+// the same home naming no peer keeps choosing on its own figures.
+func TestTheMarkAndAHeadlessPlacementFollowAnotherMachinesReading(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com", "b@x.com")
+	f.observe("qiushi", 40, 10, time.Minute)
+	f.observe("a@x.com", 20, 10, time.Minute)
+	f.observe("b@x.com", 10, 10, time.Minute)
+	f.mint("a@x.com", 300*24*time.Hour)
+	f.mint("b@x.com", 300*24*time.Hour)
+	paired := f.pairedWith("b@x.com", 60, 10)
+
+	marked := func(scope config.Scope) string {
+		r := round.FromDisk(scope, time.Now())
+		markBoard(r, time.Now(), f.edges)
+		for _, a := range r.Accounts() {
+			if a.View.Next {
+				return a.Acct.Name
+			}
+		}
+		return ""
+	}
+	if got := marked(f.cfg); got != "b@x.com" {
+		t.Errorf("on its own figures the board marks %q, want b", got)
+	}
+	if got := marked(paired); got != "a@x.com" {
+		t.Errorf("with mini2's newer reading of b the board marks %q, want a", got)
+	}
+
+	doc, code, errw := f.place("--dry-run")
+	if code != 0 || doc.Account != "b@x.com" {
+		t.Errorf("on its own figures a headless placement takes %q (exit %d, %s), want b", doc.Account, code, errw)
+	}
+	f.cfg = paired
+	doc, code, errw = f.place("--dry-run")
+	if code != 0 || doc.Account != "a@x.com" {
+		t.Errorf("with mini2's newer reading of b a headless placement takes %q (exit %d, %s), want a", doc.Account, code, errw)
 	}
 }

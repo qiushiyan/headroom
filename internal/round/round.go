@@ -171,15 +171,25 @@ func (r *Round) Asking() bool {
 }
 
 // Result is one answer of a round's Fetch: the request's result, by the index
-// of the account it answers, and the round it belongs to. A pull's answer is
-// no request's: it carries selected, every account's figures chosen afresh
-// from the store the pull has just written, or problem, this machine failing
-// to record a pull — and nothing about any request.
+// of the account it answers, and the round it belongs to. In a round that
+// pulls, selection carries the figures the accounts it covers come to, chosen
+// from the store after the answer landed; a pull's result is no request's
+// (pulled), and carries every account's selection, or problem — this machine
+// failing to claim or record the pull.
 type Result struct {
 	refresh.Result
-	of       *Round
-	selected []*accountstate.Observation
-	problem  string
+	of        *Round
+	selection map[int]*accountstate.Observation
+	pulled    bool
+	problem   string
+}
+
+// event is what reaches a pulling round's selector: a request's result, a
+// pull that landed, or this machine failing to record one.
+type event struct {
+	res     *refresh.Result
+	pulled  bool
+	problem string
 }
 
 // Fetch is the budget half of the round: the claim, and whatever requests it
@@ -200,39 +210,73 @@ func (r *Round) Fetch(ctx context.Context) <-chan Result {
 	if r.pull == nil || len(r.Scope.Peers) == 0 {
 		return r.Feed(start(ctx, r.Store, requests))
 	}
+	// Figures then arrive from two places at once — this machine's requests
+	// and the other machines' answers — and the board must come to what the
+	// store holds, whatever order they land in. So every arrival is turned
+	// into figures in one place, in order: the selector reads the store after
+	// each and chooses the affected accounts' figures by the assembly's rule
+	// (accountstate.Select), with any answer of this process the store could
+	// not record as one more candidate. Each choice is made from a store at
+	// least as new as the one before it, so the last to land is the newest;
+	// Apply only shows what it is handed.
+	//
 	// The pulls start first: the claim inside start can wait on the lock,
-	// and a pull has no reason to wait on it. A pull that lands sends the
-	// figures every account's choice now comes to, made by the rule the
-	// assembly applies, over the store as it now stands — never a reading of
-	// its own for the round to rank.
+	// and a pull has no reason to wait on it.
 	accts := r.Accounts()
-	out := make(chan Result, len(r.rows)+len(r.Scope.Peers))
+	events := make(chan event, len(r.rows)+len(r.Scope.Peers))
 	var wg sync.WaitGroup
 	for _, peer := range r.Scope.Peers {
 		wg.Go(func() {
 			answered, err := peers.Pull(ctx, r.Store, peer, r.pull)
 			switch {
 			case err != nil:
-				out <- Result{of: r, problem: err.Error()}
+				events <- event{problem: err.Error()}
 			case answered:
-				snap, now := r.Store.Load(), time.Now()
-				selected := make([]*accountstate.Observation, len(accts))
-				for i, a := range accts {
-					selected[i] = accountstate.Select(snap, a.Key, a.Acct, now)
-				}
-				out <- Result{of: r, selected: selected}
+				events <- event{pulled: true}
 			}
 		})
 	}
 	src := start(ctx, r.Store, requests)
 	wg.Go(func() {
 		for u := range src {
-			out <- Result{Result: u, of: r}
+			events <- event{res: &u}
 		}
 	})
 	go func() {
 		wg.Wait()
-		close(out)
+		close(events)
+	}()
+	out := make(chan Result, len(r.rows)+len(r.Scope.Peers))
+	go func() {
+		defer close(out)
+		unrecorded := map[int]*accountstate.Observation{}
+		choose := func(snap state.Snapshot, now time.Time, i int) *accountstate.Observation {
+			a := accts[i]
+			return accountstate.Newest(unrecorded[i], accountstate.Select(snap, a.Key, a.Acct, now))
+		}
+		for ev := range events {
+			switch {
+			case ev.problem != "":
+				out <- Result{of: r, problem: ev.problem}
+			case ev.pulled:
+				snap, now := r.Store.Load(), time.Now()
+				sel := make(map[int]*accountstate.Observation, len(accts))
+				for i := range accts {
+					sel[i] = choose(snap, now, i)
+				}
+				out <- Result{of: r, selection: sel, pulled: true}
+			default:
+				u := *ev.res
+				res := Result{Result: u, of: r}
+				if u.Index >= 0 && u.Index < len(accts) {
+					if u.Observation != nil && u.StoreErr != nil {
+						unrecorded[u.Index] = u.Observation
+					}
+					res.selection = map[int]*accountstate.Observation{u.Index: choose(r.Store.Load(), time.Now(), u.Index)}
+				}
+				out <- res
+			}
+		}
 	}()
 	return out
 }
@@ -259,42 +303,28 @@ func (r *Round) Apply(res Result) {
 	if res.of != r {
 		return
 	}
-	switch {
-	case res.problem != "":
+	if res.problem != "" {
 		r.Problems = append(slices.Clip(r.Problems), state.Problem{Section: "peers", Detail: res.problem})
 		return
-	case res.selected != nil:
-		// The store's choice stands, except where this process holds an
-		// answer of its own the store may not: one whose record failed.
-		for i, d := range r.rows {
-			if i < len(res.selected) {
-				d.View.Show(accountstate.Newest(live(d.View.Obs), res.selected[i]))
-			}
-		}
-		return
 	}
-	if res.Index < 0 || res.Index >= len(r.rows) {
+	for i, o := range res.selection {
+		if i >= 0 && i < len(r.rows) {
+			r.rows[i].View.Show(o)
+		}
+	}
+	if res.pulled || res.Index < 0 || res.Index >= len(r.rows) {
 		return
 	}
 	d := r.rows[res.Index]
 	d.View.Attempt = res.Attempt
-	if res.Observation != nil {
-		// By the one rule: an answer this process got stands over what the
-		// row holds unless that is newer — another machine's reading stamped
-		// by a clock ahead of this one's, as the store would choose it too.
-		d.View.Show(accountstate.Newest(res.Observation, d.View.Obs))
+	if res.selection == nil && res.Observation != nil {
+		// A round that pulls from nobody shows each answer as it lands, as
+		// the store records it.
+		d.View.Show(res.Observation)
 	}
 	if res.StoreErr != nil {
 		d.View.Attempt.StoreError = res.StoreErr.Error()
 	}
-}
-
-// live is o when it is this process's own answer, and nil otherwise.
-func live(o *accountstate.Observation) *accountstate.Observation {
-	if o != nil && o.Source == accountstate.SourceLive {
-		return o
-	}
-	return nil
 }
 
 // Complete fetches and applies every result: a round with nobody watching it.
@@ -329,7 +359,7 @@ func (r *Round) Narrow(selector string) error {
 func claudeAccess(ctx context.Context, d *row, read creds.Reading, health auth.Status, item func(context.Context, accounts.Account) (creds.Item, string), now time.Time) {
 	blob, ok := creds.Parse(read.Raw)
 	if ok {
-		d.View.Plan = blob.PlanLabel()
+		d.View.SetLoginPlan(blob.PlanLabel())
 	}
 	d.View.Health = Health(health, read.Raw, blob, ok, now.UnixMilli())
 	d.View.Login = accountstate.LoginReached

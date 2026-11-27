@@ -6,8 +6,8 @@ Asks the usage endpoint about every account the budget lets it ask (for Antigrav
 agy -p /usage), stores the answers and prints nothing: the round headroom --json runs,
 without the health probes or the document. An automatic launch leaves one running for the
 next launch's figures. With HEADROOM_PEERS set it also pulls each machine named there
-(Claude Code and Codex, at most once a request spacing), whose readings the board and
-limits then show "via" that machine. It ends within about twelve seconds; SIGTERM, SIGINT
+(Claude Code and Codex, at most once a request spacing): the board then captions a newer
+reading of theirs "via" that machine, and the JSON documents name it in usage.peer. It ends within about twelve seconds; SIGTERM, SIGINT
 or SIGHUP stop it within one, with the request it abandoned recorded.
 
 Flags:

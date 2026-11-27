@@ -36,10 +36,12 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 	list := make([]Account, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
 		key := state.KeyFor(a)
-		v := Facts{Vendor: a.Scope.Vendor, FreshFor: FreshFor(a.Scope), Label: a.Name, Launcher: accounts.Launcher(a), Health: HealthUnprobed}
+		v := Facts{Vendor: a.Scope.Vendor, FreshFor: FreshFor(a.Scope), Paired: len(a.Scope.Peers) > 0,
+			Label: a.Name, Launcher: accounts.Launcher(a), Health: HealthUnprobed}
 		if a.Email != "" {
 			v.Label = a.Email
 		}
+		v.baseLabel = v.Label
 		if !a.IsPrimary() && a.Email != "" && a.Email != a.Name {
 			v.DirMismatch = a.Name
 		}
@@ -47,7 +49,7 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 		case config.Codex:
 			v.LoginCommand = accounts.EngineLauncher(a) + " -- login"
 			// What the login's id token says, until a response names a plan.
-			v.Plan = a.Auth.Plan
+			v.SetLoginPlan(a.Auth.Plan)
 			if !a.Readable {
 				// A Codex account that cannot say whose it is has no ledger
 				// key at all: it replays nothing, even if an earlier login on

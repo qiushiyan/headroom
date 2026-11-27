@@ -92,11 +92,11 @@ func Decode(vendor config.Vendor, data []byte) (map[string]state.Observation, er
 // document its headroom printed, or why there is none. SSH in production.
 type Asker func(ctx context.Context, peer string, vendor config.Vendor) ([]byte, error)
 
-// askWait bounds the ask: from the connection to the answer read, a child
-// still holding the output included. A pull runs beside a round's requests and
-// the round is not over until it is, so a machine slow to answer holds the
-// round about as long as a slow request does; the store's lock waits are the
-// store's own.
+// askWait bounds the ask, from the connection to the answer read; a child left
+// holding the output pipe has a second more to let go (SSH's WaitDelay). A
+// pull runs beside a round's requests and the round is not over until it is,
+// so a machine slow to answer holds the round about as long as a slow request
+// does; the store's lock waits are the store's own.
 const askWait = 8 * time.Second
 
 // Pull asks peer for its readings when the store says a pull is due, and
