@@ -1,9 +1,11 @@
 # Readings from other machines — one home's figures, current wherever the account is used
 
 Status: built on the `peer-readings` branch, 2026-11-27, and revised by its
-review (rounds 1 and 2, Astra: § Review revisions). Written against `main` at
-a0feb6b, on two macOS machines (a laptop and a desk mini) holding the same
-seven Claude Code accounts.
+review (rounds 1 and 2, Astra: § Review revisions); kept as the dated record
+of the decision. The design as it stands lives in `DESIGN.md` § Readings from
+other machines — read that, not this, for what is true today. Written against
+`main` at a0feb6b, on two macOS machines (a laptop and a desk mini) holding
+the same seven Claude Code accounts.
 
 ## Summary
 
