@@ -13,8 +13,10 @@ import (
 	"github.com/qiushiyan/headroom/internal/state"
 )
 
-// Each named machine gets its lines: answered; failed, under the failure's
-// own time; asked with no outcome yet; or never asked. None of them changes the verdict — a laptop asleep is not a fault —
+// Each named machine gets its lines: answered, with how many of this
+// machine's accounts its readings matched; failed, under the failure's own
+// time, with when the next ask is due; asked with no outcome yet; or never
+// asked. None of them changes the verdict — a laptop asleep is not a fault —
 // and a Codex line says it is Codex's.
 func TestCheckSaysHowEachMachineAnswered(t *testing.T) {
 	scope := config.Scope{Vendor: config.Codex, AccountsRoot: t.TempDir(), Spacing: config.DefaultSpacing,
@@ -33,8 +35,8 @@ func TestCheckSaysHowEachMachineAnswered(t *testing.T) {
 	checkPeers(scope, accounts.Set{Scope: scope, Accounts: []accounts.Account{{Name: "a@x.com", AccountID: "a"}}}, st.Load(), r)
 	got := out.String()
 	for _, want := range []string{
-		"codex peer[mini2]: answered just now",
-		"codex peer[laptop]: the ask 1h ago failed — ssh could not reach it: timed out; its newest answer: none yet",
+		"codex peer[mini2]: answered just now, with a usable reading of 0 of the 1 accounts here",
+		"codex peer[laptop]: the ask 1h ago failed — ssh could not reach it: timed out; its newest answer: none yet; the next ask is in 5m",
 		"codex peer[laptop]: asked just now, with no outcome recorded",
 		"codex peer[desk]: not asked yet",
 	} {

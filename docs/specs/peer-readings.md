@@ -46,8 +46,9 @@ Change: a new observation source, `peer`, with the machine's name: caption
 "via mini2", JSON `source: "peer"`, `peer: "mini2"` (schema 8, additive).
 Change: on a machine that names peers, figures are current for placement's
 fifteen minutes whoever read them; on one alone, for the spacing as before.
-Change: `check` prints a line per named machine: when it last answered, or
-why the newest ask failed, each outcome under its own time.
+Change: `check` prints a line per named machine: when it last answered and
+how many of this machine's accounts its readings matched, or why the newest
+ask failed and when the next is due, each outcome under its own time.
 Change: a launch or headless placement leaves a refresh when a pull is due,
 and the board schedules a round for one, even with nothing of its own to ask.
 

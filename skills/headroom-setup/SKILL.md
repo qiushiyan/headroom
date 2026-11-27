@@ -88,9 +88,11 @@ machine.
 3. On each machine: `headroom refresh --vendor claude`, then `headroom
    check`.
 
-Done when each machine's `check` has, under every vendor it uses,
-`peer[<machine>]: answered …`. `the ask … failed — <reason>` names what to
-fix there (unreachable, no headroom, a build without the readings command).
+Done when each machine's `check` has, under every vendor it uses, `peer[<machine>]:
+answered …, with a usable reading of N of the M accounts here` and N above
+0. `the ask … failed — <reason>` names what to fix there (unreachable, no
+headroom, a build without the readings command), and the line says when it
+asks again; 0 of M means the machines hold different accounts.
 
 ## A program that runs its own sessions
 
