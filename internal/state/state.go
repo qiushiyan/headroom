@@ -215,9 +215,10 @@ type doc struct {
 	runs []Run
 
 	// peers is what this machine last heard from each other machine it pulls
-	// readings from (peers.go). Disposable like the placements: each answer
-	// replaces what the last one said, so a section that will not decode is
-	// set aside at the next pull and the readings start empty.
+	// readings from (peers.go), read only under a scope that names peers.
+	// Disposable like the placements: every reading in it is renewed by the
+	// next answer from the machine that made it, so a section that will not
+	// decode is set aside at the next pull and the readings start empty.
 	peers map[string]peerRec
 
 	// cond is what reading the file came to; held is each section's standing
@@ -528,6 +529,13 @@ func (d *doc) marshal() ([]byte, error) {
 		}
 	}
 	put(secAccounts, false, d.accounts)
+	if d.cond == condNotJSON && d.held[secAccounts] {
+		// The file was not JSON and no claim has rebuilt the ledger yet: the
+		// silence it owes is kept by writing the section as one no reader
+		// decodes, so the next reader holds it too and the first claim, not
+		// whichever write came first, rebuilds it quiet.
+		out[secAccounts.String()] = json.RawMessage(`"unreadable: rebuilt quiet by the next claim"`)
+	}
 	put(secSessions, false, d.sessions)
 	put(secRuns, len(d.runs) == 0, d.runs)
 	put(secPlacements, len(d.placements.Recent) == 0 && len(d.placements.Last) == 0, d.placements)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/accounts"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
@@ -68,13 +69,14 @@ func auditResponses(snap state.Snapshot, r *report) {
 	}
 }
 
-// checkPeers says how the newest pull from each machine the scope names
-// went. It asserts nothing about the vendor or about headroom's files: a
-// laptop asleep is not a fault, and the readings it last gave stand, aged.
-// It is here so that a machine misnamed in HEADROOM_PEERS, or one running a
-// headroom without the readings command, is said somewhere other than in a
-// caption that never says "via" it.
-func checkPeers(scope config.Scope, snap state.Snapshot, r *report) {
+// checkPeers says how pulling from each machine the scope names stands. It
+// asserts nothing about the vendor or about headroom's files: a laptop asleep
+// is not a fault, and the readings it last gave stand, aged. It is here so
+// that a machine misnamed in HEADROOM_PEERS, or one running a headroom without
+// the readings command, is said
+// somewhere other than in a caption that never says "via" it. Each outcome is
+// told under its own time; an ask with none recorded yet is said as that.
+func checkPeers(scope config.Scope, _ accounts.Set, snap state.Snapshot, r *report) {
 	now := time.Now()
 	ago := func(ms int64) string {
 		if a := render.Age((now.UnixMilli() - ms) / 1000); a != "just now" {
@@ -85,25 +87,25 @@ func checkPeers(scope config.Scope, snap state.Snapshot, r *report) {
 	for _, peer := range scope.Peers {
 		label := fmt.Sprintf("peer[%s]", peer)
 		st, ok := snap.PeerStatus(peer)
-		if ok && st.Error == "" && st.PulledMS > 0 {
-			r.ok(fmt.Sprintf("%s: answered %s", label, ago(st.PulledMS)))
+		if !ok {
+			// A note carries no group prefix of its own, and a Codex line must
+			// still say it is Codex's.
+			r.note(r.prefix + label + ": not asked yet — the board, headroom --json and headroom refresh pull from it")
 			continue
 		}
-		// A note carries no group prefix of its own, and a Codex line must
-		// still say it is Codex's.
-		label = r.prefix + label
 		switch {
-		case !ok:
-			r.note(label + ": not asked yet — the board, headroom --json and headroom refresh pull from it")
-		case st.Error != "":
+		case st.FailedMS > st.PulledMS:
 			newest := "none yet"
 			if st.PulledMS > 0 {
 				newest = ago(st.PulledMS)
 			}
-			r.note(fmt.Sprintf("%s: the ask %s failed — %s; its newest answer: %s",
-				label, ago(st.AttemptMS), st.Error, newest))
-		default:
-			r.note(label + ": asked, and its answer is still on its way")
+			r.note(fmt.Sprintf("%s%s: the ask %s failed — %s; its newest answer: %s",
+				r.prefix, label, ago(st.FailedMS), st.Error, newest))
+		case st.PulledMS > 0:
+			r.ok(fmt.Sprintf("%s: answered %s", label, ago(st.PulledMS)))
+		}
+		if st.AttemptMS > max(st.PulledMS, st.FailedMS) {
+			r.note(fmt.Sprintf("%s%s: asked %s, with no outcome recorded — still on its way, or cut short", r.prefix, label, ago(st.AttemptMS)))
 		}
 	}
 }

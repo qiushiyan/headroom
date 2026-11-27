@@ -362,3 +362,44 @@ func TestScopeSpacingReachesFreshnessAndTheIdleCadence(t *testing.T) {
 		t.Errorf("idle cadence %v, want the scope's spacing", wait)
 	}
 }
+
+// Another machine's Codex reading passes the identity check a reading of this
+// machine's own does: under this account's key, a body naming another user of
+// the same workspace is never shown, and one naming this login is.
+func TestAPulledCodexReadingNamingSomeoneElseIsNeverShown(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		shown      bool
+	}{
+		{"its own", codexUsage("acct-1", "user-1", 76), true},
+		{"another user of the same account", codexUsage("acct-1", "user-9", 76), false},
+		{"another account", codexUsage("acct-9", "user-1", 76), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCodexFixture(t, "http://127.0.0.1:1")
+			f.scope.Peers = []string{"mini2"}
+			f.extra(t, login(1))
+			st := state.Open(f.scope)
+			now := time.Now()
+			c, err := st.ClaimPull("mini2", now)
+			if err != nil || !c.Permit {
+				t.Fatalf("claim: %+v %v", c, err)
+			}
+			key := state.Key{UUID: "acct-1/user-1"}
+			if err := st.RecordPull("mini2", c.Generation, map[string]state.Observation{key.ID(): {FetchedAtMS: now.UnixMilli(), Body: []byte(tc.body)}}, "", now); err != nil {
+				t.Fatal(err)
+			}
+			for _, a := range accountstate.Read(f.scope, st, now).Accounts {
+				if a.Acct.Name != "u1@x.com" {
+					continue
+				}
+				switch {
+				case (a.View.Obs != nil) != tc.shown:
+					t.Errorf("obs %+v, shown want %v", a.View.Obs, tc.shown)
+				case tc.shown && (a.View.Obs.Source != accountstate.SourcePeer || a.View.Obs.Rows[0].Percent != 76):
+					t.Errorf("obs %+v, want mini2's 76%%", a.View.Obs)
+				}
+			}
+		})
+	}
+}

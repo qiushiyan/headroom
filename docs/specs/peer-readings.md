@@ -1,8 +1,9 @@
 # Readings from other machines — one home's figures, current wherever the account is used
 
-Status: built on the `peer-readings` branch, 2026-11-27. Written against
-`main` at a0feb6b, on two macOS machines (a laptop and a desk mini) holding
-the same seven Claude Code accounts.
+Status: built on the `peer-readings` branch, 2026-11-27, and revised by its
+review (round 1, Astra: § Review revisions). Written against `main` at
+a0feb6b, on two macOS machines (a laptop and a desk mini) holding the same
+seven Claude Code accounts.
 
 ## Summary
 
@@ -17,27 +18,38 @@ cliushi@ and yqs@ hours old, the mini itell, qiushiyan@ and yan@. Account
 and organization ids matched on all seven, so every pair described one
 subscription; only the ages differed.
 
-Goal: every surface — the board, `limits`, placement, the statusline chip —
-shows, for each account, the newest reading any of the machines holds, named
-for the machine it came from.
+Goal: every surface — the board, `limits`, placement, headless placement,
+the statusline chip — uses, for each account, the newest reading any of the
+machines holds. The board's caption and the JSON documents name the machine
+it came from; the chip and a launch's own lines show its figure and age
+without the machine.
 Goal: opt-in. A machine that names no other behaves exactly as before: no ssh,
-no new section, no new caption.
+no new caption, and a `peers` section left by an earlier configuration is
+neither read nor reported, carried through writes as it stands.
 
 Change: `HEADROOM_PEERS` names the other machines, as ssh reaches them
 (comma- or space-separated). Claude Code's and Codex's scopes take them;
-Antigravity's takes none.
+Antigravity's takes none. A name that is no ssh destination is left out of
+every pull and failed by `check` against headroom's own configuration; no
+other command refuses over it.
 Change: `headroom readings --vendor claude|codex` (hidden) prints this
 machine's own newest reading of each account, raw, as a versioned document.
 Change: the rounds that already fetch — the board, `--json`, `refresh` (the
 child each launch leaves, and the chip's refresh) — also pull each named
 machine's document over ssh, at most once a spacing, beside their requests.
-Change: the answer is kept in a `peers` section of `state.json`, replaced
-whole by each answer; `accountstate` reads it as one more candidate, newest
-wins, a tie to this machine's own.
+Change: the answer is kept in a `peers` section of `state.json`; each answer
+adds and renews readings per account and takes none away. `accountstate`
+reads it as one more candidate under the one precedence rule
+(`accountstate.Newest`: newest wins, a tie at the second to the nearer
+source), which a round also applies to what arrives while it runs.
 Change: a new observation source, `peer`, with the machine's name: caption
 "via mini2", JSON `source: "peer"`, `peer: "mini2"` (schema 8, additive).
+Change: on a machine that names peers, figures are current for placement's
+fifteen minutes whoever read them; on one alone, for the spacing as before.
 Change: `check` prints a line per named machine: when it last answered, or
-why the newest ask failed.
+why the newest ask failed, each outcome under its own time.
+Change: a launch or headless placement leaves a refresh when a pull is due,
+and the board schedules a round for one, even with nothing of its own to ask.
 
 Boundary: nothing is pulled but what the other machine's headroom already
 holds. No vendor request, no token, no Keychain item crosses between
@@ -68,53 +80,116 @@ pull.
 
 ## Design
 
-- **The section.** `peers` → `{<machine>: {attempt_ms, pulled_ms, error,
-  readings: {<key>: {fetched_at_ms, body}}}}`. Disposable like the
-  placements: an unreadable section is reported, read as empty, and set aside
-  at the next pull. An older binary carries it through its writes untouched.
-  A machine nobody has asked in thirty days is swept by age, never by who the
-  caller's configuration names.
+- **The section.** `peers` → `{<machine>: {attempt_ms, generation,
+  pulled_ms, failed_ms, error, readings: {<key>: {fetched_at_ms, body}}}}`.
+  Read only by a store whose scope names peers; under one that names none it
+  is carried through writes as it stands, as an older binary carries it.
+  Disposable like the placements: an unreadable section is reported, read as
+  empty, and set aside at the next pull. Readings are merged per key, newer
+  over older, kept only for `uuid:` keys with a body the store keeps, none
+  older than the ledger's thirty days, at most 256 per machine. A machine
+  nobody has asked in thirty days is swept at a pull, by age, never by who
+  the caller's configuration names; a home that names no peer at all carries
+  the section as it stands.
 - **The pull.** `state.ClaimPull` is a test-and-set under the store's lock so
-  that of the surfaces asking at once only one opens a connection; the next
-  pull is due a spacing later, or five minutes after a failure (a laptop
-  asleep costs each ask a connection timeout). ssh runs with
+  that of the surfaces asking at once only one opens a connection; it hands
+  back a generation, and `RecordPull` drops an outcome whose generation is
+  not the newest ask's, as `Complete` does a stale fetch. The next pull is due
+  a spacing later, or five minutes after a failure (a laptop asleep costs
+  each ask a connection timeout) — `Snapshot.NextPull` states the same rule
+  for the launch gate and the board's schedule. ssh runs with
   `BatchMode=yes`, `ConnectTimeout=3`, `-T`, and the remote command puts
-  `~/.local/bin` (where `make install` puts headroom) ahead of PATH; a pull
-  is bounded at eight seconds. A pull cut short by the round's own end
-  records nothing. A failure keeps the last answer and records why.
-- **The read.** `newestObservation` considers this machine's stored fetch,
-  Claude Code's cache, then each named machine's reading; strictly newer
-  wins. A machine the scope does not name is never read, so turning the
-  variable off returns the board to this machine's own figures at once.
-- **Freshness.** A pulled reading is fresh for as long as placement takes
-  any reading as current (`placement.StaleAfter`, 15 minutes). It is the
-  newest reading of an account this machine cannot ask about itself, and the
-  machine that made it asks only as often as its own surfaces run — every
-  few minutes while the account is used there. First built as two spacings,
-  which dogfood showed too tight: mini2's reading of an account in use was 3
-  minutes old, and the row read "stale" with a run-a-session errand. While a
-  pulled reading is fresh, an aged-out token here is not captioned.
-- **In a round.** A pull's readings arrive as results of the accounts they
-  are of and land only where they are newer than what the row holds; they
-  never touch the attempt axis, which is about this machine's request.
+  `~/.local/bin` (where `make install` puts headroom) ahead of PATH; the ask
+  is bounded at eight seconds, a child holding the output pipe included
+  (`WaitDelay`), and its answer at 4 MiB. A pull cut short by the round's own
+  end records nothing. A failure keeps the readings and records why under
+  its own time. This machine failing to claim or record a pull is a `peers`
+  problem of the round, in the JSON documents.
+- **The answer.** `readings` prints a list, empty when nothing is known; a
+  document with no list, of another schema or for another vendor is refused
+  by name. Exit 2 is diagnosed as a build without the command only on the
+  refusal such a build prints (`unexpected argument readings`); any other
+  exit says the remote's first stderr line.
+- **The read.** `accountstate.Select` considers this machine's stored fetch,
+  Claude Code's cache, then each named machine's reading, under
+  `accountstate.Newest`. A machine the scope does not name is never read, so
+  turning the variable off returns the board to this machine's own figures at
+  once.
+- **In a round.** A pull that lands sends one result holding every account's
+  figures chosen again by `Select` over the store as it now stands; the round
+  shows them except where it holds a live answer of its own that is newer,
+  which may not have reached the store. A live answer is applied by `Newest`
+  too, so a reading stamped by a clock ahead of this one stands on the board
+  as it does on disk. A pull never touches the attempt axis, which is about
+  this machine's request.
+- **Freshness.** `accountstate.FreshFor(scope)`: on a machine that names
+  peers, `max(spacing, placement.StaleAfter)` — 15 minutes — for every
+  source; on one alone, the spacing. What makes figures current is their
+  age, never who read them: a newer reading of an account this machine cannot
+  ask about arrives at the cadence of whichever machine drives it, every few
+  minutes while it is used there. First built as two spacings for pulled
+  readings only, which dogfood showed too tight (mini2's reading of an
+  account in use was 3 minutes old, and the row read "stale" with a
+  run-a-session errand), then as fifteen minutes for pulled readings only,
+  which the review showed gave two meanings to "current" on one board.
+- **Captions.** "via <machine>" names a pulled reading. An aged-out token is
+  not captioned while the figures on show are current, whoever read them:
+  the errand buys a reading, and a current one is on show. A drift marker on
+  a pulled reading sends to `headroom check on <machine>`, since check
+  audits the responses its own machine stored.
+
+## Review revisions
+
+Round 1 (Astra, `review-r1`) found, and the branch now fixes: a late pull
+completion overwriting a newer answer (generation); the board and placement
+able to settle on different readings (one rule, `Newest`, applied in both
+places, and a round re-selecting from the store after a pull); a pull's
+write ending the conservative silence an unreadable ledger owes (the ledger
+section is written undecodable until the first claim rebuilds it — a hole
+`Place` shared on `main`); launches and the board scheduling only on local
+eligibility; `make test-pty` able to reach the real peer; output caps
+bypassed by `bytes.Buffer`'s promoted `ReadFrom`, and a held pipe outliving
+the bound; an incomplete export erasing good readings (merge per key, and an
+explicit list on the wire); a bad `HEADROOM_PEERS` name refusing every
+command, and a leftover section reported on a machine that names no peer;
+`check` dating an old failure to a new ask; every exit 2 diagnosed as an old
+build; a peer's drift sent to a check that cannot see it; the freshness
+window depending on the source.
 
 ## Verification
 
-- `internal/state/peers_test.go`: one surface pulls at once; spacing and the
-  failure retry; a failed pull keeps the last answer; only `uuid:` keys kept;
-  clock anomalies; an unreadable section set aside; age-out.
-- `internal/accountstate/peers_test.go`: newest wins across machines; a
-  machine the scope does not name is not read; freshness for placement's
-  window;
-  `OwnReadings` never hands on a pulled reading.
-- `internal/round/peers_test.go`: a pull lands where newest and leaves the
-  attempt; opt-in and spaced; a failure recorded, not shown.
-- `internal/peers/peers_test.go`: schema and vendor refusals; ssh arguments;
-  each failure said in terms of what to do.
+- `internal/state/peers_test.go`: one surface pulls at once and `NextPull`
+  names the next; the failure retry; a failure keeps the readings under its
+  own time; a late completion dropped; an answer renews and never erases;
+  admission limits; clock anomalies; an unreadable section set aside; a home
+  naming no peer leaves the section alone; a pull before the first claim
+  keeps the ledger quiet; age-out.
+- `internal/accountstate/peers_test.go`: newest wins across machines, a tie
+  to this machine's own; a machine the scope does not name is not read; one
+  freshness window per configuration; `OwnReadings` is this machine's
+  newest, Claude Code's cache included, never a pulled reading.
+- `internal/round/peers_test.go`: after a pull the board shows the store's
+  choice and the attempt stands; every arrival order comes to one answer,
+  a clock ahead and an unrecorded live answer included; opt-in and spaced;
+  failures said where they belong.
+- `internal/peers/peers_test.go`: schema, vendor and missing-list refusals;
+  the newer of a repeated account; ssh arguments; each failure said in terms
+  of what to do; size and time bounds; a pull cut short records nothing.
+- `internal/launchop/refresh_test.go` and `internal/app/accounts_test.go`: a
+  due pull leaves a refresh and brings the board's round forward.
+- `internal/check/peers_test.go`: each outcome's line; both groups through
+  `Run`; a bad name fails against headroom's own configuration.
+- `internal/app/launch_model_test.go`: a newer pulled Fable figure excludes
+  the account from a Fable launch.
+- `internal/app/codex_test.go`: a pulled Codex reading naming another user
+  is never shown.
 - `internal/app/peers_bin_test.go`: two homes, the real binary, a stub ssh
   running `readings` under the other home from `~/.local/bin` — `refresh`
-  pulls, `limits` shows `peer`/`mini2`, `readings` does not echo it, and the
-  same home without the variable shows its own.
+  pulls, the other machine runs no Keychain, vendor or ssh, `limits` shows
+  `peer`/`mini2`, `readings` does not echo it, and the same home without the
+  variable shows its own.
+- `test/pty/run.sh`: an ssh stub ahead of the real one, and the run fails if
+  any case reaches it.
 - Dogfood, 2026-11-27, the branch build against both machines' live homes
   (parked on the mini outside PATH, reached by an ssh wrapper): the mini
   answered `readings` over ssh with its Keychain sealed; one `refresh` on the

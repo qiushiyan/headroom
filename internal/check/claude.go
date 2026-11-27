@@ -155,7 +155,7 @@ func checkClaude(scope config.Scope, environ []string, probe sessions.PIDProbe, 
 	// theirs, for every assertion that reads them.
 	snap := st.Load()
 	checkOwnState(snap, r)
-	checkPeers(scope, snap, r)
+	checkPeers(scope, set, snap, r)
 	checkSessionWindows(snap.Audit(), snap.Vendor(), time.Now(), r)
 	// Deliberately outside checkOwnState: these depend on .reserved and the
 	// process environment, not on state.json, so a state document written by

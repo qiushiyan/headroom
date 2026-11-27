@@ -171,12 +171,15 @@ func (r *Round) Asking() bool {
 }
 
 // Result is one answer of a round's Fetch: the request's result, by the index
-// of the account it answers, and the round it belongs to. A result from a
-// pull carries another machine's reading and nothing about a request.
+// of the account it answers, and the round it belongs to. A pull's answer is
+// no request's: it carries selected, every account's figures chosen afresh
+// from the store the pull has just written, or problem, this machine failing
+// to record a pull — and nothing about any request.
 type Result struct {
 	refresh.Result
-	of   *Round
-	peer bool
+	of       *Round
+	selected []*accountstate.Observation
+	problem  string
 }
 
 // Fetch is the budget half of the round: the claim, and whatever requests it
@@ -198,20 +201,26 @@ func (r *Round) Fetch(ctx context.Context) <-chan Result {
 		return r.Feed(start(ctx, r.Store, requests))
 	}
 	// The pulls start first: the claim inside start can wait on the lock,
-	// and a pull has no reason to wait on it.
+	// and a pull has no reason to wait on it. A pull that lands sends the
+	// figures every account's choice now comes to, made by the rule the
+	// assembly applies, over the store as it now stands — never a reading of
+	// its own for the round to rank.
 	accts := r.Accounts()
-	out := make(chan Result, len(r.rows)*(1+len(r.Scope.Peers)))
+	out := make(chan Result, len(r.rows)+len(r.Scope.Peers))
 	var wg sync.WaitGroup
 	for _, peer := range r.Scope.Peers {
 		wg.Go(func() {
-			if !peers.Pull(ctx, r.Store, peer, r.pull) {
-				return
-			}
-			snap, now := r.Store.Load(), time.Now()
-			for i, a := range accts {
-				if obs := accountstate.PeerObservation(snap, a.Key, a.Acct, peer, now); obs != nil {
-					out <- Result{Index: i, Observation: obs, of: r, peer: true}
+			answered, err := peers.Pull(ctx, r.Store, peer, r.pull)
+			switch {
+			case err != nil:
+				out <- Result{of: r, problem: err.Error()}
+			case answered:
+				snap, now := r.Store.Load(), time.Now()
+				selected := make([]*accountstate.Observation, len(accts))
+				for i, a := range accts {
+					selected[i] = accountstate.Select(snap, a.Key, a.Acct, now)
 				}
+				out <- Result{of: r, selected: selected}
 			}
 		})
 	}
@@ -247,35 +256,45 @@ func (r *Round) Feed(src <-chan refresh.Result) <-chan Result {
 // round's result is ignored: its index counts that round's accounts, and the
 // same index here can be someone else's.
 func (r *Round) Apply(res Result) {
-	if res.of != r || res.Index < 0 || res.Index >= len(r.rows) {
+	if res.of != r {
 		return
 	}
-	d := r.rows[res.Index]
-	if res.peer {
-		// Another machine's reading says nothing about this machine's
-		// request, and stands only where it is the newest reading there is.
-		if o := res.Observation; o != nil && (d.View.Obs == nil || o.ObservedAt > d.View.Obs.ObservedAt) {
-			d.View.Obs = o
-			if o.Plan != "" {
-				d.View.Plan = o.Plan
+	switch {
+	case res.problem != "":
+		r.Problems = append(slices.Clip(r.Problems), state.Problem{Section: "peers", Detail: res.problem})
+		return
+	case res.selected != nil:
+		// The store's choice stands, except where this process holds an
+		// answer of its own the store may not: one whose record failed.
+		for i, d := range r.rows {
+			if i < len(res.selected) {
+				d.View.Show(accountstate.Newest(live(d.View.Obs), res.selected[i]))
 			}
 		}
 		return
 	}
+	if res.Index < 0 || res.Index >= len(r.rows) {
+		return
+	}
+	d := r.rows[res.Index]
 	d.View.Attempt = res.Attempt
 	if res.Observation != nil {
-		d.View.Obs = res.Observation
-		if res.Observation.Plan != "" {
-			d.View.Plan = res.Observation.Plan
-		}
-		if res.Observation.Email != "" {
-			// The figures name whose they are (accountstate.Assemble).
-			d.View.Label = res.Observation.Email
-		}
+		// By the one rule: an answer this process got stands over what the
+		// row holds unless that is newer — another machine's reading stamped
+		// by a clock ahead of this one's, as the store would choose it too.
+		d.View.Show(accountstate.Newest(res.Observation, d.View.Obs))
 	}
 	if res.StoreErr != nil {
 		d.View.Attempt.StoreError = res.StoreErr.Error()
 	}
+}
+
+// live is o when it is this process's own answer, and nil otherwise.
+func live(o *accountstate.Observation) *accountstate.Observation {
+	if o != nil && o.Source == accountstate.SourceLive {
+		return o
+	}
+	return nil
 }
 
 // Complete fetches and applies every result: a round with nobody watching it.

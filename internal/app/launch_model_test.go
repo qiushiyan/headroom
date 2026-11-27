@@ -228,3 +228,41 @@ func TestAFableLaunchOnAnAccountWithNoFigureSaysSo(t *testing.T) {
 		t.Errorf("dry run:\n%s", dry.stdout)
 	}
 }
+
+// Another machine's newer reading decides where a launch goes as this
+// machine's own would: its Fable figure past the cutoff excludes the account
+// it is of. Without HEADROOM_PEERS the same home places on its own figures.
+func TestALaunchPlacesOnAnotherMachinesNewerReading(t *testing.T) {
+	f := newAutoFixture(t, "a@x.com", "b@x.com")
+	f.observeFable("qiushi", 95, 10, 72*time.Hour)
+	f.observeFable("a@x.com", 50, 20, 72*time.Hour)
+	f.observeFable("b@x.com", 96, 30, 72*time.Hour)
+	if dry := f.launch("--dry-run", "--", "--model", "fable"); !strings.Contains(dry.stdout, "would start claude on a@x.com") {
+		t.Fatalf("on this machine's own figures a Fable launch takes a:\n%s", dry.stdout)
+	}
+
+	paired := f.cfg
+	paired.Peers = []string{"mini2"}
+	st := state.Open(paired)
+	now := time.Now()
+	c, err := st.ClaimPull("mini2", now)
+	if err != nil || !c.Permit {
+		t.Fatalf("claim: %+v %v", c, err)
+	}
+	reset := now.Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	body := fmt.Sprintf(`{"limits":[{"kind":"weekly_all","group":"weekly","percent":50,"resets_at":%q},`+
+		`{"kind":"weekly_scoped","group":"weekly","percent":92,"resets_at":%q,"scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}`, reset, reset)
+	if err := st.RecordPull("mini2", c.Generation, map[string]state.Observation{f.key("a@x.com").ID(): {FetchedAtMS: now.UnixMilli(), Body: []byte(body)}}, "", now); err != nil {
+		t.Fatal(err)
+	}
+
+	dry := launchOn(t, paired, f.edges, "--dry-run", "--", "--model", "fable")
+	for _, want := range []string{"would start claude on qiushi", "excluded: Fable (7d) 92%"} {
+		if !strings.Contains(dry.stdout, want) {
+			t.Errorf("with mini2's newer reading, the Fable dry run lacks %q:\n%s", want, dry.stdout)
+		}
+	}
+	if dry := f.launch("--dry-run", "--", "--model", "fable"); !strings.Contains(dry.stdout, "would start claude on a@x.com") {
+		t.Errorf("a home naming no peer placed on a pulled reading:\n%s", dry.stdout)
+	}
+}

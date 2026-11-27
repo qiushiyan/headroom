@@ -149,9 +149,23 @@ type Attempt struct {
 // inside that period. It is a display policy, not a vendor promise.
 // Sharing the spacing prevents a timing change from marking every other run
 // stale while no newer answer is obtainable. Spacing is per vendor, so facts
-// carry their own window (Facts.FreshFor, set at assembly from the scope);
-// this is the default for facts assembled without one.
+// carry their own window (Facts.FreshFor, set at assembly from the scope, by
+// FreshFor); this is the default for facts assembled without one.
 const FreshWindow = config.DefaultSpacing
+
+// FreshFor is the window inside which a scope's figures are current: its
+// spacing, on a machine on its own. On one that pulls other machines'
+// readings, a newer reading of an account it cannot ask about itself arrives
+// at the cadence of whichever machine drives the account — every few minutes
+// while it is in use there — so the window is the one placement takes any
+// reading as measured for, whatever machine made it. One meaning for every
+// source: what makes figures current is their age, never who read them.
+func FreshFor(scope config.Scope) time.Duration {
+	if len(scope.Peers) > 0 {
+		return max(scope.RequestSpacing(), placement.StaleAfter)
+	}
+	return scope.RequestSpacing()
+}
 
 // Facts carries three independent answers: an account can be logged in,
 // have figures 22 hours old, and have its newest refresh refused. Keeping
@@ -214,25 +228,44 @@ type Load struct {
 }
 
 // Fresh reports whether the observation is recent enough to describe current
-// headroom: no older than the spacing, inside which no newer answer can be
-// had.
-//
-// Another machine's reading is the newest of an account this machine cannot
-// ask about itself — were its token live, its own fetch would be newer — and
-// that machine asks as often as its own surfaces run, which is every few
-// minutes while the account is in use there and not at all once it is not.
-// Held to the spacing, every such reading would read stale and send an errand
-// that buys nothing; so it is current for as long as placement takes any
-// reading as current, and past that both come back.
+// headroom: inside the scope's window (FreshFor).
 func (v Facts) Fresh(now int64) bool {
 	window := v.FreshFor
 	if window <= 0 {
 		window = FreshWindow
 	}
-	if v.Obs != nil && v.Obs.Source == SourcePeer {
-		window = max(window, placement.StaleAfter)
-	}
 	return v.Obs != nil && now-v.Obs.ObservedAt <= int64(window/time.Second)
+}
+
+// Show makes o the figures on show, with what it names: a plan the response
+// named outranks the login's, which is as old as the last login refresh, and
+// figures are labelled with the account they were measured for (Antigravity's
+// are named by its reading, nothing else names it). Every place figures are
+// chosen goes through it, so the plan and label always follow the figures.
+func (v *Facts) Show(o *Observation) {
+	v.Obs = o
+	if o == nil {
+		return
+	}
+	if o.Plan != "" {
+		v.Plan = o.Plan
+	}
+	if o.Email != "" {
+		v.Label = o.Email
+	}
+}
+
+// Newest is the reading that stands of two: the later one, and on a tie the
+// first. It is the one rule for which figures are shown, applied by the
+// assembly from disk and by a round to what arrives while it runs, so the
+// board and the next launch cannot settle on different figures. A tie is
+// decided at the second, as figures are dated; the first is the caller's
+// nearer source — this process's answer, then this machine's own.
+func Newest(a, b *Observation) *Observation {
+	if a == nil || (b != nil && b.ObservedAt > a.ObservedAt) {
+		return b
+	}
+	return a
 }
 
 // Actionable is the question the picker actually asks: are these figures

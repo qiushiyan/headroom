@@ -43,9 +43,17 @@ func TestAReadingFromAnotherMachineIsShownHere(t *testing.T) {
 	if err := os.Symlink(bin, filepath.Join(local, "headroom")); err != nil {
 		t.Fatal(err)
 	}
+	// The other machine answers from disk alone: anything it ran there — the
+	// Keychain, a vendor, ssh onward — leaves a mark.
+	edges := filepath.Join(t.TempDir(), "edges")
+	for _, name := range []string{"security", "claude", "ssh"} {
+		if err := os.WriteFile(filepath.Join(there.stubs, name), fmt.Appendf(nil, "#!/bin/sh\necho %s >>%q\nexit 44\n", name, edges), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// ssh runs the remote command, its last argument, as the other machine's
 	// login shell would: under that home, with a PATH that lacks ~/.local/bin.
-	ssh := fmt.Sprintf("#!/bin/sh\nfor last; do :; done\nexec env -i HOME=%q PATH=/usr/bin:/bin /bin/sh -c \"$last\"\n", there.home)
+	ssh := fmt.Sprintf("#!/bin/sh\nfor last; do :; done\nexec env -i HOME=%q PATH=%q /bin/sh -c \"$last\"\n", there.home, there.stubs+":/usr/bin:/bin")
 	if err := os.WriteFile(filepath.Join(here.stubs, "ssh"), []byte(ssh), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +70,9 @@ func TestAReadingFromAnotherMachineIsShownHere(t *testing.T) {
 		return out
 	}
 	run("refresh", "--vendor", "claude")
+	if b, err := os.ReadFile(edges); err == nil {
+		t.Errorf("the other machine's readings ran %q; they are read from disk alone", b)
+	}
 
 	var doc jsonDoc
 	if err := json.Unmarshal(run("limits", "--vendor", "claude", "--account", "a@x.com"), &doc); err != nil {

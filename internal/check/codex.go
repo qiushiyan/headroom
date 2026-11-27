@@ -196,7 +196,7 @@ func checkCodex(scope config.Scope, environ []string, r *report) {
 
 	snap := st.Load()
 	checkOwnState(snap, r)
-	checkPeers(scope, snap, r)
+	checkPeers(scope, set, snap, r)
 	checkRouting(set, environ, r)
 }
 

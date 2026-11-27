@@ -36,7 +36,7 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 	list := make([]Account, 0, len(set.Accounts))
 	for _, a := range set.Accounts {
 		key := state.KeyFor(a)
-		v := Facts{Vendor: a.Scope.Vendor, FreshFor: a.Scope.RequestSpacing(), Label: a.Name, Launcher: accounts.Launcher(a), Health: HealthUnprobed}
+		v := Facts{Vendor: a.Scope.Vendor, FreshFor: FreshFor(a.Scope), Label: a.Name, Launcher: accounts.Launcher(a), Health: HealthUnprobed}
 		if a.Email != "" {
 			v.Label = a.Email
 		}
@@ -59,18 +59,9 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 			// agy signs in with its own browser flow, started by running it.
 			v.LoginCommand = "agy"
 		}
-		v.Obs = newestObservation(snap, key, a, now)
-		if v.Obs != nil && v.Obs.Plan != "" {
-			// The plan headroom's own response named outranks the id token's,
-			// which is as old as the last login refresh. Decided here, from
-			// disk alone, so `limits` reports the plan the board does.
-			v.Plan = v.Obs.Plan
-		}
-		if v.Obs != nil && v.Obs.Email != "" {
-			// Figures are shown under the account they were measured for:
-			// Antigravity's are named by its reading, nothing else names it.
-			v.Label = v.Obs.Email
-		}
+		// Decided here, from disk alone, so `limits` reports the figures,
+		// plan and label the board does.
+		v.Show(Select(snap, key, a, now))
 		if next := snap.NextEligible(key, now); next.After(now) {
 			v.Attempt.NextEligibleAt = next.Unix()
 		}
@@ -79,7 +70,7 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 	return list
 }
 
-// newestObservation replays through the one parse dispatch: the store a body
+// Select replays through the one parse dispatch: the store a body
 // was read from says which vendor's parser reads it, and the same response
 // identity check that guards a live body guards a replayed one. Usage is never
 // derived from a vendor's session files — a Codex rollout carries no account
@@ -87,14 +78,15 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 // turns — so a Codex account has only headroom's own stored response here.
 //
 // Beside this machine's own readings stand those of the machines it pulls
-// from, for the same account by identity, and the newest of them all wins: a
-// tie goes to this machine's own.
-func newestObservation(snap state.Snapshot, k state.Key, a accounts.Account, now time.Time) *Observation {
+// from, for the same account by identity, and the newest of them all wins
+// (Newest): a tie goes to this machine's own.
+//
+// Select is that choice for one account, from one snapshot: the assembly
+// makes it, and a round makes it again over what a pull has just recorded.
+func Select(snap state.Snapshot, k state.Key, a accounts.Account, now time.Time) *Observation {
 	best, _ := ownNewest(snap, k, a, now)
 	for _, peer := range a.Scope.Peers {
-		if o := PeerObservation(snap, k, a, peer, now); o != nil && (best == nil || o.ObservedAt > best.ObservedAt) {
-			best = o
-		}
+		best = Newest(best, PeerObservation(snap, k, a, peer, now))
 	}
 	return best
 }
@@ -116,11 +108,9 @@ func ownNewest(snap state.Snapshot, k state.Key, a accounts.Account, now time.Ti
 		if !ok {
 			return
 		}
-		at := atMS / 1000
-		if best != nil && at <= best.ObservedAt {
-			return
+		if o := FromReading(reading, atMS/1000, source); Newest(best, o) == o {
+			best, raw = o, state.Observation{FetchedAtMS: atMS, Body: body}
 		}
-		best, raw = FromReading(reading, at, source), state.Observation{FetchedAtMS: atMS, Body: body}
 	}
 	if snap.Vendor() != a.Scope.Vendor {
 		return nil, raw

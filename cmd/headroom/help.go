@@ -247,8 +247,9 @@ failed but something could not be tested.`
 const readingsHelp = `Prints this machine's own newest reading of every account of one vendor, as the usage
 endpoint sent it, for another machine's headroom to pull over ssh. A machine names the ones
 it pulls from in HEADROOM_PEERS; nobody runs this by hand. Read from disk alone, so it
-answers where the login Keychain is sealed. Readings this machine pulled from others are
-never among them.
+answers where the login Keychain is sealed. An account appears only when it is known by
+its identity and this machine holds a reading of its own of it; readings this machine
+pulled from others are never among them, and a vendor this machine lacks answers [].
 
 {"schema": 1, "vendor": "claude"|"codex",
  "readings": [{"account": "uuid:<id>", "name", "fetched_at_ms", "body": {...}}]}`
@@ -256,5 +257,7 @@ never among them.
 const refreshHelp = `Asks the usage endpoint about every account the budget lets it ask (for Antigravity, runs
 agy -p /usage), stores the answers and prints nothing: the round headroom --json runs,
 without the health probes or the document. An automatic launch leaves one running for the
-next launch's figures. It ends within about twelve seconds; SIGTERM, SIGINT or SIGHUP stop
-it within one, with the request it abandoned recorded.`
+next launch's figures. With HEADROOM_PEERS set it also pulls each machine named there
+(Claude Code and Codex, at most once a request spacing), whose readings the board and
+limits then show "via" that machine. It ends within about twelve seconds; SIGTERM, SIGINT
+or SIGHUP stop it within one, with the request it abandoned recorded.`

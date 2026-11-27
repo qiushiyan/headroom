@@ -32,8 +32,14 @@ shell's `x-<name>`) — quote that spelling.
   says …!)` → the dir was logged in as the wrong account; `headroom login
   <name>` and approve as that email.
 - **Stale figures** keep their severity colours; their caption states the age.
+- **`via <machine>`** in a caption: the figures are that machine's reading,
+  newer than any this machine holds (`HEADROOM_PEERS`; in JSON `usage.source`
+  `"peer"` and `usage.peer`). They count as current for fifteen minutes on a
+  machine that pulls; `limits` shows the last pull's and pulls nothing. An
+  account expected to read `via` and reading old: the `peer[<machine>]`
+  line of `headroom check` says how the last pull went.
 - **Drift markers** → the vendor response changed shape; `headroom check`
-  names what. A rolled-over window reads unknown until refreshed.
+  names what — on the machine the marker names, for figures read `via` it. A rolled-over window reads unknown until refreshed.
 - **Where a bare launch would go, and why**: `headroom launch --dry-run` —
   one row per account with its figures, their age, how long its weekly
   window has left (`≈` when projected from the schedule), busy sessions,

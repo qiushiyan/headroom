@@ -221,22 +221,38 @@ func TestCaptionKeepsEveryClause(t *testing.T) {
 			notWant: []string{"stale"},
 		},
 		{
-			// Figures another machine read name it; and while they are
-			// current, this machine's aged-out token is no errand — a session
-			// here would buy nothing newer.
+			// Figures another machine read name it; and while figures are
+			// current — inside a paired machine's window, whoever read them —
+			// this machine's aged-out token is no errand.
 			name: "current figures from another machine name it and spare the token errand",
-			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 90 * time.Second,
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute,
 				Obs:     &accountstate.Observation{Rows: []usage.Row{row}, ObservedAt: now - 600, Source: accountstate.SourcePeer, Peer: "mini2"},
 				Attempt: attempt(accountstate.AttemptTokenStale)},
 			want:    []string{"12%", "via mini2", "observed 10m ago"},
 			notWant: []string{"stale", "access token"},
 		},
 		{
+			name: "current figures of this machine's own spare the token errand too",
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute,
+				Obs: obs(10*time.Minute, accountstate.SourceStore, row), Attempt: attempt(accountstate.AttemptTokenStale)},
+			want:    []string{"12%", "observed 10m ago"},
+			notWant: []string{"stale", "access token"},
+		},
+		{
 			name: "old figures from another machine still send the errand",
-			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 90 * time.Second,
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 15 * time.Minute,
 				Obs:     &accountstate.Observation{Rows: []usage.Row{row}, ObservedAt: now - 3*3600, Source: accountstate.SourcePeer, Peer: "mini2"},
 				Attempt: attempt(accountstate.AttemptTokenStale)},
 			want: []string{"stale", "via mini2", "observed 3h ago", "access token stale"},
+		},
+		{
+			// check audits what its own machine stored, so drift in another
+			// machine's reading is sent to that machine's check.
+			name: "drift in another machine's reading names where to check it",
+			view: accountstate.Facts{Label: "a@x.com", FreshFor: 15 * time.Minute,
+				Obs: &accountstate.Observation{Rows: []usage.Row{{Label: "5h session", Kind: "session", Group: "session", PercentState: tag.Bad}},
+					ObservedAt: now - 60, Source: accountstate.SourcePeer, Peer: "mini2"}},
+			want: []string{"drift — run headroom check on mini2"},
 		},
 		{
 			name:    "a refresh in flight shows over the figures it will replace",

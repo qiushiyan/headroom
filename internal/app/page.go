@@ -191,13 +191,14 @@ func (ui *page) ackString(now time.Time) string {
 // configure: sooner is refused by the endpoint's budget, later would leave the
 // board saying less than it could.
 func (ui *page) schedule() {
-	ui.nextAt = nextRound(ui.st.Load(), ui.accounts(), ui.round != nil && ui.round.Asking(), ui.scope.RequestSpacing(), ui.clock())
+	ui.nextAt = nextRound(ui.st.Load(), ui.accounts(), ui.scope.Peers, ui.round != nil && ui.round.Asking(), ui.scope.RequestSpacing(), ui.clock())
 }
 
 // nextRound is the instant the next round is due, from the store as it now
-// stands: the soonest any account becomes eligible again, never sooner than
-// the floor. asking says the round had anything to ask about.
-func nextRound(snap state.Snapshot, accts []accountstate.Account, asking bool, spacing time.Duration, now time.Time) time.Time {
+// stands: the soonest any account becomes eligible again, or a pull from one
+// of peers is due, never sooner than the floor. asking says the round had any
+// account to ask about.
+func nextRound(snap state.Snapshot, accts []accountstate.Account, peers []string, asking bool, spacing time.Duration, now time.Time) time.Time {
 	var next time.Time
 	for _, d := range accts {
 		if e := snap.NextEligible(d.Key, now); e.After(now) && (next.IsZero() || e.Before(next)) {
@@ -221,6 +222,19 @@ func nextRound(snap state.Snapshot, accts []accountstate.Account, asking bool, s
 	// past its own gate never fires at all.
 	if !asking {
 		next = now.Add(spacing)
+	}
+	// A pull due sooner brings the round forward: with every account cooling
+	// down after a refusal, or none to ask at all, the other machines'
+	// readings are still worth a round — and a schedule past the presence
+	// window would never fire. One due now waits for the floor.
+	for _, peer := range peers {
+		p := snap.NextPull(peer, now)
+		if floor := now.Add(refreshFloor); p.Before(floor) {
+			p = floor
+		}
+		if p.Before(next) {
+			next = p
+		}
 	}
 	return next
 }

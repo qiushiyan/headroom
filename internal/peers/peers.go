@@ -61,7 +61,11 @@ func Encode(vendor config.Vendor, own []accountstate.OwnReading) Document {
 // parses, is decided where it is read (accountstate.PeerObservation), by the
 // same check this machine's own bodies pass.
 func Decode(vendor config.Vendor, data []byte) (map[string]state.Observation, error) {
-	var doc Document
+	var doc struct {
+		Schema   int        `json:"schema"`
+		Vendor   string     `json:"vendor"`
+		Readings *[]Reading `json:"readings"`
+	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, errors.New("its answer is not a readings document")
 	}
@@ -70,9 +74,12 @@ func Decode(vendor config.Vendor, data []byte) (map[string]state.Observation, er
 		return nil, fmt.Errorf("its headroom prints readings schema %d and this one reads %d — install the same build on both", doc.Schema, Schema)
 	case doc.Vendor != string(vendor):
 		return nil, fmt.Errorf("it answered for %q when %q was asked", doc.Vendor, vendor)
+	case doc.Readings == nil:
+		// An empty list is an answer; no list is a document cut short.
+		return nil, errors.New("its answer carries no readings list")
 	}
-	out := make(map[string]state.Observation, len(doc.Readings))
-	for _, r := range doc.Readings {
+	out := make(map[string]state.Observation, len(*doc.Readings))
+	for _, r := range *doc.Readings {
 		if prev, ok := out[r.Account]; ok && prev.FetchedAtMS >= r.FetchedAtMS {
 			continue
 		}
@@ -85,34 +92,45 @@ func Decode(vendor config.Vendor, data []byte) (map[string]state.Observation, er
 // document its headroom printed, or why there is none. SSH in production.
 type Asker func(ctx context.Context, peer string, vendor config.Vendor) ([]byte, error)
 
-// pullWait bounds one pull from start to answer. A pull runs beside a round's
-// requests and the round is not over until it is, so a machine that is slow to
-// answer holds the round no longer than a slow request does.
-const pullWait = 8 * time.Second
+// askWait bounds the ask: from the connection to the answer read, a child
+// still holding the output included. A pull runs beside a round's requests and
+// the round is not over until it is, so a machine slow to answer holds the
+// round about as long as a slow request does; the store's lock waits are the
+// store's own.
+const askWait = 8 * time.Second
 
 // Pull asks peer for its readings when the store says a pull is due, and
-// records what came of it. It reports whether a new answer was recorded. A
-// pull cut short by the caller's own end records nothing: that is not the
-// machine failing to answer.
-func Pull(ctx context.Context, st *state.Store, peer string, ask Asker) bool {
-	if ok, err := st.ClaimPull(peer, time.Now()); err != nil || !ok {
-		return false
+// records what came of it. answered reports that an answer was recorded. err
+// is this machine's own bookkeeping failing — the claim or the record could
+// not be written — never the other machine's failure to answer, which is
+// recorded as its outcome. A pull cut short by the caller's own end records
+// nothing: that is not the machine failing to answer.
+func Pull(ctx context.Context, st *state.Store, peer string, ask Asker) (answered bool, err error) {
+	claim, err := st.ClaimPull(peer, time.Now())
+	if err != nil {
+		return false, fmt.Errorf("a pull from %s could not be claimed: %w", peer, err)
 	}
-	pctx, cancel := context.WithTimeout(ctx, pullWait)
+	if !claim.Permit {
+		return false, nil
+	}
+	actx, cancel := context.WithTimeout(ctx, askWait)
 	defer cancel()
-	data, err := ask(pctx, peer, st.Vendor())
+	data, askErr := ask(actx, peer, st.Vendor())
 	if ctx.Err() != nil {
-		return false
+		return false, nil
 	}
 	var readings map[string]state.Observation
-	if err == nil {
-		readings, err = Decode(st.Vendor(), data)
+	if askErr == nil {
+		readings, askErr = Decode(st.Vendor(), data)
 	}
-	if err != nil {
-		_ = st.RecordPull(peer, nil, err.Error(), time.Now())
-		return false
+	failure := ""
+	if askErr != nil {
+		failure = askErr.Error()
 	}
-	return st.RecordPull(peer, readings, "", time.Now()) == nil
+	if err := st.RecordPull(peer, claim.Generation, readings, failure, time.Now()); err != nil {
+		return false, fmt.Errorf("what %s said could not be recorded: %w", peer, err)
+	}
+	return failure == "", nil
 }
 
 // answerLimit bounds what a pull reads from the other machine: a reading per
@@ -131,15 +149,16 @@ func remoteCommand(vendor config.Vendor) string {
 // and gives up connecting after three seconds.
 func SSH(ctx context.Context, peer string, vendor config.Vendor) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-T", peer, remoteCommand(vendor))
-	var out, errOut capped
-	out.limit, errOut.limit = answerLimit, 64<<10
-	cmd.Stdout, cmd.Stderr = &out, &errOut
+	// A child left holding the output pipe must not outlive the bound.
+	cmd.WaitDelay = time.Second
+	out, errOut := &capped{limit: answerLimit}, &capped{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = out, errOut
 	err := cmd.Run()
 	if out.over {
 		return nil, fmt.Errorf("its answer ran past %d bytes", answerLimit)
 	}
 	if err == nil {
-		return out.Bytes(), nil
+		return out.buf.Bytes(), nil
 	}
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
@@ -147,40 +166,42 @@ func SSH(ctx context.Context, peer string, vendor config.Vendor) ([]byte, error)
 	}
 	// ssh's own complaint ends its stderr; headroom's error leads its own,
 	// above the usage lines.
-	lines := strings.Split(strings.TrimSpace(errOut.String()), "\n")
+	lines := strings.Split(strings.TrimSpace(errOut.buf.String()), "\n")
 	first, last := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[len(lines)-1])
 	if first == "" {
 		first, last = "nothing said", "nothing said"
 	}
 	switch code := exit.ExitCode(); {
 	case ctx.Err() != nil:
-		return nil, fmt.Errorf("no answer within %s", pullWait)
+		return nil, fmt.Errorf("no answer within %s", askWait)
 	case code == 255:
 		return nil, fmt.Errorf("ssh could not reach it: %s", last)
 	case code == 127:
 		return nil, errors.New("no headroom on its PATH or in ~/.local/bin")
-	case code == 2 && out.Len() == 0:
-		// An unknown word is exit 2 with nothing on stdout: most likely a
-		// build from before this command, and what it said is kept beside
-		// the guess.
-		return nil, fmt.Errorf("its headroom has no readings command (%s) — install this build there", first)
+	case code == 2 && out.buf.Len() == 0 && strings.Contains(first, "unexpected argument readings"):
+		// A build from before this command refuses the word as its grammar
+		// refuses any unknown one: exit 2, nothing on stdout, and this line.
+		return nil, errors.New("its headroom has no readings command — install this build there")
 	default:
 		return nil, fmt.Errorf("its headroom exited %d: %s", code, first)
 	}
 }
 
-// capped is a buffer that keeps at most limit bytes and says when more came.
+// capped keeps at most limit bytes and says when more came. The buffer is a
+// field, not embedded: an embedded bytes.Buffer would lend capped its
+// ReadFrom, and io.Copy — what exec feeds a pipe through — would read the
+// whole stream past Write and its limit.
 type capped struct {
-	bytes.Buffer
+	buf   bytes.Buffer
 	limit int
 	over  bool
 }
 
 func (c *capped) Write(p []byte) (int, error) {
-	if room := c.limit - c.Len(); len(p) > room {
+	if room := c.limit - c.buf.Len(); len(p) > room {
 		c.over = true
-		c.Buffer.Write(p[:max(room, 0)])
+		c.buf.Write(p[:max(room, 0)])
 		return len(p), nil
 	}
-	return c.Buffer.Write(p)
+	return c.buf.Write(p)
 }

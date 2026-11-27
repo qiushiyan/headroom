@@ -195,6 +195,12 @@ type Scope struct {
 // that crosses into a launch is absolute because it was established here.
 type Config struct {
 	Claude, Codex, Agy Scope
+
+	// BadPeers are the names in HEADROOM_PEERS that are no ssh destination
+	// headroom will pass on. They are left out of every scope's Peers and
+	// said by `check`, never a reason for any other command to refuse:
+	// pulling is an enhancement, and a typo in it must not stop a launch.
+	BadPeers []string
 }
 
 // Scope returns the vendor's scope; every one is always resolved.
@@ -305,10 +311,8 @@ func Load() (Config, error) {
 		}
 	}
 
-	peers, err := parsePeers(os.Getenv("HEADROOM_PEERS"))
-	if err != nil {
-		return Config{}, err
-	}
+	peers, bad := parsePeers(os.Getenv("HEADROOM_PEERS"))
+	c.BadPeers = bad
 	// Claude Code's and Codex's figures age on a machine that does not use the
 	// account: a token only a session refreshes is what a request needs.
 	// Antigravity has no such gap — each machine reads its own sign-in by
@@ -327,18 +331,17 @@ func Load() (Config, error) {
 // parsePeers reads HEADROOM_PEERS: ssh destinations separated by commas or
 // spaces, each said once. A destination reaches ssh as an argument, so one
 // that would read as an option, or carries anything an ssh alias or
-// user@host never does, is refused rather than passed on.
-func parsePeers(v string) ([]string, error) {
-	var out []string
+// user@host never does, is set apart in bad rather than passed on.
+func parsePeers(v string) (peers, bad []string) {
 	for _, p := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
-		if !validPeer(p) {
-			return nil, fmt.Errorf("HEADROOM_PEERS names %q, which is not an ssh destination headroom will pass on — use an ssh alias or user@host, separated by commas or spaces", p)
-		}
-		if !slices.Contains(out, p) {
-			out = append(out, p)
+		switch {
+		case !validPeer(p):
+			bad = append(bad, p)
+		case !slices.Contains(peers, p):
+			peers = append(peers, p)
 		}
 	}
-	return out, nil
+	return peers, bad
 }
 
 func validPeer(p string) bool {

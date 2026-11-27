@@ -1,17 +1,43 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qiushiyan/headroom/internal/config"
 )
 
 var body = json.RawMessage(`{"limits":[]}`)
 
+// pairedScope is rootScope naming one peer, so its store reads the peers
+// section.
+func pairedScope(root string) config.Scope {
+	s := rootScope(root)
+	s.Peers = []string{"mini2"}
+	return s
+}
+
+// pull claims a pull from peer at at and records readings as its answer.
+func pull(t *testing.T, s *Store, peer string, at time.Time, readings map[string]Observation) {
+	t.Helper()
+	c, err := s.ClaimPull(peer, at)
+	if err != nil || !c.Permit {
+		t.Fatalf("pull from %s at %v refused: %+v %v", peer, at, c, err)
+	}
+	if err := s.RecordPull(peer, c.Generation, readings, "", at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reading(at time.Time) Observation { return Observation{FetchedAtMS: at.UnixMilli(), Body: body} }
+
 // Of the surfaces of one machine asking at once, one opens the connection:
 // the claim is a test-and-set like the request claim, and the next pull is
-// due a spacing later.
+// due a spacing later — the instant NextPull names.
 func TestOnlyOneSurfacePullsAtOnce(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
@@ -21,9 +47,10 @@ func TestOnlyOneSurfacePullsAtOnce(t *testing.T) {
 	start := make(chan struct{})
 	for i := range racers {
 		wg.Go(func() {
-			s := Open(rootScope(root))
+			s := Open(pairedScope(root))
 			<-start
-			permits[i], _ = s.ClaimPull("mini2", now)
+			c, _ := s.ClaimPull("mini2", now)
+			permits[i] = c.Permit
 		})
 	}
 	close(start)
@@ -38,106 +65,154 @@ func TestOnlyOneSurfacePullsAtOnce(t *testing.T) {
 		t.Errorf("%d of %d racers may pull; exactly one opens the connection", granted, racers)
 	}
 
-	s := Open(rootScope(root))
+	s := Open(pairedScope(root))
 	spacing := rootScope(root).RequestSpacing()
-	if ok, _ := s.ClaimPull("mini2", now.Add(spacing-time.Second)); ok {
+	if next := s.Load().NextPull("mini2", now); !next.Equal(time.UnixMilli(now.Add(spacing).UnixMilli())) {
+		t.Errorf("next pull at %v, want a spacing after the ask", next)
+	}
+	if c, _ := s.ClaimPull("mini2", now.Add(spacing-time.Second)); c.Permit {
 		t.Error("a pull inside the spacing was permitted")
 	}
-	if ok, _ := s.ClaimPull("mac", now); !ok {
+	if c, _ := s.ClaimPull("mac", now); !c.Permit {
 		t.Error("another machine's pull waited on this one's")
 	}
-	if ok, _ := s.ClaimPull("mini2", now.Add(spacing)); !ok {
+	if c, _ := s.ClaimPull("mini2", now.Add(spacing)); !c.Permit {
 		t.Error("a pull a spacing later was refused")
 	}
 }
 
-// A machine that did not answer is left alone for longer than a spacing, and
-// its last answer stands: a failure annotates what is known and never erases
-// it.
+// A machine that did not answer is left alone for longer than a spacing; its
+// readings stand, and the failure keeps its own time — a later ask that was
+// cut short does not take it over.
 func TestAFailedPullKeepsTheLastAnswer(t *testing.T) {
 	root := t.TempDir()
-	s := Open(rootScope(root))
+	s := Open(pairedScope(root))
 	now := time.Now()
-	k := Key{UUID: "a1", Name: "a@example.com"}
+	k := Key{UUID: "a1"}
+	spacing := rootScope(root).RequestSpacing()
 
-	s.ClaimPull("mini2", now)
-	if err := s.RecordPull("mini2", map[string]Observation{k.ID(): {FetchedAtMS: now.UnixMilli(), Body: body}}, "", now); err != nil {
+	pull(t, s, "mini2", now, map[string]Observation{k.ID(): reading(now)})
+	later := now.Add(spacing)
+	c, _ := s.ClaimPull("mini2", later)
+	if err := s.RecordPull("mini2", c.Generation, nil, "ssh could not reach it", later); err != nil {
 		t.Fatal(err)
 	}
-	later := now.Add(rootScope(root).RequestSpacing())
-	if ok, _ := s.ClaimPull("mini2", later); !ok {
-		t.Fatal("the next pull was refused")
-	}
-	if err := s.RecordPull("mini2", nil, "ssh could not reach it", later); err != nil {
-		t.Fatal(err)
-	}
-
-	snap := s.Load()
-	if _, ok := snap.PeerObservation("mini2", k, later); !ok {
+	if _, ok := s.Load().PeerObservation("mini2", k, later); !ok {
 		t.Error("a failed pull erased the last answer")
 	}
-	st, _ := snap.PeerStatus("mini2")
-	if st.Error != "ssh could not reach it" || st.PulledMS != now.UnixMilli() {
-		t.Errorf("status = %+v, want the failure beside the last answer's time", st)
-	}
-	if ok, _ := s.ClaimPull("mini2", later.Add(rootScope(root).RequestSpacing())); ok {
+	if c, _ := s.ClaimPull("mini2", later.Add(spacing)); c.Permit {
 		t.Error("a machine that did not answer was asked again a spacing later")
 	}
-	if ok, _ := s.ClaimPull("mini2", later.Add(PeerRetry)); !ok {
-		t.Error("a machine that did not answer was never asked again")
+	if next := s.Load().NextPull("mini2", later); !next.Equal(time.UnixMilli(later.Add(PeerRetry).UnixMilli())) {
+		t.Errorf("next pull at %v, want PeerRetry after the failed ask", next)
+	}
+	retry := later.Add(PeerRetry)
+	if c, _ := s.ClaimPull("mini2", retry); !c.Permit {
+		t.Fatal("a machine that did not answer was never asked again")
+	}
+	st, _ := s.Load().PeerStatus("mini2")
+	if st.Error != "ssh could not reach it" || st.FailedMS != later.UnixMilli() || st.PulledMS != now.UnixMilli() || st.AttemptMS != retry.UnixMilli() {
+		t.Errorf("status = %+v, want each outcome under its own time", st)
 	}
 }
 
-// An answer replaces the machine's last one whole, and only readings keyed by
-// identity are kept: another machine's dir name says nothing about which
-// account is in it. A reading is matched to an account by identity alone.
-func TestAnAnswerIsKeptByIdentity(t *testing.T) {
+// An outcome that outlived its claim is dropped: a late answer cannot stand
+// over a newer one, nor a late failure put a machine that has since answered
+// back into retry.
+func TestALateCompletionIsDropped(t *testing.T) {
 	root := t.TempDir()
-	s := Open(rootScope(root))
+	s := Open(pairedScope(root))
 	now := time.Now()
-	a, b := Key{UUID: "a1", Name: "a@example.com"}, Key{UUID: "b1", Name: "b@example.com"}
+	k := Key{UUID: "a1"}
+	slow, _ := s.ClaimPull("mini2", now)
+	later := now.Add(2 * rootScope(root).RequestSpacing())
+	pull(t, s, "mini2", later, map[string]Observation{k.ID(): {FetchedAtMS: later.UnixMilli(), Body: json.RawMessage(`{"limits":[],"n":2}`)}})
 
-	s.ClaimPull("mini2", now)
-	s.RecordPull("mini2", map[string]Observation{
-		a.ID():               {FetchedAtMS: now.UnixMilli(), Body: body},
-		b.ID():               {FetchedAtMS: now.UnixMilli(), Body: body},
-		"dir:c@example.com":  {FetchedAtMS: now.UnixMilli(), Body: body},
+	s.RecordPull("mini2", slow.Generation, map[string]Observation{"uuid:b1": reading(now)}, "", later.Add(time.Second))
+	s.RecordPull("mini2", slow.Generation, nil, "no answer within 8s", later.Add(time.Second))
+	snap := s.Load()
+	if o, ok := snap.PeerObservation("mini2", k, later); !ok || o.FetchedAtMS != later.UnixMilli() {
+		t.Errorf("a late completion touched the newer answer: %+v", o)
+	}
+	if _, ok := snap.PeerObservation("mini2", Key{UUID: "b1"}, later); ok {
+		t.Error("a late answer's readings were kept")
+	}
+	if st, _ := snap.PeerStatus("mini2"); st.Error != "" || st.FailedMS != 0 {
+		t.Errorf("a late failure was recorded over the newer answer: %+v", st)
+	}
+}
+
+// An answer renews the readings it carries and takes none away: one that
+// leaves an account out — a machine whose own ledger could not be read, a
+// dir whose identity file was mid-rewrite — says nothing about the dated
+// reading held. Only readings keyed by identity, with a body the store keeps,
+// are kept; and an older reading never replaces a newer one.
+func TestAnAnswerRenewsAndNeverErases(t *testing.T) {
+	root := t.TempDir()
+	s := Open(pairedScope(root))
+	now := time.Now()
+	a, b := Key{UUID: "a1"}, Key{UUID: "b1"}
+	big := json.RawMessage(`{"limits":[],"pad":"` + string(bytes.Repeat([]byte("x"), BodyLimit)) + `"}`)
+
+	pull(t, s, "mini2", now, map[string]Observation{
+		a.ID():               reading(now),
+		b.ID():               reading(now),
+		"dir:c@example.com":  reading(now),
 		"uuid:empty":         {FetchedAtMS: now.UnixMilli()},
 		"uuid:never-fetched": {Body: body},
-	}, "", now)
-	got := s.Load().d.peers["mini2"].Readings
-	if len(got) != 2 {
-		t.Errorf("kept %v, want the two readings keyed by identity", got)
+		"uuid:big":           {FetchedAtMS: now.UnixMilli(), Body: big},
+	})
+	if got := s.Load().d.peers["mini2"].Readings; len(got) != 2 {
+		t.Errorf("kept %d readings, want the two keyed by identity with a body the store keeps", len(got))
 	}
 
-	s.RecordPull("mini2", map[string]Observation{a.ID(): {FetchedAtMS: now.UnixMilli(), Body: body}}, "", now)
+	later := now.Add(rootScope(root).RequestSpacing())
+	pull(t, s, "mini2", later, map[string]Observation{a.ID(): {FetchedAtMS: now.Add(-time.Hour).UnixMilli(), Body: body}})
 	snap := s.Load()
-	if _, ok := snap.PeerObservation("mini2", b, now); ok {
-		t.Error("an account the newest answer left out still has the old answer's reading")
+	if o, ok := snap.PeerObservation("mini2", a, later); !ok || o.FetchedAtMS != now.UnixMilli() {
+		t.Errorf("an older reading replaced a newer one: %+v", o)
 	}
-	if _, ok := snap.PeerObservation("mini2", Key{Name: "a@example.com"}, now); ok {
+	if _, ok := snap.PeerObservation("mini2", b, later); !ok {
+		t.Error("an answer that left an account out erased its reading")
+	}
+	if _, ok := snap.PeerObservation("mini2", Key{Name: "a@example.com"}, later); ok {
 		t.Error("a reading was matched to an account known only by its dir's name")
 	}
-	if _, ok := snap.PeerObservation("mac", a, now); ok {
+	if _, ok := snap.PeerObservation("mac", a, later); ok {
 		t.Error("one machine's reading was given as another's")
+	}
+}
+
+// One machine's readings are bounded: past peerReadingsMax the oldest go.
+func TestOneMachinesReadingsAreBounded(t *testing.T) {
+	s := Open(pairedScope(t.TempDir()))
+	now := time.Now()
+	many := map[string]Observation{}
+	for i := range peerReadingsMax + 10 {
+		many[fmt.Sprintf("uuid:%d", i)] = reading(now.Add(-time.Duration(i) * time.Second))
+	}
+	pull(t, s, "mini2", now, many)
+	if st, _ := s.Load().PeerStatus("mini2"); st.Readings != peerReadingsMax {
+		t.Errorf("kept %d readings, want %d", st.Readings, peerReadingsMax)
+	}
+	if _, ok := s.Load().PeerObservation("mini2", Key{UUID: "0"}, now); !ok {
+		t.Error("the newest reading was the one dropped")
 	}
 }
 
 // A reading stamped in the future is a clock anomaly, refused as the store's
 // own is; and an ask stamped in the future does not hold pulls off.
 func TestPeerClockAnomaliesAreNotTrusted(t *testing.T) {
-	root := t.TempDir()
-	s := Open(rootScope(root))
+	s := Open(pairedScope(t.TempDir()))
 	now := time.Now()
 	k := Key{UUID: "a1"}
 	ahead := now.Add(time.Hour)
 
-	s.ClaimPull("mini2", ahead)
-	s.RecordPull("mini2", map[string]Observation{k.ID(): {FetchedAtMS: ahead.UnixMilli(), Body: body}}, "", ahead)
+	pull(t, s, "mini2", ahead, map[string]Observation{k.ID(): reading(ahead)})
 	if _, ok := s.Load().PeerObservation("mini2", k, now); ok {
 		t.Error("a reading stamped an hour ahead was taken as data")
 	}
-	if ok, _ := s.ClaimPull("mini2", now); !ok {
+	if c, _ := s.ClaimPull("mini2", now); !c.Permit {
 		t.Error("an ask stamped in the future held the next pull off")
 	}
 }
@@ -148,30 +223,63 @@ func TestPeerClockAnomaliesAreNotTrusted(t *testing.T) {
 func TestAnUnreadablePeersSectionIsSetAside(t *testing.T) {
 	root := t.TempDir()
 	writeDoc(t, root, `{"version":1,"peers":{"mini2":"not a record"}}`)
-	s := Open(rootScope(root))
+	s := Open(pairedScope(root))
 	snap := s.Load()
 	if len(snap.Problems()) != 1 || snap.Problems()[0].Section != "peers" {
 		t.Errorf("problems = %v, want the peers section named", snap.Problems())
 	}
-	if ok, err := s.ClaimPull("mini2", time.Now()); !ok || err != nil {
-		t.Fatalf("pull refused over an unreadable section: %v %v", ok, err)
+	if c, err := s.ClaimPull("mini2", time.Now()); !c.Permit || err != nil {
+		t.Fatalf("pull refused over an unreadable section: %+v %v", c, err)
 	}
-	raw := readRaw(t, root)
-	if _, ok := raw["peers_unreadable"]; !ok {
-		t.Errorf("the unreadable section was not kept aside: %v", raw)
+	if _, ok := readRaw(t, root)["peers_unreadable"]; !ok {
+		t.Error("the unreadable section was not kept aside")
 	}
 	if len(s.Load().Problems()) != 0 {
 		t.Errorf("the rebuilt section still reads as unreadable: %v", s.Load().Problems())
 	}
 }
 
+// A home that names no peer reads as one that never knew of peers: its
+// leftover section — damaged or not — is not read, not reported, carried
+// through every write as it stands, and pulls from nobody.
+func TestAHomeNamingNoPeerLeavesTheSectionAlone(t *testing.T) {
+	root := t.TempDir()
+	writeDoc(t, root, `{"version":1,"peers":{"mini2":"not a record"}}`)
+	s := Open(rootScope(root))
+	if p := s.Load().Problems(); len(p) != 0 {
+		t.Errorf("a home naming no peer reported its leftover section: %v", p)
+	}
+	if c, _ := s.ClaimPull("mini2", time.Now()); c.Permit {
+		t.Error("a home naming no peer was permitted a pull")
+	}
+	claimOne(t, s, key("a"), time.Now())
+	if got := string(readRaw(t, root)["peers"]); got != `{"mini2":"not a record"}` && got != `{
+    "mini2": "not a record"
+  }` {
+		t.Errorf("the leftover section was rewritten: %s", got)
+	}
+}
+
+// A file that was not JSON owes the ledger a quiet rebuild at the first
+// claim, whichever write comes first: a pull landing before any claim must
+// not leave a document whose ledger reads as merely empty.
+func TestAPullBeforeTheFirstClaimKeepsTheLedgerQuiet(t *testing.T) {
+	root := t.TempDir()
+	writeDoc(t, root, `not json`)
+	s := Open(pairedScope(root))
+	if c, err := s.ClaimPull("mini2", time.Now()); !c.Permit || err != nil {
+		t.Fatalf("pull refused: %+v %v", c, err)
+	}
+	if dec := claimOne(t, s, Key{UUID: "a1"}, time.Now()); dec.Permit {
+		t.Error("a pull's write ended the quiet period an unreadable ledger owes")
+	}
+}
+
 // A machine nobody has asked in the ledger's retention is dropped, by age
 // alone.
 func TestAMachineNobodyAsksAgesOut(t *testing.T) {
-	root := t.TempDir()
-	s := Open(rootScope(root))
-	then := time.Now().Add(-retention - time.Hour)
-	s.ClaimPull("old", then)
+	s := Open(pairedScope(t.TempDir()))
+	s.ClaimPull("old", time.Now().Add(-retention-time.Hour))
 	s.ClaimPull("mini2", time.Now())
 	if _, ok := s.Load().PeerStatus("old"); ok {
 		t.Error("a machine asked a retention ago is still recorded")

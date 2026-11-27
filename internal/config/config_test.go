@@ -229,13 +229,19 @@ func TestPeersAreOptIn(t *testing.T) {
 }
 
 // A name reaches ssh as an argument, so one that would read as an option or
-// carries what no ssh destination does is refused by name.
-func TestPeersThatAreNoDestinationRefuse(t *testing.T) {
+// carries what no ssh destination does is never passed on — and never a
+// reason for any other command to refuse: it is set apart for check to say,
+// and the good names stand.
+func TestABadPeerIsSetApartNotRefused(t *testing.T) {
 	for _, bad := range []string{"-oProxyCommand=x", "mini2;rm", "a$(b)", "host/x"} {
 		clearOverrides(t)
 		t.Setenv("HEADROOM_PEERS", "mini2,"+bad)
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_PEERS") {
-			t.Errorf("HEADROOM_PEERS with %q: err = %v, want a refusal naming the variable", bad, err)
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("HEADROOM_PEERS with %q refused the configuration: %v", bad, err)
+		}
+		if !reflect.DeepEqual(c.Claude.Peers, []string{"mini2"}) || !reflect.DeepEqual(c.BadPeers, []string{bad}) {
+			t.Errorf("HEADROOM_PEERS with %q: peers %v, set apart %v", bad, c.Claude.Peers, c.BadPeers)
 		}
 	}
 }

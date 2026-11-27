@@ -37,6 +37,12 @@ const (
 // assertions that need a live session are then not made.
 func Run(cfg config.Config, out io.Writer, color bool, probe sessions.PIDProbe) int {
 	r := newReport(out, color)
+	// A name in HEADROOM_PEERS that is no ssh destination is left out of
+	// every pull rather than refusing any command; this is where it is said.
+	for _, p := range cfg.BadPeers {
+		r.own(false, fmt.Sprintf("config: HEADROOM_PEERS names %q", p),
+			"not an ssh destination headroom will pass on, so nothing is pulled from it — use an ssh alias or user@host")
+	}
 	checkClaude(cfg.Claude, os.Environ(), probe, r)
 
 	// Codex's group runs after Claude Code's, through the same report.
