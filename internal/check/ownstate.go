@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/render"
 	"github.com/qiushiyan/headroom/internal/state"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
@@ -63,5 +65,45 @@ func auditResponses(snap state.Snapshot, r *report) {
 		reading, err := usage.Parse(snap.Vendor(), rec.Body)
 		r.check(err == nil && !reading.Drifted(), label,
 			"the response headroom itself stored no longer parses — shape drifted")
+	}
+}
+
+// checkPeers says how the newest pull from each machine the scope names
+// went. It asserts nothing about the vendor or about headroom's files: a
+// laptop asleep is not a fault, and the readings it last gave stand, aged.
+// It is here so that a machine misnamed in HEADROOM_PEERS, or one running a
+// headroom without the readings command, is said somewhere other than in a
+// caption that never says "via" it.
+func checkPeers(scope config.Scope, snap state.Snapshot, r *report) {
+	now := time.Now()
+	ago := func(ms int64) string {
+		if a := render.Age((now.UnixMilli() - ms) / 1000); a != "just now" {
+			return a + " ago"
+		}
+		return "just now"
+	}
+	for _, peer := range scope.Peers {
+		label := fmt.Sprintf("peer[%s]", peer)
+		st, ok := snap.PeerStatus(peer)
+		if ok && st.Error == "" && st.PulledMS > 0 {
+			r.ok(fmt.Sprintf("%s: answered %s", label, ago(st.PulledMS)))
+			continue
+		}
+		// A note carries no group prefix of its own, and a Codex line must
+		// still say it is Codex's.
+		label = r.prefix + label
+		switch {
+		case !ok:
+			r.note(label + ": not asked yet — the board, headroom --json and headroom refresh pull from it")
+		case st.Error != "":
+			newest := "none yet"
+			if st.PulledMS > 0 {
+				newest = ago(st.PulledMS)
+			}
+			r.note(fmt.Sprintf("%s: the ask %s failed — %s; its newest answer: %s",
+				label, ago(st.AttemptMS), st.Error, newest))
+		default:
+			r.note(label + ": asked, and its answer is still on its way")
+		}
 	}
 }

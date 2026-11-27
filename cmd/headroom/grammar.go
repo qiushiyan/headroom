@@ -20,6 +20,7 @@ type CLI struct {
 	Login    LoginCmd    `cmd:"" help:"Renew the Claude Code logins that end soon."`
 	Headless HeadlessCmd `cmd:"" help:"Place sessions a headless runner starts itself, on per-account tokens."`
 	Refresh  RefreshCmd  `cmd:"" help:"Ask the usage endpoint about every account that may be asked, and store the answers."`
+	Readings ReadingsCmd `cmd:"" hidden:"" help:"Print this machine's own readings, for another machine's headroom to pull."`
 	Check    CheckCmd    `cmd:"" help:"Verify the vendor facts headroom relies on, and its own state."`
 	VersionC VersionCmd  `cmd:"" name:"version" help:"Print the build this binary is."`
 }

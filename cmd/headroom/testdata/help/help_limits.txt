@@ -23,7 +23,8 @@ The JSON document (schema 8):
    "accounts": [{
      "vendor": "claude"|"codex"|"agy", "name", "email", "launcher", "plan",
      "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
-     "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
+     "usage": null | {"observed_at": RFC3339,
+       "source": "live"|"headroom_cache"|"claude_cache"|"peer", "peer": machine (source peer),
        "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",
        "limits": [{"kind", "group", "model", "label", "percent", "percent_state",
                    "resets_at": RFC3339|null, "reset_state", "identity_state", ...}]},
@@ -33,7 +34,8 @@ The JSON document (schema 8):
 
   Select limits by kind, group and model, never by label. A *_state of "bad" means the
   field did not parse: its value is not a reading. usage.observed_at says how old the
-  figures are; load is null from limits, which reads no process table.
+  figures are, and a "peer" source the machine of HEADROOM_PEERS whose reading is newest;
+  load is null from limits, which reads no process table.
 
 Exit codes:
   0    success

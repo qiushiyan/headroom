@@ -366,6 +366,19 @@ func (c *RefreshCmd) Run(cfg config.Config, h host) error {
 	return app.Refresh(scopes, h.round(false))
 }
 
+// ReadingsCmd is what a pull runs on the machine it asks (HEADROOM_PEERS on
+// the asking one): hidden, since nobody runs it by hand, and read from disk
+// alone.
+type ReadingsCmd struct {
+	Vendor config.Vendor `enum:"claude,codex" required:"" help:"The vendor whose readings to print."`
+}
+
+func (ReadingsCmd) Help() string { return readingsHelp }
+
+func (c *ReadingsCmd) Run(ctx *kong.Context, cfg config.Config) error {
+	return app.Readings(ctx.Stdout, cfg.Scope(c.Vendor))
+}
+
 type CheckCmd struct{}
 
 func (CheckCmd) Help() string { return checkHelp }

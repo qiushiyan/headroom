@@ -17,6 +17,7 @@ func clearOverrides(t *testing.T) {
 	for _, v := range []string{
 		"HEADROOM_HOME", "HEADROOM_PRIMARY_NAME", "HEADROOM_LAUNCHER_FORMAT", "HEADROOM_USAGE_URL",
 		"HEADROOM_CODEX_PRIMARY_NAME", "HEADROOM_CODEX_LAUNCHER_FORMAT", "HEADROOM_CODEX_USAGE_URL",
+		"HEADROOM_PEERS",
 	} {
 		t.Setenv(v, "")
 	}
@@ -196,5 +197,45 @@ func TestAgyScope(t *testing.T) {
 	}
 	if Agy.Title() != "Antigravity" || Agy.EnvPolicy().HomeVar != "" {
 		t.Errorf("title %q, home variable %q", Agy.Title(), Agy.EnvPolicy().HomeVar)
+	}
+}
+
+// Readings from other machines are opt-in: unset, a scope names no peer and
+// nothing is pulled. Set, Claude Code and Codex take the machines named, each
+// once, and Antigravity none — each machine reads its own sign-in every time.
+func TestPeersAreOptIn(t *testing.T) {
+	clearOverrides(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []Scope{c.Claude, c.Codex, c.Agy} {
+		if len(s.Peers) != 0 {
+			t.Errorf("%s: peers %v with HEADROOM_PEERS unset", s.Vendor, s.Peers)
+		}
+	}
+
+	t.Setenv("HEADROOM_PEERS", "mini2, me@desk.local,mini2  laptop")
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"mini2", "me@desk.local", "laptop"}
+	if !reflect.DeepEqual(c.Claude.Peers, want) || !reflect.DeepEqual(c.Codex.Peers, want) {
+		t.Errorf("peers = %v / %v, want %v for both", c.Claude.Peers, c.Codex.Peers, want)
+	}
+	if len(c.Agy.Peers) != 0 {
+		t.Errorf("agy peers = %v, want none", c.Agy.Peers)
+	}
+}
+
+// A name reaches ssh as an argument, so one that would read as an option or
+// carries what no ssh destination does is refused by name.
+func TestPeersThatAreNoDestinationRefuse(t *testing.T) {
+	for _, bad := range []string{"-oProxyCommand=x", "mini2;rm", "a$(b)", "host/x"} {
+		clearOverrides(t)
+		t.Setenv("HEADROOM_PEERS", "mini2,"+bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HEADROOM_PEERS") {
+			t.Errorf("HEADROOM_PEERS with %q: err = %v, want a refusal naming the variable", bad, err)
+		}
 	}
 }

@@ -289,7 +289,7 @@ const (
 	clauseAttempt                     // how the newest refresh went
 	// Then what explains.
 	clauseAge    // how old the figures are
-	clauseSource // where they came from, when not headroom's own fetch
+	clauseSource // where they came from, when not headroom's own fetch on this machine
 	clauseLoad   // the sessions and launches on the account
 	clauseKinds
 )
@@ -344,13 +344,20 @@ func (p Palette) clauses(v accountstate.Facts, now int64, rowDrift bool) clauses
 		c[clauseStale] = p.Yel + "stale" + p.Rst
 	}
 	c[clauseAge] = p.Dim + "observed " + Age(now-v.Obs.ObservedAt) + " ago" + p.Rst
-	if v.Obs.Source == accountstate.SourceCache {
+	switch v.Obs.Source {
+	case accountstate.SourceCache:
 		c[clauseSource] = p.Dim + "via Claude Code's cache" + p.Rst
+	case accountstate.SourcePeer:
+		c[clauseSource] = p.Dim + "via " + Sanitize(v.Obs.Peer) + p.Rst
 	}
 	// No limits is already the body of an empty observation; repeating it as
-	// a caption would say the same thing twice.
+	// a caption would say the same thing twice. Nor is an aged-out token worth
+	// a word while another machine's reading is current (Facts.Fresh): the
+	// figures on show are ones placement trusts, and a session here would buy
+	// them a few minutes at most.
 	sayAttempt := v.Attempt.State != accountstate.AttemptOK && v.Attempt.State != accountstate.AttemptNone &&
-		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0)
+		!(v.Attempt.State == accountstate.AttemptNoLimits && len(v.Obs.Rows) == 0) &&
+		!(v.Attempt.State == accountstate.AttemptTokenStale && fresh && v.Obs.Source == accountstate.SourcePeer)
 	if sayAttempt || v.Attempt.StoreError != "" {
 		c[clauseAttempt] = p.Dim + attemptReason(v, now) + p.Rst
 	}

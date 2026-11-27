@@ -221,6 +221,24 @@ func TestCaptionKeepsEveryClause(t *testing.T) {
 			notWant: []string{"stale"},
 		},
 		{
+			// Figures another machine read name it; and while they are
+			// current, this machine's aged-out token is no errand — a session
+			// here would buy nothing newer.
+			name: "current figures from another machine name it and spare the token errand",
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 90 * time.Second,
+				Obs:     &accountstate.Observation{Rows: []usage.Row{row}, ObservedAt: now - 600, Source: accountstate.SourcePeer, Peer: "mini2"},
+				Attempt: attempt(accountstate.AttemptTokenStale)},
+			want:    []string{"12%", "via mini2", "observed 10m ago"},
+			notWant: []string{"stale", "access token"},
+		},
+		{
+			name: "old figures from another machine still send the errand",
+			view: accountstate.Facts{Label: "a@x.com", Launcher: "x-a", FreshFor: 90 * time.Second,
+				Obs:     &accountstate.Observation{Rows: []usage.Row{row}, ObservedAt: now - 3*3600, Source: accountstate.SourcePeer, Peer: "mini2"},
+				Attempt: attempt(accountstate.AttemptTokenStale)},
+			want: []string{"stale", "via mini2", "observed 3h ago", "access token stale"},
+		},
+		{
 			name:    "a refresh in flight shows over the figures it will replace",
 			view:    accountstate.Facts{Label: "a@x.com", Obs: obs(20*time.Second, accountstate.SourceStore, row), Attempt: attempt(accountstate.AttemptPending)},
 			want:    []string{"fetching"},

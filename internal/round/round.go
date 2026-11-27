@@ -24,6 +24,7 @@ import (
 	"github.com/qiushiyan/headroom/internal/codexauth"
 	"github.com/qiushiyan/headroom/internal/config"
 	"github.com/qiushiyan/headroom/internal/creds"
+	"github.com/qiushiyan/headroom/internal/peers"
 	"github.com/qiushiyan/headroom/internal/refresh"
 	"github.com/qiushiyan/headroom/internal/state"
 )
@@ -50,6 +51,9 @@ type Deps struct {
 	// Start sends the requests the store's claim permits and reports each
 	// result by the index of the request it answers; nil is refresh.Start.
 	Start func(ctx context.Context, st *state.Store, requests []*refresh.Candidate) <-chan refresh.Result
+	// Pull asks another machine for its readings (peers.SSH in production).
+	// nil pulls from nobody, and so does a scope that names no peers.
+	Pull peers.Asker
 }
 
 // Round is one vendor's round: the scope and store it ran under, the set it
@@ -65,6 +69,7 @@ type Round struct {
 
 	rows  []*row
 	start func(ctx context.Context, st *state.Store, requests []*refresh.Candidate) <-chan refresh.Result
+	pull  peers.Asker
 }
 
 // row is one account as the round holds it: its facts, and beside them the
@@ -98,7 +103,7 @@ func prepare(ctx context.Context, set accounts.Set, st *state.Store, now time.Ti
 	scope := set.Scope
 	snap := st.Load()
 	accts := accountstate.Assemble(set, snap, now)
-	r := &Round{Scope: scope, Store: st, Set: set, Problems: snap.Problems(), rows: rowsOf(accts), start: deps.Start}
+	r := &Round{Scope: scope, Store: st, Set: set, Problems: snap.Problems(), rows: rowsOf(accts), start: deps.Start, pull: deps.Pull}
 	var health auth.QueryFunc = func(string) auth.Status { return auth.Status{} }
 	if scope.Vendor == config.Claude && deps.Health != nil {
 		health = deps.Health(set.Accounts)
@@ -166,14 +171,18 @@ func (r *Round) Asking() bool {
 }
 
 // Result is one answer of a round's Fetch: the request's result, by the index
-// of the account it answers, and the round it belongs to.
+// of the account it answers, and the round it belongs to. A result from a
+// pull carries another machine's reading and nothing about a request.
 type Result struct {
 	refresh.Result
-	of *Round
+	of   *Round
+	peer bool
 }
 
 // Fetch is the budget half of the round: the claim, and whatever requests it
-// permits, each result reported as this round's.
+// permits, each result reported as this round's — and beside them, a pull
+// from each machine the scope names whose pull is due, its readings reported
+// as results of the accounts they are of.
 func (r *Round) Fetch(ctx context.Context) <-chan Result {
 	requests := make([]*refresh.Candidate, len(r.rows))
 	for i, d := range r.rows {
@@ -185,7 +194,38 @@ func (r *Round) Fetch(ctx context.Context) <-chan Result {
 			return refresh.Start(ctx, st, requests, nil)
 		}
 	}
-	return r.Feed(start(ctx, r.Store, requests))
+	if r.pull == nil || len(r.Scope.Peers) == 0 {
+		return r.Feed(start(ctx, r.Store, requests))
+	}
+	// The pulls start first: the claim inside start can wait on the lock,
+	// and a pull has no reason to wait on it.
+	accts := r.Accounts()
+	out := make(chan Result, len(r.rows)*(1+len(r.Scope.Peers)))
+	var wg sync.WaitGroup
+	for _, peer := range r.Scope.Peers {
+		wg.Go(func() {
+			if !peers.Pull(ctx, r.Store, peer, r.pull) {
+				return
+			}
+			snap, now := r.Store.Load(), time.Now()
+			for i, a := range accts {
+				if obs := accountstate.PeerObservation(snap, a.Key, a.Acct, peer, now); obs != nil {
+					out <- Result{Index: i, Observation: obs, of: r, peer: true}
+				}
+			}
+		})
+	}
+	src := start(ctx, r.Store, requests)
+	wg.Go(func() {
+		for u := range src {
+			out <- Result{Result: u, of: r}
+		}
+	})
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
 }
 
 // Feed reports what src delivers as this round's results, in order, and
@@ -211,6 +251,17 @@ func (r *Round) Apply(res Result) {
 		return
 	}
 	d := r.rows[res.Index]
+	if res.peer {
+		// Another machine's reading says nothing about this machine's
+		// request, and stands only where it is the newest reading there is.
+		if o := res.Observation; o != nil && (d.View.Obs == nil || o.ObservedAt > d.View.Obs.ObservedAt) {
+			d.View.Obs = o
+			if o.Plan != "" {
+				d.View.Plan = o.Plan
+			}
+		}
+		return
+	}
 	d.View.Attempt = res.Attempt
 	if res.Observation != nil {
 		d.View.Obs = res.Observation

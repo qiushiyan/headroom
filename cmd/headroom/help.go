@@ -32,6 +32,9 @@ var configuration = clikit.Section{
   HEADROOM_LAUNCHER_FORMAT         how the board spells an account's launch command (%s = name)
   HEADROOM_CODEX_PRIMARY_NAME      the name ~/.codex answers to
   HEADROOM_CODEX_LAUNCHER_FORMAT   the board's Codex launch command
+  HEADROOM_PEERS                   other machines with the same accounts, as ssh reaches them
+                                   (comma- or space-separated): each one's newest Claude Code and
+                                   Codex readings are pulled over ssh and the newest reading wins
 
 A relative HEADROOM_HOME makes every command refuse until it is fixed; headroom check
 says which.`,
@@ -60,7 +63,8 @@ var boardDocument = clikit.Section{
  "accounts": [{
    "vendor": "claude"|"codex"|"agy", "name", "email", "launcher", "plan",
    "health": "ok"|"no_login"|"relogin_required"|"bad_blob"|"unknown"|"unprobed",
-   "usage": null | {"observed_at": RFC3339, "source": "live"|"headroom_cache"|"claude_cache",
+   "usage": null | {"observed_at": RFC3339,
+     "source": "live"|"headroom_cache"|"claude_cache"|"peer", "peer": machine (source peer),
      "fresh": bool, "allowance": "unknown"|"allowed"|"blocked"|"bad",
      "limits": [{"kind", "group", "model", "label", "percent", "percent_state",
                  "resets_at": RFC3339|null, "reset_state", "identity_state", ...}]},
@@ -70,7 +74,8 @@ var boardDocument = clikit.Section{
 
 Select limits by kind, group and model, never by label. A *_state of "bad" means the
 field did not parse: its value is not a reading. usage.observed_at says how old the
-figures are; load is null from limits, which reads no process table.`,
+figures are, and a "peer" source the machine of HEADROOM_PEERS whose reading is newest;
+load is null from limits, which reads no process table.`,
 }
 
 const launchHelp = `Execs claude — or codex under --vendor codex — on the account decided, with the child's
@@ -238,6 +243,15 @@ Codex update, or when the board looks wrong. One line per assertion: ok, FAIL, o
 one it could not test (rate limited, offline, a stale token). It exits 0 when everything
 passed, 1 on any FAIL — a configuration headroom refuses among them — and 2 when nothing
 failed but something could not be tested.`
+
+const readingsHelp = `Prints this machine's own newest reading of every account of one vendor, as the usage
+endpoint sent it, for another machine's headroom to pull over ssh. A machine names the ones
+it pulls from in HEADROOM_PEERS; nobody runs this by hand. Read from disk alone, so it
+answers where the login Keychain is sealed. Readings this machine pulled from others are
+never among them.
+
+{"schema": 1, "vendor": "claude"|"codex",
+ "readings": [{"account": "uuid:<id>", "name", "fetched_at_ms", "body": {...}}]}`
 
 const refreshHelp = `Asks the usage endpoint about every account the budget lets it ask (for Antigravity, runs
 agy -p /usage), stores the answers and prints nothing: the round headroom --json runs,

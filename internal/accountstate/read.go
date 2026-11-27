@@ -85,9 +85,26 @@ func Assemble(set accounts.Set, snap state.Snapshot, now time.Time) []Account {
 // derived from a vendor's session files — a Codex rollout carries no account
 // identity, and under the shared store one rollout holds several accounts'
 // turns — so a Codex account has only headroom's own stored response here.
+//
+// Beside this machine's own readings stand those of the machines it pulls
+// from, for the same account by identity, and the newest of them all wins: a
+// tie goes to this machine's own.
 func newestObservation(snap state.Snapshot, k state.Key, a accounts.Account, now time.Time) *Observation {
+	best, _ := ownNewest(snap, k, a, now)
+	for _, peer := range a.Scope.Peers {
+		if o := PeerObservation(snap, k, a, peer, now); o != nil && (best == nil || o.ObservedAt > best.ObservedAt) {
+			best = o
+		}
+	}
+	return best
+}
+
+// ownNewest is the newest reading this machine itself holds of the account —
+// headroom's stored fetch, or Claude Code's cache — and the body it was read
+// from, as it was stored.
+func ownNewest(snap state.Snapshot, k state.Key, a accounts.Account, now time.Time) (*Observation, state.Observation) {
 	var best *Observation
-	accountID, userID := a.ResponseIdentity()
+	var raw state.Observation
 	consider := func(body []byte, atMS int64, source Source) {
 		if len(body) == 0 || atMS <= 0 {
 			return
@@ -95,22 +112,81 @@ func newestObservation(snap state.Snapshot, k state.Key, a accounts.Account, now
 		// Zero rows is as much an answer here as it is from the live endpoint
 		// — "this account reported no limit windows at time X" beats showing
 		// nothing at all.
-		reading, err := usage.Parse(snap.Vendor(), body)
-		if err != nil || !reading.BelongsTo(accountID, userID) {
+		reading, ok := readBody(snap, a, body)
+		if !ok {
 			return
 		}
 		at := atMS / 1000
 		if best != nil && at <= best.ObservedAt {
 			return
 		}
-		best = FromReading(reading, at, source)
+		best, raw = FromReading(reading, at, source), state.Observation{FetchedAtMS: atMS, Body: body}
 	}
 	if snap.Vendor() != a.Scope.Vendor {
-		return nil
+		return nil, raw
 	}
 	if obs, ok := snap.Observation(k, now); ok {
 		consider(obs.Body, obs.FetchedAtMS, SourceStore)
 	}
 	consider(a.Meta.CachedUsage, a.Meta.FetchedAtMS, SourceCache)
-	return best
+	return best, raw
+}
+
+// PeerObservation is the reading peer last gave of the account, through the
+// one parse dispatch and the response identity check a body of this
+// machine's own goes through; nil when it gave none that is usable. What
+// matches it to the account is the identity the ledger keys on, never a name.
+func PeerObservation(snap state.Snapshot, k state.Key, a accounts.Account, peer string, now time.Time) *Observation {
+	if snap.Vendor() != a.Scope.Vendor {
+		return nil
+	}
+	o, ok := snap.PeerObservation(peer, k, now)
+	if !ok {
+		return nil
+	}
+	reading, ok := readBody(snap, a, o.Body)
+	if !ok {
+		return nil
+	}
+	obs := FromReading(reading, o.FetchedAtMS/1000, SourcePeer)
+	obs.Peer = peer
+	return obs
+}
+
+func readBody(snap state.Snapshot, a accounts.Account, body []byte) (usage.Reading, bool) {
+	accountID, userID := a.ResponseIdentity()
+	reading, err := usage.Parse(snap.Vendor(), body)
+	return reading, err == nil && reading.BelongsTo(accountID, userID)
+}
+
+// OwnReading is one account's newest reading as this machine itself holds
+// it, as stored: what another machine pulls.
+type OwnReading struct {
+	Key  state.Key
+	Name string
+	Obs  state.Observation
+}
+
+// OwnReadings is the newest reading this machine itself holds of every
+// account in set that is known by its identity — never one it pulled from
+// another machine, so no reading travels back to where it came from under a
+// second machine's name. An account known only by its dir's name has none: a
+// name says nothing about which account another machine's dir of that name
+// holds.
+func OwnReadings(set accounts.Set, snap state.Snapshot, now time.Time) []OwnReading {
+	var out []OwnReading
+	for _, a := range set.Accounts {
+		k := state.KeyFor(a)
+		if k.UUID == "" || !a.Readable {
+			continue
+		}
+		if obs, raw := ownNewest(snap, k, a, now); obs != nil {
+			name := a.Name
+			if a.Email != "" {
+				name = a.Email
+			}
+			out = append(out, OwnReading{Key: k, Name: name, Obs: raw})
+		}
+	}
+	return out
 }

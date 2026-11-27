@@ -179,6 +179,16 @@ type Scope struct {
 	// home variable being absent, which the vendor resolves against the real
 	// home, so the child would run on a tree the board never described.
 	PrimaryRelocated bool
+
+	// Peers are the other machines whose readings of these accounts are read
+	// beside this machine's own, each named as ssh reaches it
+	// (HEADROOM_PEERS). None, the default, is a machine on its own: nothing
+	// is pulled and nothing is read but its own. A machine can only ask about
+	// an account whose access token it keeps live, and only a session there
+	// keeps it so, so each machine's figures for the accounts it does not use
+	// age while another machine uses them (DESIGN.md § Readings from other
+	// machines).
+	Peers []string
 }
 
 // Config holds one Scope per vendor. Load is the only door: every directory
@@ -295,12 +305,55 @@ func Load() (Config, error) {
 		}
 	}
 
+	peers, err := parsePeers(os.Getenv("HEADROOM_PEERS"))
+	if err != nil {
+		return Config{}, err
+	}
+	// Claude Code's and Codex's figures age on a machine that does not use the
+	// account: a token only a session refreshes is what a request needs.
+	// Antigravity has no such gap — each machine reads its own sign-in by
+	// running agy, every time — and two machines may be signed in to two
+	// Google accounts, so its scope takes no peers.
+	c.Claude.Peers, c.Codex.Peers = peers, slices.Clone(peers)
+
 	c.Codex.Present = isDir(c.Codex.PrimaryDir()) || isDir(c.Codex.AccountsRoot)
 	// Antigravity is present where agy has run: its state dir exists. The
 	// accounts root alone says nothing — headroom creates it for its state
 	// file, and no account can be added there.
 	c.Agy.Present = isDir(c.Agy.PrimaryDir())
 	return c, nil
+}
+
+// parsePeers reads HEADROOM_PEERS: ssh destinations separated by commas or
+// spaces, each said once. A destination reaches ssh as an argument, so one
+// that would read as an option, or carries anything an ssh alias or
+// user@host never does, is refused rather than passed on.
+func parsePeers(v string) ([]string, error) {
+	var out []string
+	for _, p := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if !validPeer(p) {
+			return nil, fmt.Errorf("HEADROOM_PEERS names %q, which is not an ssh destination headroom will pass on — use an ssh alias or user@host, separated by commas or spaces", p)
+		}
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func validPeer(p string) bool {
+	if p == "" || p[0] == '-' || len(p) > 255 {
+		return false
+	}
+	for _, r := range p {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("._-@:", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func relativeErr(name, v string) error {

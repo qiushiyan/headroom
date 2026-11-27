@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/qiushiyan/headroom/internal/config"
+	"github.com/qiushiyan/headroom/internal/placement"
 	"github.com/qiushiyan/headroom/internal/usage"
 )
 
@@ -50,6 +51,7 @@ const (
 	SourceLive  Source = iota // headroom's own fetch, in this process
 	SourceStore               // headroom's own fetch, replayed from the state file
 	SourceCache               // Claude Code's own cache in .claude.json
+	SourcePeer                // another machine's reading, pulled from it (Observation.Peer names it)
 )
 
 // Name is the source as the JSON documents and the launch log spell it. A
@@ -64,6 +66,8 @@ func (s Source) Name() string {
 		return "headroom_cache"
 	case SourceCache:
 		return "claude_cache"
+	case SourcePeer:
+		return "peer"
 	}
 	return ""
 }
@@ -80,6 +84,8 @@ func (s Source) Ours() bool { return s == SourceLive || s == SourceStore }
 // vendor will take work at all, whatever the windows say. Plan is the plan the
 // response named, "" when it named none. Email is the account the figures were
 // measured for, when the response names it (Antigravity's), "" otherwise.
+// Peer is the machine a SourcePeer reading came from, as HEADROOM_PEERS
+// names it.
 type Observation struct {
 	Rows       []usage.Row
 	Allowance  usage.Allowance
@@ -87,6 +93,7 @@ type Observation struct {
 	Email      string
 	ObservedAt int64 // unix seconds
 	Source     Source
+	Peer       string
 }
 
 // FromReading builds the observation a parsed usage body amounts to.
@@ -207,11 +214,23 @@ type Load struct {
 }
 
 // Fresh reports whether the observation is recent enough to describe current
-// headroom.
+// headroom: no older than the spacing, inside which no newer answer can be
+// had.
+//
+// Another machine's reading is the newest of an account this machine cannot
+// ask about itself — were its token live, its own fetch would be newer — and
+// that machine asks as often as its own surfaces run, which is every few
+// minutes while the account is in use there and not at all once it is not.
+// Held to the spacing, every such reading would read stale and send an errand
+// that buys nothing; so it is current for as long as placement takes any
+// reading as current, and past that both come back.
 func (v Facts) Fresh(now int64) bool {
 	window := v.FreshFor
 	if window <= 0 {
 		window = FreshWindow
+	}
+	if v.Obs != nil && v.Obs.Source == SourcePeer {
+		window = max(window, placement.StaleAfter)
 	}
 	return v.Obs != nil && now-v.Obs.ObservedAt <= int64(window/time.Second)
 }

@@ -97,8 +97,8 @@ func agyBucket(v any, group string) Row {
 	}
 	id, idOK := identField(b, "id")
 	window, windowOK := identField(b, "window")
-	row := Row{Kind: id, Group: window, Model: group, Severity: "normal", WindowSeconds: agyWindows[window]}
-	row.Label = agyLabel(group, window)
+	row := Row{Kind: id, Group: window, Model: group, Severity: "normal", WindowSeconds: agyWindows[window],
+		Label: agyLabel(group, window)}
 	if !idOK || !windowOK || id == "" {
 		// The id is what selects a limit; a bucket without one is unselectable.
 		row.IdentityState = tag.Bad
